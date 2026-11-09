@@ -4,7 +4,10 @@
 //! and `long` / `long long` are i64. `char` is signed. Locals are `alloca`s
 //! in the entry block. File-scope objects are LLVM globals. Internal linkage
 //! is `internal`; a declaration with no definition in this translation unit
-//! is `external global` or `declare`.
+//! is `external global` or `declare`. A const object is `constant`. String
+//! literals whose address is used are `private unnamed_addr constant` arrays
+//! of `i8`. A variadic call names the function type, as in
+//! `call i32 (ptr, ...) @printf(...)`.
 //!
 //! The System V AMD64 ABI sign-extends signed `char` and `short` parameters
 //! and return values to 32 bits, and zero-extends the unsigned ones. Those
@@ -33,6 +36,11 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
     out.push_str(&format!("source_filename = {}\n", llvm_string(filename)));
     out.push_str("target triple = \"x86_64-pc-linux-gnu\"\n\n");
     let mut wrote_prelude = false;
+    for literal in &unit.strings {
+        out.push_str(&render_string(literal));
+        out.push('\n');
+        wrote_prelude = true;
+    }
     for global in &unit.globals {
         out.push_str(&render_global(global));
         out.push('\n');
@@ -61,25 +69,40 @@ fn render_global(global: &IrGlobal) -> String {
     let name = llvm_global(&global.name);
     let ir = global.ty.ir_type();
     let align = global.ty.align();
+    // A const object is an LLVM `constant`. `const int *` is not const; the
+    // pointer can be reseated. An array of const elements is constant.
+    let kind = if global.ty.is_const_object() {
+        "constant"
+    } else {
+        "global"
+    };
     if let Some(value) = &global.init {
         let linkage = match global.linkage {
             Linkage::Internal => "internal ",
             Linkage::External => "",
         };
         let spelled = render_const(&global.ty, value);
-        format!("{name} = {linkage}global {ir} {spelled}, align {align}")
+        format!("{name} = {linkage}{kind} {ir} {spelled}, align {align}")
     } else {
-        format!("{name} = external global {ir}, align {align}")
+        format!("{name} = external {kind} {ir}, align {align}")
     }
 }
 
+fn render_string(literal: &StrConst) -> String {
+    let n = literal.bytes.len();
+    format!(
+        "@{} = private unnamed_addr constant [{n} x i8] c{}, align 1",
+        literal.name,
+        llvm_bytes(&literal.bytes)
+    )
+}
+
 fn render_declare(decl: &IrFunc) -> String {
-    let params = decl
-        .params
-        .iter()
-        .map(|ty| param_ir(ty, None))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let mut parts: Vec<String> = decl.params.iter().map(|ty| param_ir(ty, None)).collect();
+    if decl.variadic {
+        parts.push("...".to_string());
+    }
+    let params = parts.join(", ");
     format!(
         "declare {}{} {}({params})",
         ret_prefix(&decl.ret),
@@ -687,6 +710,7 @@ impl Gen {
                 }
             }
             Expr::Decay { expr, .. } => Some(self.gen_addr(expr)),
+            Expr::Str { .. } => Some(self.gen_addr(expr)),
             Expr::Call { args, resolved, .. } => {
                 self.gen_call(args, resolved.as_ref().expect("resolved call"))
             }
@@ -705,6 +729,7 @@ impl Gen {
             } => self.gen_val(expr),
             Expr::Index { base, index, .. } => self.gen_ptr_index(base, index),
             Expr::Decay { expr, .. } => self.gen_addr(expr),
+            Expr::Str { symbol, .. } => llvm_global(symbol.as_deref().expect("string symbol")),
             _ => panic!("internal compiler error: address of a non-lvalue"),
         }
     }
@@ -889,22 +914,39 @@ impl Gen {
 
     fn gen_call(&mut self, args: &[Expr], resolved: &CallRes) -> Option<String> {
         let mut rendered = Vec::new();
-        for (arg, param_ty) in args.iter().zip(&resolved.params) {
+        for (index, arg) in args.iter().enumerate() {
             let value = self.gen_val(arg);
-            let value = self.convert(&value, &arg.ty().expect("typed"), param_ty);
-            rendered.push(param_ir(param_ty, Some(&value)));
+            let src = arg.ty().expect("typed");
+            if index < resolved.params.len() {
+                let param_ty = &resolved.params[index];
+                let value = self.convert(&value, &src, param_ty);
+                rendered.push(param_ir(param_ty, Some(&value)));
+            } else {
+                // Default argument promotions (C11 6.5.2.2): integer types
+                // narrower than `int` become `int`. There are no floats yet.
+                let promoted = default_promote(&src);
+                let value = self.convert(&value, &src, &promoted);
+                rendered.push(format!("{} {value}", promoted.ir_type()));
+            }
         }
         let arglist = rendered.join(", ");
         let callee = llvm_global(&resolved.name);
+        // A variadic call names the function type, including `...`
+        // (`call i32 (ptr, ...) @printf(...)`). Other calls name only the
+        // return type, which is what the existing tests match.
+        let ty = if resolved.variadic {
+            variadic_fn_type(&resolved.ret, &resolved.params)
+        } else {
+            resolved.ret.ir_type()
+        };
         if resolved.ret.is_void() {
-            self.emit(&format!("  call void {callee}({arglist})"));
+            self.emit(&format!("  call {ty} {callee}({arglist})"));
             None
         } else {
             let tmp = self.fresh();
             self.emit(&format!(
-                "  {tmp} = call {}{} {callee}({arglist})",
-                ret_prefix(&resolved.ret),
-                resolved.ret.ir_type()
+                "  {tmp} = call {}{ty} {callee}({arglist})",
+                ret_prefix(&resolved.ret)
             ));
             Some(tmp)
         }
@@ -1079,8 +1121,12 @@ impl Gen {
 /// LLVM string constant. The Language Reference ends the string at the first
 /// `"`. The only escapes are `\\` and `\xx` (two hex digits); a quote is `\22`.
 fn llvm_string(text: &str) -> String {
+    llvm_bytes(text.as_bytes())
+}
+
+fn llvm_bytes(bytes: &[u8]) -> String {
     let mut out = String::from("\"");
-    for byte in text.bytes() {
+    for &byte in bytes {
         match byte {
             b'\\' => out.push_str("\\\\"),
             b'"' => out.push_str("\\22"),
@@ -1090,6 +1136,22 @@ fn llvm_string(text: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// `i32 (ptr, ...)` — the function type written on a variadic call.
+fn variadic_fn_type(ret: &CType, params: &[CType]) -> String {
+    let mut parts: Vec<String> = params.iter().map(|ty| ty.ir_type()).collect();
+    parts.push("...".to_string());
+    format!("{} ({})", ret.ir_type(), parts.join(", "))
+}
+
+/// Default argument promotions. Narrow integers become `int`. Pointers are
+/// unchanged. Floats are not in this subset.
+fn default_promote(ty: &CType) -> CType {
+    match ty.as_integer() {
+        Some(int) => CType::from_name(int.promote()),
+        None => ty.clone(),
+    }
 }
 
 /// `@name` when `name` matches LLVM's unquoted identifier pattern, otherwise
@@ -1175,9 +1237,12 @@ fn render_const(ty: &CType, value: &ConstInit) -> String {
             format!("ptrtoint ({} to {ir})", render_ptr_operand(ptr))
         }
         ConstInit::Aggregate(items) => {
-            let CType::Array(elem, _) = ty else {
+            let Some(elem) = ty.array_elem() else {
                 return "zeroinitializer".to_string();
             };
+            if let Some(bytes) = i8_bytes(ty, items) {
+                return format!("c{}", llvm_bytes(&bytes));
+            }
             let parts = items
                 .iter()
                 .map(|item| format!("{} {}", elem.ir_type(), render_const(elem, item)))
@@ -1186,6 +1251,27 @@ fn render_const(ty: &CType, value: &ConstInit) -> String {
             format!("[{parts}]")
         }
     }
+}
+
+/// A flat array of byte-sized integers can be spelled as an LLVM `c"..."`
+/// constant. Wider elements keep the `[i32 1, i32 2]` form.
+fn i8_bytes(ty: &CType, items: &[ConstInit]) -> Option<Vec<u8>> {
+    let elem = ty.array_elem()?;
+    if elem.as_integer().map(TypeName::width) != Some(8) {
+        return None;
+    }
+    if items.len() != ty.array_len()? as usize {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            ConstInit::Int(bits) => bytes.push(*bits as u8),
+            ConstInit::Zero => bytes.push(0),
+            _ => return None,
+        }
+    }
+    Some(bytes)
 }
 
 fn zero_const_spelling(ty: &CType) -> String {
@@ -1669,6 +1755,64 @@ int main(void) {
             )
             .0
         );
+    }
+
+    #[test]
+    fn strings_and_varargs_lower() {
+        let hello = "\
+int printf(const char *, ...);
+int main(void) {
+    printf(\"hello, world\\n\");
+    return 0;
+}
+";
+        let ir = crate::compile_to_ir(hello, "hello.c").unwrap();
+        assert!(
+            ir.contains(
+                "@.str = private unnamed_addr constant [14 x i8] c\"hello, world\\0A\\00\", align 1"
+            ),
+            "{ir}"
+        );
+        assert!(ir.contains("declare i32 @printf(ptr, ...)"), "{ir}");
+        assert!(
+            ir.contains("call i32 (ptr, ...) @printf(ptr @.str)"),
+            "{ir}"
+        );
+        let (code, out, err) = run_binary(&ir);
+        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+        assert_eq!(out, b"hello, world\n");
+
+        let ir = crate::compile_to_ir(
+            "\
+int idc(char c, ...);
+int main(void) {
+    char c = 2;
+    short s = 3;
+    return idc(c, c, s);
+}
+char buf[4] = \"ab\";
+const int g = 7;
+char exact[2] = \"hi\";
+",
+            "va.c",
+        )
+        .unwrap();
+        assert!(ir.contains("declare i32 @idc(i8 signext, ...)"), "{ir}");
+        assert!(ir.contains("call i32 (i8, ...) @idc(i8 signext"), "{ir}");
+        assert!(ir.contains(", i32 "), "{ir}");
+        assert!(
+            ir.contains("@buf = global [4 x i8] c\"ab\\00\\00\", align 1"),
+            "{ir}"
+        );
+        assert!(ir.contains("@g = constant i32 7, align 4"), "{ir}");
+        assert!(
+            ir.contains("@exact = global [2 x i8] c\"hi\", align 1"),
+            "{ir}"
+        );
+        assert!(!ir.contains("c\"hi\\00\""), "{ir}");
+        let sized =
+            crate::compile_to_ir("int main(void) { return sizeof \"abc\"; }\n", "sz.c").unwrap();
+        assert!(!sized.contains("@.str"), "{sized}");
     }
 
     #[test]

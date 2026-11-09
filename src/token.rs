@@ -10,6 +10,9 @@ pub enum TokenKind {
     Eof,
     Ident,
     Int,
+    /// A decoded string literal. The bytes live on [`Token::bytes`] and do
+    /// not include the implicit terminating NUL.
+    String,
 
     KwAuto,
     KwBreak,
@@ -116,6 +119,8 @@ pub struct Token {
     /// Type chosen for an integer constant (C11 6.4.4.1) or `int` for a
     /// character constant (C11 6.4.4.4).
     pub int_ty: Option<TypeName>,
+    /// Decoded bytes of a [`TokenKind::String`], without the implicit NUL.
+    pub bytes: Option<Vec<u8>>,
 }
 
 pub fn keyword(spelling: &str) -> Option<TokenKind> {

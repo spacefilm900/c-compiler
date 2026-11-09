@@ -30,6 +30,7 @@ pub fn analyze(unit: &mut TranslationUnit, filename: &str) -> Result<(), Diagnos
         current_ret: CType::int_type(),
         global_order: Vec::new(),
         func_order: Vec::new(),
+        strings: Vec::new(),
     };
     for decl in &mut unit.decls {
         match decl {
@@ -75,6 +76,7 @@ struct FuncSym {
     name: String,
     ret: CType,
     params: Vec<CType>,
+    variadic: bool,
     linkage: Linkage,
     defined: bool,
     used: bool,
@@ -95,6 +97,8 @@ struct Sema {
     current_ret: CType,
     global_order: Vec<String>,
     func_order: Vec<String>,
+    /// String literals that need a private global, keyed by bytes including NUL.
+    strings: Vec<(Vec<u8>, String)>,
 }
 
 impl Sema {
@@ -180,7 +184,14 @@ impl Sema {
                 );
             }
         }
-        let params: Vec<CType> = func.params.iter().map(|param| param.ty.clone()).collect();
+        // Top-level parameter qualifiers are not part of the function type
+        // (C11 6.7.6.3p15). Pointee qualifiers stay, so `const char *` and
+        // `char *` are different types.
+        let params: Vec<CType> = func
+            .params
+            .iter()
+            .map(|param| param.ty.unqualified())
+            .collect();
         let name = func.name.clone();
         let prior = self.file_get(&name);
         let prior_linkage = match &prior {
@@ -205,6 +216,7 @@ impl Sema {
                     name,
                     ret: func.ret_type.clone(),
                     params: params.clone(),
+                    variadic: func.variadic,
                     linkage,
                     defined: is_def,
                     used: false,
@@ -214,6 +226,7 @@ impl Sema {
             }
             Some(Symbol::Func(existing)) => {
                 if !compatible(&existing.ret, &func.ret_type)
+                    || existing.variadic != func.variadic
                     || existing.params.len() != params.len()
                     || existing
                         .params
@@ -283,6 +296,7 @@ impl Sema {
                         name: func.name.clone(),
                         ret: func.ret.clone(),
                         params: func.params.clone(),
+                        variadic: func.variadic,
                         linkage: func.linkage,
                     });
                 }
@@ -336,6 +350,14 @@ impl Sema {
         }
         unit.func_decls = func_decls;
         unit.globals = globals;
+        unit.strings = self
+            .strings
+            .iter()
+            .map(|(bytes, name)| StrConst {
+                name: name.clone(),
+                bytes: bytes.clone(),
+            })
+            .collect();
         Ok(())
     }
 
@@ -405,17 +427,34 @@ impl Sema {
     ) -> Result<(CType, Vec<ElemStore>), Diagnostic> {
         let mut ty = ty.clone();
         if let CType::Array(elem, None) = &ty {
-            let Init::List {
-                items,
-                line,
-                column,
-            } = init
-            else {
-                let (line, column) = init_pos(init);
-                return self.err(line, column, "array initializer must be a brace list");
-            };
-            let count = self.infer_array_len(elem, items, *line, *column)?;
-            ty = CType::array((**elem).clone(), Some(count));
+            let elem = (**elem).clone();
+            if let Some(bytes) = string_payload(init) {
+                if elem.is_character() {
+                    ty = CType::array(elem.clone(), Some(bytes.len() as u64 + 1));
+                } else if matches!(init, Init::Expr(_)) {
+                    let (line, column) = init_pos(init);
+                    return self.err(
+                        line,
+                        column,
+                        "a string literal cannot initialize this array",
+                    );
+                }
+                // A brace list around a string, with a non-character element,
+                // falls through to element-list length inference.
+            }
+            if ty.array_len().is_none() {
+                let Init::List {
+                    items,
+                    line,
+                    column,
+                } = init
+                else {
+                    let (line, column) = init_pos(init);
+                    return self.err(line, column, "array initializer must be a brace list");
+                };
+                let count = self.infer_array_len(&elem, items, *line, *column)?;
+                ty = CType::array(elem, Some(count));
+            }
         }
         let mut stores = Vec::new();
         self.fill_object(&ty, init, 0, &mut stores, line, column)?;
@@ -440,7 +479,9 @@ impl Sema {
         let mut scratch = Vec::new();
         while pos < items.len() {
             let start = pos;
-            if matches!(items[pos], Init::List { .. }) || elem.is_scalar() {
+            if string_payload(&items[pos]).is_some() && is_char_array(elem) {
+                pos += 1;
+            } else if matches!(items[pos], Init::List { .. }) || elem.is_scalar() {
                 if matches!(items[pos], Init::List { .. }) {
                     self.fill_object(elem, &items[pos], 0, &mut scratch, line, column)?;
                 }
@@ -474,6 +515,19 @@ impl Sema {
             });
             return Ok(());
         }
+        if let Some(bytes) = string_payload(init).map(|bytes| bytes.to_vec()) {
+            if is_char_array(ty) {
+                return self.fill_from_string(ty, &bytes, base, stores, init);
+            }
+            if matches!(init, Init::Expr(_)) {
+                let (line, column) = init_pos(init);
+                return self.err(
+                    line,
+                    column,
+                    "a string literal cannot initialize this array",
+                );
+            }
+        }
         let CType::Array(elem, Some(len)) = ty else {
             return self.err(line, column, "array initializer must be a brace list");
         };
@@ -494,6 +548,14 @@ impl Sema {
                 return self.err(*line, *column, "excess elements in array initializer");
             }
             let off = base + index * elem_size;
+            if is_char_array(elem) {
+                if let Some(bytes) = string_payload(&items[pos]).map(|bytes| bytes.to_vec()) {
+                    self.fill_from_string(elem, &bytes, off, stores, &items[pos])?;
+                    pos += 1;
+                    index += 1;
+                    continue;
+                }
+            }
             if matches!(items[pos], Init::List { .. }) || elem.is_scalar() {
                 self.fill_object(elem, &items[pos], off, stores, *line, *column)?;
                 pos += 1;
@@ -566,6 +628,44 @@ impl Sema {
                 }
             }
         }
+    }
+
+    /// C11 6.7.9p14. The terminating NUL is stored when the array is larger
+    /// than the literal or has unknown size (already made known). An array
+    /// whose length equals the literal, not counting that NUL, is initialized
+    /// without it. A longer literal is a diagnostic.
+    fn fill_from_string(
+        &self,
+        ty: &CType,
+        bytes: &[u8],
+        base: u64,
+        stores: &mut Vec<ElemStore>,
+        init: &Init,
+    ) -> Result<(), Diagnostic> {
+        let (line, column) = init_pos(init);
+        let Some(len) = ty.array_len() else {
+            return self.err(line, column, "array size missing");
+        };
+        if bytes.len() as u64 > len {
+            return self.err(line, column, "initializer string is too long for the array");
+        }
+        let elem = ty.array_elem().expect("character array").clone();
+        let elem_size = elem.size().expect("character element");
+        let mut data = bytes.to_vec();
+        if (data.len() as u64) < len {
+            data.push(0);
+        }
+        for (index, byte) in data.iter().enumerate() {
+            if index as u64 >= len {
+                break;
+            }
+            stores.push(ElemStore {
+                offset: base + index as u64 * elem_size,
+                ty: elem.clone(),
+                expr: Expr::int(u64::from(*byte), TypeName::Int, line, column),
+            });
+        }
+        Ok(())
     }
 
     fn check_stores(&mut self, stores: &mut [ElemStore]) -> Result<(), Diagnostic> {
@@ -922,11 +1022,57 @@ impl Sema {
             Expr::Call { .. } => self.check_call(expr),
             Expr::Index { .. } => self.check_index(expr),
             Expr::Decay { .. } => Ok(()),
+            Expr::Str { .. } => self.check_str(expr),
         }
+    }
+
+    /// A string literal has type `char[N]`, counting the terminating NUL.
+    /// The private global is created when the address is used, not for
+    /// `sizeof` and not when the literal only initializes a character array.
+    fn check_str(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        let len = match expr {
+            Expr::Str { bytes, .. } => bytes.len() as u64 + 1,
+            _ => unreachable!("string literal"),
+        };
+        expr.set_ty(CType::array(CType::from_name(TypeName::Char), Some(len)));
+        Ok(())
+    }
+
+    /// Record a string literal the first time its address is needed. Identical
+    /// contents share one private global.
+    fn ensure_string(&mut self, expr: &mut Expr) {
+        let bytes = match expr {
+            Expr::Str {
+                symbol: None,
+                bytes,
+                ..
+            } => bytes.clone(),
+            _ => return,
+        };
+        let symbol = self.intern_string(&bytes);
+        if let Expr::Str { symbol: slot, .. } = expr {
+            *slot = Some(symbol);
+        }
+    }
+
+    fn intern_string(&mut self, bytes: &[u8]) -> String {
+        let mut key = bytes.to_vec();
+        key.push(0);
+        if let Some((_, name)) = self.strings.iter().find(|(stored, _)| stored == &key) {
+            return name.clone();
+        }
+        let name = if self.strings.is_empty() {
+            ".str".to_string()
+        } else {
+            format!(".str.{}", self.strings.len())
+        };
+        self.strings.push((key, name.clone()));
+        name
     }
 
     /// Array expressions become pointers except as the operand of `sizeof` or `&`.
     fn decay(&mut self, expr: &mut Expr) {
+        self.ensure_string(expr);
         let Some(ty) = expr.ty() else {
             return;
         };
@@ -1032,7 +1178,8 @@ impl Sema {
         }
         let equality = matches!(op, BinOp::Eq | BinOp::Ne);
         let pointers_ok = if equality {
-            pointer_equality(&left_ty, &right_ty)
+            loose_pointers(&left_ty, &right_ty)
+                || void_ptr_mix(&left_ty, &right_ty)
                 || (left_ty.is_pointer() && is_null_pointer_constant(right))
                 || (right_ty.is_pointer() && is_null_pointer_constant(left))
         } else {
@@ -1040,7 +1187,7 @@ impl Sema {
             // pointer constant is not included, and `void *` is not compatible
             // with `int *`. Clang warns for those and still compiles; this
             // compiler rejects them.
-            left_ty.is_pointer() && right_ty.is_pointer() && compatible(&left_ty, &right_ty)
+            left_ty.is_pointer() && right_ty.is_pointer() && loose_pointers(&left_ty, &right_ty)
         };
         if pointers_ok {
             return Ok(CType::int_type());
@@ -1081,7 +1228,7 @@ impl Sema {
             return Ok(left_ty);
         }
         if op == BinOp::Sub && left_ty.is_pointer() && right_ty.is_pointer() {
-            if !compatible(&left_ty, &right_ty) {
+            if !loose_pointers(&left_ty, &right_ty) {
                 return self.err(
                     line,
                     column,
@@ -1149,6 +1296,7 @@ impl Sema {
             let line = *line;
             let column = *column;
             self.check_expr(expr)?;
+            self.ensure_string(expr);
             match op {
                 UnaryOp::Addr => {
                     if !is_lvalue(expr) {
@@ -1421,8 +1569,8 @@ impl Sema {
                 );
             }
         };
-        let (fname, ret, params) = match sym {
-            Symbol::Func(func) => (func.name, func.ret, func.params),
+        let (fname, ret, params, variadic) = match sym {
+            Symbol::Func(func) => (func.name, func.ret, func.params, func.variadic),
             Symbol::Var(_) => {
                 return self.err(
                     line,
@@ -1432,7 +1580,19 @@ impl Sema {
             }
         };
         let arity = params.len();
-        if argc != arity {
+        if variadic {
+            if argc < arity {
+                return self.err(
+                    line,
+                    column,
+                    format!(
+                        "function '{name}' expects at least {} {}, found {argc}",
+                        arity,
+                        if arity == 1 { "argument" } else { "arguments" },
+                    ),
+                );
+            }
+        } else if argc != arity {
             return self.err(
                 line,
                 column,
@@ -1444,10 +1604,16 @@ impl Sema {
             );
         }
         if let Expr::Call { args, .. } = expr {
-            for (arg, param_ty) in args.iter_mut().zip(params.iter()) {
+            for (index, arg) in args.iter_mut().enumerate() {
                 self.check_expr(arg)?;
                 self.decay(arg);
-                self.can_assign(param_ty, arg)?;
+                if index < params.len() {
+                    self.can_assign(&params[index], arg)?;
+                } else {
+                    // Default argument promotions apply in the IR. There is no
+                    // parameter type to convert to; the argument must be a scalar.
+                    self.require_scalar(arg)?;
+                }
             }
         }
         self.note_use(&name, line, column);
@@ -1456,6 +1622,7 @@ impl Sema {
                 name: fname,
                 ret: ret.clone(),
                 params,
+                variadic,
             });
         }
         expr.set_ty(ret);
@@ -1518,6 +1685,13 @@ impl Sema {
         if ty.is_array() {
             return self.err(expr.line(), expr.column(), "array type is not assignable");
         }
+        if ty.is_const() {
+            return self.err(
+                expr.line(),
+                expr.column(),
+                format!("cannot assign to const-qualified type '{}'", ty.display()),
+            );
+        }
         if !ty.is_scalar() {
             return self.err(expr.line(), expr.column(), "expression is not assignable");
         }
@@ -1531,17 +1705,22 @@ impl Sema {
             Expr::Unary {
                 op: UnaryOp::Deref, ..
             } => self.check_unary(expr),
+            Expr::Str { .. } => self.check_str(expr),
             _ => self.err(expr.line(), expr.column(), "expression is not assignable"),
         }
     }
 
     /// Implicit assignment conversion (C11 6.5.16.1).
     ///
-    /// Arithmetic types convert. A pointer may be assigned a compatible
-    /// pointer, `void *` in either direction with an object pointer, or a
-    /// null pointer constant. Any other pointer mismatch is an error. Clang
-    /// only warns for incompatible pointer types (`-Wincompatible-pointer-types`)
-    /// and still emits code; this compiler rejects the program.
+    /// Arithmetic types convert. A pointer may be assigned a pointer to a
+    /// qualified or unqualified version of a compatible type when the
+    /// destination pointee has every qualifier of the source pointee, so
+    /// `char *` may initialize `const char *` and `const char *` may not
+    /// initialize `char *`. `void *` follows the same qualifier rule. A null
+    /// pointer constant may initialize any pointer. Any other pointer mismatch
+    /// is an error. Clang only warns for incompatible pointer types
+    /// (`-Wincompatible-pointer-types`) and still emits code; this compiler
+    /// rejects the program. A cast may drop qualifiers; that is not diagnosed.
     fn can_assign(&self, dest: &CType, src: &Expr) -> Result<(), Diagnostic> {
         let src_ty = src.ty().expect("typed");
         if src_ty.is_void() {
@@ -1555,7 +1734,7 @@ impl Sema {
             return Ok(());
         }
         if dest.is_pointer()
-            && ((src_ty.is_pointer() && (compatible(dest, &src_ty) || void_ptr_mix(dest, &src_ty)))
+            && ((src_ty.is_pointer() && pointer_assignable(dest, &src_ty))
                 || is_null_pointer_constant(src))
         {
             return Ok(());
@@ -1632,18 +1811,16 @@ impl Sema {
                     .usual(right.as_integer().unwrap()),
             ));
         }
-        if left.is_pointer() && right.is_pointer() && compatible(&left, &right) {
-            return Ok(composite(&left, &right));
+        if left.is_pointer() && right.is_pointer() {
+            if let Some(merged) = merge_pointers(&left, &right) {
+                return Ok(merged);
+            }
         }
         if left.is_pointer() && is_null_pointer_constant(else_expr) {
             return Ok(left);
         }
         if right.is_pointer() && is_null_pointer_constant(then_expr) {
             return Ok(right);
-        }
-        if void_ptr_mix(&left, &right) {
-            let void_ptr = if left.is_void_pointer() { left } else { right };
-            return Ok(void_ptr);
         }
         self.err(
             line,
@@ -1699,6 +1876,7 @@ fn is_lvalue(expr: &Expr) -> bool {
         expr,
         Expr::Var { .. }
             | Expr::Index { .. }
+            | Expr::Str { .. }
             | Expr::Unary {
                 op: UnaryOp::Deref,
                 ..
@@ -1733,10 +1911,64 @@ fn pointer_plus_int(left: &CType, right: &CType) -> Option<CType> {
     }
 }
 
-fn pointer_equality(left: &CType, right: &CType) -> bool {
-    left.is_pointer()
-        && right.is_pointer()
-        && (compatible(left, right) || void_ptr_mix(left, right))
+/// Pointers to qualified or unqualified versions of compatible types
+/// (C11 6.5.8, 6.5.9). One level of pointee qualifiers is ignored.
+/// `const int *` may be compared with `int *`. `char **` may not be compared
+/// with `const char **`, because `char *` and `const char *` are not
+/// compatible.
+fn loose_pointers(left: &CType, right: &CType) -> bool {
+    match (left.pointee(), right.pointee()) {
+        (Some(a), Some(b)) => compatible(&a.unqualified(), &b.unqualified()),
+        _ => false,
+    }
+}
+
+/// Assignment between pointers (C11 6.5.16.1). The destination pointee must
+/// have every qualifier of the source pointee. `char *` converts to
+/// `const char *`. `char **` does not convert to `const char **`.
+fn pointer_assignable(dest: &CType, src: &CType) -> bool {
+    let (Some(dp), Some(sp)) = (dest.pointee(), src.pointee()) else {
+        return false;
+    };
+    if !dp.quals().includes(sp.quals()) {
+        return false;
+    }
+    compatible(&dp.unqualified(), &sp.unqualified())
+        || dp.unqualified().is_void()
+        || sp.unqualified().is_void()
+}
+
+/// `?:` on two pointers. The result pointee carries every qualifier from
+/// either side. A `void *` arm produces `void *` with those qualifiers.
+fn merge_pointers(left: &CType, right: &CType) -> Option<CType> {
+    let lp = left.pointee()?;
+    let rp = right.pointee()?;
+    let quals = lp.quals().merge(rp.quals());
+    if lp.unqualified().is_void() || rp.unqualified().is_void() {
+        return Some(CType::pointer(CType::Void.with_quals(quals)));
+    }
+    if compatible(&lp.unqualified(), &rp.unqualified()) {
+        let merged = composite(&lp.unqualified(), &rp.unqualified()).with_quals(quals);
+        return Some(CType::pointer(merged));
+    }
+    None
+}
+
+fn is_char_array(ty: &CType) -> bool {
+    ty.array_elem().is_some_and(CType::is_character)
+}
+
+/// Bytes of a string literal used as an initializer, including a single pair
+/// of braces around that literal (`char s[4] = {"hi"}`).
+fn string_payload(init: &Init) -> Option<&[u8]> {
+    match init {
+        Init::Expr(Expr::Str { bytes, .. }) => Some(bytes),
+        Init::List { items, .. } => match items.as_slice() {
+            [Init::Expr(Expr::Str { bytes, .. })] => Some(bytes),
+            _ => None,
+        },
+        Init::Expr(_) => None,
+    }
 }
 
 fn void_ptr_mix(left: &CType, right: &CType) -> bool {
@@ -1746,7 +1978,11 @@ fn void_ptr_mix(left: &CType, right: &CType) -> bool {
 /// An integer constant expression with value 0, or that expression cast to `void *`.
 fn is_null_pointer_constant(expr: &Expr) -> bool {
     match expr {
-        Expr::Cast { ty_name, expr, .. } if ty_name.is_void_pointer() => {
+        Expr::Cast { ty_name, expr, .. }
+            if ty_name
+                .pointee()
+                .is_some_and(|pointee| pointee.is_void() && pointee.quals().is_empty()) =>
+        {
             is_null_pointer_constant(expr)
         }
         _ => match eval_const_expr(expr) {
@@ -1953,6 +2189,10 @@ fn designator(expr: &Expr) -> Result<(String, i64), ConstError> {
             };
             Ok((name.to_string(), 0))
         }
+        Expr::Str { symbol, .. } => {
+            let name = symbol.clone().ok_or(ConstError::NotConst)?;
+            Ok((name, 0))
+        }
         Expr::Index {
             base, index, ty, ..
         } => {
@@ -2092,7 +2332,8 @@ fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
         | Expr::Call { .. }
         | Expr::Comma { .. }
         | Expr::Index { .. }
-        | Expr::Decay { .. } => Err(ConstError::NotConst),
+        | Expr::Decay { .. }
+        | Expr::Str { .. } => Err(ConstError::NotConst),
     }
 }
 
@@ -2490,6 +2731,67 @@ mod tests {
         );
         assert!(sema_err("int f(int a); int main(void) { return a; }")
             .contains("undeclared identifier 'a'"));
+        assert!(
+            sema_err("int main(void) { const int x = 1; x = 2; return x; }")
+                .contains("cannot assign to const-qualified type 'const int'")
+        );
+        assert!(
+            sema_err("int main(void) { const char *p = \"a\"; *p = 'b'; return 0; }")
+                .contains("const-qualified type 'const char'")
+        );
+        assert!(
+            sema_err("int main(void) { char *const p = 0; p = 0; return 0; }")
+                .contains("const-qualified type 'char * const'")
+        );
+        assert!(
+            sema_err("int main(void) { const char s[] = \"hi\"; s[0] = 'a'; return 0; }")
+                .contains("const-qualified type 'const char'")
+        );
+        assert!(
+            sema_err("void g(char *); int main(void) { const char *p = 0; g(p); return 0; }")
+                .contains("incompatible types assigning 'const char *' to 'char *'")
+        );
+        assert!(sema_err(
+            "void h(const char **); int main(void) { char **p = 0; h(p); return 0; }"
+        )
+        .contains("incompatible types assigning 'char **' to 'const char **'"));
+        assert!(sema_err("char d[1] = \"hi\"; int main(void) { return 0; }")
+            .contains("initializer string is too long"));
+        assert!(sema_err("int a[2] = \"hi\";").contains("string literal cannot initialize"));
+        assert!(sema_err("int main(void) { printf(\"hi\\n\"); return 0; }")
+            .contains("undeclared identifier 'printf'"));
+        assert!(sema_err("int f(int, ...); int f(int);").contains("conflicting types"));
+        assert!(
+            sema_err("const int f(void); int f(void) { return 1; }").contains("conflicting types")
+        );
+        assert!(
+            sema_err("int printf(const char *, ...); int main(void) { return printf(); }")
+                .contains("expects at least 1 argument, found 0")
+        );
+    }
+
+    #[test]
+    fn strings_const_and_varargs_are_accepted() {
+        sema_ok("void f(const char *); int main(void) { char *p = \"hi\"; f(p); return 0; }");
+        sema_ok("int f(const int x); int f(int x) { return x; }");
+        sema_ok("int f(int *const p); int f(int *p) { return 0; }");
+        sema_ok("int main(void) { volatile int x = 1; x = 2; return x; }");
+        sema_ok("int main(void) { return sizeof \"abc\" + sizeof \"\" + sizeof \"a\\0b\"; }");
+        let unit = analyzed("char s[] = \"hi\"; char t[2] = \"hi\"; char *p = \"ab\" \"c\";");
+        let bytes = |name: &str| match &unit.globals.iter().find(|g| g.name == name).unwrap().init {
+            Some(ConstInit::Aggregate(items)) => items
+                .iter()
+                .map(|item| match item {
+                    ConstInit::Int(bits) => *bits as u8,
+                    ConstInit::Zero => 0,
+                    _ => 0xff,
+                })
+                .collect::<Vec<_>>(),
+            _ => panic!("{name}"),
+        };
+        assert_eq!(bytes("s"), b"hi\0");
+        assert_eq!(bytes("t"), b"hi");
+        assert!(unit.strings.iter().any(|s| s.bytes == b"abc\0"));
     }
 
     #[test]

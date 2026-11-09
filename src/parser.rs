@@ -34,6 +34,7 @@ impl Parser<'_> {
             decls,
             globals: Vec::new(),
             func_decls: Vec::new(),
+            strings: Vec::new(),
         })
     }
 
@@ -46,7 +47,7 @@ impl Parser<'_> {
     /// declarator, so `int *a, b;` declares one pointer and one `int`.
     fn parse_external(&mut self) -> Result<Vec<TopDecl>, Diagnostic> {
         let specs = self.parse_specs(SpecPlace::Declaration)?;
-        let base = CType::from_name(specs.ty);
+        let base = CType::from_name(specs.ty).with_quals(specs.quals);
         let first = self.parse_named_decl(base.clone())?;
         if first.is_function() && self.current().kind == TokenKind::LBrace {
             return Ok(vec![self.finish_definition(specs, first)?]);
@@ -72,6 +73,7 @@ impl Parser<'_> {
             ret,
             params,
             prototype: _,
+            variadic,
         } = declarator.kind
         else {
             return Err(self.error_at(
@@ -80,6 +82,13 @@ impl Parser<'_> {
                 "expected a function definition",
             ));
         };
+        if variadic {
+            return Err(self.error_at(
+                declarator.line,
+                declarator.column,
+                "defining a variadic function is not supported",
+            ));
+        }
         for param in &params {
             if param.name.is_none() {
                 return Err(self.error_at(
@@ -94,6 +103,7 @@ impl Parser<'_> {
             ret_type: ret,
             name: declarator.name,
             params,
+            variadic: false,
             body: Some(body),
             storage: specs.storage,
             linkage: Linkage::External,
@@ -111,6 +121,7 @@ impl Parser<'_> {
             ret,
             params,
             prototype,
+            variadic,
         } = declarator.kind
         {
             if !prototype {
@@ -127,6 +138,7 @@ impl Parser<'_> {
                 ret_type: ret,
                 name: declarator.name,
                 params,
+                variadic,
                 body: None,
                 storage: specs.storage,
                 linkage: Linkage::External,
@@ -194,6 +206,10 @@ impl Parser<'_> {
                     self.advance();
                     self.note_type(&mut flags, &token)?;
                 }
+                TokenKind::KwConst | TokenKind::KwVolatile => {
+                    self.advance();
+                    self.note_qualifier(&mut flags, &token)?;
+                }
                 kind => {
                     if let Some(message) = unsupported(kind) {
                         return Err(self.error(message));
@@ -210,9 +226,37 @@ impl Parser<'_> {
             storage: flags.storage,
             storage_at: flags.storage_at,
             ty,
+            quals: flags.quals,
             line: flags.line,
             column: flags.column,
         })
+    }
+
+    fn note_qualifier(&self, flags: &mut SpecFlags, token: &Token) -> Result<(), Diagnostic> {
+        // A qualifier does not satisfy "at least one type specifier" (C11 6.7.2p2).
+        let which = if token.kind == TokenKind::KwConst {
+            "const"
+        } else {
+            "volatile"
+        };
+        let duplicate = if token.kind == TokenKind::KwConst {
+            flags.quals.is_const
+        } else {
+            flags.quals.is_volatile
+        };
+        if duplicate {
+            return Err(self.error_at(
+                token.line,
+                token.column,
+                format!("duplicate '{which}' qualifier"),
+            ));
+        }
+        if token.kind == TokenKind::KwConst {
+            flags.quals.is_const = true;
+        } else {
+            flags.quals.is_volatile = true;
+        }
+        Ok(())
     }
 
     fn note_type(&self, flags: &mut SpecFlags, token: &Token) -> Result<(), Diagnostic> {
@@ -358,10 +402,12 @@ impl Parser<'_> {
                 ret,
                 params,
                 prototype,
+                variadic,
             } => DeclKind::Function {
                 ret,
                 params,
                 prototype,
+                variadic,
             },
         })
     }
@@ -372,6 +418,7 @@ impl Parser<'_> {
             return Ok(ParsedParams {
                 params: Vec::new(),
                 prototype: false,
+                variadic: false,
             });
         }
         if self.current().kind == TokenKind::KwVoid && self.lookahead() == TokenKind::RParen {
@@ -380,10 +427,20 @@ impl Parser<'_> {
             return Ok(ParsedParams {
                 params: Vec::new(),
                 prototype: true,
+                variadic: false,
             });
         }
         let mut params = Vec::new();
+        let mut variadic = false;
         loop {
+            if self.current().kind == TokenKind::Ellipsis {
+                if params.is_empty() {
+                    return Err(self.error("a named parameter is required before '...'"));
+                }
+                self.advance();
+                variadic = true;
+                break;
+            }
             params.push(self.parse_param()?);
             if self.match_kind(TokenKind::Comma) {
                 if self.current().kind == TokenKind::RParen {
@@ -397,15 +454,13 @@ impl Parser<'_> {
         Ok(ParsedParams {
             params,
             prototype: true,
+            variadic,
         })
     }
 
     fn parse_param(&mut self) -> Result<Param, Diagnostic> {
-        if self.current().kind == TokenKind::Ellipsis {
-            return Err(self.error("variadic functions are not supported"));
-        }
         let specs = self.parse_specs(SpecPlace::Parameter)?;
-        let base = CType::from_name(specs.ty);
+        let base = CType::from_name(specs.ty).with_quals(specs.quals);
         if !self.starts_raw_declarator() {
             if base.is_void() {
                 if self.current().kind == TokenKind::Comma {
@@ -484,11 +539,12 @@ impl Parser<'_> {
     fn parse_raw_declarator(&mut self, abstract_ok: bool) -> Result<RawDecl, Diagnostic> {
         if self.current().kind == TokenKind::Star {
             self.advance();
+            let quals = self.parse_pointer_quals()?;
             if let Some(message) = unsupported(self.current().kind) {
                 return Err(self.error(message));
             }
             let inner = self.parse_raw_declarator(abstract_ok)?;
-            return Ok(RawDecl::Pointer(Box::new(inner)));
+            return Ok(RawDecl::Pointer(quals, Box::new(inner)));
         }
         self.parse_direct(abstract_ok)
     }
@@ -539,6 +595,43 @@ impl Parser<'_> {
         Ok(node)
     }
 
+    /// Qualifiers after `*` (`int * const p`). A repeated qualifier in this
+    /// list is a diagnostic. `restrict` stays unsupported.
+    fn parse_pointer_quals(&mut self) -> Result<Quals, Diagnostic> {
+        let mut quals = Quals::default();
+        loop {
+            let token = self.current().clone();
+            match token.kind {
+                TokenKind::KwConst | TokenKind::KwVolatile => {
+                    let which = if token.kind == TokenKind::KwConst {
+                        "const"
+                    } else {
+                        "volatile"
+                    };
+                    let duplicate = if token.kind == TokenKind::KwConst {
+                        quals.is_const
+                    } else {
+                        quals.is_volatile
+                    };
+                    if duplicate {
+                        return Err(self.error(format!("duplicate '{which}' qualifier")));
+                    }
+                    if token.kind == TokenKind::KwConst {
+                        quals.is_const = true;
+                    } else {
+                        quals.is_volatile = true;
+                    }
+                    self.advance();
+                }
+                TokenKind::KwRestrict => {
+                    return Err(self.error("restrict is not supported"));
+                }
+                _ => break,
+            }
+        }
+        Ok(quals)
+    }
+
     fn can_start_param(&self, kind: TokenKind) -> bool {
         is_type_specifier(kind)
             || matches!(kind, TokenKind::RParen | TokenKind::Ellipsis)
@@ -585,9 +678,10 @@ impl Parser<'_> {
     ) -> Result<Layer, Diagnostic> {
         match raw {
             RawDecl::Named(_, _, _) | RawDecl::Abstract(_, _) => Ok(base),
-            RawDecl::Pointer(inner) => match base {
+            RawDecl::Pointer(quals, inner) => match base {
                 Layer::Object(ty) => {
-                    self.derive_layer(Layer::Object(CType::pointer(ty)), inner, line, column)
+                    let ptr = CType::pointer(ty).with_quals(*quals);
+                    self.derive_layer(Layer::Object(ptr), inner, line, column)
                 }
                 Layer::Function { .. } => {
                     Err(self.error_at(line, column, "function pointers are not supported"))
@@ -619,6 +713,7 @@ impl Parser<'_> {
                             ret,
                             params: params.params.clone(),
                             prototype: params.prototype,
+                            variadic: params.variadic,
                         },
                         inner,
                         line,
@@ -688,7 +783,7 @@ impl Parser<'_> {
             };
             return Err(self.error_at(line, column, message));
         }
-        let base = CType::from_name(specs.ty);
+        let base = CType::from_name(specs.ty).with_quals(specs.quals);
         let mut decls = Vec::new();
         loop {
             let declarator = self.parse_named_decl(base.clone())?;
@@ -1146,7 +1241,7 @@ impl Parser<'_> {
     /// function pointer is rejected.
     fn parse_type_name(&mut self) -> Result<CType, Diagnostic> {
         let specs = self.parse_specs(SpecPlace::TypeName)?;
-        let base = CType::from_name(specs.ty);
+        let base = CType::from_name(specs.ty).with_quals(specs.quals);
         if !self.starts_raw_declarator() {
             return Ok(base);
         }
@@ -1207,7 +1302,7 @@ impl Parser<'_> {
                 }
                 TokenKind::Dot => return Err(self.error("member access is not supported")),
                 TokenKind::Ellipsis => {
-                    return Err(self.error("variadic functions are not supported"));
+                    return Err(self.error("unexpected '...'"));
                 }
                 _ => break,
             }
@@ -1230,6 +1325,16 @@ impl Parser<'_> {
             TokenKind::Ident => {
                 self.advance();
                 Ok(Expr::var(token.spelling, token.line, token.column))
+            }
+            TokenKind::String => {
+                self.advance();
+                let mut bytes = token.bytes.expect("string token");
+                // Translation phase 6 concatenates adjacent string literals.
+                while self.current().kind == TokenKind::String {
+                    let next = self.advance();
+                    bytes.extend(next.bytes.expect("string token"));
+                }
+                Ok(Expr::str_lit(bytes, token.line, token.column))
             }
             TokenKind::LParen => {
                 self.advance();
@@ -1295,6 +1400,7 @@ struct Specs {
     storage: Storage,
     storage_at: Option<(usize, usize)>,
     ty: TypeName,
+    quals: Quals,
     line: usize,
     column: usize,
 }
@@ -1317,6 +1423,7 @@ struct SpecFlags {
     long: u8,
     signed: bool,
     unsigned: bool,
+    quals: Quals,
     any: bool,
     line: usize,
     column: usize,
@@ -1341,6 +1448,7 @@ enum DeclKind {
         ret: CType,
         params: Vec<Param>,
         prototype: bool,
+        variadic: bool,
     },
 }
 
@@ -1350,13 +1458,14 @@ enum Layer {
         ret: CType,
         params: Vec<Param>,
         prototype: bool,
+        variadic: bool,
     },
 }
 
 enum RawDecl {
     Named(String, usize, usize),
     Abstract(usize, usize),
-    Pointer(Box<RawDecl>),
+    Pointer(Quals, Box<RawDecl>),
     Array(Box<RawDecl>, Option<u64>),
     Func(Box<RawDecl>, ParsedParams),
 }
@@ -1365,13 +1474,14 @@ struct ParsedParams {
     params: Vec<Param>,
     /// `false` only for an empty `()` list, which is not a prototype.
     prototype: bool,
+    variadic: bool,
 }
 
 fn decl_name(raw: &RawDecl) -> Option<(String, usize, usize)> {
     match raw {
         RawDecl::Named(name, line, column) => Some((name.clone(), *line, *column)),
         RawDecl::Abstract(_, _) => None,
-        RawDecl::Pointer(inner) | RawDecl::Array(inner, _) | RawDecl::Func(inner, _) => {
+        RawDecl::Pointer(_, inner) | RawDecl::Array(inner, _) | RawDecl::Func(inner, _) => {
             decl_name(inner)
         }
     }
@@ -1380,7 +1490,7 @@ fn decl_name(raw: &RawDecl) -> Option<(String, usize, usize)> {
 fn decl_pos(raw: &RawDecl) -> (usize, usize) {
     match raw {
         RawDecl::Named(_, line, column) | RawDecl::Abstract(line, column) => (*line, *column),
-        RawDecl::Pointer(inner) | RawDecl::Array(inner, _) | RawDecl::Func(inner, _) => {
+        RawDecl::Pointer(_, inner) | RawDecl::Array(inner, _) | RawDecl::Func(inner, _) => {
             decl_pos(inner)
         }
     }
@@ -1394,6 +1504,7 @@ enum BoundErr {
     DivZero,
     Overflow,
     Shift,
+    NotConst,
 }
 
 fn bound_message(err: BoundErr) -> &'static str {
@@ -1405,6 +1516,7 @@ fn bound_message(err: BoundErr) -> &'static str {
         BoundErr::DivZero => "array size divides by zero",
         BoundErr::Overflow => "array size overflows",
         BoundErr::Shift => "array size uses an undefined shift",
+        BoundErr::NotConst => "array size is not an integer constant",
     }
 }
 
@@ -1491,6 +1603,7 @@ fn eval_ice(expr: &Expr) -> Result<BVal, BoundErr> {
                 ty: dest,
             })
         }
+        Expr::Str { .. } => Err(BoundErr::NotConst),
         Expr::Var { .. }
         | Expr::Assign { .. }
         | Expr::Call { .. }
@@ -1505,6 +1618,10 @@ fn eval_ice(expr: &Expr) -> Result<BVal, BoundErr> {
 fn type_only(expr: &Expr) -> Result<CType, BoundErr> {
     match expr {
         Expr::Int { value_ty, .. } => Ok(CType::from_name(*value_ty)),
+        Expr::Str { bytes, .. } => Ok(CType::array(
+            CType::from_name(TypeName::Char),
+            Some(bytes.len() as u64 + 1),
+        )),
         Expr::Sizeof { .. } => Ok(CType::from_name(TypeName::ULong)),
         Expr::Unary { op, expr, .. } => {
             let inner = type_only(expr)?.as_integer().ok_or(BoundErr::Vla)?;
@@ -1791,7 +1908,9 @@ fn assign_kind(kind: TokenKind) -> Option<AssignKind> {
 
 /// A token that can begin a type name in `sizeof ( type-name )` or a cast.
 fn looks_like_type(kind: TokenKind) -> bool {
-    is_type_specifier(kind) || unsupported(kind).is_some()
+    is_type_specifier(kind)
+        || matches!(kind, TokenKind::KwConst | TokenKind::KwVolatile)
+        || unsupported(kind).is_some()
 }
 
 fn is_type_specifier(kind: TokenKind) -> bool {
@@ -1808,7 +1927,11 @@ fn is_type_specifier(kind: TokenKind) -> bool {
 }
 
 fn starts_declaration(kind: TokenKind) -> bool {
-    is_type_specifier(kind) || matches!(kind, TokenKind::KwStatic | TokenKind::KwExtern)
+    is_type_specifier(kind)
+        || matches!(
+            kind,
+            TokenKind::KwStatic | TokenKind::KwExtern | TokenKind::KwConst | TokenKind::KwVolatile
+        )
 }
 
 fn found(token: &Token) -> String {
@@ -1827,9 +1950,7 @@ fn unsupported(kind: TokenKind) -> Option<&'static str> {
         TokenKind::KwUnion => "unions are not supported",
         TokenKind::KwEnum => "enums are not supported",
         TokenKind::KwTypedef => "typedef is not supported",
-        TokenKind::KwConst | TokenKind::KwVolatile | TokenKind::KwRestrict => {
-            "type qualifiers are not supported"
-        }
+        TokenKind::KwRestrict => "restrict is not supported",
         TokenKind::KwRegister => "register is not supported",
         TokenKind::KwAuto => "auto is not supported",
         TokenKind::KwInline => "inline is not supported",
@@ -2137,7 +2258,7 @@ global int [] a =
         assert!(parse_err("int (*fp)(void);").contains("function pointers are not supported"));
         assert!(parse_err("int a[n];").contains("variable-length arrays are not supported"));
         assert!(parse_err("int a[0];").contains("array size must be positive"));
-        assert!(parse_err("\"hi\";").contains("string literals"));
+        assert!(parse_err("\"hi\";").contains("expected a type"));
         assert!(parse_err("int main(void) { return a ? b; }").contains("expected ':'"));
         assert!(parse_err("int add();").contains("old-style function declarations"));
         assert!(
@@ -2164,6 +2285,42 @@ global int [] a =
         assert!(parse_err("int int x;").contains("invalid combination of type specifiers"));
         assert!(parse_err("char int x;").contains("invalid combination of type specifiers"));
         assert!(parse_err("int f(int a, ...) { return a; }").contains("variadic"));
+        assert!(parse_err("int f(...);").contains("named parameter is required"));
+        assert!(parse_err("const const int x;").contains("duplicate 'const' qualifier"));
+        assert!(parse_err("int * const const p;").contains("duplicate 'const' qualifier"));
+        assert!(parse_err("int * restrict p;").contains("restrict is not supported"));
+    }
+
+    #[test]
+    fn strings_qualifiers_and_varargs_parse() {
+        assert_eq!(
+            parsed("const char *p = \"hel\" \"lo\\n\";\n"),
+            "\
+global const char * p =
+  string \"hello\\n\"
+"
+        );
+        assert_eq!(
+            parsed("int printf(const char *, ...);\n"),
+            "\
+proto int printf
+  param const char *
+  varargs
+"
+        );
+        assert_eq!(
+            parsed("char s[2] = \"hi\";\n"),
+            "\
+global char [2] s =
+  string \"hi\"
+"
+        );
+        assert_eq!(
+            parsed("int *const p;\n"),
+            "\
+global int * const p
+"
+        );
     }
 
     #[test]

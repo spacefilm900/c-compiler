@@ -24,7 +24,8 @@ reviews:
     - path: "tests/**/*.c"
       instructions: |
         These are differential smoke programs for this compiler, compared with Clang only as a black-box oracle.
-        Keep them inside the documented subset. Do not add headers, libc calls, or preprocessor directives.
+        Keep them inside the documented subset. Do not add headers or preprocessor directives.
+        A test may call a C library function only by declaring the prototype in the file, for example `int printf(const char *, ...);`, `int puts(const char *);`, `int putchar(int);`, or `unsigned long strlen(const char *);`. Do not include a header for that declaration.
     - path: "harness/**/*.py"
       instructions: |
         Preserve the harness contract: build/compiler INPUT.c -o OUTPUT.ll, then compare the program's exit status and output with Clang.
