@@ -67,7 +67,7 @@ Actions are pinned to commits, not floating tags:
 - `actions/checkout` `11d5960a326750d5838078e36cf38b85af677262` (v4.4.0)
 - `dtolnay/rust-toolchain` `683b588c487a69d01f6c6ddf40f036ff682cc2c8` (v1), with `toolchain: 1.85.1`
 
-`.coderabbit.yaml` is review configuration validated against CodeRabbit's published schema. Putting the file in the tree does not install CodeRabbit. The skills install was skipped, so those skills are not installed. Reviews start only after the CodeRabbit GitHub App is installed on this repository. What was checked, and what the repository owner still has to do, is in `STATUS.md`.
+`.coderabbit.yaml` is review configuration validated against CodeRabbit's published schema. The file does not install the GitHub App. Whether the App is active on this repository, and what it did on the import pull request, is recorded in `STATUS.md`. The optional CodeRabbit skills install was skipped.
 
 ## Supported subset
 

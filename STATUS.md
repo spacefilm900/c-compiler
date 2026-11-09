@@ -29,7 +29,7 @@ The same 21 unit tests were re-run in this preparation environment with `rustup 
 
 ## Import verification (2026-11-09)
 
-Imported into the private repository `https://github.com/spacefilm900/c-compiler` from the tested archive. The default branch `main` already had one commit, `2582a22d92d35b05097ecaaab77f71aaa75cb16b` (`Initial commit`), containing only `README.md` with the text `# c-compiler`. That path conflicts with this tree. The placeholder was replaced by the compiler `README.md`. No other file was already in the repository. History was not rewritten and nothing was force-pushed. The compiler commit is on `cursor/import-compiler-ci-08ff`, branched from `main` at `2582a22`, so the import can be a pull request. The pull request URL is recorded below once GitHub accepts it.
+Imported into the private repository `https://github.com/spacefilm900/c-compiler` from the tested archive. The default branch `main` already had one commit, `2582a22d92d35b05097ecaaab77f71aaa75cb16b` (`Initial commit`), containing only `README.md` with the text `# c-compiler`. That path conflicts with this tree. The placeholder was replaced by the compiler `README.md`. No other file was already in the repository. History was not rewritten and nothing was force-pushed. The compiler commit is `3b9d33e1cefd9a44f61c069011e7cbc460d033b8` on `cursor/import-compiler-ci-08ff`, branched from `main` at `2582a22`. GitHub accepted the pull request: https://github.com/spacefilm900/c-compiler/pull/1.
 
 This environment, on that branch, before the branch was pushed:
 
@@ -50,26 +50,30 @@ Pinned actions were resolved on GitHub before the push. Both commits exist and m
 
 ### GitHub Actions
 
-No Actions run has been observed yet. This section will be updated with the run URL and conclusion after GitHub records one. Do not treat the local results above as a green GitHub check.
+Observed on commit `3b9d33e1cefd9a44f61c069011e7cbc460d033b8`. Both runs completed with conclusion **success**. Each job's log contains `test result: ok. 21 passed; 0 failed` and `17/17 passed`. The runner reported rustc 1.85.1 (4eb161250 2025-03-15), Ubuntu clang 18.1.3, Ubuntu LLVM 18.1.3 (`llvm-as --version`), GNU Make 4.3, and Python 3.12.3.
+
+| Event | Run | Job | Conclusion |
+| --- | --- | --- | --- |
+| `push` | https://github.com/spacefilm900/c-compiler/actions/runs/42538152639 | https://github.com/spacefilm900/c-compiler/actions/runs/42538152639/job/128906962752 | success (2026-11-09 00:03:54Z–00:04:27Z) |
+| `pull_request` | https://github.com/spacefilm900/c-compiler/actions/runs/42538162075 | https://github.com/spacefilm900/c-compiler/actions/runs/42538162075/job/128906993007 | success (2026-11-09 00:04:01Z–00:04:35Z) |
+
+The push job also recorded a non-failing annotation: Node.js 20 is deprecated, and `actions/checkout@11d5960a326750d5838078e36cf38b85af677262` was forced onto Node.js 24. The job still succeeded. The pin was left as imported because the run did not fail.
+
+A later commit that only updates this file starts new runs. Those runs are not the rows above.
 
 ### CodeRabbit
 
-`.coderabbit.yaml` is in the tree. It does not install the GitHub App, and the skipped skills install was not performed here either.
+`.coderabbit.yaml` does not install the GitHub App. The optional skills install was skipped and was not performed here.
 
-Checks made with the token available to this import, before the pull request existed:
+Before the pull request existed, the token used for this import could not see an installation: collaborators were only `spacefilm900` (admin); `main` had no check runs; issues, pull requests, and commit comments were empty; `GET /repos/spacefilm900/c-compiler/hooks` and `GET /user/installations` returned HTTP 403 `Resource not accessible by integration`; `GET /repos/spacefilm900/c-compiler/installation` returned HTTP 401 because that route expects a GitHub App JWT; `GET /orgs/spacefilm900/installations` returned HTTP 404 because `spacefilm900` is a user. Those negative checks do not list other Apps.
 
-- Collaborators: `spacefilm900` only, with admin, maintain, push, triage, and pull. No CodeRabbit account is a collaborator.
-- Issues, pull requests, and commit comments: none.
-- Check runs and commit statuses on `main`: none.
-- Actions workflows before this import: none.
-- Repository events list: empty.
-- `GET /repos/spacefilm900/c-compiler/hooks`: HTTP 403, `Resource not accessible by integration`.
-- `GET /user/installations`: HTTP 403, `Resource not accessible by integration`.
-- `GET /repos/spacefilm900/c-compiler/installation`: HTTP 401, `A JSON web token could not be decoded` (that route expects a GitHub App JWT).
-- `GET /orgs/spacefilm900/installations`: HTTP 404. `spacefilm900` is a user account, not an organization.
-- Code scanning alerts: code scanning is not enabled.
+After pull request 1 was opened, the App was active on this repository:
 
-There is no evidence that the CodeRabbit GitHub App is active on this repository. The token cannot list other GitHub Apps, so this is not an account-wide installation audit. Activation is a repository-owner step and was not done from here. No subscription was started and no account permissions were changed.
+- Check run `CodeRabbit` on `3b9d33e`, app `coderabbitai`, conclusion **success**, completed 2026-11-09 00:13:11Z. GitHub URL: https://github.com/spacefilm900/c-compiler/runs/128907038494. Details URL: https://app.coderabbit.ai/change-stack/spacefilm900/c-compiler/pull/1. The check summary says `Result: Success - Review completed`.
+- `coderabbitai[bot]` commented on the pull request at 2026-11-09 00:04:08Z and posted a review state `COMMENTED` with 3 inline comments. The comment's run configuration names file `.coderabbit.yaml`, layers `Repository YAML`, review profile `CHILL`, and plan `Advanced`.
+- The three comments are minor notes on `src/irgen.rs` (quote escaping in `source_filename`), `src/lexer.rs` (backslash line splice inside a `//` comment), and `src/lexer.rs` (integer literals that overflow `i64` panic instead of a diagnostic). They were not applied. This pull request imports the tested tree and does not change the language.
+
+No subscription was started and no account permissions were changed from this import. Nothing further is required to turn the App on for this repository; it already reviewed the import. The skills package remains uninstalled.
 
 `cargo test` includes lexer regressions, parser AST dumps, negative diagnostics, a CLI check, an IR smoke check (`ret i32 42` assembled and executed), and a differential run of every `tests/*.c` file against `clang -std=c11`. The harness repeats that differential check through `build/compiler` (release binary) and compares exit status, stdout, and stderr.
 
@@ -113,29 +117,14 @@ The workflow file from the tested archive is unchanged. Its first comment still 
 - Pinned actions: `actions/checkout@11d5960a326750d5838078e36cf38b85af677262` (v4.4.0), `dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8` (v1) with toolchain `1.85.1`. Both SHAs were confirmed to exist on GitHub on 2026-11-09.
 - `.coderabbit.yaml` follows CodeRabbit schema `https://coderabbit.ai/integrations/schema.v2.json`. The file was checked against that schema before this import. It does not install anything.
 - CodeRabbit skills were not installed; that install question was skipped, and they were not installed during this import.
-- The CodeRabbit GitHub App is not shown as active on this repository by the checks in Import verification. Reviews do not start until the account owner installs the App.
-- No GitHub Actions run has been observed yet. Do not treat this document as a green CI check.
-
-### Owner step to activate CodeRabbit
-
-This was not performed during the import. The owner of `spacefilm900` does it in a browser, on the personal account (this repository is not in an organization):
-
-1. Sign in at [the CodeRabbit login page](https://app.coderabbit.ai/login) with **Login with GitHub**, as `spacefilm900`.
-2. When GitHub asks to authorize CodeRabbit, review the read of organizations, teams, and email addresses, and authorize only if that is acceptable.
-3. Select the personal account `spacefilm900`, not an organization.
-4. On the GitHub App install screen for [coderabbitai](https://github.com/apps/coderabbitai), choose **Only select repositories** and select `c-compiler`. Do not choose **All repositories**.
-5. Review the App permissions CodeRabbit documents (read of actions, discussions, members, metadata, and merge queues; read-and-write of checks, commit statuses, workflows, and repository contents so it can post review comments). Confirm them only if that access is acceptable. Workflow write is what lets an agent edit `.github/workflows/` when asked; ordinary reviews do not need to change those files.
-6. Click **Install & Authorize** (or **Save** if the App is already installed on the account and `c-compiler` only needs to be added to the selected-repository list: GitHub → Settings → Applications → CodeRabbit → Configure).
-7. Open this pull request in the CodeRabbit UI, or wait for the App to review it. `.coderabbit.yaml` is configuration the App reads after it is installed. The file does not install the App.
-
-CodeRabbit's current plan page says a new organization starts on a 14-day Advanced trial with no credit card, the Free plan includes private repositories but limits GitHub pull-request reviews to summarization, and full pull-request reviews after the trial require a paid plan the owner chooses. No trial was started and no payment was made here. Official steps: [GitHub integration](https://docs.coderabbit.ai/platforms/github-com), [plans](https://docs.coderabbit.ai/management/plans).
+- The CodeRabbit GitHub App reviewed pull request 1. See Import verification for the check URL, the `CHILL` profile loaded from `.coderabbit.yaml`, and the three comments that were left unapplied.
+- GitHub Actions on the import commit succeeded. See Import verification for the run URLs. The documentation commit that records those runs starts separate Actions runs, and those later runs are not the rows in that table.
 
 ## Next actions
 
-1. Record the GitHub Actions run URL and conclusion in this file once GitHub reports them.
-2. Repository owner installs the CodeRabbit GitHub App on `c-compiler` only, if reviews are wanted.
-3. Accept prototypes so mutually recursive functions can be declared before use.
-4. Add file-scope variables, then pointers and arrays, still rejecting anything not yet implemented.
+1. Accept prototypes so mutually recursive functions can be declared before use.
+2. Add file-scope variables, then pointers and arrays, still rejecting anything not yet implemented.
+3. The CodeRabbit notes left on the import (quote escaping in IR strings, `//` comments that end in `\`, and integer literals that overflow `i64`) are edge cases outside the current tests. They are not part of this import.
 
 ## Clean-room reminder
 
