@@ -1,9 +1,10 @@
 //! Hand-written lexer for a C subset.
 //!
-//! This is a direct tokenization of source text. It does not implement C
-//! translation phases 1–4: no trigraphs, no backslash line splicing, and no
-//! preprocessor. Those inputs are diagnosed rather than ignored. String
-//! literals are decoded here; adjacent literals are concatenated by the parser.
+//! The compiler runs the preprocessor ([`crate::pp`]) over a translation unit
+//! first. This lexer is the phase-7 scan: it turns one preprocessing token's
+//! spelling, or a raw buffer in the parser unit tests, into tokens. It still
+//! rejects a `#` or a backslash-newline that reaches it. String literals are
+//! decoded here; adjacent literals are concatenated by the parser.
 
 use crate::ast::TypeName;
 use crate::diag::Diagnostic;
@@ -99,6 +100,7 @@ impl Lexer<'_> {
             spelling: String::new(),
             line: self.line,
             column: self.column,
+            filename: self.filename.to_string(),
             value: None,
             int_ty: None,
             bytes: None,
@@ -138,6 +140,7 @@ impl Lexer<'_> {
             spelling: spelling.to_string(),
             line,
             column,
+            filename: self.filename.to_string(),
             value: None,
             int_ty: None,
             bytes: None,
@@ -355,6 +358,7 @@ impl Lexer<'_> {
             spelling: spelling.to_string(),
             line,
             column,
+            filename: self.filename.to_string(),
             value: Some(bits),
             int_ty: Some(ty),
             bytes: None,
@@ -398,6 +402,7 @@ impl Lexer<'_> {
             spelling,
             line,
             column,
+            filename: self.filename.to_string(),
             value: None,
             int_ty: None,
             bytes: Some(bytes),
@@ -857,7 +862,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_literals_and_preprocessor() {
+    fn rejects_literals_and_raw_hash() {
         assert!(err("\"hi").contains("unterminated string literal"));
         assert!(err("L\"hi\"").contains("wide string and character literals"));
         assert!(err("u8\"hi\"").contains("wide string and character literals"));

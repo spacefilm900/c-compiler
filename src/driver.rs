@@ -1,39 +1,71 @@
-//! Command-line driver. The harness contract is `compiler INPUT.c -o OUTPUT.ll`.
+//! Command-line driver.
+//!
+//! `compiler INPUT.c -o OUTPUT.ll` writes textual LLVM IR.
+//! `-E` writes the preprocessed text instead. `-I`, `-D`, and `-U` are
+//! passed to the preprocessor. A bare `-D NAME` defines `NAME` as `1`.
 
 use std::fs;
 use std::io::{self, Write};
+use std::path::PathBuf;
 
-use crate::compile_to_ir;
+use crate::compile_with;
+use crate::pp::{preprocess, CliMacro, PpOptions};
 
 const USAGE: &str = "\
-usage: compiler INPUT.c -o OUTPUT.ll
+usage: compiler [options] INPUT.c -o OUTPUT.ll
+       compiler -E [options] INPUT.c [-o OUTPUT.i]
+options:
+  -I DIR          add DIR to the include search path
+  -D NAME[=text]  define NAME as text, or as 1 if text is omitted
+  -U NAME         undefine NAME
+  -E              preprocess only
+  -h, --help      show this help
 Compile a C subset to textual LLVM IR.";
+
+struct Options {
+    input: String,
+    output: Option<String>,
+    preprocess_only: bool,
+    pp: PpOptions,
+}
 
 pub fn run(args: &[String]) -> i32 {
     if args.len() == 2 && (args[1] == "-h" || args[1] == "--help") {
         println!("{USAGE}");
         return 0;
     }
-    if args.len() != 4 || args[2] != "-o" {
-        let _ = writeln!(io::stderr(), "{USAGE}");
-        return 2;
-    }
-    let input = &args[1];
-    let output = &args[3];
-    let source = match fs::read(input) {
+    let options = match parse_args(args) {
+        Ok(options) => options,
+        Err(message) => {
+            let _ = writeln!(io::stderr(), "{message}");
+            return 2;
+        }
+    };
+    let source = match fs::read(&options.input) {
         Ok(bytes) => match String::from_utf8(bytes) {
             Ok(text) => text,
             Err(_) => {
-                let _ = writeln!(io::stderr(), "{input}: error: source is not valid UTF-8");
+                let _ = writeln!(
+                    io::stderr(),
+                    "{}: error: source is not valid UTF-8",
+                    options.input
+                );
                 return 1;
             }
         },
         Err(err) => {
-            let _ = writeln!(io::stderr(), "{input}: error: {err}");
+            let _ = writeln!(io::stderr(), "{}: error: {err}", options.input);
             return 1;
         }
     };
-    match compile_to_ir(&source, input) {
+    if options.preprocess_only {
+        return emit_preprocessed(&options, &source);
+    }
+    let Some(output) = options.output.as_deref() else {
+        let _ = writeln!(io::stderr(), "{USAGE}");
+        return 2;
+    };
+    match compile_with(&source, &options.input, &options.pp) {
         Ok(ir) => match fs::write(output, ir) {
             Ok(()) => 0,
             Err(err) => {
@@ -46,6 +78,146 @@ pub fn run(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+fn emit_preprocessed(options: &Options, source: &str) -> i32 {
+    match preprocess(source, &options.input, &options.pp) {
+        Ok(text) => {
+            if let Some(output) = &options.output {
+                match fs::write(output, text) {
+                    Ok(()) => 0,
+                    Err(err) => {
+                        let _ = writeln!(io::stderr(), "{output}: error: {err}");
+                        1
+                    }
+                }
+            } else {
+                print!("{text}");
+                let _ = io::stdout().flush();
+                0
+            }
+        }
+        Err(diag) => {
+            let _ = writeln!(io::stderr(), "{diag}");
+            1
+        }
+    }
+}
+
+fn parse_args(args: &[String]) -> Result<Options, String> {
+    let mut input = None;
+    let mut output = None;
+    let mut preprocess_only = false;
+    let mut pp = PpOptions::default();
+    let mut index = 1;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "-E" {
+            preprocess_only = true;
+            index += 1;
+            continue;
+        }
+        if arg == "-o" {
+            index += 1;
+            let Some(path) = args.get(index) else {
+                return Err(USAGE.to_string());
+            };
+            output = Some(path.clone());
+            index += 1;
+            continue;
+        }
+        if let Some(dir) = take_attached(arg, "-I", args, &mut index)? {
+            pp.include_dirs.push(PathBuf::from(dir));
+            continue;
+        }
+        if let Some(text) = take_attached(arg, "-D", args, &mut index)? {
+            pp.definitions.push(parse_define(&text)?);
+            continue;
+        }
+        if let Some(name) = take_attached(arg, "-U", args, &mut index)? {
+            if !is_macro_name(&name) {
+                return Err(format!("invalid macro name '{name}'"));
+            }
+            pp.definitions.push(CliMacro::Undef(name));
+            continue;
+        }
+        if arg.starts_with('-') {
+            return Err(USAGE.to_string());
+        }
+        if input.is_some() {
+            return Err(USAGE.to_string());
+        }
+        input = Some(arg.clone());
+        index += 1;
+    }
+    let Some(input) = input else {
+        return Err(USAGE.to_string());
+    };
+    if !preprocess_only && output.is_none() {
+        return Err(USAGE.to_string());
+    }
+    Ok(Options {
+        input,
+        output,
+        preprocess_only,
+        pp,
+    })
+}
+
+/// `-I dir` and `-Idir` are both accepted. The returned string is the payload
+/// and `index` points at the next argument.
+fn take_attached(
+    arg: &str,
+    flag: &str,
+    args: &[String],
+    index: &mut usize,
+) -> Result<Option<String>, String> {
+    if arg == flag {
+        *index += 1;
+        let Some(value) = args.get(*index) else {
+            return Err(USAGE.to_string());
+        };
+        *index += 1;
+        return Ok(Some(value.clone()));
+    }
+    if let Some(rest) = arg.strip_prefix(flag) {
+        if !rest.is_empty() {
+            *index += 1;
+            return Ok(Some(rest.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+fn parse_define(text: &str) -> Result<CliMacro, String> {
+    let name_len = text
+        .bytes()
+        .position(|byte| !(byte.is_ascii_alphanumeric() || byte == b'_'))
+        .unwrap_or(text.len());
+    let name = &text[..name_len];
+    if !is_macro_name(name) {
+        return Err(format!("invalid macro name '{text}'"));
+    }
+    let replacement = if name_len == text.len() {
+        None
+    } else if text.as_bytes().get(name_len) == Some(&b'=') {
+        Some(text[name_len + 1..].to_string())
+    } else {
+        return Err(format!("invalid macro name '{text}'"));
+    };
+    Ok(CliMacro::Define {
+        name: name.to_string(),
+        replacement,
+    })
+}
+
+fn is_macro_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    match bytes.next() {
+        Some(byte) if byte.is_ascii_alphabetic() || byte == b'_' => {}
+        _ => return false,
+    }
+    bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') && name != "defined"
 }
 
 #[cfg(test)]
@@ -101,5 +273,52 @@ mod tests {
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&out);
         let _ = std::fs::remove_file(&bad);
+    }
+
+    #[test]
+    fn dash_e_define_and_include() {
+        let (src, out) = temp_paths();
+        std::fs::write(&src, "int x = NAME;\n").unwrap();
+        let pre = out.with_extension("i");
+        assert_eq!(
+            run(&[
+                "compiler".into(),
+                "-DNAME=7".into(),
+                "-E".into(),
+                src.display().to_string(),
+                "-o".into(),
+                pre.display().to_string(),
+            ]),
+            0
+        );
+        let text = std::fs::read_to_string(&pre).unwrap();
+        assert!(text.contains("int x = 7;"), "{text}");
+
+        let header_dir = out.parent().unwrap().join(format!(
+            "cc-inc-{}",
+            src.file_name().unwrap().to_string_lossy()
+        ));
+        let _ = std::fs::remove_dir_all(&header_dir);
+        std::fs::create_dir_all(&header_dir).unwrap();
+        std::fs::write(header_dir.join("one.h"), "int from_i = 4;\n").unwrap();
+        std::fs::write(&src, "#include <one.h>\n").unwrap();
+        let included = pre.with_extension("inc.i");
+        assert_eq!(
+            run(&[
+                "compiler".into(),
+                format!("-I{}", header_dir.display()),
+                "-E".into(),
+                src.display().to_string(),
+                "-o".into(),
+                included.display().to_string(),
+            ]),
+            0
+        );
+        let included_text = std::fs::read_to_string(&included).unwrap();
+        assert!(included_text.contains("int from_i = 4;"), "{included_text}");
+        let _ = std::fs::remove_file(&included);
+        let _ = std::fs::remove_dir_all(&header_dir);
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&pre);
     }
 }

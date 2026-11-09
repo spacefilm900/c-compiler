@@ -6,6 +6,12 @@ For each tests/*.c:
   1. project compiler -> .ll; clang (backend only) links .ll -> binary A
   2. clang (black-box oracle) compiles the .c -> binary B
   3. run both; compare exit code, stdout, stderr.
+
+A test may #include "..." relative to its own directory (headers under tests/
+are not themselves tests). #include <...> uses this compiler's include/
+directory; clang still uses the host headers. Only the declarations need to
+agree, so printf, strlen, malloc, and NULL can be compared.
+
 Env: CC_UNDER_TEST, CLANG (default "clang"), TIMEOUT (seconds, default 10).
 Exit status 0 only if all tests pass.
 """
