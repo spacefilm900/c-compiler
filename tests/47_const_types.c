@@ -9,6 +9,8 @@ unsigned long neg = -1;
 int sz = sizeof(sizeof(int));
 int shifted = (int)(1L << 40);
 unsigned char low = (unsigned char)(1ul << 40);
+unsigned long cond_ul = 1 ? -1 : 1u;
+int cond_cmp = (1 ? -1 : 1u) > 0;
 
 int main(void) {
     if (c != -24)
@@ -33,5 +35,9 @@ int main(void) {
         return 10;
     if (low != 0)
         return 11;
+    if (cond_ul != 4294967295ul)
+        return 12;
+    if (cond_cmp != 1)
+        return 13;
     return 0;
 }

@@ -1046,13 +1046,25 @@ fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
             cond,
             then_expr,
             else_expr,
+            ty,
             ..
         } => {
-            if is_zero(&eval_const_expr(cond)?) {
-                eval_const_expr(else_expr)
+            // The chosen arm is converted to the conditional's result type,
+            // the same conversion the IR does before the phi.
+            let chosen = if is_zero(&eval_const_expr(cond)?) {
+                else_expr
             } else {
-                eval_const_expr(then_expr)
+                then_expr
+            };
+            let value = eval_const_expr(chosen)?;
+            let result = ty.expect("typed conditional");
+            if !result.is_integer() {
+                return Err(ConstError::NotConst);
             }
+            Ok(CVal {
+                bits: convert_bits(value.bits, value.ty, result),
+                ty: result,
+            })
         }
         Expr::Cast { ty_name, expr, .. } => {
             if *ty_name == TypeName::Void {
@@ -1679,6 +1691,8 @@ unsigned w = 4294967295u + 1u;
 int nested = sizeof(sizeof(char));
 unsigned long sz = sizeof(int);
 long wide = 1L << 40;
+unsigned long cond_ul = 1 ? -1 : 1u;
+int cond_cmp = (1 ? -1 : 1u) > 0;
 ",
         );
         let value = |name: &str| {
@@ -1698,6 +1712,8 @@ long wide = 1L << 40;
         assert_eq!(value("nested"), Some(8));
         assert_eq!(value("sz"), Some(4));
         assert_eq!(value("wide"), Some(1u64 << 40));
+        assert_eq!(value("cond_ul"), Some(4294967295));
+        assert_eq!(value("cond_cmp"), Some(1));
 
         assert!(sema_err("long g = 1L << 63;").contains("overflows 'long'"));
         sema_ok("unsigned long g = 1ul << 63;");

@@ -21,7 +21,7 @@ Rust, edition 2021, standard library only. No crates.io dependencies (`Cargo.loc
 
 ## Tests for this step
 
-Run locally on this tree before the pull request. GitHub Actions for this step is recorded after that workflow finishes.
+Run locally on this tree after the constant `?:` arm is converted to the conditional's result type. GitHub Actions for this step is recorded after that workflow finishes. The same commands, on the same toolchain, were clean before that fix as well: 34 passed and 47/47.
 
 | Command | Toolchain | Result |
 | --- | --- | --- |
