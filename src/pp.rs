@@ -163,15 +163,25 @@ fn format_tokens(tokens: &[PpToken]) -> String {
 }
 
 fn tokens_glue(previous: &str, next: &str) -> bool {
-    let Some(prev) = previous.as_bytes().last().copied() else {
+    if previous.is_empty() || next.is_empty() {
         return false;
-    };
-    let Some(next) = next.as_bytes().first().copied() else {
-        return false;
-    };
-    let prev_word = prev.is_ascii_alphanumeric() || prev == b'_';
-    let next_word = next.is_ascii_alphanumeric() || next == b'_';
-    prev_word && next_word
+    }
+    // `..` is still two tokens, but three dots become `...`. `??` is the
+    // start of a trigraph in a preprocessor that implements them.
+    if (previous == "." && next == ".") || (previous == "?" && next == "?") {
+        return true;
+    }
+    let joined = format!("{previous}{next}");
+    match lex_source(&joined, "<glue>", 0) {
+        Ok(tokens) => {
+            let kept: Vec<_> = tokens
+                .iter()
+                .filter(|tok| tok.kind != PpKind::Newline)
+                .collect();
+            !(kept.len() == 2 && kept[0].spelling == previous && kept[1].spelling == next)
+        }
+        Err(_) => true,
+    }
 }
 
 fn convert_token(tok: &PpToken) -> Result<Token, Diagnostic> {
@@ -307,6 +317,8 @@ struct FileInfo {
 struct Cond {
     active: bool,
     seen_true: bool,
+    /// C11 6.10.1 allows one `#else`, and no `#elif` after it.
+    else_seen: bool,
     display: String,
     line: usize,
     column: usize,
@@ -967,6 +979,7 @@ impl Processor {
         if self.cond.is_empty() {
             return Err(error_at(at, "#elif without #if"));
         }
+        self.reject_after_else("elif", at)?;
         self.skip_rest_of_line();
         self.finish_skip_to_endif()
     }
@@ -975,7 +988,9 @@ impl Processor {
         if self.cond.is_empty() {
             return Err(error_at(at, "#else without #if"));
         }
+        self.reject_after_else("else", at)?;
         self.expect_end(at)?;
+        self.cond.last_mut().unwrap().else_seen = true;
         self.finish_skip_to_endif()
     }
 
@@ -1069,7 +1084,26 @@ impl Processor {
             canonical,
             depth,
         });
-        let included = lex_source(&text, &display, file_id)?;
+        let mut included = lex_source(&text, &display, file_id)?;
+        // A header that does not end in a new-line must not continue into the
+        // next line of the file that included it. Clang treats that end of
+        // file as the end of the line.
+        if let Some(last) = included.last() {
+            if last.kind != PpKind::Newline {
+                let line = last.line;
+                let column = last.column.saturating_add(last.spelling.len());
+                included.push(PpToken {
+                    kind: PpKind::Newline,
+                    spelling: "\n".to_string(),
+                    display: display.clone(),
+                    file_id,
+                    line,
+                    column,
+                    leading_space: false,
+                    hide: hide_empty(),
+                });
+            }
+        }
         self.splice(included);
         Ok(())
     }
@@ -1099,12 +1133,13 @@ impl Processor {
         loop {
             match self.skip_until_clause()? {
                 Clause::Elif => {
+                    let at = self.directive_token();
+                    self.reject_after_else("elif", &at)?;
                     let seen = self.cond.last().unwrap().seen_true;
                     if seen {
                         self.skip_rest_of_line();
                         continue;
                     }
-                    let at = cond_token(self.cond.last().unwrap());
                     let line = self.take_line()?;
                     let value = self.eval_line(line, &at)?;
                     let frame = self.cond.last_mut().unwrap();
@@ -1115,9 +1150,11 @@ impl Processor {
                     }
                 }
                 Clause::Else => {
-                    let at = cond_token(self.cond.last().unwrap());
+                    let at = self.directive_token();
+                    self.reject_after_else("else", &at)?;
                     self.expect_end(&at)?;
                     let frame = self.cond.last_mut().unwrap();
+                    frame.else_seen = true;
                     if !frame.seen_true {
                         frame.active = true;
                         frame.seen_true = true;
@@ -1137,7 +1174,17 @@ impl Processor {
     fn finish_skip_to_endif(&mut self) -> Result<(), Diagnostic> {
         loop {
             match self.skip_until_clause()? {
-                Clause::Elif | Clause::Else => self.skip_rest_of_line(),
+                Clause::Elif => {
+                    let at = self.directive_token();
+                    self.reject_after_else("elif", &at)?;
+                    self.skip_rest_of_line();
+                }
+                Clause::Else => {
+                    let at = self.directive_token();
+                    self.reject_after_else("else", &at)?;
+                    self.cond.last_mut().unwrap().else_seen = true;
+                    self.skip_rest_of_line();
+                }
                 Clause::Endif => {
                     let at = cond_token(self.cond.last().unwrap());
                     self.expect_end(&at)?;
@@ -1150,6 +1197,7 @@ impl Processor {
 
     fn skip_until_clause(&mut self) -> Result<Clause, Diagnostic> {
         let mut depth = 0i32;
+        let mut nested_else = Vec::new();
         loop {
             self.skip_to_hash()?;
             self.index += 1;
@@ -1167,18 +1215,49 @@ impl Processor {
             match name.as_str() {
                 "if" | "ifdef" | "ifndef" => {
                     depth += 1;
+                    nested_else.push(false);
                     self.skip_rest_of_line();
                 }
                 "elif" if depth == 0 => return Ok(Clause::Elif),
+                "elif" => {
+                    if nested_else.last() == Some(&true) {
+                        return Err(error_at(&name_tok, "#elif after #else"));
+                    }
+                    self.skip_rest_of_line();
+                }
                 "else" if depth == 0 => return Ok(Clause::Else),
+                "else" => {
+                    if nested_else.last() == Some(&true) {
+                        return Err(error_at(&name_tok, "#else after #else"));
+                    }
+                    if let Some(seen) = nested_else.last_mut() {
+                        *seen = true;
+                    }
+                    self.skip_rest_of_line();
+                }
                 "endif" if depth == 0 => return Ok(Clause::Endif),
                 "endif" => {
                     depth -= 1;
+                    nested_else.pop();
                     self.skip_rest_of_line();
                 }
                 _ => self.skip_rest_of_line(),
             }
         }
+    }
+
+    fn directive_token(&self) -> PpToken {
+        self.tokens
+            .get(self.index.saturating_sub(1))
+            .cloned()
+            .unwrap_or_else(|| cond_token(self.cond.last().unwrap()))
+    }
+
+    fn reject_after_else(&self, kind: &str, at: &PpToken) -> Result<(), Diagnostic> {
+        if self.cond.last().is_some_and(|frame| frame.else_seen) {
+            return Err(error_at(at, format!("#{kind} after #else")));
+        }
+        Ok(())
     }
 
     fn skip_to_hash(&mut self) -> Result<(), Diagnostic> {
@@ -1203,9 +1282,11 @@ impl Processor {
         let replaced = replace_defined(&tokens, |name| self.is_defined(name))?;
         let expanded = self.expand_list(replaced)?;
         let zeroed = replace_idents(expanded);
+        if zeroed.is_empty() {
+            return Err(error_at(at, "expected an expression"));
+        }
         let expr = parse_if_expr(&zeroed)?;
         let value = eval_expr(&expr)?;
-        let _ = at;
         Ok(value.bits != 0)
     }
 
@@ -1287,6 +1368,7 @@ fn cond_frame(at: &PpToken, value: bool) -> Cond {
     Cond {
         active: value,
         seen_true: value,
+        else_seen: false,
         display: at.display.clone(),
         line: at.line,
         column: at.column,
@@ -1855,17 +1937,24 @@ fn literal_val(tok: &PpToken) -> Result<Val, Diagnostic> {
 
 fn val_from_compiler(tok: &Token) -> Val {
     let ty = tok.int_ty.unwrap_or(TypeName::Int);
-    let bits = tok.value.unwrap_or(0);
-    if ty.is_signed() {
-        Val {
-            bits: sign_extend(bits, ty.width()) as u64,
-            unsigned: false,
-        }
+    let raw = tok.value.unwrap_or(0);
+    let bits = if ty.is_signed() {
+        sign_extend(raw, ty.width()) as u64
     } else {
-        Val {
-            bits: bits & ty.mask(),
-            unsigned: true,
-        }
+        raw & ty.mask()
+    };
+    // `#if` uses `intmax_t` for every integer constant that fits in it, even
+    // when the phase-7 type is a narrower unsigned type (`0xFFFFFFFF` is
+    // `unsigned int` and still fits). A `u`/`U` suffix, or a value that does
+    // not fit in signed `intmax_t`, stays unsigned. A character constant is
+    // not scanned for a suffix.
+    let spelling = tok.spelling.as_str();
+    let u_suffix =
+        !spelling.starts_with('\'') && spelling.bytes().any(|byte| byte == b'u' || byte == b'U');
+    let too_big = !ty.is_signed() && ty.width() == 64 && bits > i64::MAX as u64;
+    Val {
+        bits,
+        unsigned: u_suffix || too_big,
     }
 }
 
@@ -2215,6 +2304,12 @@ fn expr_unsigned(expr: &IfExpr) -> bool {
                 | Binary::Or,
             ..
         } => false,
+        // The result type of a shift is the promoted left operand (C11 6.5.7).
+        IfExpr::Binary {
+            op: Binary::Shl | Binary::Shr,
+            left,
+            ..
+        } => expr_unsigned(left),
         IfExpr::Binary { left, right, .. } => expr_unsigned(left) || expr_unsigned(right),
         IfExpr::Cond {
             then_expr,
@@ -2905,5 +3000,40 @@ mod tests {
         let text = pp("#if __STDC__ == 1 && __STDC_VERSION__ == 201112L && __x86_64__ && __linux__ && __LP64__\nint ok;\n#endif\n#define ID(x) x\nID(ID)(1)\n");
         assert!(text.contains("int ok;"), "{text}");
         assert!(squash(&text).contains("ID(1)"), "{text}");
+    }
+
+    #[test]
+    fn review_fixes_match_clang() {
+        let glued = pp("#define NEG -1\n1-NEG\n");
+        assert!(glued.contains("1- -1"), "{glued}");
+        assert!(!glued.contains("1--1"), "{glued}");
+
+        let empty = pp_err("#if\n#endif\n");
+        assert!(empty.contains("t.c:1:"), "{empty}");
+        assert!(empty.contains("expected an expression"), "{empty}");
+
+        let after_else = pp_err("#if 0\n#else\n#elif 1\n#endif\n");
+        assert!(after_else.contains("#elif after #else"), "{after_else}");
+        let nested = pp_err("#if 0\n#if 0\n#else\n#else\n#endif\n#endif\n");
+        assert!(nested.contains("#else after #else"), "{nested}");
+
+        let hex = pp("#if -1 < 0xFFFFFFFF\nA\n#else\nB\n#endif\n#if -1 < 0x8000000000000000\nG\n#else\nH\n#endif\n#if (1 ? -1 : (1 << 0u)) < 0\nI\n#else\nJ\n#endif\n");
+        assert!(hex.contains('A') && !hex.contains('B'), "{hex}");
+        assert!(hex.contains('H') && !hex.contains('G'), "{hex}");
+        assert!(hex.contains('I') && !hex.contains('J'), "{hex}");
+
+        let dir = std::env::temp_dir().join(format!("cc-pp-nonl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("nonl.h"), "#define X 1").unwrap();
+        let main = dir.join("main.c");
+        let text = preprocess(
+            "#include \"nonl.h\"\nint y = X;\n",
+            main.to_str().unwrap(),
+            &PpOptions::default(),
+        )
+        .unwrap();
+        assert!(text.contains("int y = 1;"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

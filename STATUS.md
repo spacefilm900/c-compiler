@@ -33,7 +33,7 @@ Run locally on this tree before the pull request. GitHub Actions for this step i
 | --- | --- | --- |
 | `cargo fmt --all -- --check` | rustc **1.85.1** (4eb161250 2025-03-15) | clean |
 | `cargo clippy --offline --all-targets -- -D warnings` | same | clean |
-| `cargo test --offline --lib` | same | **59 passed, 0 failed** |
+| `cargo test --offline --lib` | same | **60 passed, 0 failed** |
 | `make` | GNU make **4.3** | `build/compiler` produced |
 | `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **90/90 passed** |
 
@@ -188,7 +188,7 @@ Stage 2 step 2: `typedef`, enumerations, and unions, which the real system heade
 
 ## Stage 2 step 1 record
 
-Local results are in the table above: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **59 passed**, `make` produced `build/compiler`, and `python3 harness/run_tests.py` **90/90 passed**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. GitHub Actions for this step is not in this file.
+Local results are in the table above: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **60 passed**, `make` produced `build/compiler`, and `python3 harness/run_tests.py` **90/90 passed**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. The 60 count is after the review fixes (a header without a final newline no longer runs into the next line, `#else` is not followed by another `#else` or `#elif`, an empty `#if` is reported on that directive, `#if` constants that fit in `intmax_t` stay signed, a shift's type follows its left operand, and `-E` inserts a space when two tokens would otherwise glue). GitHub Actions for this step is not in this file.
 
 `include/` is a temporary bridge, not the host libc. `#include <stdio.h>` finds `include/stdio.h`, which declares `printf`, `puts`, and `putchar`. `string.h` declares `strlen`, `strcmp`, and `memcpy`. `stdlib.h` declares `malloc`, `free`, `exit`, and `abs`. `stddef.h` defines `NULL` as `((void *)0)`. There is no `typedef`, so those headers use `unsigned long` where a hosted header would use `size_t`. The compiler does not search `/usr/include`. Real glibc headers still need types this step does not parse. Quote includes are sought in the including file's directory, then each `-I` directory, then `include/`. Angle includes skip the including file's directory. The search stops at 200 nested includes. `#pragma once` remembers the canonical path.
 
