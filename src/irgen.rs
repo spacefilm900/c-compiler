@@ -31,9 +31,20 @@
 
 use crate::ast::*;
 
+/// System V AMD64 layout for `x86_64-pc-linux-gnu`.
+///
+/// `i64` is aligned to 8 bytes, which is what `long` requires. LLVM's default
+/// layout, used when this line is absent, aligns `i64` to 4 bytes. A struct
+/// `getelementptr` is then folded with the wrong field offset: `struct { char
+/// c; long l; }` puts `l` at 4 instead of 8. The string is the one Clang
+/// attaches to this triple.
+const DATA_LAYOUT: &str =
+    "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128";
+
 pub fn render(unit: &TranslationUnit, filename: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("source_filename = {}\n", llvm_string(filename)));
+    out.push_str(&format!("target datalayout = \"{DATA_LAYOUT}\"\n"));
     out.push_str("target triple = \"x86_64-pc-linux-gnu\"\n\n");
     let mut wrote_prelude = false;
     for handle in &unit.structs {
@@ -1589,6 +1600,7 @@ int main(void) {
         assert!(ir.contains("define i32 @main()"));
         assert!(ir.contains("ret i32 42"));
         assert!(ir.contains("target triple = \"x86_64-pc-linux-gnu\""));
+        assert!(ir.contains(&format!("target datalayout = \"{}\"", super::DATA_LAYOUT)));
         assert_eq!(run_binary(&ir).0, 42);
     }
 

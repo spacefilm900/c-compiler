@@ -10,7 +10,7 @@ The frontend was written from the C standard, the LLVM Language Reference, and t
 
 ## Build
 
-Emitting IR does not need Clang. Running the result does. The IR uses opaque pointers and the triple `x86_64-pc-linux-gnu`, so Clang/LLVM must be 15 or newer.
+Emitting IR does not need Clang. Running the result does. The IR uses opaque pointers, the triple `x86_64-pc-linux-gnu`, and that triple's System V data layout, so Clang/LLVM must be 15 or newer.
 
 `rust-toolchain.toml` pins Rust **1.85.1** with the `rustfmt` and `clippy` components. That matches the system `cargo` used for the local unit tests. On that machine, plain `cargo clippy` is not installed; clippy is the rustup command below.
 
