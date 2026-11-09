@@ -8,9 +8,10 @@ For each tests/*.c:
   3. run both; compare exit code, stdout, stderr.
 
 A test may #include "..." relative to its own directory (headers under tests/
-are not themselves tests). #include <...> uses this compiler's include/
-directory; clang still uses the host headers. Only the declarations need to
-agree, so printf, strlen, malloc, and NULL can be compared.
+are not themselves tests). #include <...> searches this compiler's include/
+directory and then the host C library, the same search the compiler uses.
+Clang still uses the host headers. The declarations agree, so printf,
+strlen, malloc, and the macros in limits.h can be compared.
 
 Env: CC_UNDER_TEST, CLANG (default "clang"), TIMEOUT (seconds, default 10).
 Exit status 0 only if all tests pass.

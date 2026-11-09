@@ -32,6 +32,10 @@ pub enum TypeName {
     ULong,
     LongLong,
     ULongLong,
+    /// `_Bool`. The object representation is one byte, and every stored value
+    /// is 0 or 1. Rank is below `char`. Conversion to `_Bool` compares with 0
+    /// rather than truncating (C11 6.3.1.2).
+    Bool,
 }
 
 impl TypeName {
@@ -49,6 +53,7 @@ impl TypeName {
             TypeName::ULong => "unsigned long",
             TypeName::LongLong => "long long",
             TypeName::ULongLong => "unsigned long long",
+            TypeName::Bool => "_Bool",
         }
     }
 
@@ -76,7 +81,8 @@ impl TypeName {
     pub fn width(self) -> u32 {
         match self {
             TypeName::Void => 0,
-            TypeName::Char | TypeName::SChar | TypeName::UChar => 8,
+            // Stored in a byte. The value is still only 0 or 1.
+            TypeName::Bool | TypeName::Char | TypeName::SChar | TypeName::UChar => 8,
             TypeName::Short | TypeName::UShort => 16,
             TypeName::Int | TypeName::UInt => 32,
             TypeName::Long | TypeName::ULong | TypeName::LongLong | TypeName::ULongLong => 64,
@@ -107,7 +113,7 @@ impl TypeName {
     /// share a rank. The unsigned type has the same rank as its signed pair.
     pub fn rank(self) -> u8 {
         match self {
-            TypeName::Void => 0,
+            TypeName::Void | TypeName::Bool => 0,
             TypeName::Char | TypeName::SChar | TypeName::UChar => 1,
             TypeName::Short | TypeName::UShort => 2,
             TypeName::Int | TypeName::UInt => 3,
@@ -124,7 +130,8 @@ impl TypeName {
     /// in signed `int` on this target, including `unsigned short`.
     pub fn promote(self) -> TypeName {
         match self {
-            TypeName::Char
+            TypeName::Bool
+            | TypeName::Char
             | TypeName::SChar
             | TypeName::UChar
             | TypeName::Short
@@ -173,7 +180,7 @@ impl TypeName {
     pub fn abi_attr(self) -> Option<&'static str> {
         match self {
             TypeName::Char | TypeName::SChar | TypeName::Short => Some("signext"),
-            TypeName::UChar | TypeName::UShort => Some("zeroext"),
+            TypeName::Bool | TypeName::UChar | TypeName::UShort => Some("zeroext"),
             _ => None,
         }
     }
@@ -188,30 +195,37 @@ impl TypeName {
     }
 }
 
-/// `const` and `volatile` on one type (C11 6.7.3). `restrict` is not accepted.
+/// `const`, `volatile`, and `restrict` on one type (C11 6.7.3).
 ///
 /// The same qualifier twice in one specifier or qualifier list is a
 /// diagnostic. Qualifiers from different lists combine: `const int * const`.
+/// `restrict` is part of the type for compatibility and assignment. It does
+/// not change the IR. It is only meaningful on a pointer; the parser rejects
+/// it on any other type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Quals {
     pub is_const: bool,
     pub is_volatile: bool,
+    pub is_restrict: bool,
 }
 
 impl Quals {
     pub fn is_empty(self) -> bool {
-        !self.is_const && !self.is_volatile
+        !self.is_const && !self.is_volatile && !self.is_restrict
     }
 
     /// `self` has every qualifier `other` has.
     pub fn includes(self, other: Self) -> bool {
-        (!other.is_const || self.is_const) && (!other.is_volatile || self.is_volatile)
+        (!other.is_const || self.is_const)
+            && (!other.is_volatile || self.is_volatile)
+            && (!other.is_restrict || self.is_restrict)
     }
 
     pub fn merge(self, other: Self) -> Self {
         Self {
             is_const: self.is_const || other.is_const,
             is_volatile: self.is_volatile || other.is_volatile,
+            is_restrict: self.is_restrict || other.is_restrict,
         }
     }
 }
@@ -239,7 +253,26 @@ pub struct StructRef {
     data: Rc<RefCell<StructBody>>,
 }
 
+/// A struct and a union share the tag namespace and the member machinery.
+/// The kind selects the layout: struct members are sequential, union members
+/// all start at offset 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordKind {
+    Struct,
+    Union,
+}
+
+impl RecordKind {
+    pub fn word(self) -> &'static str {
+        match self {
+            RecordKind::Struct => "struct",
+            RecordKind::Union => "union",
+        }
+    }
+}
+
 struct StructBody {
+    kind: RecordKind,
     tag: String,
     fields: Option<Vec<StructField>>,
     size: u64,
@@ -258,15 +291,16 @@ impl Eq for StructRef {}
 impl std::fmt::Debug for StructRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let body = self.data.borrow();
-        write!(f, "struct {}#{}", body.tag, self.id)
+        write!(f, "{} {}#{}", body.kind.word(), body.tag, self.id)
     }
 }
 
 impl StructRef {
-    pub fn new_incomplete(id: u32, tag: impl Into<String>) -> Self {
+    pub fn new_incomplete(id: u32, tag: impl Into<String>, kind: RecordKind) -> Self {
         Self {
             id,
             data: Rc::new(RefCell::new(StructBody {
+                kind,
                 tag: tag.into(),
                 fields: None,
                 size: 0,
@@ -274,6 +308,14 @@ impl StructRef {
                 llvm_name: String::new(),
             })),
         }
+    }
+
+    pub fn kind(&self) -> RecordKind {
+        self.data.borrow().kind
+    }
+
+    pub fn is_union(&self) -> bool {
+        self.kind() == RecordKind::Union
     }
 
     pub fn id(&self) -> u32 {
@@ -348,29 +390,107 @@ pub fn align_up(offset: u64, align: u64) -> Option<u64> {
 /// `_Alignof` of an array type.
 ///
 /// `fields` is `(size, alignment)` in declaration order. `None` means the
-/// size overflowed.
+/// size overflowed. `union_layout` places every member at offset 0 and uses
+/// the largest member as the size.
 pub fn layout_record(fields: &[(u64, u32)]) -> Option<(Vec<u64>, u64, u32)> {
+    layout_fields(fields, false)
+}
+
+/// Union layout. Every member starts at offset 0. The size is the largest
+/// member, rounded up to the strictest alignment.
+pub fn layout_union(fields: &[(u64, u32)]) -> Option<(Vec<u64>, u64, u32)> {
+    layout_fields(fields, true)
+}
+
+fn layout_fields(fields: &[(u64, u32)], union_layout: bool) -> Option<(Vec<u64>, u64, u32)> {
     let mut offsets = Vec::with_capacity(fields.len());
     let mut offset = 0u64;
     let mut align = 1u32;
+    let mut max_size = 0u64;
     for &(size, field_align) in fields {
         let field_align = field_align.max(1);
         align = align.max(field_align);
-        offset = align_up(offset, u64::from(field_align))?;
-        offsets.push(offset);
-        offset = offset.checked_add(size)?;
+        if union_layout {
+            offsets.push(0);
+            max_size = max_size.max(size);
+        } else {
+            offset = align_up(offset, u64::from(field_align))?;
+            offsets.push(offset);
+            offset = offset.checked_add(size)?;
+        }
     }
-    let size = align_up(offset, u64::from(align))?;
+    let size = align_up(
+        if union_layout { max_size } else { offset },
+        u64::from(align),
+    )?;
     Some((offsets, size, align))
 }
 
-/// A type this milestone can name: `void`, an integer, a pointer, an array,
-/// or a struct, each of which may be `const` or `volatile`.
+/// A function type. It is not an object type: a parameter of function type is
+/// adjusted to a pointer, and a typedef of a function type names a function
+/// designator. `params` are the adjusted parameter types with top-level
+/// qualifiers removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FuncTy {
+    pub ret: CType,
+    pub params: Vec<CType>,
+    pub variadic: bool,
+}
+
+/// `float`, `double`, and `long double` on this target.
+///
+/// Sizes follow the System V AMD64 ABI: 4, 8, and 16. `long double` is the
+/// 80-bit extended format (`x86_fp80`), stored in 16 bytes. Declarations of
+/// these types are accepted so the system headers can be parsed. Arithmetic
+/// on them is rejected; there is no floating literal yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatKind {
+    Float,
+    Double,
+    LongDouble,
+}
+
+impl FloatKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FloatKind::Float => "float",
+            FloatKind::Double => "double",
+            FloatKind::LongDouble => "long double",
+        }
+    }
+
+    pub fn size(self) -> u64 {
+        match self {
+            FloatKind::Float => 4,
+            FloatKind::Double => 8,
+            FloatKind::LongDouble => 16,
+        }
+    }
+
+    pub fn align(self) -> u32 {
+        self.size() as u32
+    }
+
+    pub fn ir_type(self) -> &'static str {
+        match self {
+            FloatKind::Float => "float",
+            FloatKind::Double => "double",
+            FloatKind::LongDouble => "x86_fp80",
+        }
+    }
+}
+
+/// A type this milestone can name: `void`, an integer (including `_Bool`), a
+/// floating type, a pointer, an array, a function, or a struct or union, each
+/// of which may be `const`, `volatile`, or `restrict`.
 ///
 /// `char` stays distinct from `signed char`. Pointers use one LLVM `ptr`
 /// (opaque pointers). An array with `len == None` is incomplete (`int a[]`).
 /// A pointer is complete even when it points at an incomplete type. A struct
-/// is incomplete until its member list has been defined in the same scope.
+/// or union is incomplete until its member list has been defined in the same
+/// scope. A completed enum is [`TypeName::Int`]: the implementation-defined
+/// compatible integer type is `int`, and every enumeration constant has type
+/// `int`.
 ///
 /// Qualifiers on an array apply to the element type, not the array type
 /// (C11 6.7.3p9), so an array is never wrapped in [`CType::Qualified`].
@@ -380,9 +500,11 @@ pub fn layout_record(fields: &[(u64, u32)]) -> Option<(Vec<u64>, u64, u32)> {
 pub enum CType {
     Void,
     Int(TypeName),
+    Float(FloatKind),
     Pointer(Box<CType>),
     Array(Box<CType>, Option<u64>),
     Struct(StructRef),
+    Func(Box<FuncTy>),
     Qualified(Quals, Box<CType>),
 }
 
@@ -405,6 +527,18 @@ impl CType {
 
     pub fn array(elem: CType, len: Option<u64>) -> Self {
         CType::Array(Box::new(elem), len)
+    }
+
+    pub fn func(ret: CType, params: Vec<CType>, variadic: bool) -> Self {
+        CType::Func(Box::new(FuncTy {
+            ret,
+            params,
+            variadic,
+        }))
+    }
+
+    pub fn bool_type() -> Self {
+        CType::Int(TypeName::Bool)
     }
 
     /// Drop one layer of qualifiers. Nested qualifiers, including those on a
@@ -442,7 +576,7 @@ impl CType {
 
     /// The type with its own qualifiers removed, for queries that do not care
     /// about `const` or `volatile`.
-    fn peel(&self) -> &CType {
+    pub(crate) fn peel(&self) -> &CType {
         match self {
             CType::Qualified(_, inner) => inner.peel(),
             other => other,
@@ -478,7 +612,31 @@ impl CType {
     }
 
     pub fn is_struct(&self) -> bool {
+        self.struct_ref().is_some_and(|handle| !handle.is_union())
+    }
+
+    pub fn is_union(&self) -> bool {
+        self.struct_ref().is_some_and(|handle| handle.is_union())
+    }
+
+    /// A struct or a union.
+    pub fn is_record(&self) -> bool {
         matches!(self.peel(), CType::Struct(_))
+    }
+
+    pub fn is_float(&self) -> bool {
+        matches!(self.peel(), CType::Float(_))
+    }
+
+    pub fn is_func(&self) -> bool {
+        matches!(self.peel(), CType::Func(_))
+    }
+
+    pub fn func_ty(&self) -> Option<&FuncTy> {
+        match self.peel() {
+            CType::Func(func) => Some(func),
+            _ => None,
+        }
     }
 
     pub fn struct_ref(&self) -> Option<&StructRef> {
@@ -509,6 +667,7 @@ impl CType {
                 .unwrap_or_default()
                 .iter()
                 .any(|field| field.ty.contains_const()),
+            CType::Func(func) => func.ret.contains_const(),
             _ => false,
         }
     }
@@ -555,8 +714,8 @@ impl CType {
 
     pub fn is_complete(&self) -> bool {
         match self.peel() {
-            CType::Void => false,
-            CType::Int(_) | CType::Pointer(_) => true,
+            CType::Void | CType::Func(_) => false,
+            CType::Int(_) | CType::Float(_) | CType::Pointer(_) => true,
             CType::Array(elem, Some(_)) => elem.is_complete(),
             CType::Array(_, None) => false,
             CType::Struct(handle) => handle.is_complete(),
@@ -567,8 +726,9 @@ impl CType {
     /// Size in bytes. Incomplete types have no size.
     pub fn size(&self) -> Option<u64> {
         match self.peel() {
-            CType::Void => None,
+            CType::Void | CType::Func(_) => None,
             CType::Int(ty) => Some(ty.size()),
+            CType::Float(kind) => Some(kind.size()),
             CType::Pointer(_) => Some(8),
             CType::Array(elem, Some(len)) => elem.size().map(|elem| elem.saturating_mul(*len)),
             CType::Array(_, None) => None,
@@ -584,8 +744,9 @@ impl CType {
     /// 8-byte aligned. Qualifiers do not change the alignment.
     pub fn align(&self) -> u32 {
         match self.peel() {
-            CType::Void => 1,
+            CType::Void | CType::Func(_) => 1,
             CType::Int(ty) => ty.align(),
+            CType::Float(kind) => kind.align(),
             CType::Pointer(_) => 8,
             CType::Array(elem, _) => {
                 let elem_align = elem.align();
@@ -615,7 +776,9 @@ impl CType {
         match self.peel() {
             CType::Void => "void".to_string(),
             CType::Int(ty) => ty.ir_type().to_string(),
+            CType::Float(kind) => kind.ir_type().to_string(),
             CType::Pointer(_) => "ptr".to_string(),
+            CType::Func(_) => "void".to_string(),
             CType::Array(elem, len) => {
                 let n = len.unwrap_or(0);
                 format!("[{n} x {}]", elem.ir_type())
@@ -653,14 +816,23 @@ fn render_type(ty: &CType, name: &str) -> String {
             CType::Int(scalar) => {
                 join_spec(&format!("{}{}", qual_prefix(*quals), scalar.as_str()), name)
             }
+            CType::Float(kind) => {
+                join_spec(&format!("{}{}", qual_prefix(*quals), kind.as_str()), name)
+            }
             CType::Struct(handle) => join_spec(
-                &format!("{}struct {}", qual_prefix(*quals), handle.tag()),
+                &format!("{}{}", qual_prefix(*quals), record_spelling(handle)),
                 name,
             ),
+            CType::Func(_) => render_type(inner, name),
         },
         CType::Void => join_spec("void", name),
         CType::Int(scalar) => join_spec(scalar.as_str(), name),
-        CType::Struct(handle) => join_spec(&format!("struct {}", handle.tag()), name),
+        CType::Float(kind) => join_spec(kind.as_str(), name),
+        CType::Struct(handle) => join_spec(&record_spelling(handle), name),
+        CType::Func(func) => {
+            let applied = format!("{name}({})", render_params(func));
+            render_type(&func.ret, &applied)
+        }
         CType::Pointer(inner) => render_type(inner, &star_decl(inner, Quals::default(), name)),
         CType::Array(elem, len) => {
             let bracket = match len {
@@ -672,28 +844,64 @@ fn render_type(ty: &CType, name: &str) -> String {
     }
 }
 
-fn qual_prefix(quals: Quals) -> String {
-    match (quals.is_const, quals.is_volatile) {
-        (true, true) => "const volatile ".to_string(),
-        (true, false) => "const ".to_string(),
-        (false, true) => "volatile ".to_string(),
-        (false, false) => String::new(),
+fn record_spelling(handle: &StructRef) -> String {
+    let word = handle.kind().word();
+    let tag = handle.tag();
+    if tag.is_empty() {
+        word.to_string()
+    } else {
+        format!("{word} {tag}")
     }
 }
 
-/// Text after `*`: empty, ` const`, ` volatile`, or ` const volatile`.
+fn render_params(func: &FuncTy) -> String {
+    let mut parts: Vec<String> = func.params.iter().map(|ty| ty.display()).collect();
+    if func.variadic {
+        parts.push("...".to_string());
+    }
+    if parts.is_empty() {
+        "void".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn qual_words(quals: Quals) -> Vec<&'static str> {
+    let mut words = Vec::new();
+    if quals.is_const {
+        words.push("const");
+    }
+    if quals.is_volatile {
+        words.push("volatile");
+    }
+    if quals.is_restrict {
+        words.push("restrict");
+    }
+    words
+}
+
+fn qual_prefix(quals: Quals) -> String {
+    let words = qual_words(quals);
+    if words.is_empty() {
+        String::new()
+    } else {
+        format!("{} ", words.join(" "))
+    }
+}
+
+/// Text after `*`: empty, or ` const`, ` volatile`, ` restrict`, in that order.
 fn qual_after_star(quals: Quals) -> String {
-    match (quals.is_const, quals.is_volatile) {
-        (true, true) => " const volatile".to_string(),
-        (true, false) => " const".to_string(),
-        (false, true) => " volatile".to_string(),
-        (false, false) => String::new(),
+    let words = qual_words(quals);
+    if words.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", words.join(" "))
     }
 }
 
 fn star_decl(pointee: &CType, quals: Quals, name: &str) -> String {
     let q = qual_after_star(quals);
-    let needs_paren = matches!(pointee.peel(), CType::Array(_, _));
+    let needs_paren = matches!(pointee.peel(), CType::Array(_, _) | CType::Func(_));
     if needs_paren {
         if q.is_empty() {
             format!("(*{name})")
@@ -737,7 +945,17 @@ pub fn compatible(left: &CType, right: &CType) -> bool {
     match (left.peel(), right.peel()) {
         (CType::Void, CType::Void) => true,
         (CType::Int(a), CType::Int(b)) => a == b,
+        (CType::Float(a), CType::Float(b)) => a == b,
         (CType::Pointer(a), CType::Pointer(b)) => compatible(a, b),
+        (CType::Func(a), CType::Func(b)) => {
+            a.variadic == b.variadic
+                && a.params.len() == b.params.len()
+                && compatible(&a.ret, &b.ret)
+                && a.params
+                    .iter()
+                    .zip(b.params.iter())
+                    .all(|(left, right)| compatible(left, right))
+        }
         (CType::Array(a, la), CType::Array(b, lb)) => {
             (la.is_none() || lb.is_none() || la == lb) && compatible(a, b)
         }
@@ -778,6 +996,15 @@ pub fn sign_extend(bits: u64, width: u32) -> i64 {
 /// this target keeps the low bits and reads them as two's complement, which
 /// is what Clang does on `x86_64-pc-linux-gnu`.
 pub fn convert_bits(bits: u64, from: TypeName, to: TypeName) -> u64 {
+    // C11 6.3.1.2: any nonzero value becomes 1. Truncation would turn 2 into 0.
+    if to == TypeName::Bool && from != TypeName::Bool {
+        let zero = if from.is_signed() {
+            sign_extend(bits, from.width()) == 0
+        } else {
+            bits & from.mask() == 0
+        };
+        return u64::from(!zero);
+    }
     let to_mask = to.mask();
     if to.width() <= from.width() {
         return bits & to_mask;
@@ -801,6 +1028,8 @@ pub enum Storage {
     None,
     Static,
     Extern,
+    /// `typedef`. The declaration introduces an alias, not an object.
+    Typedef,
 }
 
 /// Linkage after C11 6.2.2 has been applied to a declaration.
@@ -999,6 +1228,9 @@ pub struct CallRes {
     /// The callee was declared with `...`. Arguments past `params` use the
     /// default argument promotions.
     pub variadic: bool,
+    /// The callee is a pointer expression. `name` is empty. A direct call
+    /// names the function and leaves this false.
+    pub indirect: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1130,6 +1362,10 @@ pub enum Expr {
         column: usize,
         index: Option<usize>,
         offset: Option<u64>,
+        /// Address the member with a byte `getelementptr` from the base.
+        /// Unions do this: every member is at offset 0, and the LLVM type is
+        /// not a list of those members.
+        bytewise: bool,
         ty: Option<CType>,
     },
 }
@@ -1297,6 +1533,7 @@ impl Expr {
             column,
             index: None,
             offset: None,
+            bytewise: false,
             ty: None,
         }
     }
@@ -1400,10 +1637,13 @@ impl Expr {
     /// assignment or `?:` is not an lvalue.
     pub fn is_lvalue(&self) -> bool {
         match self {
-            Expr::Var { .. } | Expr::Index { .. } | Expr::Str { .. } => true,
+            Expr::Var { ty, .. } => ty.as_ref().is_none_or(|ty| !ty.is_func()),
+            Expr::Index { .. } | Expr::Str { .. } => true,
             Expr::Unary {
-                op: UnaryOp::Deref, ..
-            } => true,
+                op: UnaryOp::Deref,
+                ty,
+                ..
+            } => ty.as_ref().is_none_or(|ty| !ty.is_func()),
             Expr::Member { arrow, base, .. } => *arrow || base.is_lvalue(),
             _ => false,
         }
@@ -1517,6 +1757,9 @@ pub struct FuncDef {
     pub storage: Storage,
     /// Filled in by semantic analysis. The parser sets [`Linkage::External`].
     pub linkage: Linkage,
+    /// Linker name. An `__asm__("...")` label replaces the C name. Calls and
+    /// `declare` use this; lookup still uses [`FuncDef::name`].
+    pub symbol: String,
     pub line: usize,
     pub column: usize,
 }
@@ -1616,7 +1859,7 @@ fn put(out: &mut String, indent: usize, text: &str) {
 
 fn storage_prefix(storage: Storage) -> &'static str {
     match storage {
-        Storage::None => "",
+        Storage::None | Storage::Typedef => "",
         Storage::Static => "static ",
         Storage::Extern => "extern ",
     }
@@ -1939,8 +2182,8 @@ mod tests {
 
     #[test]
     fn struct_identity_is_the_declaration() {
-        let a = StructRef::new_incomplete(1, "S");
-        let b = StructRef::new_incomplete(2, "S");
+        let a = StructRef::new_incomplete(1, "S", RecordKind::Struct);
+        let b = StructRef::new_incomplete(2, "S", RecordKind::Struct);
         assert_ne!(a, b);
         assert_eq!(a.clone(), a);
         assert!(!a.is_complete());

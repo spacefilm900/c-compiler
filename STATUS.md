@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-**External test suite from *Writing a C Compiler*.** The stage 2 preprocessor is unchanged aside from two diagnostics. The Nora Sandler suite is fetched at a pinned commit and run by `harness/run_wacc.py`. It is not vendored.
+**Stage 2, step 2: typedefs, enumerations, unions, and real system headers.** Programs can `#include` the host glibc headers for `stdio.h`, `stdlib.h`, `string.h`, `stdint.h`, `ctype.h`, and `assert.h`. The compiler supplies `stddef.h`, `stdarg.h`, `stdbool.h`, and `limits.h`. The Nora Sandler suite is fetched at a pinned commit and run by `harness/run_wacc.py`. It is not vendored.
 
 ## External suite
 
@@ -22,14 +22,13 @@ Skipped, and not listed as failures:
 | Extra credit `goto` | 29 | not started |
 | Extra credit `goto` and `switch` | 1 | not started |
 | Extra credit `switch` | 34 | not started |
-| Extra credit `union` | 29 | not started. A `*_client.c` file uses the library file's tags. |
 | `chapter_18/valid/parameters/` and `params_and_returns/` | 31 | passing or returning a struct by value is still rejected |
 
 There is no separate function-pointer chapter in this pin. Function pointers stay a diagnostic when a test uses them.
 
 ### Per-chapter results
 
-Run locally with `python3 harness/run_wacc.py` after the fetch. 1191 executed, **1064 passed**, **127 known failures**, **426 skipped**, 0 unexpected, 0 compiler panics.
+Run locally with `python3 harness/run_wacc.py` after the fetch. 1220 executed, **1082 passed**, **138 known failures**, **397 skipped**, 0 unexpected, 0 compiler panics.
 
 | Chapter | Run | Passed | Known failures | Skipped |
 | --- | --- | --- | --- | --- |
@@ -46,25 +45,25 @@ Run locally with `python3 harness/run_wacc.py` after the fetch. 1191 executed, *
 | 11 | 53 | 52 | 1 | 2 |
 | 12 | 37 | 34 | 3 | 1 |
 | 13 | 0 | 0 | 0 | 69 |
-| 14 | 77 | 61 | 16 | 1 |
+| 14 | 77 | 64 | 13 | 1 |
 | 15 | 106 | 88 | 18 | 0 |
 | 16 | 92 | 79 | 13 | 4 |
-| 17 | 88 | 72 | 16 | 0 |
-| 18 | 246 | 213 | 33 | 62 |
+| 17 | 88 | 76 | 12 | 0 |
+| 18 | 275 | 224 | 51 | 33 |
 | 19 | 0 | 0 | 0 | 167 |
 | 20 | 0 | 0 | 0 | 66 |
-| **Total** | **1191** | **1064** | **127** | **426** |
+| **Total** | **1220** | **1082** | **138** | **397** |
 
 ### Known-failure categories
 
 | Category | Tests | Meaning |
 | --- | --- | --- |
-| `unsupported-double` | 71 | `double`, a floating constant, or both. Later chapters use `double` in programs whose main feature is pointers, arrays, characters, or structs. |
-| `unsupported-static-local` | 30 | `static` inside a function |
+| `unsupported-double` | 78 | `double`, a floating constant, or both. Later chapters, including some union tests, use `double` in programs whose main feature is something else. `float` and `double` may appear in a declaration. An expression that computes one is still rejected, and a floating constant is still a lexical error. |
+| `unsupported-static-local` | 32 | `static` inside a function |
 | `unsupported-block-extern` | 14 | `extern` inside a block |
-| `unsupported-block-function` | 6 | a function declaration inside a block (rejected as a nested function) |
+| `unsupported-block-function` | 7 | a function declaration inside a block (rejected as a nested function) |
 | `unsupported-do-while` | 5 | `do` / `while` |
-| `unsupported-struct-by-value` | 1 | `chapter_18/valid/no_structure_parameters/semantic_analysis/incomplete_structs.c` declares a function that passes and returns an incomplete struct. That declaration is still rejected. The file also uses a static local. |
+| `unsupported-struct-by-value` | 2 | Passing or returning a struct or union by value is rejected. One file declares a function that passes and returns an incomplete struct. `incomplete_union_types.c` passes a union by value. |
 
 ### Diagnostics fixed while running the suite
 
@@ -81,10 +80,10 @@ No test in the run panicked, and no executed program disagreed with `expected_re
 | --- | --- | --- |
 | `cargo fmt --all -- --check` | rustc **1.85.1** (4eb161250 2025-03-15) | clean |
 | `cargo clippy --offline --all-targets -- -D warnings` | same | clean |
-| `cargo test --offline --lib` | same | **60 passed, 0 failed** |
-| `make` | GNU make **4.3** | `build/compiler` already current. An earlier `make` in this session, after the diagnostic changes, compiled the release binary and copied it to `build/compiler`. |
-| `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **91/91 passed** |
-| `scripts/fetch_wacc_tests.sh` then `python3 harness/run_wacc.py` | same Clang and Python | **1064 passed, 127 known failures, 426 skipped, 0 unexpected** |
+| `cargo test --offline --lib` | same | **62 passed, 0 failed** |
+| `make` | GNU make **4.3** | `build/compiler` produced |
+| `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **97/97 passed** |
+| `scripts/fetch_wacc_tests.sh` then `python3 harness/run_wacc.py` | same Clang and Python | **1082 passed, 138 known failures, 397 skipped, 0 unexpected** |
 
 `tests/91_addr_incomplete.c` is the new harness program. GitHub Actions for this change is not in this file.
 
@@ -97,8 +96,8 @@ The compiler is a Rust binary. `make` installs it at `build/compiler`. It accept
 ## Stage 2 plan
 
 1. **Done.** Built-in preprocessor (this step). Real libc headers are not required yet; `include/` is a temporary stand-in. See below.
-2. More types: `typedef`, `enum`, unions, and the rest of the declarations those headers need.
-3. Basic standard headers, then the host headers once the types exist.
+2. **Done.** `typedef`, `enum`, unions, and the declarations the host headers need. See the step 2 record below.
+3. Basic standard headers are in use: the compiler supplies the freestanding ones, and glibc supplies the rest listed in the step 2 record.
 
 ## Milestone 2 plan
 
@@ -150,7 +149,12 @@ GitHub Actions for this step is not copied here.
 - [x] `const` and `volatile`, including assignment to const objects and `char *` passed to `const char *`
 - [x] Variadic declarations and calls, with default argument promotions
 - [x] Simple structs: tags and scope, System V layout, `.` / `->`, assignment, and brace initializers
-- [x] Built-in preprocessor: splicing, macros, conditionals, `#include`, `#error`, `#line`, `#pragma once`
+- [x] Built-in preprocessor: splicing, macros, conditionals, `#include`, `#include_next`, `#error`, `#line`, `#pragma once`
+- [x] `typedef`, including pointers, arrays, structs, and function types
+- [x] Enumerations, with `int` as the compatible type
+- [x] Unions: System V layout, member access, and initialization of the first member
+- [x] `_Bool`, `restrict`, function pointers, and declarations of `float` / `double` / `long double`
+- [x] Host glibc headers for the declarations used by the harness, plus compiler-supplied `stddef.h`, `stdarg.h`, `stdbool.h`, and `limits.h`
 - [x] CLI `build/compiler INPUT.c -o OUTPUT.ll`, plus `-E`, `-I`, `-D`, and `-U`
 - [x] Differential tests against Clang
 
@@ -218,7 +222,7 @@ A character array (`char`, `signed char`, or `unsigned char`) may be initialized
 - A const object is emitted as an LLVM `constant`. An array of const elements is too. `const int *` is a normal `global`, because the pointer itself can be reseated.
 - Pointer comparisons ignore one level of pointee qualifiers, so `const int *` may be compared with `int *`.
 
-What is not enforced: `volatile` does not change code generation. Loads and stores are ordinary LLVM loads and stores, not `volatile`. This compiler does not optimize, but a later LLVM pass can. A cast may drop `const` or `volatile`; the cast is accepted and a later write is not diagnosed. `restrict` is rejected. Duplicate qualifiers are errors here; Clang only warns.
+What is not enforced: `volatile` does not change code generation. Loads and stores are ordinary LLVM loads and stores, not `volatile`. This compiler does not optimize, but a later LLVM pass can. A cast may drop `const` or `volatile`; the cast is accepted and a later write is not diagnosed. `restrict` is accepted on pointers and does not change the IR; see the stage 2 step 2 record. Duplicate qualifiers are errors here; Clang only warns.
 
 A variadic declaration such as `int printf(const char *, ...);` is kept. The IR is `declare i32 @printf(ptr, ...)`, with `signext` or `zeroext` on a narrow fixed parameter or return, the same as any other function. A call is `call i32 (ptr, ...) @printf(...)`. Fixed arguments are converted to the parameter type. Further arguments get the default argument promotions: `char` and `short`, signed or unsigned, become `int`. Pointers are not promoted. There are no floating types. `int f(...);` is rejected because C11 requires a named parameter before `...`. A definition that uses `...` is rejected; this subset has no `va_list`. A call still requires a visible declaration. C11 has no implicit declaration, and this compiler does not add one.
 
@@ -251,7 +255,7 @@ A struct may be a local, a file-scope object (`extern` or `static` included), or
 
 - The preprocessor implements translation phases 2–4 for the directives listed below. Trigraphs are not recognized. `_Pragma`, `#include_next`, and `__DATE__` / `__TIME__` are not implemented. A `#` that survives expansion is a stray-token diagnostic. Digraphs (`<:`, `:>`, `<%`, `%>`, `%:`, `%:%:`) are recognized as the corresponding punctuators.
 - An integer constant that fits in no type on the C11 6.4.4.1 list for its suffix and base is a diagnostic. A decimal constant that does not fit in signed `long long` is rejected even when it fits in `unsigned long long`.
-- No unions, enums, typedefs, bit-fields, flexible array members, or anonymous structs. No passing or returning a struct by value, and no designated initializers. No types other than `void`, the integer types above, pointers, arrays, and the structs described above. `const` and `volatile` are accepted as described above. `restrict` is not. No `_Bool`, `float`, or `double`. No function pointers and no variable-length arrays. No wide string or character literals. An empty struct is rejected.
+- No bit-fields, flexible array members, or anonymous struct/union members. No passing or returning a struct or union by value, and no designated initializers. `float`, `double`, and `long double` may be declared (so the system headers parse) but an expression that computes one is rejected, and a floating constant is a lexical error. No variable-length arrays. Wide string and character literals are rejected in program text; a wide character constant in a preprocessor expression is accepted as the corresponding character value. An empty struct or union is rejected. Defining a variadic function, and the `va_start` / `va_arg` macros, are not implemented.
 - Multi-character character constants (`'ab'`) are rejected; Clang accepts them as an implementation-defined `int`. A hex or octal escape outside `unsigned char` is a diagnostic, matching Clang. Runtime shift counts outside `0 .. width`, signed left shifts of negative values, and signed left shifts that do not fit are undefined and are not diagnosed outside constant initializers. Signed overflow at runtime is undefined and is not diagnosed. Modifying a string literal is undefined and is not diagnosed. `volatile` does not emit volatile loads or stores. A cast may drop `const`.
 - No `switch`, `do`/`while`, or `goto`.
 - An empty parameter list on a declaration that is not a definition (`int f();`) is rejected. C11 treats that as a non-prototype. This subset requires a prototype: `(void)` or a parameter type list. A definition may still use `()`.
@@ -273,7 +277,33 @@ A struct may be a local, a file-scope object (`extern` or `static` included), or
 
 ## Next actions
 
-Stage 2 step 2: `typedef`, enumerations, and unions, which the real system headers need. Until that lands, `include/` stays the system include path.
+Stage 2 step 3, from the plan: whatever the next headers or programs still reject. Floating expressions, passing a struct or union by value, `static` locals, and block-scope `extern` are the largest remaining buckets in the external suite.
+
+## Stage 2 step 2 record
+
+`typedef` is an alias, not a new type. The parser keeps a scope of typedef names, enumeration constants, and ordinary identifiers, and decides the declaration-versus-expression ambiguity from that scope. A typedef name is a type specifier only when the declaration specifiers do not already contain a type, so `typedef T T` is a redeclaration of the alias. Compatible redeclarations are allowed. Function typedefs are function types; a declarator may add `*` to make a pointer, and a parameter of function type is adjusted to a pointer.
+
+An enumeration constant has type `int`, and a completed enum type is compatible with `int`. That is the implementation-defined choice in C11 6.7.2.2: every value has to be representable as `int`, and a value that is not is a diagnostic. The constants are integer constant expressions. An enumerator list starts at 0. A trailing comma is allowed. `enum E` before `E` is defined is a diagnostic.
+
+A union is laid out like a struct except every member starts at offset 0. The size is the largest member, rounded up to the strictest alignment. A brace initializer initializes the first member; further initializers are excess. Assignment copies the whole object with `llvm.memmove`, as for a struct. The LLVM type is a one-element array whose element has the union's alignment, so a union member inside a struct is aligned the way the ABI requires. Member access uses a byte `getelementptr`. Passing or returning a union by value is rejected, same as a struct. A prototype may still return a struct or union, so `<stdlib.h>` can declare `div`. A call that would return one is a diagnostic.
+
+`struct tag` and `union tag` share one tag namespace with enums. `struct tag; { union tag; }` hides the outer struct. `union tag *p` while `struct tag` is visible, with no inner `union tag;`, is a diagnostic. Untagged `struct { ... }` and `union { ... }` are ordinary types; a typedef may name them. Anonymous members (a member with no name) are still rejected. Bit-fields are still rejected.
+
+`restrict` is a qualifier. It is part of type compatibility and of assignment, and it is not part of a parameter's function type, same as top-level `const`. It does not change the IR. It is rejected on a type that is not a pointer. `inline`, `__inline`, and `_Noreturn` are accepted and do not change linkage. `register` and `auto` are accepted as the default storage class.
+
+`__attribute__((...))` and `__extension__` are parsed and ignored. `__asm__("name")` renames the linker symbol, which is what glibc's `__REDIRECT` expands to. Adjacent string literals in the asm operand are concatenated. `__func__` and `__PRETTY_FUNCTION__` are the name of the current function, as a string.
+
+`_Bool` is an unsigned integer type of rank below `char`, stored in one byte, with values 0 and 1. Conversion to `_Bool` compares with zero. It is passed as `i8 zeroext`. `<stdbool.h>` defines `bool`, `true`, and `false`.
+
+`float` is 4 bytes, `double` is 8, and `long double` is 16 (`x86_fp80`). They exist so a header can declare `strtod`. Arithmetic, assignment, and casts that produce one are diagnostics. Floating constants are still rejected by the lexer.
+
+Function pointers are values. A function designator decays to a pointer except as the operand of `&` or `sizeof`. A call through a pointer is an indirect `call`. A direct call of a declared function is still a direct `call`.
+
+Angle includes search `-I` directories, then `include/` (the compiler's freestanding headers), then `/usr/include/x86_64-linux-gnu`, then `/usr/include`. `#include_next` starts after the directory that provided the current file. The temporary `stdio.h`, `stdlib.h`, and `string.h` stand-ins are gone. `stddef.h` honors glibc's `__need_size_t` / `__need_NULL` protocol and defines `size_t`, `ptrdiff_t`, and `wchar_t` from `__SIZE_TYPE__`, `__PTRDIFF_TYPE__`, and `__WCHAR_TYPE__`. `stdarg.h` defines `__gnuc_va_list` as the x86_64 register-save descriptor (an array of one struct) when included with `__need___va_list`, and defines `va_list` otherwise. The `va_*` macros do not implement argument access. `limits.h` is the ISO C limits for this LP64 target, with `char` signed.
+
+Predefined macros added for the headers: `__USER_LABEL_PREFIX__` (empty), `__WCHAR_MAX__`, and `__WCHAR_MIN__`. The macros that were already predefined (`__STDC_VERSION__`, `__x86_64__`, `__LP64__`, `__GNUC__` 4.2.1, the `__SIZEOF_*__` macros, `__SIZE_TYPE__`) select the LP64 path in glibc and keep the `_Float128` typedefs out of the headers.
+
+Local results: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **62 passed**, `make` produced `build/compiler`, `python3 harness/run_tests.py` **97/97 passed**, and `python3 harness/run_wacc.py` **1082 passed, 138 known failures, 397 skipped, 0 unexpected**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. Before this step the external suite was 1064 passed, 127 known failures, and 426 skipped. The 29 union extra-credit tests are no longer skipped. Eight tests that had been listed as known failures now pass and were removed from `harness/wacc_known_failures.txt`. GitHub Actions for this step is not in this file yet.
 
 ## Stage 2 step 1 record
 
