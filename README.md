@@ -1,6 +1,6 @@
 # Clean-room C compiler → LLVM IR
 
-A small C compiler that emits textual LLVM IR. LLVM (`clang`, and optionally `opt` / `llc`) optimizes that IR and generates native code. This milestone is a C subset: enough to lex, parse, check, and run integer functions, locals, arithmetic, branches, loops, and calls. It is not a full C compiler.
+A small C compiler that emits textual LLVM IR. LLVM (`clang`, and optionally `opt` / `llc`) optimizes that IR and generates native code. This milestone is a C subset: enough to lex, parse, check, and run integer functions, prototypes, file-scope `int` objects, locals, arithmetic, branches, loops, and calls. It is not a full C compiler.
 
 ## Why Rust
 
@@ -71,12 +71,14 @@ Actions are pinned to commits, not floating tags:
 
 ## Supported subset
 
-- One translation unit of function definitions. `int` is a 32-bit two's complement type. `void` is allowed as a return type and as the sole unnamed parameter (`int main(void)` and `int main()` are both no-parameter definitions).
+- One translation unit of function definitions, prototypes, and file-scope `int` objects. `int` is a 32-bit two's complement type. `void` is allowed as a return type and as the sole unnamed parameter (`int main(void)` and `int main()` are both no-parameter definitions).
+- Prototypes: `int f(void);`, `int f(int a, int b);`, and unnamed parameters (`int f(int, int);`). A later definition may use different parameter names. A declaration may also follow the definition when the types match. A call checks the argument count against the prototype or definition in scope. A function declared but not defined is an LLVM `declare`, so an external definition can be linked in. `static` on a file-scope function gives it internal linkage.
+- File-scope `int` objects: `int g;`, `int g = expr;`, `extern int g;`, `extern int g = expr;`, and `static int g;`. Several declarators are allowed (`int a = 1, b = 2;`). A declaration without an initializer and without `extern` is a tentative definition; if nothing in the file initializes it, it is zero. `extern` without an initializer does not define the object. The initializer must be an integer constant expression in the operators below. Locals and parameters shadow globals.
 - Locals: `int name;`, `int name = expr;`, and multiple declarators (`int a = 1, b = a + 2;`). A declaration inside `for (int i = ...)` is in scope for the condition, step, and body.
 - Statements: blocks, expression statements, empty statements, `return`, `if` / `else` (an `else` binds to the nearest `if`), `while`, `for`, `break`, `continue`.
 - Expressions, with C precedence and associativity: integer constants (decimal, octal, hexadecimal; no suffix; must fit in signed 32-bit), identifiers, parentheses, unary `+` `-` `!`, binary `+` `-` `*` `/` `%`, comparisons, `&&` and `||`, assignment, and direct calls.
 - `/` and `%` are signed and round toward zero. Comparisons and `&&` / `||` produce `0` or `1`. `&&` and `||` evaluate the right operand only when the left operand does not decide the result.
-- A function may call itself. Any other callee must already have been defined. Assignment targets are variables; parentheses do not change that (`(x) = 1` assigns to `x`).
+- A function may call itself, and it may call a function that was declared earlier and defined later. Assignment targets are variables; parentheses do not change that (`(x) = 1` assigns to `x`).
 - `//` line comments and non-nesting `/* */` block comments.
 
 Reaching the closing brace of an `int` function lowers to `ret i32 0`. That is what C requires for `main`. The same lowering is used for every other `int` function. A `void` function that falls off the end lowers to `ret void`.
@@ -87,7 +89,7 @@ Unsupported or invalid input is a diagnostic. It is not ignored and it is not lo
 
 The lexer rejects the preprocessor (`#`). Trigraphs are not recognized. A backslash immediately before a new-line, including at the end of a `//` or `/*` comment, is a diagnostic rather than a line splice. String literals, character constants, floating constants, binary literals, integer suffixes, and non-ASCII bytes are errors. An integer constant that does not fit in signed 32-bit `int` is a diagnostic, including a value that does not fit in 64 bits. C11 6.4.4.1 would otherwise try `long`, `long long`, and, for octal and hex, unsigned types. Those types are outside this subset, so the constant is rejected instead of given a wider type.
 
-The parser or checker rejects pointers, arrays, structs, unions, enums, typedefs, globals, `static` / `extern` / qualifiers, prototypes without a body, nested functions, variadic functions, `sizeof`, casts, the comma operator, `?:`, bitwise and shift operators, `++` / `--`, compound assignment, member access, `switch`, `do`/`while`, and `goto`. Other C11 keywords (`char`, `float`, `_Bool`, …) are recognized so they produce a specific "not supported" diagnostic.
+The parser or checker rejects pointers, arrays, structs, unions, enums, typedefs, qualifiers, block-scope `static` and `extern`, old-style declarations with an empty parameter list (`int f();`), nested functions, variadic functions, `sizeof`, casts, the comma operator, `?:`, bitwise and shift operators, `++` / `--`, compound assignment, member access, `switch`, `do`/`while`, and `goto`. A global initializer that is not an integer constant expression is a diagnostic, including an evaluated division by zero. Other C11 keywords (`char`, `float`, `_Bool`, …) are recognized so they produce a specific "not supported" diagnostic.
 
 ## Layout
 

@@ -5,9 +5,9 @@ Rust sources for the clean-room frontend. `make` (or `cargo build --release`) pr
 | File | Role |
 | --- | --- |
 | `lexer.rs` | Tokens. Rejects preprocessor lines, strings, floats, and other input this milestone does not lex. |
-| `parser.rs`, `ast.rs` | Recursive-descent parser and AST. |
-| `sema.rs` | Scopes, types, calls, lvalues. |
-| `irgen.rs` | Textual LLVM IR. |
+| `parser.rs`, `ast.rs` | Recursive-descent parser and AST, including prototypes and file-scope objects. |
+| `sema.rs` | Scopes, types, calls, lvalues, linkage, and constant initializers. |
+| `irgen.rs` | Textual LLVM IR (`define`, `declare`, and globals). |
 | `driver.rs`, `main.rs` | `compiler INPUT.c -o OUTPUT.ll`. |
 | `diag.rs`, `token.rs` | Diagnostics and token kinds. |
 
