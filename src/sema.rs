@@ -431,20 +431,16 @@ impl Sema {
             if let Some(bytes) = string_payload(init) {
                 if elem.is_character() {
                     ty = CType::array(elem.clone(), Some(bytes.len() as u64 + 1));
-                } else {
+                } else if matches!(init, Init::Expr(_)) {
                     let (line, column) = init_pos(init);
-                    let message = if matches!(init, Init::Expr(_)) {
-                        "a string literal cannot initialize this array"
-                    } else {
-                        "array initializer must be a brace list"
-                    };
-                    // A brace list whose only item is a string is still a list
-                    // when the element is not a character. Fall through only
-                    // for that list; a bare string is not an element list.
-                    if matches!(init, Init::Expr(_)) || !matches!(init, Init::List { .. }) {
-                        return self.err(line, column, message);
-                    }
+                    return self.err(
+                        line,
+                        column,
+                        "a string literal cannot initialize this array",
+                    );
                 }
+                // A brace list around a string, with a non-character element,
+                // falls through to element-list length inference.
             }
             if ty.array_len().is_none() {
                 let Init::List {
@@ -454,12 +450,7 @@ impl Sema {
                 } = init
                 else {
                     let (line, column) = init_pos(init);
-                    let message = if string_payload(init).is_some() {
-                        "a string literal cannot initialize this array"
-                    } else {
-                        "array initializer must be a brace list"
-                    };
-                    return self.err(line, column, message);
+                    return self.err(line, column, "array initializer must be a brace list");
                 };
                 let count = self.infer_array_len(&elem, items, *line, *column)?;
                 ty = CType::array(elem, Some(count));

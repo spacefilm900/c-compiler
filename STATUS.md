@@ -168,7 +168,7 @@ It exits 0 and prints `hello, world` followed by a newline. The harness compares
 
 ## Milestone 2 step 5 record
 
-Local results are in the table above: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **41 passed**, `make` produced `build/compiler`, and `python3 harness/run_tests.py` **72/72 passed**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. Those commands were run on this tree before the pull request. GitHub Actions and CodeRabbit are not recorded here.
+Local results are in the table above: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **41 passed**, `make` produced `build/compiler`, and `python3 harness/run_tests.py` **72/72 passed**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. Those commands were run before the pull request, then again after the review fixes (`%ld` is given a `long`, the unsized-array string initializer no longer tests conditions that cannot fire, and the test-path note allows a hand-declared library prototype). The second run had the same counts. GitHub Actions is not recorded here.
 
 `tests/62_hello.c` is the program above. The harness run compared its exit status, stdout, and stderr with `clang -std=c11`. Both print `hello, world` and a newline and exit 0.
 

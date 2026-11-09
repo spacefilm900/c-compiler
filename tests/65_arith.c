@@ -15,6 +15,6 @@ int main(void) {
     printf("%d\n", sum);
     printf("%d\n", (int)sizeof(int));
     printf("%d\n", -1 < 1u);
-    printf("%ld\n", -1L < 1u);
+    printf("%ld\n", (long)(-1L < 1u));
     return 0;
 }
