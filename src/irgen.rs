@@ -259,7 +259,10 @@ fn local_slots(compound: &Compound) -> Vec<(String, CType)> {
 
 fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, CType)>) {
     match stmt {
-        Stmt::Decl(decl) => slots.push((decl.slot.clone(), decl.ty.clone())),
+        Stmt::Decl(decl) if decl.storage == Storage::None => {
+            slots.push((decl.slot.clone(), decl.ty.clone()))
+        }
+        Stmt::Decl(_) | Stmt::FuncDecl(_) => {}
         Stmt::Compound(compound) => {
             for item in &compound.items {
                 collect_slots(item, slots);
@@ -275,11 +278,13 @@ fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, CType)>) {
                 collect_slots(else_stmt, slots);
             }
         }
-        Stmt::While { body, .. } => collect_slots(body, slots),
+        Stmt::While { body, .. } | Stmt::Do { body, .. } => collect_slots(body, slots),
         Stmt::For { init, body, .. } => {
             if let ForInit::Decl(decls) = init {
                 for decl in decls {
-                    slots.push((decl.slot.clone(), decl.ty.clone()));
+                    if decl.storage == Storage::None {
+                        slots.push((decl.slot.clone(), decl.ty.clone()));
+                    }
                 }
             }
             collect_slots(body, slots);
@@ -399,6 +404,8 @@ impl Gen {
                 ..
             } => self.gen_if(cond, then_stmt, else_stmt.as_deref()),
             Stmt::While { cond, body, .. } => self.gen_while(cond, body),
+            Stmt::Do { body, cond, .. } => self.gen_do(body, cond),
+            Stmt::FuncDecl(_) => {}
             Stmt::For {
                 init,
                 cond,
@@ -643,6 +650,27 @@ impl Gen {
         if !self.terminated {
             self.br(&cond_label);
         }
+        self.start(end_label);
+    }
+
+    /// The body runs, then the condition. `continue` lands on the condition,
+    /// so a `continue` does not skip it and a `break` does not evaluate it.
+    fn gen_do(&mut self, body: &Stmt, cond: &Expr) {
+        self.ensure_block();
+        let body_label = self.label();
+        let cond_label = self.label();
+        let end_label = self.label();
+        self.br(&body_label);
+        self.start(body_label.clone());
+        self.loops.push((cond_label.clone(), end_label.clone()));
+        self.gen_stmt(body);
+        self.loops.pop();
+        if !self.terminated {
+            self.br(&cond_label);
+        }
+        self.start(cond_label);
+        let cond = self.gen_cond(cond);
+        self.br_cond(&cond, &body_label, &end_label);
         self.start(end_label);
     }
 
@@ -1823,6 +1851,109 @@ int main(void) {
         // y = 4, w = z = 1, x becomes 2, 2 << 1 = 4, -8 >> 1 = -4,
         // ~2 & 7 = 5, g becomes 17. 4 + 1 + 4 - 4 + 5 + 17 = 27.
         assert_eq!(run_binary(&ir).0, 27);
+    }
+
+    #[test]
+    fn static_locals_block_linkage_and_do_while() {
+        let ir = crate::compile_to_ir(
+            "\
+static int hidden = 1;
+int exposed = 4;
+int ext = 2;
+int bump(void) {
+    static int n = 3;
+    n = n + 1;
+    return n;
+}
+int other(void) {
+    static int n = 10;
+    n = n + 1;
+    return n;
+}
+int read_hidden(void) { return hidden; }
+int see_exposed(void) {
+    int exposed = 0;
+    {
+        extern int exposed;
+        return exposed;
+    }
+}
+int see_ext(void) {
+    int ext = 0;
+    {
+        extern int ext;
+        ext = ext + 5;
+        return ext;
+    }
+}
+int call_later(void) {
+    int id(int);
+    return id(6);
+}
+int id(int x) { return x; }
+int loop(void) {
+    int n = 0;
+    int i = 0;
+    do {
+        i = i + 1;
+        if (i < 3)
+            continue;
+        n = n + 1;
+    } while (i < 4);
+    return n * 10 + i;
+}
+int main(void) {
+    if (bump() != 4) return 1;
+    if (bump() != 5) return 2;
+    if (other() != 11) return 3;
+    if (read_hidden() != 1) return 4;
+    if (see_exposed() != 4) return 8;
+    if (see_ext() != 7) return 5;
+    if (call_later() != 6) return 6;
+    if (loop() != 24) return 7;
+    return 0;
+}
+",
+            "block.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("@bump.n.1 = internal global i32 3, align 4"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains("@other.n.2 = internal global i32 10, align 4"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains("@hidden = internal global i32 1, align 4"),
+            "{ir}"
+        );
+        assert!(ir.contains("@exposed = global i32 4, align 4"), "{ir}");
+        assert!(ir.contains("@ext = global i32 2, align 4"), "{ir}");
+        assert!(!ir.contains("store i32 3"), "{ir}");
+        assert!(!ir.contains("declare i32 @id"), "{ir}");
+        assert!(ir.contains("define i32 @id(i32 %p0)"), "{ir}");
+        assert_eq!(run_binary(&ir).0, 0);
+
+        let external = crate::compile_to_ir(
+            "\
+int main(void) {
+    extern int missing;
+    extern int missing;
+    return missing;
+}
+",
+            "ext.c",
+        )
+        .unwrap();
+        assert_eq!(
+            external
+                .matches("@missing = external global i32, align 4")
+                .count(),
+            1,
+            "{external}"
+        );
     }
 
     #[test]

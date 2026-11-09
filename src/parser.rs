@@ -1934,9 +1934,7 @@ impl Parser<'_> {
         let mut items = Vec::new();
         while !matches!(self.current().kind, TokenKind::RBrace | TokenKind::Eof) {
             if self.starts_declaration() {
-                for decl in self.parse_block_declaration()? {
-                    items.push(Stmt::Decl(decl));
-                }
+                items.extend(self.parse_block_declaration(false)?);
             } else if let Some(message) = unsupported(self.current().kind) {
                 return Err(self.error(message));
             } else {
@@ -1970,9 +1968,25 @@ impl Parser<'_> {
         ))
     }
 
-    fn parse_block_declaration(&mut self) -> Result<Vec<VarDecl>, Diagnostic> {
+    /// Declarations inside a block, or in the header of a `for` loop.
+    ///
+    /// A `for` header may not declare a function, and it may not use `static`
+    /// or `extern` (the declaration would not have automatic storage). A
+    /// function declarator followed by `{` is a nested definition, which this
+    /// subset rejects. A function declarator followed by `;` or `,` is a
+    /// block-scope declaration; C11 6.2.2 treats it as `extern`.
+    fn parse_block_declaration(&mut self, in_for: bool) -> Result<Vec<Stmt>, Diagnostic> {
         let specs = self.parse_specs(SpecPlace::Declaration)?;
         self.apply_shadow(&specs)?;
+        if in_for {
+            if let Some((line, column)) = specs.storage_at {
+                return Err(self.error_at(
+                    line,
+                    column,
+                    "a for-loop declaration cannot have a storage class",
+                ));
+            }
+        }
         if self.current().kind == TokenKind::Semi {
             self.finish_tag_only(&specs)?;
             self.expect(TokenKind::Semi, "';'")?;
@@ -1982,65 +1996,119 @@ impl Parser<'_> {
             self.parse_typedef_declarators(&specs)?;
             return Ok(Vec::new());
         }
-        if let Some((line, column)) = specs.storage_at {
-            let message = match specs.storage {
-                Storage::Static => "static local variables are not supported",
-                Storage::Extern => "block-scope extern declarations are not supported",
-                Storage::Typedef => unreachable!("typedef handled above"),
-                Storage::None => unreachable!("storage location without a storage class"),
-            };
-            return Err(self.error_at(line, column, message));
-        }
         let base = specs.ty.clone();
-        let mut decls = Vec::new();
+        let mut items = Vec::new();
         loop {
             let declarator = self.parse_named_decl(base.clone())?;
             if declarator.is_function() {
-                return Err(self.error_at(
-                    declarator.line,
-                    declarator.column,
-                    "nested functions are not supported",
-                ));
-            }
-            let DeclKind::Object(ty) = declarator.kind else {
-                unreachable!("function rejected above");
-            };
-            if ty.is_void() {
-                return Err(self.error_at(
-                    declarator.line,
-                    declarator.column,
-                    "void variables are not supported",
-                ));
-            }
-            let init = if self.match_kind(TokenKind::Assign) {
-                Some(self.parse_initializer()?)
+                if self.current().kind == TokenKind::LBrace {
+                    return Err(self.error_at(
+                        declarator.line,
+                        declarator.column,
+                        "nested functions are not supported",
+                    ));
+                }
+                if in_for {
+                    return Err(self.error_at(
+                        declarator.line,
+                        declarator.column,
+                        "a function declaration is not allowed in a for loop",
+                    ));
+                }
+                items.push(Stmt::FuncDecl(self.finish_block_func(&specs, declarator)?));
             } else {
-                None
-            };
-            self.reject_incomplete_initializer(
-                &ty,
-                init.is_some(),
-                declarator.line,
-                declarator.column,
-            )?;
-            self.reject_bad_restrict(&ty, declarator.line, declarator.column)?;
-            self.bind_ordinary(&declarator.name, declarator.line, declarator.column)?;
-            decls.push(VarDecl {
-                name: declarator.name,
-                ty,
-                init,
-                checked: None,
-                line: declarator.line,
-                column: declarator.column,
-                slot: String::new(),
-            });
+                items.push(Stmt::Decl(self.finish_block_object(&specs, declarator)?));
+            }
             if self.match_kind(TokenKind::Comma) {
                 continue;
             }
             break;
         }
         self.expect(TokenKind::Semi, "';'")?;
-        Ok(decls)
+        Ok(items)
+    }
+
+    fn finish_block_func(
+        &mut self,
+        specs: &Specs,
+        declarator: NamedDecl,
+    ) -> Result<FuncDef, Diagnostic> {
+        let DeclKind::Function {
+            ret,
+            params,
+            prototype,
+            variadic,
+        } = declarator.kind
+        else {
+            unreachable!("function declarator");
+        };
+        if !prototype {
+            return Err(self.error_at(
+                declarator.line,
+                declarator.column,
+                "old-style function declarations are not supported",
+            ));
+        }
+        if self.current().kind == TokenKind::Assign {
+            return Err(self.error("function declarations cannot have an initializer"));
+        }
+        let symbol = declarator
+            .symbol
+            .clone()
+            .unwrap_or_else(|| declarator.name.clone());
+        self.bind_ordinary(&declarator.name, declarator.line, declarator.column)?;
+        Ok(FuncDef {
+            ret_type: ret,
+            name: declarator.name,
+            params,
+            variadic,
+            body: None,
+            storage: specs.storage,
+            linkage: Linkage::External,
+            symbol,
+            line: declarator.line,
+            column: declarator.column,
+        })
+    }
+
+    fn finish_block_object(
+        &mut self,
+        specs: &Specs,
+        declarator: NamedDecl,
+    ) -> Result<VarDecl, Diagnostic> {
+        let DeclKind::Object(ty) = declarator.kind else {
+            unreachable!("object declarator");
+        };
+        if ty.is_void() {
+            return Err(self.error_at(
+                declarator.line,
+                declarator.column,
+                "void variables are not supported",
+            ));
+        }
+        let init = if self.match_kind(TokenKind::Assign) {
+            Some(self.parse_initializer()?)
+        } else {
+            None
+        };
+        self.reject_incomplete_initializer(
+            &ty,
+            init.is_some(),
+            declarator.line,
+            declarator.column,
+        )?;
+        self.reject_bad_restrict(&ty, declarator.line, declarator.column)?;
+        self.bind_ordinary(&declarator.name, declarator.line, declarator.column)?;
+        Ok(VarDecl {
+            name: declarator.name,
+            ty,
+            storage: specs.storage,
+            init,
+            checked: None,
+            line: declarator.line,
+            column: declarator.column,
+            slot: String::new(),
+        })
     }
 
     fn parse_statement(&mut self) -> Result<Stmt, Diagnostic> {
@@ -2049,6 +2117,7 @@ impl Parser<'_> {
             TokenKind::KwReturn => self.parse_return(),
             TokenKind::KwIf => self.parse_if(),
             TokenKind::KwWhile => self.parse_while(),
+            TokenKind::KwDo => self.parse_do(),
             TokenKind::KwFor => self.parse_for(),
             TokenKind::KwBreak => {
                 let token = self.advance();
@@ -2150,6 +2219,22 @@ impl Parser<'_> {
         })
     }
 
+    fn parse_do(&mut self) -> Result<Stmt, Diagnostic> {
+        let token = self.advance();
+        let body = Box::new(self.parse_statement()?);
+        self.expect(TokenKind::KwWhile, "'while'")?;
+        self.expect(TokenKind::LParen, "'('")?;
+        let cond = self.parse_expression()?;
+        self.expect(TokenKind::RParen, "')'")?;
+        self.expect(TokenKind::Semi, "';'")?;
+        Ok(Stmt::Do {
+            body,
+            cond,
+            line: token.line,
+            column: token.column,
+        })
+    }
+
     fn parse_for(&mut self) -> Result<Stmt, Diagnostic> {
         self.push_tags();
         let parsed = self.parse_for_in_scope();
@@ -2163,7 +2248,17 @@ impl Parser<'_> {
         let init = if self.match_kind(TokenKind::Semi) {
             ForInit::Empty
         } else if self.starts_declaration() {
-            ForInit::Decl(self.parse_block_declaration()?)
+            let mut decls = Vec::new();
+            for item in self.parse_block_declaration(true)? {
+                match item {
+                    Stmt::Decl(decl) => decls.push(decl),
+                    Stmt::FuncDecl(_) => {
+                        unreachable!("a function declaration in a for loop is rejected")
+                    }
+                    _ => unreachable!("a block declaration is a variable or a function"),
+                }
+            }
+            ForInit::Decl(decls)
         } else if let Some(message) = unsupported(self.current().kind) {
             return Err(self.error(message));
         } else {
@@ -3271,7 +3366,6 @@ fn found(token: &Token) -> String {
 fn unsupported(kind: TokenKind) -> Option<&'static str> {
     Some(match kind {
         TokenKind::KwSwitch | TokenKind::KwCase | TokenKind::KwDefault => "switch is not supported",
-        TokenKind::KwDo => "do-while loops are not supported",
         TokenKind::KwGoto => "goto is not supported",
         TokenKind::KwAlignas | TokenKind::KwAlignof => "alignment specifiers are not supported",
         TokenKind::KwAtomic => "atomic types are not supported",
@@ -3387,6 +3481,50 @@ func int main
           else
             expr
               var b
+"
+        );
+    }
+
+    #[test]
+    fn static_extern_and_do_while_parse() {
+        assert_eq!(
+            parsed(
+                "\
+int main(void) {
+    static int kept = 1;
+    extern int shared;
+    int other(int);
+    do {
+        kept = kept + shared;
+    } while (kept < 3);
+    return other(kept);
+}
+"
+            ),
+            "\
+func int main
+  block
+    static decl int kept =
+      int 1
+    extern decl int shared
+    proto int other
+      param int
+    do
+      body
+        block
+          expr
+            assign
+              var kept
+              +
+                var kept
+                var shared
+      cond
+        <
+          var kept
+          int 3
+    return
+      call other
+        var kept
 "
         );
     }
@@ -3576,18 +3714,33 @@ global int [] a =
             parse_err("int main(void) { int inner(void) { return 1; } }")
                 .contains("nested functions")
         );
-        assert!(parse_err("int main(void) { int inner(void); }").contains("nested functions"));
         assert!(parse_err("int f(int, int) { return 0; }").contains("parameter name omitted"));
-        assert!(parse_err("int main(void) { static int x; }").contains("static local"));
-        assert!(parse_err("int main(void) { extern int x; }").contains("block-scope extern"));
         assert!(parse_err("int f(void) = 1;").contains("cannot have an initializer"));
         assert!(parse_err("static extern int x;").contains("multiple storage-class"));
         assert!(parse_err("void g;").contains("void variables"));
         assert!(parse_err("int f(static int a);").contains("not supported on parameters"));
         assert!(parse_err("int main(void) { switch (1) {} }").contains("switch is not supported"));
-        assert!(parse_err("int main(void) { do {} while (0); }").contains("do-while"));
         assert!(parse_err("int main(void) { else; }").contains("'else' without a matching 'if'"));
         assert!(parsed("int (*fp)(void);\n").contains("int (*)(void)"));
+        assert!(
+            parse_err("int main(void) { static int foo(void) { return 1; } }")
+                .contains("nested functions")
+        );
+        assert!(
+            parse_err("int main(void) { for (static int i = 0; i < 1; i = i + 1) ; }")
+                .contains("for-loop declaration cannot have a storage class")
+        );
+        assert!(
+            parse_err("int main(void) { for (extern int i = 0; i < 1; i = i + 1) ; }")
+                .contains("for-loop declaration cannot have a storage class")
+        );
+        assert!(
+            parse_err("int main(void) { for (int f(void); ; ) return 0; }")
+                .contains("function declaration is not allowed in a for loop")
+        );
+        assert!(parse_err("int main(void) { int f(); }").contains("old-style function"));
+        assert!(parse_err("int main(void) { do { } while (0) return 0; }").contains("expected ';'"));
+        assert!(parse_err("int main(void) { do { }; while (0); }").contains("expected 'while'"));
         assert!(parse_err("short long x;").contains("invalid combination of type specifiers"));
         assert!(parse_err("unsigned signed x;").contains("invalid combination of type specifiers"));
         assert!(parse_err("long long long x;").contains("invalid combination of type specifiers"));

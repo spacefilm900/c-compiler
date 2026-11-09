@@ -2,9 +2,11 @@
 
 ## Current milestone
 
-**Stage 2, step 2: typedefs, enumerations, unions, and real system headers.** Programs can `#include` the host glibc headers for `stdio.h`, `stdlib.h`, `string.h`, `stdint.h`, `ctype.h`, and `assert.h`. The compiler supplies `stddef.h`, `stdarg.h`, `stdbool.h`, and `limits.h`. The Nora Sandler suite is fetched at a pinned commit and run by `harness/run_wacc.py`. It is not vendored.
+**Stage 2, step 2, on top of block-scope `static`, block-scope `extern`, block-scope function declarations, and `do` / `while`.** Programs can `#include` the host glibc headers for `stdio.h`, `stdlib.h`, `string.h`, `stdint.h`, `ctype.h`, and `assert.h`. The compiler supplies `stddef.h`, `stdarg.h`, `stdbool.h`, and `limits.h`. `static` inside a function has no linkage and static storage duration. A block-scope `extern` follows C11 6.2.2. `do` statement `while (` expression `);` runs the body first. The Nora Sandler suite is fetched at a pinned commit and run by `harness/run_wacc.py`. It is not vendored.
 
 ## External suite
+
+`main` at `fdee7d5` had **63** unit tests, **95/95** harness programs, and a suite run of **1191 executed, 1115 passed, 76 known failures, 426 skipped**. After merging that commit into this branch: **65** unit tests, **102/102** harness programs, and **1220 executed, 1143 passed, 77 known failures, 397 skipped**, 0 unexpected, 0 panics. The 29 union extra-credit tests are executed. Fifteen tests that `main` still listed now pass, including the two `?:` copies of a struct. Sixteen union tests still fail: fifteen use a floating constant, and one passes a union by value.
 
 Licence: **MIT**, Copyright (c) 2023 Nora Sandler. The licence allows redistribution. The tree is still fetched, not committed. Source: https://github.com/nlsandler/writing-a-c-compiler-tests. Pinned commit: `ae12014d2dec14488f3f80d14df4b6d8e4634d7d` (2026-02-17). Recorded in `tests/external/README.md`. `scripts/fetch_wacc_tests.sh` clones that commit into `tests/external/wacc/` (gitignored). CI caches that directory.
 
@@ -28,7 +30,7 @@ There is no separate function-pointer chapter in this pin. A function pointer is
 
 ### Per-chapter results
 
-Run locally with `python3 harness/run_wacc.py` after the fetch. 1220 executed, **1082 passed**, **138 known failures**, **397 skipped**, 0 unexpected, 0 compiler panics.
+Run locally with `python3 harness/run_wacc.py` after the fetch. 1220 executed, **1143 passed**, **77 known failures**, **397 skipped**, 0 unexpected, 0 compiler panics.
 
 | Chapter | Run | Passed | Known failures | Skipped |
 | --- | --- | --- | --- | --- |
@@ -39,30 +41,26 @@ Run locally with `python3 harness/run_wacc.py` after the fetch. 1220 executed, *
 | 5 | 82 | 82 | 0 | 0 |
 | 6 | 57 | 57 | 0 | 11 |
 | 7 | 23 | 23 | 0 | 4 |
-| 8 | 70 | 65 | 5 | 28 |
-| 9 | 75 | 71 | 4 | 3 |
-| 10 | 64 | 46 | 18 | 8 |
-| 11 | 53 | 52 | 1 | 2 |
-| 12 | 37 | 34 | 3 | 1 |
+| 8 | 70 | 70 | 0 | 28 |
+| 9 | 75 | 75 | 0 | 3 |
+| 10 | 64 | 64 | 0 | 8 |
+| 11 | 53 | 53 | 0 | 2 |
+| 12 | 37 | 37 | 0 | 1 |
 | 13 | 0 | 0 | 0 | 69 |
-| 14 | 77 | 64 | 13 | 1 |
-| 15 | 106 | 88 | 18 | 0 |
-| 16 | 92 | 79 | 13 | 4 |
-| 17 | 88 | 76 | 12 | 0 |
-| 18 | 275 | 224 | 51 | 33 |
+| 14 | 77 | 67 | 10 | 1 |
+| 15 | 106 | 94 | 12 | 0 |
+| 16 | 92 | 84 | 8 | 4 |
+| 17 | 88 | 81 | 7 | 0 |
+| 18 | 275 | 235 | 40 | 33 |
 | 19 | 0 | 0 | 0 | 167 |
 | 20 | 0 | 0 | 0 | 66 |
-| **Total** | **1220** | **1082** | **138** | **397** |
+| **Total** | **1220** | **1143** | **77** | **397** |
 
 ### Known-failure categories
 
 | Category | Tests | Meaning |
 | --- | --- | --- |
-| `unsupported-double` | 78 | `double`, a floating constant, or both. Later chapters, including some union tests, use `double` in programs whose main feature is something else. `float` and `double` may appear in a declaration. An expression that computes one is still rejected, and a floating constant is still a lexical error. |
-| `unsupported-static-local` | 32 | `static` inside a function |
-| `unsupported-block-extern` | 14 | `extern` inside a block |
-| `unsupported-block-function` | 7 | a function declaration inside a block (rejected as a nested function) |
-| `unsupported-do-while` | 5 | `do` / `while` |
+| `unsupported-double` | 75 | `double`, a floating constant, or both. Later chapters, including fifteen union extra-credit tests, use a floating constant in a program whose main feature is something else. `float` and `double` may appear in a declaration. An expression that computes one is still rejected. |
 | `unsupported-struct-by-value` | 2 | Passing or returning a struct or union by value is rejected. One file declares a function that passes and returns an incomplete struct. `incomplete_union_types.c` passes a union by value. |
 
 ### Diagnostics fixed while running the suite
@@ -80,12 +78,12 @@ No test in the run panicked, and no executed program disagreed with `expected_re
 | --- | --- | --- |
 | `cargo fmt --all -- --check` | rustc **1.85.1** (4eb161250 2025-03-15) | clean |
 | `cargo clippy --offline --all-targets -- -D warnings` | same | clean |
-| `cargo test --offline --lib` | same | **62 passed, 0 failed** |
+| `cargo test --offline --lib` | same | **65 passed, 0 failed** |
 | `make` | GNU make **4.3** | `build/compiler` produced |
-| `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **98/98 passed** |
-| `scripts/fetch_wacc_tests.sh` then `python3 harness/run_wacc.py` | same Clang and Python | **1082 passed, 138 known failures, 397 skipped, 0 unexpected** |
+| `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **102/102 passed** |
+| `scripts/fetch_wacc_tests.sh` then `python3 harness/run_wacc.py` | same Clang and Python | **1143 passed, 77 known failures, 397 skipped, 0 unexpected** |
 
-`tests/91_addr_incomplete.c` is the new harness program. GitHub Actions for this change is not in this file.
+`tests/91_addr_incomplete.c` was already in the tree. Block-scope `static`, `extern`, function declarations, and `do` / `while` are covered by `tests/92_static_local.c`, `tests/93_block_extern.c`, `tests/94_block_func.c`, and `tests/95_do_while.c`. Typedefs, enums, unions, host headers, `_Bool`, and function pointers are covered by `tests/92_typedef.c`, `tests/93_enum.c`, `tests/94_union.c`, `tests/95_headers.c`, `tests/96_bool.c`, `tests/97_fnptr.c`, and `tests/98_bool_union.c`. GitHub Actions for this merge is not in this file yet.
 
 ## Stage 2, step 1 — built-in preprocessor
 
@@ -130,7 +128,7 @@ Harness programs: `01_return_const` (42), `02_add` (5), `03_loop` (55), `04_call
 
 `cargo test` also links two translation units both ways (this compiler's IR with a Clang object) for `char` / `unsigned char` / `short` / `unsigned short` parameters and returns. Both directions exit 0, matching Clang compiling the whole program.
 
-Negative cases covered inside `cargo test` (each must be a non-zero diagnostic, not a successful compile): missing semicolon, missing `)`, function pointers, variable-length arrays, a non-positive array size, `sizeof(float)`, `sizeof(void)`, a `?:` missing `:`, old-style `int f();` declarations, unnamed parameters on a definition, `static` locals, block-scope `extern`, function initializers, multiple storage-class specifiers, `void` variables, an incomplete local array, storage class on a parameter, nested functions, `switch`, `do`/`while`, stray `else`, casts to `float`, a definition of a variadic function, `int f(...);` with no named parameter, wide string and character literals, `restrict`, a duplicate `const`, floats, invalid integer suffixes (`1Ll`, `1uu`), integer constants that fit in no target type, out-of-range hex and octal escapes, empty and multi-character character constants, unknown escapes, unterminated string literals, unterminated comments, a stray `#` that is not a directive, non-ASCII, `#error`, an unknown directive, `#else` / `#endif` without `#if`, an unterminated `#if`, a macro redefined with a different body, the wrong number of macro arguments, an include that cannot be found, and `#error` inside an included file (the diagnostic names that file), invalid type-specifier combinations (`short long`, `unsigned signed`, `long long long`, `int int`, `char int`), conflicting integer types (`char` vs `signed char`, `int` vs `unsigned`, `long` vs `long long`), incompatible pointer assignment (`int *` from `char *`, `char *` from `const char *`, `const char **` from `char **`), assignment to a const object (`const int`, `*p` for `const char *`, `char *const`, and an element of `const char[]`), a string that is too long for a character array, a string used to initialize an `int` array, arithmetic on `void *`, a subscript of a pointer to an incomplete array, a pointer compared with `0` using `<`, an array assigned to, the address of a non-lvalue, a non-constant pointer initializer, a global initializer that truncates an address (`int x = (int)&g` and `long x = (int)&g`), excess array initializers, undeclared names, redefinitions, conflicting function types (including a variadic declaration followed by a non-variadic one, and `const int` versus `int` as a return type), a variable redeclared as a function, conflicting linkage, non-constant, divide-by-zero, and overflowing global initializers, undefined shifts in a constant initializer (`1 << 32`, `1 << -1`, `-1 << 1`, `1 << 40`), `1 << 31` and `1L << 63` as overflowing constants, `++` / assignment / comma in an evaluated constant expression, a `?:` mixing `void` with an integer, `++` or compound assignment applied to a non-lvalue, bad call arity against a prototype (including too few arguments to a variadic function), a static function that is used but not defined, `break`/`continue` outside a loop, `void` returns, non-assignable expressions, calls of non-functions, and a call to a function that has not been declared yet. There is no implicit function declaration. Struct diagnostics covered the same way: passing or returning a struct by value (including an unnamed parameter `int f(struct S);`), an incomplete struct object, `sizeof` of an incomplete struct, member access on an incomplete struct, an unknown member, redefining a struct (including `struct S { struct S { int x; } in; }`), a duplicate member, a flexible array member, a bit-field, an anonymous struct, an empty struct, a designated initializer, assignment of a struct that has a const member, assignment to a member of a struct rvalue (`(s = t).x = 1`), `++` on a struct, two prototypes that each introduce their own struct tag (they are different types), and too many elements in a struct initializer.
+Negative cases covered inside `cargo test` (each must be a non-zero diagnostic, not a successful compile): missing semicolon, missing `)`, function pointers, variable-length arrays, a non-positive array size, `sizeof(float)`, `sizeof(void)`, a `?:` missing `:`, old-style `int f();` declarations, unnamed parameters on a definition, a non-constant `static` local initializer, an incomplete `static` local, a `static` or `extern` declaration in a `for` header, an initializer on a block-scope `extern`, a block-scope `static` function, a nested function, same-scope linkage conflicts (`extern` after a no-linkage declaration, and the reverse), conflicting types on a block-scope redeclaration, a block-scope `extern` that would give one identifier both internal and external linkage, a `do` / `while` condition that names a variable declared only in the body, function initializers, multiple storage-class specifiers, `void` variables, an incomplete local array, storage class on a parameter, `switch`, stray `else`, casts to `float`, a definition of a variadic function, `int f(...);` with no named parameter, wide string and character literals, `restrict`, a duplicate `const`, floats, invalid integer suffixes (`1Ll`, `1uu`), integer constants that fit in no target type, out-of-range hex and octal escapes, empty and multi-character character constants, unknown escapes, unterminated string literals, unterminated comments, a stray `#` that is not a directive, non-ASCII, `#error`, an unknown directive, `#else` / `#endif` without `#if`, an unterminated `#if`, a macro redefined with a different body, the wrong number of macro arguments, an include that cannot be found, and `#error` inside an included file (the diagnostic names that file), invalid type-specifier combinations (`short long`, `unsigned signed`, `long long long`, `int int`, `char int`), conflicting integer types (`char` vs `signed char`, `int` vs `unsigned`, `long` vs `long long`), incompatible pointer assignment (`int *` from `char *`, `char *` from `const char *`, `const char **` from `char **`), assignment to a const object (`const int`, `*p` for `const char *`, `char *const`, and an element of `const char[]`), a string that is too long for a character array, a string used to initialize an `int` array, arithmetic on `void *`, a subscript of a pointer to an incomplete array, a pointer compared with `0` using `<`, an array assigned to, the address of a non-lvalue, a non-constant pointer initializer, a global initializer that truncates an address (`int x = (int)&g` and `long x = (int)&g`), excess array initializers, undeclared names, redefinitions, conflicting function types (including a variadic declaration followed by a non-variadic one, and `const int` versus `int` as a return type), a variable redeclared as a function, conflicting linkage, non-constant, divide-by-zero, and overflowing global initializers, undefined shifts in a constant initializer (`1 << 32`, `1 << -1`, `-1 << 1`, `1 << 40`), `1 << 31` and `1L << 63` as overflowing constants, `++` / assignment / comma in an evaluated constant expression, a `?:` mixing `void` with an integer, `++` or compound assignment applied to a non-lvalue, bad call arity against a prototype (including too few arguments to a variadic function), a static function that is used but not defined, `break`/`continue` outside a loop, `void` returns, non-assignable expressions, calls of non-functions, and a call to a function that has not been declared yet. There is no implicit function declaration. Struct diagnostics covered the same way: passing or returning a struct by value (including an unnamed parameter `int f(struct S);`), an incomplete struct object, `sizeof` of an incomplete struct, member access on an incomplete struct, an unknown member, redefining a struct (including `struct S { struct S { int x; } in; }`), a duplicate member, a flexible array member, a bit-field, an anonymous struct, an empty struct, a designated initializer, assignment of a struct that has a const member, assignment to a member of a struct rvalue (`(s = t).x = 1`), `++` on a struct, two prototypes that each introduce their own struct tag (they are different types), and too many elements in a struct initializer.
 
 GitHub Actions for this step is not copied here.
 
@@ -157,6 +155,7 @@ GitHub Actions for this step is not copied here.
 - [x] Host glibc headers for the declarations used by the harness, plus compiler-supplied `stddef.h`, `stdarg.h`, `stdbool.h`, and `limits.h`
 - [x] CLI `build/compiler INPUT.c -o OUTPUT.ll`, plus `-E`, `-I`, `-D`, and `-U`
 - [x] Differential tests against Clang
+- [x] Block-scope `static` objects, block-scope `extern`, block-scope function declarations, and `do` / `while`
 
 ## Supported syntax
 
@@ -164,9 +163,9 @@ GitHub Actions for this step is not copied here.
 
 Those types may be used for locals, parameters, return types, prototypes, and file-scope objects, including `extern` and `static`. A later declaration must name the same type. Parameter names do not have to match. `int f(void);` and `int f() { ... }` are compatible: both have zero parameters. Calls check the argument count. An argument, a return value, an initializer, and the right-hand side of an assignment are converted to the destination type.
 
-Function definitions and prototypes; unnamed parameters on a prototype (`int f(int, int);`); file-scope objects; locals with optional initializers; blocks; `if` / `else`; `while`; `for` (including `for (unsigned i = ...)`); `break`; `continue`; `return`; empty statements; unary `+` `-` `!` `~`; `+` `-` `*` `/` `%` `&` `|` `^` `<<` `>>`; comparisons; short-circuit `&&` and `||`; `?:`; assignment and compound assignment; prefix and postfix `++`/`--`; the comma operator; `sizeof` on an expression or on a type name such as `sizeof(unsigned long)`; explicit casts `(type)expr` and `(void)expr`; direct calls; decimal, octal, and hex constants with the suffixes below; character constants; `//` and `/* */` comments.
+Function definitions and prototypes, including a function declaration inside a block (`int f(int);` there means `extern`); unnamed parameters on a prototype (`int f(int, int);`); file-scope objects; locals with optional initializers; block-scope `static` and `extern`; blocks; `if` / `else`; `while`; `do` / `while`; `for` (including `for (unsigned i = ...)`); `break`; `continue`; `return`; empty statements; unary `+` `-` `!` `~`; `+` `-` `*` `/` `%` `&` `|` `^` `<<` `>>`; comparisons; short-circuit `&&` and `||`; `?:`; assignment and compound assignment; prefix and postfix `++`/`--`; the comma operator; `sizeof` on an expression or on a type name such as `sizeof(unsigned long)`; explicit casts `(type)expr` and `(void)expr`; direct calls; decimal, octal, and hex constants with the suffixes below; character constants; `//` and `/* */` comments.
 
-Sizes on `x86_64-pc-linux-gnu`: `char` / `signed char` / `unsigned char` are 1, `short` / `unsigned short` are 2, `int` / `unsigned int` are 4, and `long` / `unsigned long` / `long long` / `unsigned long long` are 8. The module triple is `x86_64-pc-linux-gnu`, and the module sets `target datalayout` to the System V AMD64 layout (`i64` aligned to 8 bytes). IR uses opaque pointers (LLVM 15+). Without that data layout, LLVM's default aligns `i64` to 4 bytes, so a later optimizer can fold the offset of a `long` after a `char` to 4. Locals are allocated in the entry block. File-scope objects are LLVM globals (`global`, `internal global`, or `external global`) with natural alignment. A defined function is `define`; a prototype with no body and external linkage is `declare`. `static` is internal linkage.
+Sizes on `x86_64-pc-linux-gnu`: `char` / `signed char` / `unsigned char` are 1, `short` / `unsigned short` are 2, `int` / `unsigned int` are 4, and `long` / `unsigned long` / `long long` / `unsigned long long` are 8. The module triple is `x86_64-pc-linux-gnu`, and the module sets `target datalayout` to the System V AMD64 layout (`i64` aligned to 8 bytes). IR uses opaque pointers (LLVM 15+). Without that data layout, LLVM's default aligns `i64` to 4 bytes, so a later optimizer can fold the offset of a `long` after a `char` to 4. Automatic locals are allocated in the entry block. File-scope objects, and block-scope `static` objects, are LLVM globals (`global`, `internal global`, or `external global`) with natural alignment. A defined function is `define`; a prototype with no body and external linkage is `declare`. File-scope `static` is internal linkage. A block-scope `static` is also an `internal` global, with a name that is not the C identifier.
 
 Integer promotions (C11 6.3.1.1) convert every type narrower than `int` to `int`, including `unsigned char` and `unsigned short`, because every value of those types fits in signed `int`. The usual arithmetic conversions (C11 6.3.1.8) then pick the common type. `int` with `unsigned int` is `unsigned int`, so `-1 < 1u` is false. `long` can represent every `unsigned int`, so `-1L < 1u` is true. `long long` and `unsigned long` have the same width and `long long` has greater rank, so `-1LL + 0UL` has type `unsigned long long`. Comparisons and `&&` / `||` / `!` produce `int` 0 or 1. `?:` uses the same conversions when both arms are integers, and both arms may be `void`.
 
@@ -193,6 +192,12 @@ The comma operator yields the right operand and has a sequence point between the
 File-scope `name;` and `static name;` are tentative definitions. If the translation unit never gives that object an initializer, it is emitted as zero of its type. A later initializer replaces the tentative value. `extern` without an initializer does not define the object; `extern name = expr;` does. The initializer must be an integer constant expression (C11 6.6) and is converted to the object's type, including truncation. The operators above are allowed, including casts, `?:`, `sizeof`, `~`, bitwise operators, and shifts. Assignment, `++`/`--`, function calls, and the comma operator are rejected when they are evaluated. An unevaluated operand may contain them. An evaluated division or remainder by zero is a diagnostic. `-2147483647 - 1` is the minimum `int`. `-9223372036854775807L - 1` is the minimum `long`.
 
 A file-scope function with no storage class is treated as `extern`, so `static int f(void); int f(void) { ... }` keeps internal linkage. A file-scope object with no storage class has external linkage and does not inherit a prior `static`. The same identifier with both internal and external linkage is a diagnostic. Two bodies, or two initialized definitions, are a redefinition. A prototype parameter name is not visible outside that prototype. A local shadows a global of the same name. A global is in scope for its own initializer, but an identifier is not a constant, so `int g = g;` is rejected.
+
+A block-scope `static` object has no linkage (C11 6.2.2p6) and static storage duration (C11 6.2.4). Each declaration is a different object, including two blocks in one function that both say `static int x`. The LLVM name is `function.x.N`, with `internal` linkage, so a file-scope `x` and another function's `static int x` do not clash at link time. No initializer means zero. An initializer is a constant expression, the same rules as a file-scope initializer, and it is the global's initializer: the function does not store it on entry. `static int a[] = {1, 2}` takes its length from the list. `static int a[]` with no size is a diagnostic, because an object with no linkage must have a complete type. `for (static int i = 0; ...)` is rejected; Clang rejects it as well.
+
+A block-scope `extern` object, and a block-scope function declaration with no storage class or with `extern`, follow C11 6.2.2p4 and p5. The visible prior declaration supplies the linkage when that prior has internal or external linkage. A prior with no linkage, or no prior, means external linkage, and that object is not the no-linkage one it hides. `int a = 3; { extern int a; }` reads the file-scope `a` when that file-scope object has external linkage. The declaration is in scope only until the end of the block; a use after the block is undeclared unless a file-scope declaration is visible. The same scope cannot declare the name both with and without linkage (`static int x; extern int x;` and `extern int x; int x;` are diagnostics). An initializer on a block-scope declaration that has linkage is a diagnostic (C11 6.7.9p5). `static int f(void);` in a block is a diagnostic (C11 6.7.1p7). A nested function body is still rejected. A block declaration that is the only declaration of an external object or function is emitted as `external global` or `declare`, under the C name, so another translation unit can define it. When a no-linkage declaration hides a file-scope `static` and an inner `extern` would therefore have external linkage, that is both linkages in one translation unit (C11 6.2.2p7) and is a diagnostic. Clang accepts that program and binds the `extern` to the hidden `static`.
+
+`do` statement `while (` expression `);` executes the statement, then the expression, and repeats while the expression is non-zero. The expression is not in the scope of a compound statement that is the body. `break` leaves the loop without evaluating the condition. `continue` jumps to the condition. A scalar condition is required, including a pointer. `do int x = 1; while (0);` is rejected because a declaration is not a statement.
 
 `int main(void)` and `int main()` are both no-parameter definitions. Reaching the closing brace of an integer function lowers to `ret` of 0 of that type. That is what C requires for `main`. A pointer-returning function that falls off the end lowers to `ret ptr null`. A `void` function that falls off the end lowers to `ret void`. The OS truncates `main`'s return value to 8 bits, so the tests keep exit codes in 0..255 and print nothing.
 
@@ -257,9 +262,9 @@ A struct may be a local, a file-scope object (`extern` or `static` included), or
 - An integer constant that fits in no type on the C11 6.4.4.1 list for its suffix and base is a diagnostic. A decimal constant that does not fit in signed `long long` is rejected even when it fits in `unsigned long long`.
 - No bit-fields, flexible array members, or anonymous struct/union members. No passing or returning a struct or union by value, and no designated initializers. `float`, `double`, and `long double` may be declared (so the system headers parse) but an expression that computes one is rejected, and a floating constant is a lexical error. No variable-length arrays. Wide string and character literals are rejected in program text; a wide character constant in a preprocessor expression is accepted as the corresponding character value. An empty struct or union is rejected. Defining a variadic function is not implemented. `va_start`, `va_arg`, and `va_copy` expand to undeclared names, so a use is a diagnostic.
 - Multi-character character constants (`'ab'`) are rejected; Clang accepts them as an implementation-defined `int`. A hex or octal escape outside `unsigned char` is a diagnostic, matching Clang. Runtime shift counts outside `0 .. width`, signed left shifts of negative values, and signed left shifts that do not fit are undefined and are not diagnosed outside constant initializers. Signed overflow at runtime is undefined and is not diagnosed. Modifying a string literal is undefined and is not diagnosed. `volatile` does not emit volatile loads or stores. A cast may drop `const`.
-- No `switch`, `do`/`while`, or `goto`.
+- No `switch` or `goto`. `?:` accepts two operands of the same struct or union type.
 - An empty parameter list on a declaration that is not a definition (`int f();`) is rejected. C11 treats that as a non-prototype. This subset requires a prototype: `(void)` or a parameter type list. A definition may still use `()`.
-- `static` and `extern` are only accepted at file scope. A `static` local and a block-scope `extern` declaration are diagnostics.
+- A `for` header cannot declare a function or use `static` or `extern`. A block-scope function cannot be `static`, and a nested function definition is rejected. An initializer is rejected on a block-scope declaration that has linkage.
 - A `static` function that is called but never defined is a diagnostic. An external function or object that is declared and not defined is emitted as `declare` or `external global`, so another translation unit can provide it.
 - A tentative definition is completed inside this translation unit as a zero initializer of the object's type, which is the C11 6.9.2 rule and matches Clang's default (`-fno-common`). It is not a common symbol.
 - Uninitialized locals are not zeroed. Reading them is undefined in C; the IR loads the alloca anyway.
@@ -277,7 +282,7 @@ A struct may be a local, a file-scope object (`extern` or `static` included), or
 
 ## Next actions
 
-Stage 2 step 3, from the plan: whatever the next headers or programs still reject. Floating expressions, passing a struct or union by value, `static` locals, and block-scope `extern` are the largest remaining buckets in the external suite.
+Stage 2 step 3, from the plan: whatever the next headers or programs still reject. Floating expressions and passing or returning a struct or union by value are the largest remaining buckets. Block-scope `static`, block-scope `extern`, and `do` / `while` are implemented.
 
 ## Stage 2 step 2 record
 
@@ -303,7 +308,7 @@ Angle includes search `-I` directories, then `include/` (the compiler's freestan
 
 Predefined macros added for the headers: `__USER_LABEL_PREFIX__` (empty), `__WCHAR_MAX__`, and `__WCHAR_MIN__`. The macros that were already predefined (`__STDC_VERSION__`, `__x86_64__`, `__LP64__`, `__GNUC__` 4.2.1, the `__SIZEOF_*__` macros, `__SIZE_TYPE__`) select the LP64 path in glibc and keep the `_Float128` typedefs out of the headers.
 
-Local results: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **62 passed**, `make` produced `build/compiler`, `python3 harness/run_tests.py` **98/98 passed**, and `python3 harness/run_wacc.py` **1082 passed, 138 known failures, 397 skipped, 0 unexpected**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. Before this step the external suite was 1064 passed, 127 known failures, and 426 skipped. The 29 union extra-credit tests are no longer skipped. Eight tests that had been listed as known failures now pass and were removed from `harness/wacc_known_failures.txt`. GitHub Actions for this step is not in this file yet.
+Local results after merging `main` at `fdee7d5`: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **65 passed**, `make` produced `build/compiler`, `python3 harness/run_tests.py` **102/102 passed**, and `python3 harness/run_wacc.py` **1143 passed, 77 known failures, 397 skipped, 0 unexpected**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. `main` was 1115 passed, 76 known failures, and 426 skipped. The 29 union extra-credit tests are no longer skipped. Fifteen tests that `main` still listed now pass and were removed from `harness/wacc_known_failures.txt`. Sixteen union tests remain known failures. GitHub Actions for this merge is not in this file yet.
 
 ## Stage 2 step 1 record
 

@@ -4,73 +4,10 @@
 # A listed test that now passes is reported so this line can be removed.
 # A compiler crash or panic fails the run even when the test is listed.
 
-# unsupported-do-while: do-while is not implemented (5)
-chapter_8/valid/do_while.c unsupported-do-while
-chapter_8/valid/do_while_break_immediate.c unsupported-do-while
-chapter_8/valid/empty_loop_body.c unsupported-do-while
-chapter_8/valid/extra_credit/compound_assignment_controlling_expression.c unsupported-do-while
-chapter_8/valid/multi_continue_same_loop.c unsupported-do-while
-
-# unsupported-block-function: a function declaration inside a block is rejected (7)
-chapter_10/valid/libraries/internal_linkage_function.c unsupported-block-function
-chapter_15/valid/declarators/array_as_argument.c unsupported-block-function
-chapter_9/valid/arguments_in_registers/param_shadows_local_var.c unsupported-block-function
-chapter_9/valid/no_arguments/function_shadows_variable.c unsupported-block-function
-chapter_9/valid/no_arguments/multiple_declarations.c unsupported-block-function
-chapter_9/valid/no_arguments/variable_shadows_function.c unsupported-block-function
-
-# unsupported-static-local: block-scope static is not implemented (32)
-chapter_10/valid/extra_credit/compound_assignment_static_var.c unsupported-static-local
-chapter_10/valid/multiple_static_local.c unsupported-static-local
-chapter_10/valid/shadow_static_local_var.c unsupported-static-local
-chapter_10/valid/static_local_multiple_scopes.c unsupported-static-local
-chapter_10/valid/static_local_uninitialized.c unsupported-static-local
-chapter_10/valid/static_recursive_call.c unsupported-static-local
-chapter_10/valid/static_variables_in_expressions.c unsupported-static-local
-chapter_12/valid/extra_credit/bitwise_unsigned_shift.c unsupported-static-local
-chapter_14/valid/casts/cast_between_pointer_types.c unsupported-static-local
-chapter_14/valid/casts/pointer_int_casts.c unsupported-static-local
-chapter_14/valid/dereference/dereference_expression_result.c unsupported-static-local
-chapter_15/valid/declarators/equivalent_declarators.c unsupported-static-local
-chapter_15/valid/extra_credit/compound_assign_array_of_pointers.c unsupported-static-local
-chapter_15/valid/extra_credit/compound_lval_evaluated_once.c unsupported-static-local
-chapter_15/valid/subscripting/complex_operands.c unsupported-static-local
-chapter_16/valid/extra_credit/bitwise_ops_character_constants.c unsupported-static-local
-chapter_16/valid/extra_credit/compound_bitwise_ops_chars.c unsupported-static-local
-chapter_16/valid/extra_credit/incr_decr_chars.c unsupported-static-local
-chapter_16/valid/strings_as_initializers/terminating_null_bytes.c unsupported-static-local
-chapter_17/valid/extra_credit/sizeof_bitwise.c unsupported-static-local
-chapter_17/valid/extra_credit/sizeof_compound_bitwise.c unsupported-static-local
-chapter_17/valid/extra_credit/sizeof_incr.c unsupported-static-local
-chapter_17/valid/sizeof/sizeof_array.c unsupported-static-local
-chapter_17/valid/void_pointer/common_pointer_type.c unsupported-static-local
-chapter_18/valid/no_structure_parameters/scalar_member_access/static_structs.c unsupported-static-local
-chapter_18/valid/no_structure_parameters/smoke_tests/static_vs_auto.c unsupported-static-local
-chapter_18/valid/no_structure_parameters/struct_copy/copy_struct.c unsupported-static-local
-chapter_18/valid/no_structure_parameters/struct_copy/copy_struct_through_pointer.c unsupported-static-local
-chapter_18/valid/no_structure_parameters/struct_copy/copy_struct_with_dot_operator.c unsupported-static-local
-chapter_18/valid/no_structure_parameters/struct_copy/stack_clobber.c unsupported-static-local
-
-# unsupported-block-extern: block-scope extern is not implemented (14)
-chapter_10/valid/distinct_local_and_extern.c unsupported-block-extern
-chapter_10/valid/extern_block_scope_variable.c unsupported-block-extern
-chapter_10/valid/libraries/external_linkage_function_client.c unsupported-block-extern
-chapter_10/valid/libraries/external_tentative_var_client.c unsupported-block-extern
-chapter_10/valid/libraries/external_var_scoping.c unsupported-block-extern
-chapter_10/valid/libraries/external_var_scoping_client.c unsupported-block-extern
-chapter_10/valid/libraries/internal_hides_external_linkage_client.c unsupported-block-extern
-chapter_10/valid/libraries/internal_linkage_var.c unsupported-block-extern
-chapter_10/valid/libraries/internal_linkage_var_client.c unsupported-block-extern
-chapter_10/valid/type_before_storage_class.c unsupported-block-extern
-chapter_11/valid/long_expressions/type_specifiers.c unsupported-block-extern
-chapter_12/valid/type_specifiers/signed_type_specifiers.c unsupported-block-extern
-chapter_12/valid/type_specifiers/unsigned_type_specifiers.c unsupported-block-extern
-chapter_16/valid/chars/type_specifiers.c unsupported-block-extern
-
-# unsupported-struct-by-value: a function type that passes or returns a struct or union by value is rejected (2)
+# unsupported-struct-by-value: passing or returning a struct or union by value is rejected (2)
 chapter_18/valid/no_structure_parameters/semantic_analysis/incomplete_structs.c unsupported-struct-by-value
 
-# unsupported-double: double, float, and floating constants are not implemented (78)
+# unsupported-double: double, a floating constant, or both (75)
 chapter_14/valid/comparisons/pointers_as_conditions.c unsupported-double
 chapter_14/valid/declarators/declarators.c unsupported-double
 chapter_14/valid/dereference/multilevel_indirection.c unsupported-double
@@ -92,7 +29,6 @@ chapter_15/valid/initialization/static_nested.c unsupported-double
 chapter_15/valid/libraries/set_array_val.c unsupported-double
 chapter_15/valid/libraries/set_array_val_client.c unsupported-double
 chapter_15/valid/pointer_arithmetic/pointer_add.c unsupported-double
-chapter_15/valid/pointer_arithmetic/pointer_diff.c unsupported-double
 chapter_15/valid/subscripting/simple_subscripts.c unsupported-double
 chapter_16/valid/char_constants/char_constant_operations.c unsupported-double
 chapter_16/valid/chars/access_through_char_pointer.c unsupported-double
@@ -131,10 +67,8 @@ chapter_18/valid/no_structure_parameters/scalar_member_access/dot.c unsupported-
 chapter_18/valid/no_structure_parameters/scalar_member_access/nested_struct.c unsupported-double
 chapter_18/valid/no_structure_parameters/semantic_analysis/namespaces.c unsupported-double
 chapter_18/valid/no_structure_parameters/semantic_analysis/resolve_tags.c unsupported-double
-chapter_18/valid/no_structure_parameters/size_and_offset_calculations/member_offsets.c unsupported-double
-chapter_18/valid/no_structure_parameters/size_and_offset_calculations/sizeof_exps.c unsupported-double
 chapter_18/valid/no_structure_parameters/struct_copy/copy_struct_with_arrow_operator.c unsupported-double
-# Union extra-credit tests that still need a feature this compiler rejects.
+# Union extra-credit tests whose remaining failure is a floating constant (15)
 chapter_18/valid/extra_credit/libraries/classify_unions.c unsupported-double
 chapter_18/valid/extra_credit/libraries/classify_unions_client.c unsupported-double
 chapter_18/valid/extra_credit/libraries/param_passing.c unsupported-double
@@ -150,7 +84,6 @@ chapter_18/valid/extra_credit/member_access/union_init_and_member_access.c unsup
 chapter_18/valid/extra_credit/semantic_analysis/union_namespace.c unsupported-double
 chapter_18/valid/extra_credit/union_copy/assign_to_union.c unsupported-double
 chapter_18/valid/extra_credit/union_copy/copy_thru_pointer.c unsupported-double
-chapter_18/valid/extra_credit/member_access/union_temp_lifetime.c unsupported-static-local
-chapter_18/valid/extra_credit/union_copy/copy_non_scalar_members.c unsupported-static-local
-chapter_18/valid/extra_credit/size_and_offset/union_sizes.c unsupported-block-function
+
+# unsupported-struct-by-value also covers a union passed by value (2 total)
 chapter_18/valid/extra_credit/semantic_analysis/incomplete_union_types.c unsupported-struct-by-value
