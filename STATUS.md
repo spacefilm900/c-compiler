@@ -136,9 +136,29 @@ An array of 16 bytes or more has alignment at least 16, for locals and globals. 
 
 ## Milestone 2 step 4 record
 
-Local results are in the table above: `cargo test --offline --lib` **37 passed**, `python3 harness/run_tests.py` **61/61 passed**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. After the review fix, `cargo fmt --all -- --check` and `cargo clippy --offline --all-targets -- -D warnings` were clean and `cargo test --offline --lib` was **37 passed** again. The harness was not re-run.
+Local results are in the table above: `cargo test --offline --lib` **37 passed**, `python3 harness/run_tests.py` **61/61 passed**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. After the review fix, `cargo fmt --all -- --check` and `cargo clippy --offline --all-targets -- -D warnings` were clean and `cargo test --offline --lib` was **37 passed** again. The harness was not re-run locally after that fix. GitHub Actions on the fix commit did run the harness.
 
-GitHub Actions and the CodeRabbit review are filled in after those runs finish. Nothing is claimed for them yet.
+### GitHub Actions
+
+Observed on commit `cbab10c8aaaf4c3bb297befa262b469df518b766`. Both runs completed with conclusion **success**. Each job's log contains `test result: ok. 37 passed; 0 failed` and `61/61 passed`. The push job reported rustc 1.85.1 (4eb161250 2025-03-15), Ubuntu clang 18.1.3, Ubuntu LLVM 18.1.3 (`llvm-as --version`), GNU Make 4.3, and Python 3.12.3. The pull_request job's log also contains rustc 1.85.1 (4eb161250 2025-03-15), Ubuntu clang 18.1.3, Ubuntu LLVM 18.1.3, GNU Make 4.3, Python 3.12.3, `37 passed; 0 failed`, and `61/61 passed`.
+
+| Event | Run | Job | Conclusion |
+| --- | --- | --- | --- |
+| `push` | https://github.com/spacefilm900/c-compiler/actions/runs/42615660546 | https://github.com/spacefilm900/c-compiler/actions/runs/42615660546/job/129154765356 | success (2026-11-09 12:16:43Z–12:17:28Z) |
+| `pull_request` | https://github.com/spacefilm900/c-compiler/actions/runs/42615667217 | https://github.com/spacefilm900/c-compiler/actions/runs/42615667217/job/129154787685 | success (2026-11-09 12:16:46Z–12:17:41Z) |
+
+Commit `6269cc8bf01a0bb4c1f3ec097207e6b6403855ea`, before the review fix, also had successful push and pull_request runs of the same job. Those runs are not the head.
+
+### CodeRabbit
+
+CodeRabbit reviewed pull request 5 on `6269cc8`. Review `5825690316`, submitted 2026-11-09 12:14:56Z, state `COMMENTED`, two inline comments. Check run `CodeRabbit`, app `coderabbitai`, was still `in_progress` with no conclusion when this record was written. GitHub URL: https://github.com/spacefilm900/c-compiler/runs/129150138657. Details URL: https://app.coderabbit.ai/change-stack/spacefilm900/c-compiler/pull/5.
+
+Both inline comments were fixed in `cbab10c`:
+
+- A global initializer that narrows a file-scope address, such as `int x = (int)&g` or `long x = (int)&g`, was emitted as `ptrtoint`. The link-time bits are unknown, and a narrower cast was ignored when the destination was wider. Those initializers are now a diagnostic. A 64-bit cast into a 64-bit object still lowers to `ptrtoint`.
+- `int (*p)[]; p[0]` type-checked and lowered to a zero-byte `getelementptr` on `[0 x i32]`. A subscript of a pointer to an incomplete type is now a diagnostic. The `void *` subscript diagnostic is unchanged.
+
+The review summary also listed a docstring-coverage pre-merge note (15.15% against an 80% threshold). No function docstrings were added. The sources document modules and the language rules, not every function. The same note on pull requests 3 and 4 was left that way. No follow-up review on `cbab10c` had been posted when this record was written.
 
 ## Milestone 2 step 3 record
 
