@@ -601,9 +601,27 @@ impl Sema {
                 ..
             } = expr
             {
-                if ty_name.is_integer() {
+                if let Some(cast_int) = ty_name.as_integer() {
                     if let Ok(ptr) = eval_ptr(inner) {
-                        return Ok(ptr_as_int(ptr, dest_int));
+                        // A file-scope address is not a number until link time.
+                        // Truncating it, in the cast or in the destination,
+                        // cannot be folded. A 64-bit cast into a 64-bit
+                        // object keeps every bit (`ptrtoint` to i64).
+                        if matches!(ptr, PtrConst::Addr { .. })
+                            && (cast_int.width() < 64 || dest_int.width() < 64)
+                        {
+                            return self.err(
+                                expr.line(),
+                                expr.column(),
+                                format!("initializer of '{name}' truncates an address"),
+                            );
+                        }
+                        return Ok(match ptr_as_int(ptr, cast_int) {
+                            ConstInit::Int(bits) => {
+                                ConstInit::Int(convert_bits(bits, cast_int, dest_int))
+                            }
+                            other => other,
+                        });
                     }
                 }
             }
@@ -1474,6 +1492,16 @@ impl Sema {
                     line,
                     column,
                     "subscript of a pointer to void is not supported",
+                );
+            }
+            if !pointee.is_complete() {
+                return self.err(
+                    line,
+                    column,
+                    format!(
+                        "subscript of a pointer to incomplete type '{}'",
+                        pointee.display()
+                    ),
                 );
             }
             pointee
@@ -2743,5 +2771,11 @@ int main(void) {
         assert!(sema_err("int main(void) { int a[3]; a = a; return 0; }")
             .contains("array type is not assignable"));
         assert!(sema_err("int main(void) { return &1; }").contains("cannot take the address"));
+        assert!(sema_err("int g; int x = (int)&g;").contains("truncates an address"));
+        assert!(sema_err("int g; long x = (int)&g;").contains("truncates an address"));
+        sema_ok("int g; long x = (long)&g;");
+        assert!(
+            sema_err("int main(void) { int (*p)[]; return p[0][0]; }").contains("incomplete type")
+        );
     }
 }
