@@ -59,7 +59,14 @@ Observed on commit `3b9d33e1cefd9a44f61c069011e7cbc460d033b8`. Both runs complet
 
 The push job also recorded a non-failing annotation: Node.js 20 is deprecated, and `actions/checkout@11d5960a326750d5838078e36cf38b85af677262` was forced onto Node.js 24. The job still succeeded. The pin was left as imported because the run did not fail.
 
-A later commit that only updates this file starts new runs. Those runs are not the rows above.
+The documentation commit `865c0f0ef1dc2dfe94186b89b089c31185d026da` was checked after the rows above. Both of its workflow runs completed with conclusion **success**, and both logs contain `21 passed; 0 failed` and `17/17 passed`:
+
+| Event | Run | Conclusion |
+| --- | --- | --- |
+| `push` | https://github.com/spacefilm900/c-compiler/actions/runs/42539136514 | success |
+| `pull_request` | https://github.com/spacefilm900/c-compiler/actions/runs/42539140762 | success |
+
+Any commit after `865c0f0` starts further runs. Those are not listed here.
 
 ### CodeRabbit
 
@@ -118,7 +125,7 @@ The workflow file from the tested archive is unchanged. Its first comment still 
 - `.coderabbit.yaml` follows CodeRabbit schema `https://coderabbit.ai/integrations/schema.v2.json`. The file was checked against that schema before this import. It does not install anything.
 - CodeRabbit skills were not installed; that install question was skipped, and they were not installed during this import.
 - The CodeRabbit GitHub App reviewed pull request 1. See Import verification for the check URL, the `CHILL` profile loaded from `.coderabbit.yaml`, and the three comments that were left unapplied.
-- GitHub Actions on the import commit succeeded. See Import verification for the run URLs. The documentation commit that records those runs starts separate Actions runs, and those later runs are not the rows in that table.
+- GitHub Actions succeeded on the import commit `3b9d33e` and on the documentation commit `865c0f0`. See Import verification for the run URLs. A commit after `865c0f0` is a further run and is not one of those URLs.
 
 ## Next actions
 
