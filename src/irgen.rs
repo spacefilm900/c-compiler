@@ -1506,7 +1506,17 @@ fn write_const_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: us
             }
             false
         }
-        ConstInit::Ptr(_) | ConstInit::PtrToInt { .. } => false,
+        ConstInit::Ptr(PtrConst::Null) => true,
+        ConstInit::Ptr(PtrConst::IntToPtr(bits)) => {
+            for index in 0..8 {
+                let at = offset + index;
+                if at < bytes.len() {
+                    bytes[at] = (*bits >> (8 * index)) as u8;
+                }
+            }
+            true
+        }
+        ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => false,
     }
 }
 

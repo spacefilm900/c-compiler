@@ -8,6 +8,24 @@ struct S {
     int y;
 };
 
+union P {
+    int *a;
+    long b;
+};
+
+union P np = {0};
+union P ip = {(int *)1};
+
+struct Z {
+    int a;
+    union {
+        char *s;
+        long n;
+    } v;
+};
+
+struct Z z = {1};
+
 int main(void) {
     int x = 1;
     int *p = &x;
@@ -25,6 +43,20 @@ int main(void) {
     }
     if (s.u.a != 3 || s.y != 4) {
         return 4;
+    }
+    _Bool from_ptr = p;
+    _Bool from_null = q;
+    if (from_ptr != 1) {
+        return 5;
+    }
+    if (from_null != 0) {
+        return 6;
+    }
+    if (np.b != 0 || ip.b != 1) {
+        return 7;
+    }
+    if (z.a != 1 || z.v.s != 0) {
+        return 8;
     }
     return 0;
 }

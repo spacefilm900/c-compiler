@@ -366,13 +366,26 @@ impl Parser<'_> {
             return Err(self.error(format!("expected a type, found {}", found(self.current()))));
         }
         let ty = self.resolve_type(&flags)?.with_quals(flags.quals);
+        let shadow_decl = self.shadow_decl.take();
+        // A lone `union tag;` is a declaration and may hide an outer struct.
+        // A parameter, member, or type name has no such form: the visible tag
+        // is the one being named, and the other kind is a constraint violation.
+        if let Some((tag, _)) = &shadow_decl {
+            if where_ != SpecPlace::Declaration {
+                return Err(self.error_at(
+                    flags.line,
+                    flags.column,
+                    format!("'{tag}' defined as a different tag type"),
+                ));
+            }
+        }
         Ok(Specs {
             storage: flags.storage,
             storage_at: flags.storage_at,
             ty,
             forward_tag: flags.forward_tag,
             introduced_tag: flags.introduced_tag,
-            shadow_decl: self.shadow_decl.take(),
+            shadow_decl,
             line: flags.line,
             column: flags.column,
         })

@@ -2201,6 +2201,11 @@ impl Sema {
         if dest.is_integer() && src_ty.is_integer() {
             return Ok(());
         }
+        // C11 6.5.16.1: a pointer may be assigned to `_Bool`. The value is
+        // 0 when the pointer is null and 1 otherwise.
+        if dest.as_integer() == Some(TypeName::Bool) && src_ty.is_pointer() {
+            return Ok(());
+        }
         if dest.unqualified().is_record()
             && src_ty.unqualified().is_record()
             && compatible(&dest.unqualified(), &src_ty.unqualified())
@@ -2491,7 +2496,10 @@ fn classify_init(ty: &CType, mut stores: Vec<ElemStore>) -> CheckedInit {
 fn union_bytes_ok(ty: &CType, value: &ConstInit) -> bool {
     match value {
         ConstInit::Zero | ConstInit::Int(_) => true,
-        ConstInit::Ptr(_) | ConstInit::PtrToInt { .. } => !ty.is_union(),
+        // A null pointer and an integer converted to a pointer are bytes.
+        // The address of an object needs a relocation.
+        ConstInit::Ptr(PtrConst::Null | PtrConst::IntToPtr(_)) => true,
+        ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => !ty.is_union(),
         ConstInit::Aggregate(items) => {
             if ty.is_union() {
                 return items.first().is_none_or(const_has_no_address);
@@ -2513,7 +2521,8 @@ fn union_bytes_ok(ty: &CType, value: &ConstInit) -> bool {
 fn const_has_no_address(value: &ConstInit) -> bool {
     match value {
         ConstInit::Zero | ConstInit::Int(_) => true,
-        ConstInit::Ptr(_) | ConstInit::PtrToInt { .. } => false,
+        ConstInit::Ptr(PtrConst::Null | PtrConst::IntToPtr(_)) => true,
+        ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => false,
         ConstInit::Aggregate(items) => items.iter().all(const_has_no_address),
     }
 }
@@ -3799,7 +3808,13 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
         );
         assert!(sema_err("int g; union U { int *p; long l; } u = { &g };")
             .contains("address in a union"));
+        sema_ok("union U { int *p; long l; } u = { 0 };");
+        sema_ok("union U { int *p; long l; } u = { (int *)1 };");
+        sema_ok("struct S { int a; union { char *s; long n; } v; } g = { 1 };");
         sema_ok("struct T { int a; }; int main(void) { union T; int x = 1; return x; }");
+        assert!(sema_err("struct T { int a; }; void g(union T *p);").contains("different tag type"));
+        assert!(sema_err("struct T { int a; union T *p; };").contains("different tag type"));
+        sema_ok("int main(void) { int *p = 0; _Bool b = p; return b; }");
         let err = crate::compile_to_ir(
             "#include <stdarg.h>\nint f(va_list ap) { return va_arg(ap, int); }\n",
             "va.c",
