@@ -1745,7 +1745,20 @@ impl Parser<'_> {
     }
 
     fn error_at(&self, line: usize, column: usize, message: impl Into<String>) -> Diagnostic {
-        Diagnostic::new(self.filename, line, column, message)
+        Diagnostic::new(self.file_at(line, column), line, column, message)
+    }
+
+    /// The token that introduced this location. Included files share line
+    /// numbers with the main file, so the nearest token at or before the
+    /// cursor wins.
+    fn file_at(&self, line: usize, column: usize) -> &str {
+        let end = (self.index + 1).min(self.tokens.len());
+        for token in self.tokens[..end].iter().rev() {
+            if token.line == line && token.column == column {
+                return &token.filename;
+            }
+        }
+        self.filename
     }
 }
 

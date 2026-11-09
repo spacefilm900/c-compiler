@@ -19,13 +19,30 @@ use crate::ast::*;
 use crate::diag::Diagnostic;
 
 pub fn analyze(unit: &mut TranslationUnit, filename: &str) -> Result<(), Diagnostic> {
+    analyze_tokens(unit, filename, &[])
+}
+
+/// Like [`analyze`], but diagnostics use the source file recorded on `tokens`
+/// when a line and column match exactly one file.
+pub fn analyze_tokens(
+    unit: &mut TranslationUnit,
+    filename: &str,
+    tokens: &[crate::token::Token],
+) -> Result<(), Diagnostic> {
     for decl in &mut unit.decls {
         if let TopDecl::Func(func) = decl {
             assign_slots(func);
         }
     }
+    let mut locs: HashMap<(usize, usize), String> = HashMap::new();
+    for token in tokens {
+        if token.kind != crate::token::TokenKind::Eof {
+            locs.insert((token.line, token.column), token.filename.clone());
+        }
+    }
     let mut sema = Sema {
         filename: filename.to_string(),
+        locs,
         scopes: vec![HashMap::new()],
         loop_depth: 0,
         current_ret: CType::int_type(),
@@ -93,6 +110,10 @@ enum Symbol {
 
 struct Sema {
     filename: String,
+    /// Last token at each line and column. Included files override the main
+    /// file when they share a coordinate; parser diagnostics resolve this
+    /// more precisely from the token cursor.
+    locs: HashMap<(usize, usize), String>,
     scopes: Vec<HashMap<String, Symbol>>,
     loop_depth: u32,
     current_ret: CType,
@@ -2109,7 +2130,12 @@ impl Sema {
         column: usize,
         message: impl Into<String>,
     ) -> Result<T, Diagnostic> {
-        Err(Diagnostic::new(&self.filename, line, column, message))
+        let file = self
+            .locs
+            .get(&(line, column))
+            .map(String::as_str)
+            .unwrap_or(self.filename.as_str());
+        Err(Diagnostic::new(file, line, column, message))
     }
 }
 

@@ -113,6 +113,9 @@ pub struct Token {
     pub spelling: String,
     pub line: usize,
     pub column: usize,
+    /// Source file this token came from. The preprocessor sets this for
+    /// tokens that originated in a `#include`d file.
+    pub filename: String,
     /// Present for [`TokenKind::Int`]. The low bits of an integer or character
     /// constant. The type is [`Token::int_ty`].
     pub value: Option<u64>,

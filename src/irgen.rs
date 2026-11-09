@@ -1548,14 +1548,20 @@ mod tests {
     }
 
     fn run_reference(source: &str) -> (i32, Vec<u8>, Vec<u8>) {
-        let (ll, bin) = temp_paths();
-        let cfile = ll.with_extension("c");
+        let cfile = temp_paths().0.with_extension("c");
         std::fs::write(&cfile, source).unwrap();
+        let result = run_reference_file(&cfile);
+        let _ = std::fs::remove_file(&cfile);
+        result
+    }
+
+    fn run_reference_file(path: &std::path::Path) -> (i32, Vec<u8>, Vec<u8>) {
+        let (_, bin) = temp_paths();
         let compiled = Command::new("clang")
             .args([
                 "-w",
                 "-std=c11",
-                cfile.to_str().unwrap(),
+                path.to_str().unwrap(),
                 "-o",
                 bin.to_str().unwrap(),
             ])
@@ -1567,7 +1573,6 @@ mod tests {
             String::from_utf8_lossy(&compiled.stderr)
         );
         let ran = Command::new(&bin).output().expect("run oracle");
-        let _ = std::fs::remove_file(&cfile);
         let _ = std::fs::remove_file(&bin);
         (ran.status.code().unwrap_or(101), ran.stdout, ran.stderr)
     }
@@ -2007,12 +2012,12 @@ int main(void) {
         assert!(!files.is_empty());
         for path in files {
             let source = std::fs::read_to_string(&path).unwrap();
-            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            let name = path.to_string_lossy().to_string();
             let ir = crate::compile_to_ir(&source, &name).unwrap_or_else(|err| {
                 panic!("{name}: {err}");
             });
             let mine = run_binary(&ir);
-            let reference = run_reference(&source);
+            let reference = run_reference_file(&path);
             assert_eq!(mine, reference, "{name}");
         }
     }

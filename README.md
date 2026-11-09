@@ -1,6 +1,6 @@
 # Clean-room C compiler → LLVM IR
 
-A small C compiler that emits textual LLVM IR. LLVM (`clang`, and optionally `opt` / `llc`) optimizes that IR and generates native code. This milestone is a C subset: enough to lex, parse, check, and run functions and file-scope objects of the LP64 integer types, with prototypes, pointers, arrays, string literals, `const` and `volatile`, calls to variadic library functions such as `printf`, simple structs, arithmetic, bitwise and shift operators, `++`/`--`, compound assignment, `?:`, the comma operator, `sizeof`, casts, branches, loops, and calls. Hello world compiles and runs. It is not a full C compiler.
+A small C compiler that emits textual LLVM IR. LLVM (`clang`, and optionally `opt` / `llc`) optimizes that IR and generates native code. This milestone is a C subset: enough to lex, preprocess, parse, check, and run functions and file-scope objects of the LP64 integer types, with prototypes, pointers, arrays, string literals, `const` and `volatile`, calls to variadic library functions such as `printf`, simple structs, arithmetic, bitwise and shift operators, `++`/`--`, compound assignment, `?:`, the comma operator, `sizeof`, casts, branches, loops, and calls. A built-in preprocessor runs before the parser. Hello world compiles from `#include <stdio.h>`. It is not a full C compiler.
 
 ## Why Rust
 
@@ -28,10 +28,13 @@ Local execution used Debian Clang/LLVM **19.1.7** unpacked under `~/opt/llvm19-r
 ## Contract
 
 ```sh
-build/compiler INPUT.c -o OUTPUT.ll
+build/compiler [options] INPUT.c -o OUTPUT.ll
+build/compiler -E [options] INPUT.c [-o OUTPUT.i]
 ```
 
-On success the command exits 0 and writes a textual LLVM IR module. On failure it exits non-zero, prints one diagnostic to stderr (`file:line:column: error: ...`), and does not create the output file.
+Options are `-I DIR` (also `-IDIR`), `-D NAME[=text]` (also `-DNAME=text`; a bare `-DNAME` defines `NAME` as `1`), `-U NAME`, and `-E`. `-D` and `-U` apply in order, after the predefined macros.
+
+On success the command exits 0 and writes a textual LLVM IR module, or the preprocessed text when `-E` is set. On failure it exits non-zero, prints one diagnostic to stderr (`file:line:column: error: ...`), and does not create the output file. A diagnostic in an included file names that file.
 
 ```sh
 clang -w output.ll -o program
@@ -88,7 +91,10 @@ Actions are pinned to commits, not floating tags:
 - Assigning a pointer requires a compatible pointer, a qualification conversion (`char *` to `const char *`, and the same rule for `volatile`), `void *` in either direction when the destination does not drop a qualifier, or a null pointer constant (`0` or `(void *)0`). `int *` and `char *` are not compatible. Dropping `const` is an error here. Clang warns and still compiles. A cast may drop a qualifier; that is not diagnosed.
 - A function may call itself, and it may call a function that was declared earlier and defined later. Assignment targets are variables; parentheses do not change that (`(x) = 1` assigns to `x`).
 - Tagged structs at file scope and block scope. Members may be any supported type: integers, pointers, arrays, and nested structs, including a struct declared in the member list. `struct node;` is an incomplete type. A pointer to it is complete, so a struct may contain a pointer to itself. An object of incomplete struct type, and `sizeof` of that type, are diagnostics. Layout follows the System V AMD64 ABI: each member is aligned to its alignment, the struct alignment is the strictest member alignment, and the size is rounded up to that alignment. An array member uses the element alignment. The extra 16-byte alignment applies to a local or global array variable, not to a member. `.` and `->` name a member, including chains (`a.b.c`, `p->next->val`), and the result is an lvalue when the base is. `&s.x` and `s.arr[i]` work. A whole struct may be assigned, which copies every byte, including padding. Brace initializers work for structs and for arrays of structs, at local and file scope. A missing member is zero. A nested brace initializes one member. A flat list fills inner aggregates in order. An expression of the member's struct type initializes that member as a whole (`struct Line line = {p, q}`). Designated initializers (`.x = 1`, `[0] = 1`) are rejected. A struct with a const member cannot be assigned as a whole. Passing or returning a struct by value is rejected; a pointer to a struct is fine.
-- `//` line comments and non-nesting `/* */` block comments.
+- `//` line comments and non-nesting `/* */` block comments. A backslash immediately before a new-line is deleted first (C translation phase 2), including inside a comment or a string, so the following physical line is part of the same logical line. `__LINE__` is the physical line of the token.
+- A built-in preprocessor. `#define` / `#undef` cover object-like macros and function-like macros, including an empty parameter list and `__VA_ARGS__`. The `(` must follow the name with no space for the definition to be function-like. `#` stringifies an argument and `##` pastes two tokens. Expansion rescans, and a macro is not expanded again inside its own replacement. An identical redefinition is allowed; a different one is a diagnostic. `#if`, `#ifdef`, `#ifndef`, `#elif`, `#else`, and `#endif` nest. `#if` expressions are evaluated in `intmax_t` / `uintmax_t`. `defined X` and `defined(X)` are recognized, and any other identifier is 0. A group whose condition is false is skipped: macros there are not expanded and `#error` there is not fired. `#include "file"` searches the including file's directory, then each `-I` directory, then `include/`. `#include <file>` searches `-I` directories, then `include/`. The nested-include limit is 200. `#error` is a diagnostic. `#line` is accepted. `#pragma once` is honored; any other `#pragma` is ignored. A line that is only `#` is a null directive. Predefined names include `__FILE__`, `__LINE__`, `__STDC__` (1), `__STDC_VERSION__` (`201112L`), `__STDC_HOSTED__` (1), `__x86_64__`, `__linux__`, and `__LP64__`.
+
+`include/` is a temporary stand-in for the C library, not the host headers. It declares only what this subset can parse: `stdio.h` (`printf`, `puts`, `putchar`), `string.h` (`strlen`, `strcmp`, `memcpy`), `stdlib.h` (`malloc`, `free`, `exit`, `abs`), and `stddef.h` (`NULL` as `((void *)0)`). There is no `typedef`, so those headers use `unsigned long` instead of `size_t`. The compiler does not read `/usr/include`. Clang, when it compiles the same test, still uses the real headers; the harness compares the programs that result.
 
 Reaching the closing brace of an integer function lowers to a return of 0 of that type. That is what C requires for `main`. A `void` function that falls off the end lowers to `ret void`.
 
@@ -96,15 +102,16 @@ Reaching the closing brace of an integer function lowers to a return of 0 of tha
 
 Unsupported or invalid input is a diagnostic. It is not ignored and it is not lowered.
 
-The lexer rejects the preprocessor (`#`). Trigraphs are not recognized. A backslash immediately before a new-line, including at the end of a `//` or `/*` comment, is a diagnostic rather than a line splice. Wide string and character literals (`L"hi"`, `u8"hi"`, `L'a'`) are rejected. Floating constants, binary literals, and non-ASCII bytes are errors. An integer suffix that is not in the C11 grammar (`1Ll`, `1uu`) is a diagnostic. An integer constant that fits in no type on the C11 6.4.4.1 list is a diagnostic, including a decimal value that does not fit in signed `long long`. Multi-character character constants and hex or octal escapes outside `unsigned char` are diagnostics.
+Trigraphs are not recognized. `_Pragma` and `#include_next` are rejected or left as ordinary tokens. `__DATE__` and `__TIME__` are not predefined. Wide string and character literals (`L"hi"`, `u8"hi"`, `L'a'`) are rejected. Floating constants, binary literals, and non-ASCII bytes are errors. An integer suffix that is not in the C11 grammar (`1Ll`, `1uu`) is a diagnostic. An integer constant that fits in no type on the C11 6.4.4.1 list is a diagnostic, including a decimal value that does not fit in signed `long long`. Multi-character character constants and hex or octal escapes outside `unsigned char` are diagnostics.
 
 The parser or checker rejects function pointers, variable-length arrays, unions, enums, typedefs, `restrict`, block-scope `static` and `extern`, old-style declarations with an empty parameter list (`int f();`), nested functions, a variadic function with no named parameter (`int f(...);`), a definition of a variadic function, passing or returning a struct by value, bit-fields, flexible array members, anonymous structs (a struct with no tag), empty structs, designated initializers, `switch`, `do`/`while`, and `goto`. Arithmetic on `void *` is rejected; Clang warns and treats the size as 1. A global initializer that is not an integer constant expression, an address constant, or a constant brace list of those is a diagnostic. Assignment, `++`/`--`, calls, and the comma operator are not allowed in that constant expression when they are evaluated (C11 6.6). An evaluated division by zero is a diagnostic, and so is an evaluated signed constant whose result does not fit in its type (C11 6.6p4), including `INT_MIN / -1` and `1 << 31`. Other C11 keywords (`float`, `_Bool`, …) are recognized so they produce a specific "not supported" diagnostic.
 
 ## Layout
 
-- `src/` — Rust frontend (`lexer`, `parser`, `ast`, `sema`, `irgen`, `driver`)
+- `src/` — Rust frontend (`pp`, `lexer`, `parser`, `ast`, `sema`, `irgen`, `driver`)
+- `include/` — temporary stand-in headers (`stdio.h`, `string.h`, `stdlib.h`, `stddef.h`)
 - `build/compiler` — release binary produced by `make` (not committed)
-- `tests/` — C programs for the differential harness
+- `tests/` — C programs for the differential harness; `tests/inc/` holds headers those programs include
 - `harness/run_tests.py` — Clang oracle
 - `PLAN.md` — staged plan (unchanged starter plan)
 - `STATUS.md` — what this milestone actually does
