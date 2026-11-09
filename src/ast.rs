@@ -4,18 +4,211 @@
 //! analysis so each variable has a stable LLVM alloca name. File-scope objects
 //! use the global's LLVM name instead of an alloca.
 
+/// Integer and `void` types on `x86_64-pc-linux-gnu` (LP64).
+///
+/// `char` is a distinct type from `signed char` and `unsigned char`. On this
+/// target it is signed. `long` and `long long` are both 64 bits; `long long`
+/// still has the greater conversion rank (C11 6.3.1.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeName {
-    Int,
     Void,
+    Char,
+    SChar,
+    UChar,
+    Short,
+    UShort,
+    Int,
+    UInt,
+    Long,
+    ULong,
+    LongLong,
+    ULongLong,
 }
 
 impl TypeName {
     pub fn as_str(self) -> &'static str {
         match self {
-            TypeName::Int => "int",
             TypeName::Void => "void",
+            TypeName::Char => "char",
+            TypeName::SChar => "signed char",
+            TypeName::UChar => "unsigned char",
+            TypeName::Short => "short",
+            TypeName::UShort => "unsigned short",
+            TypeName::Int => "int",
+            TypeName::UInt => "unsigned int",
+            TypeName::Long => "long",
+            TypeName::ULong => "unsigned long",
+            TypeName::LongLong => "long long",
+            TypeName::ULongLong => "unsigned long long",
         }
+    }
+
+    pub fn is_void(self) -> bool {
+        self == TypeName::Void
+    }
+
+    pub fn is_integer(self) -> bool {
+        !self.is_void()
+    }
+
+    /// `char` is signed on this target.
+    pub fn is_signed(self) -> bool {
+        matches!(
+            self,
+            TypeName::Char
+                | TypeName::SChar
+                | TypeName::Short
+                | TypeName::Int
+                | TypeName::Long
+                | TypeName::LongLong
+        )
+    }
+
+    pub fn width(self) -> u32 {
+        match self {
+            TypeName::Void => 0,
+            TypeName::Char | TypeName::SChar | TypeName::UChar => 8,
+            TypeName::Short | TypeName::UShort => 16,
+            TypeName::Int | TypeName::UInt => 32,
+            TypeName::Long | TypeName::ULong | TypeName::LongLong | TypeName::ULongLong => 64,
+        }
+    }
+
+    /// Size in bytes. `void` is incomplete and has no size.
+    pub fn size(self) -> u64 {
+        u64::from(self.width() / 8)
+    }
+
+    /// Natural alignment, which is the size for every integer type here.
+    pub fn align(self) -> u32 {
+        self.size() as u32
+    }
+
+    pub fn ir_type(self) -> &'static str {
+        match self.width() {
+            0 => "void",
+            8 => "i8",
+            16 => "i16",
+            32 => "i32",
+            _ => "i64",
+        }
+    }
+
+    /// Integer conversion rank. `char`, `signed char`, and `unsigned char`
+    /// share a rank. The unsigned type has the same rank as its signed pair.
+    pub fn rank(self) -> u8 {
+        match self {
+            TypeName::Void => 0,
+            TypeName::Char | TypeName::SChar | TypeName::UChar => 1,
+            TypeName::Short | TypeName::UShort => 2,
+            TypeName::Int | TypeName::UInt => 3,
+            TypeName::Long | TypeName::ULong => 4,
+            TypeName::LongLong | TypeName::ULongLong => 5,
+        }
+    }
+
+    pub fn mask(self) -> u64 {
+        width_mask(self.width())
+    }
+
+    /// Integer promotions (C11 6.3.1.1). Every type narrower than `int` fits
+    /// in signed `int` on this target, including `unsigned short`.
+    pub fn promote(self) -> TypeName {
+        match self {
+            TypeName::Char
+            | TypeName::SChar
+            | TypeName::UChar
+            | TypeName::Short
+            | TypeName::UShort => TypeName::Int,
+            other => other,
+        }
+    }
+
+    /// The unsigned type of the same width. Used when the usual arithmetic
+    /// conversions cannot keep a signed type (C11 6.3.1.8).
+    pub fn to_unsigned(self) -> TypeName {
+        match self {
+            TypeName::Char | TypeName::SChar => TypeName::UChar,
+            TypeName::Short => TypeName::UShort,
+            TypeName::Int => TypeName::UInt,
+            TypeName::Long => TypeName::ULong,
+            TypeName::LongLong => TypeName::ULongLong,
+            other => other,
+        }
+    }
+
+    /// Usual arithmetic conversions, including the integer promotions.
+    pub fn usual(self, other: TypeName) -> TypeName {
+        let a = self.promote();
+        let b = other.promote();
+        if a == b {
+            return a;
+        }
+        if a.is_signed() == b.is_signed() {
+            return if a.rank() >= b.rank() { a } else { b };
+        }
+        let (signed, unsigned) = if a.is_signed() { (a, b) } else { (b, a) };
+        if unsigned.rank() >= signed.rank() {
+            return unsigned;
+        }
+        if signed.width() > unsigned.width() {
+            return signed;
+        }
+        signed.to_unsigned()
+    }
+
+    /// System V AMD64 requires the caller to extend an integer narrower than
+    /// 32 bits to 32 bits: sign-extend signed types, zero-extend unsigned
+    /// types. LLVM spells that `signext` / `zeroext` on the parameter or
+    /// return. `int` and wider types are passed as themselves.
+    pub fn abi_attr(self) -> Option<&'static str> {
+        match self {
+            TypeName::Char | TypeName::SChar | TypeName::Short => Some("signext"),
+            TypeName::UChar | TypeName::UShort => Some("zeroext"),
+            _ => None,
+        }
+    }
+
+    /// Decimal spelling of `bits` interpreted as this type.
+    pub fn format_bits(self, bits: u64) -> String {
+        if self.is_signed() {
+            sign_extend(bits, self.width()).to_string()
+        } else {
+            (bits & self.mask()).to_string()
+        }
+    }
+}
+
+pub fn width_mask(width: u32) -> u64 {
+    if width >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << width) - 1
+    }
+}
+
+/// Sign-extend the low `width` bits of `bits` to `i64`.
+pub fn sign_extend(bits: u64, width: u32) -> i64 {
+    let bits = bits & width_mask(width);
+    let shift = 64 - width;
+    ((bits << shift) as i64) >> shift
+}
+
+/// Convert `bits` from `from` to `to` (C11 6.3.1.3).
+///
+/// Unsigned destinations reduce the value modulo 2^width. A signed
+/// destination that cannot represent the value is implementation-defined;
+/// this target keeps the low bits and reads them as two's complement, which
+/// is what Clang does on `x86_64-pc-linux-gnu`.
+pub fn convert_bits(bits: u64, from: TypeName, to: TypeName) -> u64 {
+    let to_mask = to.mask();
+    if to.width() <= from.width() {
+        return bits & to_mask;
+    }
+    if from.is_signed() {
+        (sign_extend(bits, from.width()) as u64) & to_mask
+    } else {
+        bits & from.mask()
     }
 }
 
@@ -25,8 +218,9 @@ impl TypeName {
 /// thing as `extern` for objects: a file-scope object with no storage class
 /// has external linkage and is a tentative definition when it has no
 /// initializer (C11 6.2.2, 6.9.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Storage {
+    #[default]
     None,
     Static,
     Extern,
@@ -160,13 +354,16 @@ pub struct VarRes {
 pub struct CallRes {
     pub name: String,
     pub ret: TypeName,
-    pub arity: usize,
+    pub params: Vec<TypeName>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Expr {
     Int {
-        value: i32,
+        /// Low bits of the value. The high bits above [`TypeName::width`] are zero.
+        bits: u64,
+        /// Type of the literal or character constant (C11 6.4.4.1, 6.4.4.4).
+        value_ty: TypeName,
         line: usize,
         column: usize,
         ty: Option<TypeName>,
@@ -245,12 +442,31 @@ pub enum Expr {
         column: usize,
         ty: Option<TypeName>,
     },
+    /// `(type)expr`, including `(void)expr`.
+    Cast {
+        ty_name: TypeName,
+        expr: Box<Expr>,
+        line: usize,
+        column: usize,
+        ty: Option<TypeName>,
+    },
 }
 
 impl Expr {
-    pub fn int(value: i32, line: usize, column: usize) -> Self {
+    pub fn int(bits: u64, value_ty: TypeName, line: usize, column: usize) -> Self {
         Expr::Int {
-            value,
+            bits,
+            value_ty,
+            line,
+            column,
+            ty: None,
+        }
+    }
+
+    pub fn cast(ty_name: TypeName, expr: Expr, line: usize, column: usize) -> Self {
+        Expr::Cast {
+            ty_name,
+            expr: Box::new(expr),
             line,
             column,
             ty: None,
@@ -381,7 +597,8 @@ impl Expr {
             | Expr::IncDec { line, .. }
             | Expr::Cond { line, .. }
             | Expr::Comma { line, .. }
-            | Expr::Sizeof { line, .. } => *line,
+            | Expr::Sizeof { line, .. }
+            | Expr::Cast { line, .. } => *line,
         }
     }
 
@@ -397,7 +614,8 @@ impl Expr {
             | Expr::IncDec { column, .. }
             | Expr::Cond { column, .. }
             | Expr::Comma { column, .. }
-            | Expr::Sizeof { column, .. } => *column,
+            | Expr::Sizeof { column, .. }
+            | Expr::Cast { column, .. } => *column,
         }
     }
 
@@ -413,7 +631,8 @@ impl Expr {
             | Expr::IncDec { ty, .. }
             | Expr::Cond { ty, .. }
             | Expr::Comma { ty, .. }
-            | Expr::Sizeof { ty, .. } => *ty,
+            | Expr::Sizeof { ty, .. }
+            | Expr::Cast { ty, .. } => *ty,
         }
     }
 
@@ -429,7 +648,8 @@ impl Expr {
             | Expr::IncDec { ty: slot, .. }
             | Expr::Cond { ty: slot, .. }
             | Expr::Comma { ty: slot, .. }
-            | Expr::Sizeof { ty: slot, .. } => *slot = Some(ty),
+            | Expr::Sizeof { ty: slot, .. }
+            | Expr::Cast { ty: slot, .. } => *slot = Some(ty),
         }
     }
 
@@ -447,6 +667,7 @@ impl Expr {
 #[derive(Debug, Clone)]
 pub struct VarDecl {
     pub name: String,
+    pub ty: TypeName,
     pub init: Option<Expr>,
     pub line: usize,
     pub column: usize,
@@ -458,6 +679,7 @@ pub struct Param {
     /// `None` for an unnamed prototype parameter (`int f(int, int)`).
     /// A function definition's parameters always have names.
     pub name: Option<String>,
+    pub ty: TypeName,
     pub line: usize,
     pub column: usize,
     pub slot: String,
@@ -542,6 +764,7 @@ pub struct FuncDef {
 #[derive(Debug, Clone)]
 pub struct GlobalDecl {
     pub name: String,
+    pub ty: TypeName,
     pub storage: Storage,
     pub init: Option<Expr>,
     pub line: usize,
@@ -558,10 +781,12 @@ pub enum TopDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IrGlobal {
     pub name: String,
+    pub ty: TypeName,
     pub linkage: Linkage,
     /// `None` is an external declaration. `Some` is a definition, including
-    /// a tentative definition completed as zero.
-    pub init: Option<i32>,
+    /// a tentative definition completed as zero. The value is the low
+    /// [`TypeName::width`] bits.
+    pub init: Option<u64>,
 }
 
 /// A function that was declared and not defined. Emitted as `declare`.
@@ -569,7 +794,7 @@ pub struct IrGlobal {
 pub struct IrFunc {
     pub name: String,
     pub ret: TypeName,
-    pub arity: usize,
+    pub params: Vec<TypeName>,
     pub linkage: Linkage,
 }
 
@@ -611,11 +836,16 @@ fn storage_prefix(storage: Storage) -> &'static str {
 
 fn dump_global(out: &mut String, global: &GlobalDecl, indent: usize) {
     let prefix = storage_prefix(global.storage);
+    let ty = global.ty.as_str();
     if let Some(init) = &global.init {
-        put(out, indent, &format!("{prefix}global {} =", global.name));
+        put(
+            out,
+            indent,
+            &format!("{prefix}global {ty} {} =", global.name),
+        );
         dump_expr(out, init, indent + 1);
     } else {
-        put(out, indent, &format!("{prefix}global {}", global.name));
+        put(out, indent, &format!("{prefix}global {ty} {}", global.name));
     }
 }
 
@@ -633,8 +863,12 @@ fn dump_func(out: &mut String, func: &FuncDef, indent: usize) {
     );
     for param in &func.params {
         match &param.name {
-            Some(name) => put(out, indent + 1, &format!("param {name}")),
-            None => put(out, indent + 1, "param"),
+            Some(name) => put(
+                out,
+                indent + 1,
+                &format!("param {} {name}", param.ty.as_str()),
+            ),
+            None => put(out, indent + 1, &format!("param {}", param.ty.as_str())),
         }
     }
     if let Some(body) = &func.body {
@@ -653,11 +887,12 @@ fn dump_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
     match stmt {
         Stmt::Compound(compound) => dump_compound(out, compound, indent),
         Stmt::Decl(decl) => {
+            let ty = decl.ty.as_str();
             if let Some(init) = &decl.init {
-                put(out, indent, &format!("decl {} =", decl.name));
+                put(out, indent, &format!("decl {ty} {} =", decl.name));
                 dump_expr(out, init, indent + 1);
             } else {
-                put(out, indent, &format!("decl {}", decl.name));
+                put(out, indent, &format!("decl {ty} {}", decl.name));
             }
         }
         Stmt::Return { expr, .. } => {
@@ -707,10 +942,18 @@ fn dump_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
                     put(out, indent + 1, "init");
                     for decl in decls {
                         if let Some(init) = &decl.init {
-                            put(out, indent + 2, &format!("decl {} =", decl.name));
+                            put(
+                                out,
+                                indent + 2,
+                                &format!("decl {} {} =", decl.ty.as_str(), decl.name),
+                            );
                             dump_expr(out, init, indent + 3);
                         } else {
-                            put(out, indent + 2, &format!("decl {}", decl.name));
+                            put(
+                                out,
+                                indent + 2,
+                                &format!("decl {} {}", decl.ty.as_str(), decl.name),
+                            );
                         }
                     }
                 }
@@ -739,7 +982,11 @@ fn dump_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
 
 fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
     match expr {
-        Expr::Int { value, .. } => put(out, indent, &format!("int {value}")),
+        Expr::Int { bits, value_ty, .. } => put(
+            out,
+            indent,
+            &format!("{} {}", value_ty.as_str(), value_ty.format_bits(*bits)),
+        ),
         Expr::Var { name, .. } => put(out, indent, &format!("var {name}")),
         Expr::Bin {
             op, left, right, ..
@@ -803,6 +1050,10 @@ fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
                 dump_expr(out, expr, indent + 1);
             }
         },
+        Expr::Cast { ty_name, expr, .. } => {
+            put(out, indent, &format!("cast {}", ty_name.as_str()));
+            dump_expr(out, expr, indent + 1);
+        }
         Expr::Call { callee, args, .. } => {
             match callee.as_ref() {
                 Expr::Var { name, .. } => put(out, indent, &format!("call {name}")),

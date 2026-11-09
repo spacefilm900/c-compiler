@@ -1,25 +1,30 @@
 //! Textual LLVM IR for the C subset.
 //!
-//! `int` is a 32-bit two's complement value, matching the System V x86-64 ABI.
-//! Locals are `alloca`s in the entry block so a declaration inside a loop does
-//! not allocate on every iteration. File-scope objects are LLVM globals.
-//! Internal linkage is `internal`; a declaration with no definition in this
-//! translation unit is `external global` or `declare`. `&&` and `||` are
-//! short-circuiting and produce 0 or 1. `?:` evaluates only the chosen arm.
-//! Signed division and remainder use `sdiv` and `srem`, which round toward
-//! zero as C requires.
+//! Integer widths follow LP64: `char` is i8, `short` is i16, `int` is i32,
+//! and `long` / `long long` are i64. `char` is signed. Locals are `alloca`s
+//! in the entry block. File-scope objects are LLVM globals. Internal linkage
+//! is `internal`; a declaration with no definition in this translation unit
+//! is `external global` or `declare`.
 //!
-//! `>>` is `ashr` (arithmetic). `<<` is `shl`. A shift count outside `0..31`,
-//! a left shift of a negative `int`, and a left shift whose mathematical
-//! result does not fit in signed 32-bit `int` are undefined. Those counts are
-//! not masked: LLVM `shl` / `ashr` are poison when the count is not in range,
-//! and a negative left operand is still emitted as `shl`. Constant
-//! initializers reject those cases; a runtime expression does not.
+//! The System V AMD64 ABI sign-extends signed `char` and `short` parameters
+//! and return values to 32 bits, and zero-extends the unsigned ones. Those
+//! are the LLVM `signext` and `zeroext` attributes on the definition, the
+//! declaration, and the call. `int` and wider integers have no extension
+//! attribute.
 //!
-//! `++` / `--` and compound assignment load the scalar once, after the
-//! right-hand side of a compound assignment has been evaluated, then store.
-//! The lvalue address is that variable and is not recomputed. `sizeof` is the
-//! constant 4 and its operand is not emitted.
+//! `&&` and `||` are short-circuiting and produce `int` 0 or 1. `?:`
+//! evaluates only the chosen arm and converts both arms to the usual
+//! arithmetic type. Signed division uses `sdiv` / `srem`. Unsigned division
+//! uses `udiv` / `urem`. Both round toward zero. Unsigned comparisons use
+//! `icmp u*`. Signed `>>` is `ashr`; unsigned `>>` is `lshr`.
+//!
+//! A shift count outside `0 .. width`, a signed left shift of a negative
+//! value, and a signed left shift whose mathematical result does not fit are
+//! undefined. Those counts are not masked. Constant initializers reject
+//! them; a runtime expression does not. Conversions between integer types are
+//! `sext`, `zext`, or `trunc`. A same-width signed/unsigned conversion is a
+//! no-op in the IR. `sizeof` is an `unsigned long` constant and its operand
+//! is not emitted.
 
 use crate::ast::*;
 
@@ -54,40 +59,54 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
 
 fn render_global(global: &IrGlobal) -> String {
     let name = llvm_global(&global.name);
+    let ir = global.ty.ir_type();
+    let align = global.ty.align();
     if let Some(value) = global.init {
         let linkage = match global.linkage {
             Linkage::Internal => "internal ",
             Linkage::External => "",
         };
-        format!("{name} = {linkage}global i32 {value}, align 4")
+        let spelled = global.ty.format_bits(value);
+        format!("{name} = {linkage}global {ir} {spelled}, align {align}")
     } else {
-        format!("{name} = external global i32, align 4")
+        format!("{name} = external global {ir}, align {align}")
     }
 }
 
 fn render_declare(decl: &IrFunc) -> String {
-    let ret = ir_type(decl.ret);
-    let mut params = String::new();
-    for index in 0..decl.arity {
-        if index > 0 {
-            params.push_str(", ");
-        }
-        params.push_str("i32");
-    }
-    format!("declare {ret} {}({params})", llvm_global(&decl.name))
+    let params = decl
+        .params
+        .iter()
+        .map(|ty| param_ir(*ty, None))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "declare {}{} {}({params})",
+        ret_prefix(decl.ret),
+        decl.ret.ir_type(),
+        llvm_global(&decl.name)
+    )
 }
 
-fn ir_type(ty: TypeName) -> &'static str {
-    match ty {
-        TypeName::Int => "i32",
-        TypeName::Void => "void",
+fn ret_prefix(ty: TypeName) -> String {
+    match ty.abi_attr() {
+        Some(attr) => format!("{attr} "),
+        None => String::new(),
+    }
+}
+
+fn param_ir(ty: TypeName, name: Option<&str>) -> String {
+    match (ty.abi_attr(), name) {
+        (Some(attr), Some(name)) => format!("{} {attr} {name}", ty.ir_type()),
+        (Some(attr), None) => format!("{} {attr}", ty.ir_type()),
+        (None, Some(name)) => format!("{} {name}", ty.ir_type()),
+        (None, None) => ty.ir_type().to_string(),
     }
 }
 
 fn render_function(func: &FuncDef) -> String {
     let body = func.body.as_ref().expect("defined function");
-    let mut gen = Gen::default();
-    let ret = ir_type(func.ret_type);
+    let mut gen = Gen::new(func.ret_type);
     let linkage = match func.linkage {
         Linkage::Internal => "internal ",
         Linkage::External => "",
@@ -95,11 +114,13 @@ fn render_function(func: &FuncDef) -> String {
     let params = func
         .params
         .iter()
-        .map(|param| format!("i32 {}", param.arg_reg))
+        .map(|param| param_ir(param.ty, Some(&param.arg_reg)))
         .collect::<Vec<_>>()
         .join(", ");
     gen.emit(&format!(
-        "define {linkage}{ret} {}({params}) {{",
+        "define {linkage}{}{} {}({params}) {{",
+        ret_prefix(func.ret_type),
+        func.ret_type.ir_type(),
         llvm_global(&func.name)
     ));
     gen.emit("entry:");
@@ -107,30 +128,43 @@ fn render_function(func: &FuncDef) -> String {
     gen.terminated = false;
 
     for param in &func.params {
-        gen.emit(&format!("  {} = alloca i32, align 4", param.slot));
+        gen.emit(&format!(
+            "  {} = alloca {}, align {}",
+            param.slot,
+            param.ty.ir_type(),
+            param.ty.align()
+        ));
     }
-    for slot in local_slots(body) {
-        gen.emit(&format!("  {slot} = alloca i32, align 4"));
+    for (slot, ty) in local_slots(body) {
+        gen.emit(&format!(
+            "  {slot} = alloca {}, align {}",
+            ty.ir_type(),
+            ty.align()
+        ));
     }
     for param in &func.params {
         gen.emit(&format!(
-            "  store i32 {}, ptr {}, align 4",
-            param.arg_reg, param.slot
+            "  store {} {}, ptr {}, align {}",
+            param.ty.ir_type(),
+            param.arg_reg,
+            param.slot,
+            param.ty.align()
         ));
     }
 
     gen.gen_compound(body);
     if !gen.terminated {
-        match func.ret_type {
-            TypeName::Int => gen.emit("  ret i32 0"),
-            TypeName::Void => gen.emit("  ret void"),
+        if func.ret_type == TypeName::Void {
+            gen.emit("  ret void");
+        } else {
+            gen.emit(&format!("  ret {} 0", func.ret_type.ir_type()));
         }
     }
     gen.emit("}");
     gen.lines.join("\n")
 }
 
-fn local_slots(compound: &Compound) -> Vec<String> {
+fn local_slots(compound: &Compound) -> Vec<(String, TypeName)> {
     let mut slots = Vec::new();
     for item in &compound.items {
         collect_slots(item, &mut slots);
@@ -138,9 +172,9 @@ fn local_slots(compound: &Compound) -> Vec<String> {
     slots
 }
 
-fn collect_slots(stmt: &Stmt, slots: &mut Vec<String>) {
+fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, TypeName)>) {
     match stmt {
-        Stmt::Decl(decl) => slots.push(decl.slot.clone()),
+        Stmt::Decl(decl) => slots.push((decl.slot.clone(), decl.ty)),
         Stmt::Compound(compound) => {
             for item in &compound.items {
                 collect_slots(item, slots);
@@ -160,7 +194,7 @@ fn collect_slots(stmt: &Stmt, slots: &mut Vec<String>) {
         Stmt::For { init, body, .. } => {
             if let ForInit::Decl(decls) = init {
                 for decl in decls {
-                    slots.push(decl.slot.clone());
+                    slots.push((decl.slot.clone(), decl.ty));
                 }
             }
             collect_slots(body, slots);
@@ -169,7 +203,6 @@ fn collect_slots(stmt: &Stmt, slots: &mut Vec<String>) {
     }
 }
 
-#[derive(Default)]
 struct Gen {
     lines: Vec<String>,
     tmp: u32,
@@ -177,6 +210,21 @@ struct Gen {
     cur: String,
     terminated: bool,
     loops: Vec<(String, String)>,
+    ret_ty: TypeName,
+}
+
+impl Gen {
+    fn new(ret_ty: TypeName) -> Self {
+        Self {
+            lines: Vec::new(),
+            tmp: 0,
+            lab: 0,
+            cur: String::new(),
+            terminated: false,
+            loops: Vec::new(),
+            ret_ty,
+        }
+    }
 }
 
 impl Gen {
@@ -248,7 +296,8 @@ impl Gen {
                 self.ensure_block();
                 if let Some(expr) = expr {
                     let value = self.gen_val(expr);
-                    self.emit(&format!("  ret i32 {value}"));
+                    let value = self.convert(&value, expr.ty().expect("typed"), self.ret_ty);
+                    self.emit(&format!("  ret {} {value}", self.ret_ty.ir_type()));
                 } else {
                     self.emit("  ret void");
                 }
@@ -290,8 +339,49 @@ impl Gen {
     fn gen_decl(&mut self, decl: &VarDecl) {
         if let Some(init) = &decl.init {
             let value = self.gen_val(init);
-            self.emit(&format!("  store i32 {value}, ptr {}, align 4", decl.slot));
+            let value = self.convert(&value, init.ty().expect("typed"), decl.ty);
+            self.store(decl.ty, &value, &decl.slot);
         }
+    }
+
+    fn store(&mut self, ty: TypeName, value: &str, slot: &str) {
+        self.emit(&format!(
+            "  store {} {value}, ptr {slot}, align {}",
+            ty.ir_type(),
+            ty.align()
+        ));
+    }
+
+    fn load(&mut self, ty: TypeName, slot: &str) -> String {
+        let tmp = self.fresh();
+        self.emit(&format!(
+            "  {tmp} = load {}, ptr {slot}, align {}",
+            ty.ir_type(),
+            ty.align()
+        ));
+        tmp
+    }
+
+    /// Convert `value` from `from` to `to`. Same-width conversions, including
+    /// signed/unsigned of one width, need no instruction.
+    fn convert(&mut self, value: &str, from: TypeName, to: TypeName) -> String {
+        if from.width() == to.width() {
+            return value.to_string();
+        }
+        let op = if to.width() < from.width() {
+            "trunc"
+        } else if from.is_signed() {
+            "sext"
+        } else {
+            "zext"
+        };
+        let tmp = self.fresh();
+        self.emit(&format!(
+            "  {tmp} = {op} {} {value} to {}",
+            from.ir_type(),
+            to.ir_type()
+        ));
+        tmp
     }
 
     fn gen_if(&mut self, cond: &Expr, then_stmt: &Stmt, else_stmt: Option<&Stmt>) {
@@ -386,12 +476,11 @@ impl Gen {
 
     fn gen_expr(&mut self, expr: &Expr) -> Option<String> {
         match expr {
-            Expr::Int { value, .. } => Some(value.to_string()),
-            Expr::Var { resolved, .. } => {
+            Expr::Int { bits, value_ty, .. } => Some(value_ty.format_bits(*bits)),
+            Expr::Var { resolved, ty, .. } => {
                 let slot = &resolved.as_ref().expect("resolved variable").slot;
-                let tmp = self.fresh();
-                self.emit(&format!("  {tmp} = load i32, ptr {slot}, align 4"));
-                Some(tmp)
+                let ty = ty.expect("typed variable");
+                Some(self.load(ty, slot))
             }
             Expr::Unary {
                 op: UnaryOp::Not, ..
@@ -400,106 +489,172 @@ impl Gen {
                 op: UnaryOp::Plus,
                 expr,
                 ..
-            } => self.gen_expr(expr),
+            } => {
+                let value = self.gen_val(expr);
+                let src = expr.ty().expect("typed");
+                Some(self.convert(&value, src, src.promote()))
+            }
             Expr::Unary {
                 op: UnaryOp::Minus,
                 expr,
                 ..
-            } => {
-                let value = self.gen_val(expr);
-                let tmp = self.fresh();
-                self.emit(&format!("  {tmp} = sub i32 0, {value}"));
-                Some(tmp)
-            }
+            } => Some(self.gen_neg_or_not(expr, "sub")),
             Expr::Unary {
                 op: UnaryOp::BitNot,
                 expr,
                 ..
-            } => {
-                let value = self.gen_val(expr);
-                let tmp = self.fresh();
-                self.emit(&format!("  {tmp} = xor i32 {value}, -1"));
-                Some(tmp)
-            }
+            } => Some(self.gen_neg_or_not(expr, "xor")),
             Expr::Bin { op, .. } if op.is_cmp() || matches!(op, BinOp::And | BinOp::Or) => {
                 Some(self.zext_cond(expr))
             }
             Expr::Bin {
                 op, left, right, ..
-            } => {
-                let left = self.gen_val(left);
-                let right = self.gen_val(right);
-                let tmp = self.fresh();
-                self.emit(&format!(
-                    "  {tmp} = {} i32 {left}, {right}",
-                    value_inst(*op)
-                ));
-                Some(tmp)
-            }
+            } => Some(self.gen_arith(*op, left, right)),
             Expr::Assign { target, value, .. } => {
                 let slot = target.var_slot().expect("assignable variable").to_string();
-                let value = self.gen_val(value);
-                self.emit(&format!("  store i32 {value}, ptr {slot}, align 4"));
-                Some(value)
+                let dest = target.ty().expect("lvalue type");
+                let raw = self.gen_val(value);
+                let stored = self.convert(&raw, value.ty().expect("typed"), dest);
+                self.store(dest, &stored, &slot);
+                Some(stored)
             }
             Expr::CompoundAssign {
                 op, target, value, ..
-            } => {
-                let slot = target.var_slot().expect("assignable variable").to_string();
-                let rhs = self.gen_val(value);
-                let old = self.fresh();
-                self.emit(&format!("  {old} = load i32, ptr {slot}, align 4"));
-                let updated = self.fresh();
-                self.emit(&format!(
-                    "  {updated} = {} i32 {old}, {rhs}",
-                    value_inst(*op)
-                ));
-                self.emit(&format!("  store i32 {updated}, ptr {slot}, align 4"));
-                Some(updated)
-            }
-            Expr::IncDec { op, target, .. } => {
-                let slot = target.var_slot().expect("assignable variable").to_string();
-                let old = self.fresh();
-                self.emit(&format!("  {old} = load i32, ptr {slot}, align 4"));
-                let updated = self.fresh();
-                let inst = if op.is_increment() { "add" } else { "sub" };
-                self.emit(&format!("  {updated} = {inst} i32 {old}, 1"));
-                self.emit(&format!("  store i32 {updated}, ptr {slot}, align 4"));
-                if op.is_prefix() {
-                    Some(updated)
-                } else {
-                    Some(old)
-                }
-            }
+            } => Some(self.gen_compound_assign(*op, target, value)),
+            Expr::IncDec { op, target, .. } => Some(self.gen_incdec(*op, target)),
             Expr::Cond {
                 cond,
                 then_expr,
                 else_expr,
+                ty,
                 ..
-            } => self.gen_ternary(cond, then_expr, else_expr),
+            } => self.gen_ternary(cond, then_expr, else_expr, ty.expect("typed")),
             Expr::Comma { left, right, .. } => {
                 let _ = self.gen_expr(left);
                 self.gen_expr(right)
             }
-            Expr::Sizeof { .. } => Some("4".to_string()),
-            Expr::Call { args, resolved, .. } => {
-                let resolved = resolved.as_ref().expect("resolved call");
-                let values: Vec<String> = args.iter().map(|arg| self.gen_val(arg)).collect();
-                let arglist = values
-                    .iter()
-                    .map(|value| format!("i32 {value}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let callee = llvm_global(&resolved.name);
-                if resolved.ret == TypeName::Void {
-                    self.emit(&format!("  call void {callee}({arglist})"));
+            Expr::Sizeof { operand, .. } => {
+                let size = match operand {
+                    SizeofOperand::Type(ty) => ty.size(),
+                    SizeofOperand::Expr(inner) => inner.ty().expect("typed").size(),
+                };
+                Some(TypeName::ULong.format_bits(size))
+            }
+            Expr::Cast { ty_name, expr, .. } => {
+                if *ty_name == TypeName::Void {
+                    let _ = self.gen_expr(expr);
                     None
                 } else {
-                    let tmp = self.fresh();
-                    self.emit(&format!("  {tmp} = call i32 {callee}({arglist})"));
-                    Some(tmp)
+                    let value = self.gen_val(expr);
+                    Some(self.convert(&value, expr.ty().expect("typed"), *ty_name))
                 }
             }
+            Expr::Call { args, resolved, .. } => {
+                self.gen_call(args, resolved.as_ref().expect("resolved call"))
+            }
+        }
+    }
+
+    fn gen_neg_or_not(&mut self, expr: &Expr, kind: &str) -> String {
+        let src = expr.ty().expect("typed");
+        let dest = src.promote();
+        let value = self.gen_val(expr);
+        let value = self.convert(&value, src, dest);
+        let tmp = self.fresh();
+        if kind == "sub" {
+            self.emit(&format!("  {tmp} = sub {} 0, {value}", dest.ir_type()));
+        } else {
+            self.emit(&format!("  {tmp} = xor {} {value}, -1", dest.ir_type()));
+        }
+        tmp
+    }
+
+    fn gen_arith(&mut self, op: BinOp, left: &Expr, right: &Expr) -> String {
+        let left_ty = left.ty().expect("typed");
+        let right_ty = right.ty().expect("typed");
+        let common = if matches!(op, BinOp::Shl | BinOp::Shr) {
+            left_ty.promote()
+        } else {
+            left_ty.usual(right_ty)
+        };
+        let left_val = self.gen_val(left);
+        let left_val = self.convert(&left_val, left_ty, common);
+        let right_val = self.gen_val(right);
+        let right_val = self.convert(&right_val, right_ty, common);
+        let tmp = self.fresh();
+        self.emit(&format!(
+            "  {tmp} = {} {} {left_val}, {right_val}",
+            value_inst(op, common.is_signed()),
+            common.ir_type()
+        ));
+        tmp
+    }
+
+    fn gen_compound_assign(&mut self, op: BinOp, target: &Expr, value: &Expr) -> String {
+        let slot = target.var_slot().expect("assignable variable").to_string();
+        let dest = target.ty().expect("lvalue type");
+        let rhs_ty = value.ty().expect("typed");
+        let rhs = self.gen_val(value);
+        let old = self.load(dest, &slot);
+        let common = if matches!(op, BinOp::Shl | BinOp::Shr) {
+            dest.promote()
+        } else {
+            dest.usual(rhs_ty)
+        };
+        let old_c = self.convert(&old, dest, common);
+        let rhs_c = self.convert(&rhs, rhs_ty, common);
+        let updated = self.fresh();
+        self.emit(&format!(
+            "  {updated} = {} {} {old_c}, {rhs_c}",
+            value_inst(op, common.is_signed()),
+            common.ir_type()
+        ));
+        let stored = self.convert(&updated, common, dest);
+        self.store(dest, &stored, &slot);
+        stored
+    }
+
+    fn gen_incdec(&mut self, op: IncOp, target: &Expr) -> String {
+        let slot = target.var_slot().expect("assignable variable").to_string();
+        let dest = target.ty().expect("lvalue type");
+        let old = self.load(dest, &slot);
+        let common = dest.usual(TypeName::Int);
+        let old_c = self.convert(&old, dest, common);
+        let updated = self.fresh();
+        let inst = if op.is_increment() { "add" } else { "sub" };
+        self.emit(&format!(
+            "  {updated} = {inst} {} {old_c}, 1",
+            common.ir_type()
+        ));
+        let stored = self.convert(&updated, common, dest);
+        self.store(dest, &stored, &slot);
+        if op.is_prefix() {
+            stored
+        } else {
+            old
+        }
+    }
+
+    fn gen_call(&mut self, args: &[Expr], resolved: &CallRes) -> Option<String> {
+        let mut rendered = Vec::new();
+        for (arg, param_ty) in args.iter().zip(&resolved.params) {
+            let value = self.gen_val(arg);
+            let value = self.convert(&value, arg.ty().expect("typed"), *param_ty);
+            rendered.push(param_ir(*param_ty, Some(&value)));
+        }
+        let arglist = rendered.join(", ");
+        let callee = llvm_global(&resolved.name);
+        if resolved.ret == TypeName::Void {
+            self.emit(&format!("  call void {callee}({arglist})"));
+            None
+        } else {
+            let tmp = self.fresh();
+            self.emit(&format!(
+                "  {tmp} = call {}{} {callee}({arglist})",
+                ret_prefix(resolved.ret),
+                resolved.ret.ir_type()
+            ));
+            Some(tmp)
         }
     }
 
@@ -515,19 +670,19 @@ impl Gen {
             Expr::Bin {
                 op, left, right, ..
             } if op.is_cmp() => {
-                let left = self.gen_val(left);
-                let right = self.gen_val(right);
+                let left_ty = left.ty().expect("typed");
+                let right_ty = right.ty().expect("typed");
+                let common = left_ty.usual(right_ty);
+                let left_val = self.gen_val(left);
+                let left_val = self.convert(&left_val, left_ty, common);
+                let right_val = self.gen_val(right);
+                let right_val = self.convert(&right_val, right_ty, common);
                 let tmp = self.fresh();
-                let pred = match op {
-                    BinOp::Eq => "eq",
-                    BinOp::Ne => "ne",
-                    BinOp::Lt => "slt",
-                    BinOp::Gt => "sgt",
-                    BinOp::Le => "sle",
-                    BinOp::Ge => "sge",
-                    _ => unreachable!("comparison"),
-                };
-                self.emit(&format!("  {tmp} = icmp {pred} i32 {left}, {right}"));
+                self.emit(&format!(
+                    "  {tmp} = icmp {} {} {left_val}, {right_val}",
+                    cmp_pred(*op, common.is_signed()),
+                    common.ir_type()
+                ));
                 tmp
             }
             Expr::Bin {
@@ -554,8 +709,9 @@ impl Gen {
             }
             _ => {
                 let value = self.gen_val(expr);
+                let ty = expr.ty().expect("typed");
                 let tmp = self.fresh();
-                self.emit(&format!("  {tmp} = icmp ne i32 {value}, 0"));
+                self.emit(&format!("  {tmp} = icmp ne {} {value}, 0", ty.ir_type()));
                 tmp
             }
         }
@@ -581,15 +737,24 @@ impl Gen {
         tmp
     }
 
-    /// Only the chosen arm is evaluated. Both arms have the same type.
-    fn gen_ternary(&mut self, cond: &Expr, then_expr: &Expr, else_expr: &Expr) -> Option<String> {
+    /// Only the chosen arm is evaluated. Each arm is converted to `result`
+    /// in its own block, so the phi operands are defined in the predecessors.
+    fn gen_ternary(
+        &mut self,
+        cond: &Expr,
+        then_expr: &Expr,
+        else_expr: &Expr,
+        result: TypeName,
+    ) -> Option<String> {
         let cond = self.gen_cond(cond);
         let then_label = self.label();
         let else_label = self.label();
         let end_label = self.label();
         self.br_cond(&cond, &then_label, &else_label);
         self.start(then_label);
-        let then_val = self.gen_expr(then_expr);
+        let then_val = self
+            .gen_expr(then_expr)
+            .map(|value| self.convert(&value, then_expr.ty().expect("typed"), result));
         assert!(
             !self.terminated,
             "internal compiler error: expression terminated a block"
@@ -597,7 +762,9 @@ impl Gen {
         let then_block = self.cur.clone();
         self.br(&end_label);
         self.start(else_label);
-        let else_val = self.gen_expr(else_expr);
+        let else_val = self
+            .gen_expr(else_expr)
+            .map(|value| self.convert(&value, else_expr.ty().expect("typed"), result));
         assert!(
             !self.terminated,
             "internal compiler error: expression terminated a block"
@@ -609,7 +776,8 @@ impl Gen {
             (Some(then_val), Some(else_val)) => {
                 let tmp = self.fresh();
                 self.emit(&format!(
-                    "  {tmp} = phi i32 [ {then_val}, %{then_block} ], [ {else_val}, %{else_block} ]"
+                    "  {tmp} = phi {} [ {then_val}, %{then_block} ], [ {else_val}, %{else_block} ]",
+                    result.ir_type()
                 ));
                 Some(tmp)
             }
@@ -665,18 +833,36 @@ fn llvm_global(name: &str) -> String {
     }
 }
 
-fn value_inst(op: BinOp) -> &'static str {
+fn value_inst(op: BinOp, signed: bool) -> &'static str {
     match op {
         BinOp::Add => "add",
         BinOp::Sub => "sub",
         BinOp::Mul => "mul",
-        BinOp::Div => "sdiv",
-        BinOp::Mod => "srem",
+        BinOp::Div => {
+            if signed {
+                "sdiv"
+            } else {
+                "udiv"
+            }
+        }
+        BinOp::Mod => {
+            if signed {
+                "srem"
+            } else {
+                "urem"
+            }
+        }
         BinOp::BitAnd => "and",
         BinOp::BitOr => "or",
         BinOp::BitXor => "xor",
         BinOp::Shl => "shl",
-        BinOp::Shr => "ashr",
+        BinOp::Shr => {
+            if signed {
+                "ashr"
+            } else {
+                "lshr"
+            }
+        }
         BinOp::Eq
         | BinOp::Ne
         | BinOp::Lt
@@ -687,6 +873,42 @@ fn value_inst(op: BinOp) -> &'static str {
         | BinOp::Or => {
             unreachable!("comparison or logical operator")
         }
+    }
+}
+
+fn cmp_pred(op: BinOp, signed: bool) -> &'static str {
+    match op {
+        BinOp::Eq => "eq",
+        BinOp::Ne => "ne",
+        BinOp::Lt => {
+            if signed {
+                "slt"
+            } else {
+                "ult"
+            }
+        }
+        BinOp::Gt => {
+            if signed {
+                "sgt"
+            } else {
+                "ugt"
+            }
+        }
+        BinOp::Le => {
+            if signed {
+                "sle"
+            } else {
+                "ule"
+            }
+        }
+        BinOp::Ge => {
+            if signed {
+                "sge"
+            } else {
+                "uge"
+            }
+        }
+        _ => unreachable!("comparison"),
     }
 }
 
@@ -849,6 +1071,197 @@ int main(void) {
         assert!(ir.contains("ret i32 42"));
         assert!(ir.contains("target triple = \"x86_64-pc-linux-gnu\""));
         assert_eq!(run_binary(&ir).0, 42);
+    }
+
+    #[test]
+    fn integer_abi_and_unsigned_ops() {
+        let ir = crate::compile_to_ir(
+            "\
+char idc(char c) { return c; }
+unsigned char idu(unsigned char u) { return u; }
+short ids(short s) { return s; }
+unsigned short idus(unsigned short s) { return s; }
+int widen(char c, unsigned char u, short s, unsigned short us) {
+    return c + u + s + us;
+}
+unsigned divu(unsigned a, unsigned b) { return a / b; }
+unsigned shru(unsigned a) { return a >> 1; }
+char c = -1;
+unsigned char b = 200;
+long l = 1;
+extern short e;
+",
+            "abi.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("define signext i8 @idc(i8 signext %p0)"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains("define zeroext i8 @idu(i8 zeroext %p0)"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains("define signext i16 @ids(i16 signext %p0)"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains("define zeroext i16 @idus(i16 zeroext %p0)"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains(
+                "define i32 @widen(i8 signext %p0, i8 zeroext %p1, i16 signext %p2, i16 zeroext %p3)"
+            ),
+            "{ir}"
+        );
+        assert!(ir.contains("udiv i32"), "{ir}");
+        assert!(ir.contains("lshr i32"), "{ir}");
+        assert!(ir.contains("sext i8"), "{ir}");
+        assert!(ir.contains("@c = global i8 -1, align 1"), "{ir}");
+        assert!(ir.contains("@b = global i8 200, align 1"), "{ir}");
+        assert!(ir.contains("@l = global i64 1, align 8"), "{ir}");
+        assert!(ir.contains("@e = external global i16, align 2"), "{ir}");
+        assert!(!ir.contains("signext i32"), "{ir}");
+        assert!(!ir.contains("signext i64"), "{ir}");
+        assert!(!ir.contains("zeroext i32"), "{ir}");
+    }
+
+    #[test]
+    fn mixed_link_matches_clang_calling_convention() {
+        let callee = "\
+char idc(char c) { return c; }
+unsigned char idu(unsigned char u) { return u; }
+short ids(short s) { return s; }
+unsigned short idus(unsigned short s) { return s; }
+int widen(char c, unsigned char u, short s, unsigned short us) {
+    return c + u + s + us;
+}
+";
+        let caller = "\
+extern char idc(char c);
+extern unsigned char idu(unsigned char u);
+extern short ids(short s);
+extern unsigned short idus(unsigned short s);
+extern int widen(char c, unsigned char u, short s, unsigned short us);
+int main(void) {
+    if (idc(-5) != -5) return 1;
+    if (idu(200) != 200) return 2;
+    if (ids(-300) != -300) return 3;
+    if (idus(40000) != 40000) return 4;
+    if (widen(-1, 200, -2, 40000) != 40197) return 5;
+    return 0;
+}
+";
+        let caller_ir = crate::compile_to_ir(caller, "caller.c").unwrap();
+        assert!(
+            caller_ir.contains("declare signext i8 @idc(i8 signext)"),
+            "{caller_ir}"
+        );
+        assert!(
+            caller_ir.contains("declare zeroext i16 @idus(i16 zeroext)"),
+            "{caller_ir}"
+        );
+        assert!(
+            caller_ir.contains("call signext i8 @idc(i8 signext"),
+            "{caller_ir}"
+        );
+        assert!(
+            caller_ir.contains("call zeroext i8 @idu(i8 zeroext"),
+            "{caller_ir}"
+        );
+
+        let (ll, bin) = temp_paths();
+        let obj = ll.with_extension("o");
+        let cfile = ll.with_extension("clang.c");
+        std::fs::write(&ll, &caller_ir).unwrap();
+        std::fs::write(&cfile, callee).unwrap();
+        let clang_obj = Command::new("clang")
+            .args([
+                "-w",
+                "-std=c11",
+                "-c",
+                cfile.to_str().unwrap(),
+                "-o",
+                obj.to_str().unwrap(),
+            ])
+            .output()
+            .expect("clang");
+        assert!(
+            clang_obj.status.success(),
+            "{}",
+            String::from_utf8_lossy(&clang_obj.stderr)
+        );
+        let linked = Command::new("clang")
+            .args([
+                "-w",
+                ll.to_str().unwrap(),
+                obj.to_str().unwrap(),
+                "-o",
+                bin.to_str().unwrap(),
+            ])
+            .output()
+            .expect("clang link");
+        assert!(
+            linked.status.success(),
+            "{}",
+            String::from_utf8_lossy(&linked.stderr)
+        );
+        let ran = Command::new(&bin).output().expect("run");
+        assert_eq!(ran.status.code(), Some(0));
+
+        let callee_ir = crate::compile_to_ir(callee, "callee.c").unwrap();
+        let our_ll = ll.with_extension("our.ll");
+        let clang_main = ll.with_extension("main.c");
+        let clang_obj = ll.with_extension("main.o");
+        std::fs::write(&our_ll, callee_ir).unwrap();
+        std::fs::write(&clang_main, caller).unwrap();
+        let compiled = Command::new("clang")
+            .args([
+                "-w",
+                "-std=c11",
+                "-c",
+                clang_main.to_str().unwrap(),
+                "-o",
+                clang_obj.to_str().unwrap(),
+            ])
+            .output()
+            .expect("clang");
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let bin2 = ll.with_extension("bin2");
+        let linked = Command::new("clang")
+            .args([
+                "-w",
+                our_ll.to_str().unwrap(),
+                clang_obj.to_str().unwrap(),
+                "-o",
+                bin2.to_str().unwrap(),
+            ])
+            .output()
+            .expect("clang link");
+        assert!(
+            linked.status.success(),
+            "{}",
+            String::from_utf8_lossy(&linked.stderr)
+        );
+        let ran = Command::new(&bin2).output().expect("run");
+        assert_eq!(ran.status.code(), Some(0));
+        let reference = run_reference(&format!("{callee}\n{caller}"));
+        assert_eq!(reference.0, 0);
+
+        let _ = std::fs::remove_file(&ll);
+        let _ = std::fs::remove_file(&obj);
+        let _ = std::fs::remove_file(&cfile);
+        let _ = std::fs::remove_file(&bin);
+        let _ = std::fs::remove_file(&our_ll);
+        let _ = std::fs::remove_file(&clang_main);
+        let _ = std::fs::remove_file(&clang_obj);
+        let _ = std::fs::remove_file(&bin2);
     }
 
     #[test]

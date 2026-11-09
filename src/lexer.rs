@@ -4,6 +4,7 @@
 //! translation phases 1–4: no trigraphs, no backslash line splicing, and no
 //! preprocessor. Those inputs are diagnosed rather than ignored.
 
+use crate::ast::TypeName;
 use crate::diag::Diagnostic;
 use crate::token::{keyword, Token, TokenKind};
 
@@ -62,8 +63,12 @@ impl Lexer<'_> {
                 self.number(line, column)?;
                 continue;
             }
-            if byte == b'"' || byte == b'\'' {
-                self.quoted(byte, line, column)?;
+            if byte == b'"' {
+                self.string_literal(line, column)?;
+                continue;
+            }
+            if byte == b'\'' {
+                self.char_constant(line, column)?;
                 continue;
             }
             if byte == b'#' {
@@ -94,6 +99,7 @@ impl Lexer<'_> {
             line: self.line,
             column: self.column,
             value: None,
+            int_ty: None,
         });
         Ok(self.tokens)
     }
@@ -124,20 +130,14 @@ impl Lexer<'_> {
         byte
     }
 
-    fn push(
-        &mut self,
-        kind: TokenKind,
-        spelling: &str,
-        line: usize,
-        column: usize,
-        value: Option<i32>,
-    ) {
+    fn push(&mut self, kind: TokenKind, spelling: &str, line: usize, column: usize) {
         self.tokens.push(Token {
             kind,
             spelling: spelling.to_string(),
             line,
             column,
-            value,
+            value: None,
+            int_ty: None,
         });
     }
 
@@ -197,65 +197,123 @@ impl Lexer<'_> {
         }
         let spelling = &self.source[start..self.index];
         let kind = keyword(spelling).unwrap_or(TokenKind::Ident);
-        self.push(kind, spelling, line, column, None);
+        self.push(kind, spelling, line, column);
     }
 
     fn number(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
         let start = self.index;
-        if self.peek() == Some(b'0') && matches!(self.peek_at(1), Some(b'x' | b'X')) {
-            self.bump();
-            self.bump();
-            let digits = self.index;
-            while self.peek().is_some_and(|b| b.is_ascii_hexdigit()) {
+        let (digit_start, radix, hex_or_octal) =
+            if self.peek() == Some(b'0') && matches!(self.peek_at(1), Some(b'x' | b'X')) {
                 self.bump();
-            }
-            if self.index == digits {
-                return self.fail(line, column, "invalid hexadecimal constant");
-            }
-            self.reject_number_tail(line, column)?;
-            let spelling = &self.source[start..self.index];
-            let value = self.int_value(&self.source[digits..self.index], 16, line, column)?;
-            return self.push_int(spelling, value, line, column);
-        }
-        if self.peek() == Some(b'0') && matches!(self.peek_at(1), Some(b'b' | b'B')) {
-            return self.fail(line, column, "binary constants are not supported");
-        }
-        if self.peek() == Some(b'0') {
-            while self.peek().is_some_and(|b| b.is_ascii_digit()) {
-                if matches!(self.peek(), Some(b'8' | b'9')) {
-                    return self.fail(line, column, "invalid octal constant");
+                self.bump();
+                let digit_start = self.index;
+                while self.peek().is_some_and(|b| b.is_ascii_hexdigit()) {
+                    self.bump();
                 }
-                self.bump();
+                if self.index == digit_start {
+                    return self.fail(line, column, "invalid hexadecimal constant");
+                }
+                (digit_start, 16, true)
+            } else if self.peek() == Some(b'0') && matches!(self.peek_at(1), Some(b'b' | b'B')) {
+                return self.fail(line, column, "binary constants are not supported");
+            } else if self.peek() == Some(b'0') {
+                let digit_start = self.index;
+                while self.peek().is_some_and(|b| b.is_ascii_digit()) {
+                    if matches!(self.peek(), Some(b'8' | b'9')) {
+                        return self.fail(line, column, "invalid octal constant");
+                    }
+                    self.bump();
+                }
+                (digit_start, 8, true)
+            } else {
+                let digit_start = self.index;
+                while self.peek().is_some_and(|b| b.is_ascii_digit()) {
+                    self.bump();
+                }
+                (digit_start, 10, false)
+            };
+        let digit_end = self.index;
+        let suffix = self.integer_suffix(line, column)?;
+        self.reject_number_tail(line, column)?;
+        let spelling = self.source[start..self.index].to_string();
+        let digits = self.source[digit_start..digit_end].to_string();
+        let value = self.int_value(&digits, radix, line, column)?;
+        let ty = self.literal_type(value, suffix, hex_or_octal, line, column)?;
+        self.push_int(&spelling, value as u64, ty, line, column);
+        Ok(())
+    }
+
+    /// C11 6.4.4.1. The type is the first in the list for this suffix and
+    /// base that can represent the value. `long` and `long long` are both 64
+    /// bits on this target, so a value that fits in `long` is `long` rather
+    /// than `long long` unless the suffix asks for `long long`.
+    fn literal_type(
+        &self,
+        value: u128,
+        suffix: Suffix,
+        hex_or_octal: bool,
+        line: usize,
+        column: usize,
+    ) -> Result<TypeName, Diagnostic> {
+        let list: &[TypeName] = match (suffix, hex_or_octal) {
+            (Suffix::None, false) => &[TypeName::Int, TypeName::Long, TypeName::LongLong],
+            (Suffix::None, true) => &[
+                TypeName::Int,
+                TypeName::UInt,
+                TypeName::Long,
+                TypeName::ULong,
+                TypeName::LongLong,
+                TypeName::ULongLong,
+            ],
+            (Suffix::U, _) => &[TypeName::UInt, TypeName::ULong, TypeName::ULongLong],
+            (Suffix::L, false) => &[TypeName::Long, TypeName::LongLong],
+            (Suffix::L, true) => &[
+                TypeName::Long,
+                TypeName::ULong,
+                TypeName::LongLong,
+                TypeName::ULongLong,
+            ],
+            (Suffix::Ul, _) => &[TypeName::ULong, TypeName::ULongLong],
+            (Suffix::Ll, false) => &[TypeName::LongLong],
+            (Suffix::Ll, true) => &[TypeName::LongLong, TypeName::ULongLong],
+            (Suffix::Ull, _) => &[TypeName::ULongLong],
+        };
+        for ty in list {
+            if literal_fits(value, *ty) {
+                return Ok(*ty);
             }
-            self.reject_number_tail(line, column)?;
-            let spelling = &self.source[start..self.index];
-            let value = self.int_value(spelling, 8, line, column)?;
-            return self.push_int(spelling, value, line, column);
         }
-        while self.peek().is_some_and(|b| b.is_ascii_digit()) {
+        self.fail(line, column, "integer constant is too large")
+    }
+
+    fn integer_suffix(&mut self, line: usize, column: usize) -> Result<Suffix, Diagnostic> {
+        let start = self.index;
+        while matches!(self.peek(), Some(b'u' | b'U' | b'l' | b'L')) {
             self.bump();
         }
-        self.reject_number_tail(line, column)?;
-        let spelling = &self.source[start..self.index];
-        let value = self.int_value(spelling, 10, line, column)?;
-        self.push_int(spelling, value, line, column)
+        if self.index == start {
+            return Ok(Suffix::None);
+        }
+        let text = self.source[start..self.index].to_string();
+        match text.as_str() {
+            "u" | "U" => Ok(Suffix::U),
+            "l" | "L" => Ok(Suffix::L),
+            "ll" | "LL" => Ok(Suffix::Ll),
+            "ul" | "uL" | "Ul" | "UL" | "lu" | "Lu" | "lU" | "LU" => Ok(Suffix::Ul),
+            "ull" | "uLL" | "Ull" | "ULL" | "llu" | "llU" | "LLu" | "LLU" => Ok(Suffix::Ull),
+            _ => self.fail(line, column, "invalid integer suffix"),
+        }
     }
 
     /// Parse a digit sequence that the scanner has already checked.
-    ///
-    /// C11 6.4.4.1 gives an unsuffixed constant the first type in a list that
-    /// can hold it (`int`, then `long`, then `long long`, and unsigned types
-    /// for octal and hex). This subset has only signed 32-bit `int`, so a
-    /// value that does not fit, including one that does not fit in `i64`, is
-    /// a diagnostic. The wider C types are not introduced here.
     fn int_value(
         &self,
         digits: &str,
         radix: u32,
         line: usize,
         column: usize,
-    ) -> Result<i64, Diagnostic> {
-        let mut value: i64 = 0;
+    ) -> Result<u128, Diagnostic> {
+        let mut value: u128 = 0;
         for byte in digits.bytes() {
             let digit = match byte {
                 b'0'..=b'9' => u32::from(byte - b'0'),
@@ -267,37 +325,31 @@ impl Lexer<'_> {
                 return self.fail(line, column, "invalid numeric literal");
             }
             value = match value
-                .checked_mul(i64::from(radix))
-                .and_then(|next| next.checked_add(i64::from(digit)))
+                .checked_mul(u128::from(radix))
+                .and_then(|next| next.checked_add(u128::from(digit)))
             {
                 Some(next) => next,
-                None => return self.fail(line, column, "integer constant does not fit in int"),
+                None => return self.fail(line, column, "integer constant is too large"),
             };
         }
         Ok(value)
     }
 
-    fn push_int(
-        &mut self,
-        spelling: &str,
-        value: i64,
-        line: usize,
-        column: usize,
-    ) -> Result<(), Diagnostic> {
-        if value > i32::MAX as i64 {
-            return self.fail(line, column, "integer constant does not fit in int");
-        }
-        self.push(TokenKind::Int, spelling, line, column, Some(value as i32));
-        Ok(())
+    fn push_int(&mut self, spelling: &str, bits: u64, ty: TypeName, line: usize, column: usize) {
+        self.tokens.push(Token {
+            kind: TokenKind::Int,
+            spelling: spelling.to_string(),
+            line,
+            column,
+            value: Some(bits),
+            int_ty: Some(ty),
+        });
     }
 
     fn reject_number_tail(&self, line: usize, column: usize) -> Result<(), Diagnostic> {
         match self.peek() {
             Some(b'.' | b'e' | b'E' | b'p' | b'P') => {
                 self.fail(line, column, "floating constants are not supported")
-            }
-            Some(b'u' | b'U' | b'l' | b'L') => {
-                self.fail(line, column, "integer suffixes are not supported")
             }
             Some(b) if b.is_ascii_alphabetic() || b == b'_' => {
                 self.fail(line, column, "invalid numeric literal")
@@ -306,7 +358,7 @@ impl Lexer<'_> {
         }
     }
 
-    fn quoted(&mut self, quote: u8, line: usize, column: usize) -> Result<(), Diagnostic> {
+    fn string_literal(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
         self.bump();
         while let Some(byte) = self.peek() {
             if byte == b'\n' || byte == b'\r' {
@@ -322,21 +374,137 @@ impl Lexer<'_> {
                 continue;
             }
             self.bump();
-            if byte == quote {
-                let message = if quote == b'"' {
-                    "string literals are not supported"
-                } else {
-                    "character constants are not supported"
-                };
-                return self.fail(line, column, message);
+            if byte == b'"' {
+                return self.fail(line, column, "string literals are not supported");
             }
         }
-        let message = if quote == b'"' {
-            "unterminated string literal"
-        } else {
-            "unterminated character constant"
+        self.fail(line, column, "unterminated string literal")
+    }
+
+    /// An integer character constant has type `int` (C11 6.4.4.4).
+    /// One source character or one escape is accepted. A hex or octal escape
+    /// must fit in `unsigned char`; Clang rejects a wider escape on this target.
+    /// The value is that byte converted from `char` to `int`. `char` is signed,
+    /// so 128..255 are negative.
+    fn char_constant(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
+        let start = self.index;
+        self.bump();
+        if matches!(self.peek(), None | Some(b'\n' | b'\r')) {
+            return self.fail(line, column, "unterminated character constant");
+        }
+        if self.peek() == Some(b'\'') {
+            return self.fail(line, column, "empty character constant");
+        }
+        let value = self.char_body(line, column)?;
+        // The escape is a char, then converted to int (C11 6.4.4.4). char is
+        // signed here, so 128..255 become negative.
+        if self.peek() != Some(b'\'') {
+            if matches!(self.peek(), None | Some(b'\n' | b'\r')) {
+                return self.fail(line, column, "unterminated character constant");
+            }
+            return self.fail(
+                line,
+                column,
+                "multi-character character constants are not supported",
+            );
+        }
+        self.bump();
+        let spelling = self.source[start..self.index].to_string();
+        let bits = crate::ast::sign_extend(u64::from(value), 8) as u32 as u64;
+        self.push_int(&spelling, bits, TypeName::Int, line, column);
+        Ok(())
+    }
+
+    fn char_body(&mut self, line: usize, column: usize) -> Result<u32, Diagnostic> {
+        let Some(byte) = self.peek() else {
+            return self.fail(line, column, "unterminated character constant");
         };
-        self.fail(line, column, message)
+        if byte >= 128 {
+            return self.fail(
+                self.line,
+                self.column,
+                "non-ASCII characters are not supported",
+            );
+        }
+        if byte != b'\\' {
+            self.bump();
+            return Ok(u32::from(byte));
+        }
+        let esc_line = self.line;
+        let esc_column = self.column;
+        self.bump();
+        let Some(next) = self.peek() else {
+            return self.fail(line, column, "unterminated character constant");
+        };
+        if next == b'\n' || next == b'\r' {
+            return self.fail(
+                esc_line,
+                esc_column,
+                "backslash line splicing is not supported",
+            );
+        }
+        self.bump();
+        match next {
+            b'a' => Ok(7),
+            b'b' => Ok(8),
+            b'f' => Ok(12),
+            b'n' => Ok(10),
+            b'r' => Ok(13),
+            b't' => Ok(9),
+            b'v' => Ok(11),
+            b'\\' => Ok(u32::from(b'\\')),
+            b'\'' => Ok(u32::from(b'\'')),
+            b'"' => Ok(u32::from(b'"')),
+            b'?' => Ok(u32::from(b'?')),
+            b'0'..=b'7' => self.octal_escape(next, esc_line, esc_column),
+            b'x' => self.hex_escape(esc_line, esc_column),
+            _ => self.fail(esc_line, esc_column, "unknown escape sequence"),
+        }
+    }
+
+    fn octal_escape(&mut self, first: u8, line: usize, column: usize) -> Result<u32, Diagnostic> {
+        let mut value = u32::from(first - b'0');
+        for _ in 0..2 {
+            match self.peek() {
+                Some(byte @ b'0'..=b'7') => {
+                    self.bump();
+                    value = value * 8 + u32::from(byte - b'0');
+                }
+                _ => break,
+            }
+        }
+        if value > 255 {
+            return self.fail(line, column, "octal escape sequence out of range");
+        }
+        Ok(value)
+    }
+
+    fn hex_escape(&mut self, line: usize, column: usize) -> Result<u32, Diagnostic> {
+        let mut value: u32 = 0;
+        let mut digits = 0u32;
+        while let Some(byte) = self.peek() {
+            let digit = match byte {
+                b'0'..=b'9' => u32::from(byte - b'0'),
+                b'a'..=b'f' => u32::from(byte - b'a') + 10,
+                b'A'..=b'F' => u32::from(byte - b'A') + 10,
+                _ => break,
+            };
+            let next = value.saturating_mul(16).saturating_add(digit);
+            if next > 255 {
+                self.bump();
+                while self.peek().is_some_and(|b| b.is_ascii_hexdigit()) {
+                    self.bump();
+                }
+                return self.fail(line, column, "hex escape sequence out of range");
+            }
+            self.bump();
+            value = next;
+            digits += 1;
+        }
+        if digits == 0 {
+            return self.fail(line, column, "invalid hexadecimal escape");
+        }
+        Ok(value)
     }
 
     fn dot(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
@@ -344,14 +512,14 @@ impl Lexer<'_> {
             self.bump();
             self.bump();
             self.bump();
-            self.push(TokenKind::Ellipsis, "...", line, column, None);
+            self.push(TokenKind::Ellipsis, "...", line, column);
             return Ok(());
         }
         if self.peek_at(1).is_some_and(|b| b.is_ascii_digit()) {
             return self.fail(line, column, "floating constants are not supported");
         }
         self.bump();
-        self.push(TokenKind::Dot, ".", line, column, None);
+        self.push(TokenKind::Dot, ".", line, column);
         Ok(())
     }
 
@@ -368,7 +536,7 @@ impl Lexer<'_> {
         self.bump();
         self.bump();
         self.bump();
-        self.push(kind, spelling, line, column, None);
+        self.push(kind, spelling, line, column);
         true
     }
 
@@ -404,7 +572,7 @@ impl Lexer<'_> {
         };
         self.bump();
         self.bump();
-        self.push(kind, spelling, line, column, None);
+        self.push(kind, spelling, line, column);
         true
     }
 
@@ -440,8 +608,30 @@ impl Lexer<'_> {
             _ => return false,
         };
         self.bump();
-        self.push(kind, spelling, line, column, None);
+        self.push(kind, spelling, line, column);
         true
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Suffix {
+    None,
+    U,
+    L,
+    Ll,
+    Ul,
+    Ull,
+}
+
+fn literal_fits(value: u128, ty: TypeName) -> bool {
+    let width = ty.width();
+    if ty.is_signed() {
+        let max = (1u128 << (width - 1)) - 1;
+        value <= max
+    } else if width >= 64 {
+        value <= u128::from(u64::MAX)
+    } else {
+        value < (1u128 << width)
     }
 }
 
@@ -575,24 +765,62 @@ mod tests {
         assert_eq!(tokens("0x2A").pop().unwrap().value, Some(42));
         assert_eq!(tokens("0X10").pop().unwrap().value, Some(16));
         assert_eq!(tokens("2147483647").pop().unwrap().value, Some(2147483647));
-        assert!(err("2147483648").contains("does not fit in int"));
-        assert!(err("0x80000000").contains("does not fit in int"));
-        assert!(err("99999999999999999999").contains("does not fit in int"));
-        assert!(err("0x1FFFFFFFFFFFFFFFF").contains("does not fit in int"));
-        assert!(err("01777777777777777777777").contains("does not fit in int"));
+        let big = tokens("2147483648");
+        assert_eq!(big[0].value, Some(2147483648));
+        assert_eq!(big[0].int_ty, Some(crate::ast::TypeName::Long));
+        let hex = tokens("0x80000000");
+        assert_eq!(hex[0].value, Some(0x8000_0000));
+        assert_eq!(hex[0].int_ty, Some(crate::ast::TypeName::UInt));
+        assert_eq!(tokens("1u")[0].int_ty, Some(crate::ast::TypeName::UInt));
+        assert_eq!(
+            tokens("1ull")[0].int_ty,
+            Some(crate::ast::TypeName::ULongLong)
+        );
+        assert_eq!(
+            tokens("1LL")[0].int_ty,
+            Some(crate::ast::TypeName::LongLong)
+        );
+        assert!(err("99999999999999999999").contains("too large"));
+        assert!(err("0x1FFFFFFFFFFFFFFFF").contains("too large"));
+        let octal_max = tokens("01777777777777777777777");
+        assert_eq!(octal_max[0].value, Some(u64::MAX));
+        assert_eq!(octal_max[0].int_ty, Some(crate::ast::TypeName::ULong));
+        assert!(err("017777777777777777777777").contains("too large"));
+        assert!(err("9223372036854775808").contains("too large"));
         assert!(err("08").contains("invalid octal"));
         assert!(err("0x").contains("invalid hexadecimal"));
         assert!(err("0b1").contains("binary constants"));
-        assert!(err("1u").contains("integer suffixes"));
+        assert!(err("1Ll").contains("invalid integer suffix"));
+        assert!(err("1uu").contains("invalid integer suffix"));
         assert!(err("123abc").contains("invalid numeric literal"));
+    }
+
+    #[test]
+    fn character_constants() {
+        let one = tokens("'a'");
+        assert_eq!(one[0].value, Some(u64::from(b'a')));
+        assert_eq!(one[0].int_ty, Some(crate::ast::TypeName::Int));
+        assert_eq!(tokens(r"'\n'")[0].value, Some(10));
+        assert_eq!(tokens(r"'\0'")[0].value, Some(0));
+        assert_eq!(tokens(r"'\x41'")[0].value, Some(0x41));
+        assert_eq!(tokens(r"'\101'")[0].value, Some(0o101));
+        assert_eq!(tokens(r"'\377'")[0].value, Some(u64::from(u32::MAX)));
+        assert_eq!(tokens(r"'\xff'")[0].value, Some(u64::from(u32::MAX)));
+        assert_eq!(tokens(r"'\''")[0].value, Some(u64::from(b'\'')));
+        assert_eq!(tokens(r"'\\'")[0].value, Some(u64::from(b'\\')));
+        assert_eq!(tokens(r"'\?'")[0].value, Some(u64::from(b'?')));
+        assert!(err("''").contains("empty character constant"));
+        assert!(err("'ab'").contains("multi-character"));
+        assert!(err(r"'\x100'").contains("hex escape sequence out of range"));
+        assert!(err(r"'\400'").contains("octal escape sequence out of range"));
+        assert!(err(r"'\q'").contains("unknown escape sequence"));
+        assert!(err("'a").contains("unterminated character constant"));
     }
 
     #[test]
     fn rejects_literals_and_preprocessor() {
         assert!(err("\"hi\"").contains("string literals are not supported"));
         assert!(err("\"hi").contains("unterminated string literal"));
-        assert!(err("'a'").contains("character constants are not supported"));
-        assert!(err("'a").contains("unterminated character constant"));
         assert!(err("1.5").contains("floating constants"));
         assert!(err(".5").contains("floating constants"));
         assert!(err("1e2").contains("floating constants"));
