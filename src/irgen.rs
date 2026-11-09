@@ -69,16 +69,30 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
         out.push('\n');
         wrote_prelude = true;
     }
-    if wrote_prelude {
-        out.push('\n');
-    }
+    let mut functions = Vec::new();
+    let mut needs_memmove = false;
     for decl in &unit.decls {
         if let TopDecl::Func(func) = decl {
             if func.body.is_some() {
-                out.push_str(&render_function(func));
-                out.push_str("\n\n");
+                let (text, copied) = render_function(func);
+                needs_memmove |= copied;
+                functions.push(text);
             }
         }
+    }
+    if needs_memmove {
+        // Overlap is allowed, so `s = s` is defined. The copy is the object
+        // representation, padding included. An aggregate load/store is not:
+        // LLVM may leave the padding `undef`.
+        out.push_str("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)\n");
+        wrote_prelude = true;
+    }
+    if wrote_prelude {
+        out.push('\n');
+    }
+    for text in functions {
+        out.push_str(&text);
+        out.push_str("\n\n");
     }
     out
 }
@@ -156,7 +170,7 @@ fn param_ir(ty: &CType, name: Option<&str>) -> String {
     }
 }
 
-fn render_function(func: &FuncDef) -> String {
+fn render_function(func: &FuncDef) -> (String, bool) {
     let body = func.body.as_ref().expect("defined function");
     let mut gen = Gen::new(func.ret_type.clone());
     let linkage = match func.linkage {
@@ -215,7 +229,7 @@ fn render_function(func: &FuncDef) -> String {
         }
     }
     gen.emit("}");
-    gen.lines.join("\n")
+    (gen.lines.join("\n"), gen.needs_memmove)
 }
 
 fn local_slots(compound: &Compound) -> Vec<(String, CType)> {
@@ -265,6 +279,8 @@ struct Gen {
     terminated: bool,
     loops: Vec<(String, String)>,
     ret_ty: CType,
+    /// A whole-struct copy used `llvm.memmove`, which keeps padding bytes.
+    needs_memmove: bool,
 }
 
 impl Gen {
@@ -277,6 +293,7 @@ impl Gen {
             terminated: false,
             loops: Vec::new(),
             ret_ty,
+            needs_memmove: false,
         }
     }
 }
@@ -397,6 +414,12 @@ impl Gen {
         };
         match checked {
             CheckedInit::Scalar(init) => {
+                if decl.ty.is_struct() {
+                    if let Some(src) = self.struct_bytes(init) {
+                        self.copy_struct(&decl.ty, &src, &decl.slot);
+                        return;
+                    }
+                }
                 let value = self.gen_val(init);
                 let value = self.convert(&value, &init.ty().expect("typed"), &decl.ty);
                 self.store(&decl.ty, &value, &decl.slot);
@@ -429,6 +452,31 @@ impl Gen {
                 }
             }
         }
+    }
+
+    /// Byte copy of a struct, including padding. `llvm.memmove` allows the
+    /// source and destination to be the same object.
+    fn copy_struct(&mut self, ty: &CType, src: &str, dest: &str) {
+        let size = ty.size().expect("complete struct");
+        self.needs_memmove = true;
+        self.emit(&format!(
+            "  call void @llvm.memmove.p0.p0.i64(ptr {dest}, ptr {src}, i64 {size}, i1 false)"
+        ));
+    }
+
+    /// Address of a struct object whose bytes should be copied. An assignment
+    /// result is the object just stored, so `u = (s = t)` copies from `s`.
+    fn struct_bytes(&mut self, expr: &Expr) -> Option<String> {
+        if expr.ty().is_some_and(|ty| ty.is_struct()) && expr.is_lvalue() {
+            return Some(self.gen_addr(expr));
+        }
+        if let Expr::Assign { target, .. } = expr {
+            if target.ty().is_some_and(|ty| ty.is_struct()) {
+                let _ = self.gen_expr(expr);
+                return Some(self.gen_addr(target));
+            }
+        }
+        None
     }
 
     fn store(&mut self, ty: &CType, value: &str, slot: &str) {
@@ -689,10 +737,20 @@ impl Gen {
             Expr::Assign { target, value, .. } => {
                 let addr = self.gen_addr(target);
                 let dest = target.ty().expect("lvalue type");
-                let raw = self.gen_val(value);
-                let stored = self.convert(&raw, &value.ty().expect("typed"), &dest);
-                self.store(&dest, &stored, &addr);
-                Some(stored)
+                if dest.is_struct() {
+                    if let Some(src) = self.struct_bytes(value) {
+                        self.copy_struct(&dest, &src, &addr);
+                    } else {
+                        let raw = self.gen_val(value);
+                        self.store(&dest, &raw, &addr);
+                    }
+                    Some(self.load(&dest, &addr))
+                } else {
+                    let raw = self.gen_val(value);
+                    let stored = self.convert(&raw, &value.ty().expect("typed"), &dest);
+                    self.store(&dest, &stored, &addr);
+                    Some(stored)
+                }
             }
             Expr::CompoundAssign {
                 op, target, value, ..
@@ -1929,8 +1987,11 @@ int main(void) {
             "{ir}"
         );
         assert!(ir.contains("getelementptr inbounds %struct.S, ptr"), "{ir}");
-        assert!(ir.contains("load %struct.S, ptr"), "{ir}");
-        assert!(ir.contains("store %struct.S"), "{ir}");
+        assert!(ir.contains("call void @llvm.memmove.p0.p0.i64("), "{ir}");
+        assert!(
+            ir.contains("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)"),
+            "{ir}"
+        );
         assert_eq!(run_binary(&ir), run_reference(source));
     }
 

@@ -1,4 +1,15 @@
 int printf(const char *, ...);
+void *memcpy(void *, const void *, unsigned long);
+
+struct Pad {
+    char c;
+    int n;
+};
+
+int pad_of(struct Pad *p) {
+    unsigned char *b = (unsigned char *)p;
+    return (int)b[1] + (int)b[2] + (int)b[3];
+}
 
 struct S {
     int a;
@@ -36,5 +47,23 @@ int main(void) {
     struct Inner iv = {1, 2};
     struct Wrap w = {iv};
     printf("%d\n", w.in.x + w.in.y);
+
+    unsigned char raw[8];
+    int i = 0;
+    while (i < 8) {
+        raw[i] = (unsigned char)(10 + i);
+        i++;
+    }
+    struct Pad src;
+    memcpy(&src, raw, 8);
+    struct Pad dst;
+    dst = src;
+    dst = dst;
+    struct Pad mid;
+    mid = dst;
+    struct Pad chained;
+    chained = (mid = src);
+    struct Pad init = src;
+    printf("%d %d %d %d\n", chained.c, pad_of(&chained), pad_of(&dst), pad_of(&init));
     return 0;
 }
