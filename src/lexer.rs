@@ -47,7 +47,7 @@ impl Lexer<'_> {
             let line = self.line;
             let column = self.column;
             if byte == b'/' && self.peek_at(1) == Some(b'/') {
-                self.line_comment();
+                self.line_comment()?;
                 continue;
             }
             if byte == b'/' && self.peek_at(1) == Some(b'*') {
@@ -147,15 +147,23 @@ impl Lexer<'_> {
         Err(Diagnostic::new(self.filename, line, column, message))
     }
 
-    fn line_comment(&mut self) {
+    fn line_comment(&mut self) -> Result<(), Diagnostic> {
         self.bump();
         self.bump();
         while let Some(byte) = self.peek() {
+            if byte == b'\\' && matches!(self.peek_at(1), Some(b'\n' | b'\r')) {
+                return self.fail(
+                    self.line,
+                    self.column,
+                    "backslash line splicing is not supported",
+                );
+            }
             if byte == b'\n' || byte == b'\r' {
                 break;
             }
             self.bump();
         }
+        Ok(())
     }
 
     fn block_comment(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
@@ -166,6 +174,13 @@ impl Lexer<'_> {
                 self.bump();
                 self.bump();
                 return Ok(());
+            }
+            if self.peek() == Some(b'\\') && matches!(self.peek_at(1), Some(b'\n' | b'\r')) {
+                return self.fail(
+                    self.line,
+                    self.column,
+                    "backslash line splicing is not supported",
+                );
             }
             self.bump();
         }
@@ -196,8 +211,7 @@ impl Lexer<'_> {
             }
             self.reject_number_tail(line, column)?;
             let spelling = &self.source[start..self.index];
-            let value =
-                i64::from_str_radix(&self.source[digits..self.index], 16).expect("hex digits");
+            let value = self.int_value(&self.source[digits..self.index], 16, line, column)?;
             return self.push_int(spelling, value, line, column);
         }
         if self.peek() == Some(b'0') && matches!(self.peek_at(1), Some(b'b' | b'B')) {
@@ -212,7 +226,7 @@ impl Lexer<'_> {
             }
             self.reject_number_tail(line, column)?;
             let spelling = &self.source[start..self.index];
-            let value = i64::from_str_radix(spelling, 8).expect("octal digits");
+            let value = self.int_value(spelling, 8, line, column)?;
             return self.push_int(spelling, value, line, column);
         }
         while self.peek().is_some_and(|b| b.is_ascii_digit()) {
@@ -220,8 +234,44 @@ impl Lexer<'_> {
         }
         self.reject_number_tail(line, column)?;
         let spelling = &self.source[start..self.index];
-        let value = spelling.parse::<i64>().expect("decimal digits");
+        let value = self.int_value(spelling, 10, line, column)?;
         self.push_int(spelling, value, line, column)
+    }
+
+    /// Parse a digit sequence that the scanner has already checked.
+    ///
+    /// C11 6.4.4.1 gives an unsuffixed constant the first type in a list that
+    /// can hold it (`int`, then `long`, then `long long`, and unsigned types
+    /// for octal and hex). This subset has only signed 32-bit `int`, so a
+    /// value that does not fit, including one that does not fit in `i64`, is
+    /// a diagnostic. The wider C types are not introduced here.
+    fn int_value(
+        &self,
+        digits: &str,
+        radix: u32,
+        line: usize,
+        column: usize,
+    ) -> Result<i64, Diagnostic> {
+        let mut value: i64 = 0;
+        for byte in digits.bytes() {
+            let digit = match byte {
+                b'0'..=b'9' => u32::from(byte - b'0'),
+                b'a'..=b'f' => u32::from(byte - b'a') + 10,
+                b'A'..=b'F' => u32::from(byte - b'A') + 10,
+                _ => return self.fail(line, column, "invalid numeric literal"),
+            };
+            if digit >= radix {
+                return self.fail(line, column, "invalid numeric literal");
+            }
+            value = match value
+                .checked_mul(i64::from(radix))
+                .and_then(|next| next.checked_add(i64::from(digit)))
+            {
+                Some(next) => next,
+                None => return self.fail(line, column, "integer constant does not fit in int"),
+            };
+        }
+        Ok(value)
     }
 
     fn push_int(
@@ -489,6 +539,9 @@ mod tests {
         assert_eq!(tokens("2147483647").pop().unwrap().value, Some(2147483647));
         assert!(err("2147483648").contains("does not fit in int"));
         assert!(err("0x80000000").contains("does not fit in int"));
+        assert!(err("99999999999999999999").contains("does not fit in int"));
+        assert!(err("0x1FFFFFFFFFFFFFFFF").contains("does not fit in int"));
+        assert!(err("01777777777777777777777").contains("does not fit in int"));
         assert!(err("08").contains("invalid octal"));
         assert!(err("0x").contains("invalid hexadecimal"));
         assert!(err("0b1").contains("binary constants"));
@@ -509,6 +562,18 @@ mod tests {
         assert!(err("#include <stdio.h>").contains("preprocessor directives"));
         assert!(err("int café").contains("non-ASCII"));
         assert!(err("int x = 1 $ 2;").contains("unexpected character '$'"));
+    }
+
+    #[test]
+    fn line_splice_is_diagnosed() {
+        let line = err("// note \\\nreturn 1;\n");
+        assert!(line.contains("backslash line splicing is not supported"));
+        assert!(line.contains("1:9:"));
+        let block = err("/* note \\\nstill */\n");
+        assert!(block.contains("backslash line splicing is not supported"));
+        assert_eq!(spellings("// a \\ b\nint x"), vec!["int", "x"]);
+        assert_eq!(spellings("/* a \\ b */ int x"), vec!["int", "x"]);
+        assert_eq!(spellings("// ends\nint x"), vec!["int", "x"]);
     }
 
     #[test]

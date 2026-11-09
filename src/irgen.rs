@@ -31,7 +31,10 @@ fn render_function(func: &FuncDef) -> String {
         .map(|param| format!("i32 {}", param.arg_reg))
         .collect::<Vec<_>>()
         .join(", ");
-    gen.emit(&format!("define {ret} @{}({params}) {{", func.name));
+    gen.emit(&format!(
+        "define {ret} {}({params}) {{",
+        llvm_global(&func.name)
+    ));
     gen.emit("entry:");
     gen.cur = "entry".to_string();
     gen.terminated = false;
@@ -375,12 +378,13 @@ impl Gen {
                     .map(|value| format!("i32 {value}"))
                     .collect::<Vec<_>>()
                     .join(", ");
+                let callee = llvm_global(&resolved.name);
                 if resolved.ret == TypeName::Void {
-                    self.emit(&format!("  call void @{}({arglist})", resolved.name));
+                    self.emit(&format!("  call void {callee}({arglist})"));
                     None
                 } else {
                     let tmp = self.fresh();
-                    self.emit(&format!("  {tmp} = call i32 @{}({arglist})", resolved.name));
+                    self.emit(&format!("  {tmp} = call i32 {callee}({arglist})"));
                     Some(tmp)
                 }
             }
@@ -486,20 +490,42 @@ impl Gen {
     }
 }
 
+/// LLVM string constant. The Language Reference ends the string at the first
+/// `"`. The only escapes are `\\` and `\xx` (two hex digits); a quote is `\22`.
 fn llvm_string(text: &str) -> String {
     let mut out = String::from("\"");
     for byte in text.bytes() {
         match byte {
-            b'\\' | b'"' => {
-                out.push('\\');
-                out.push(byte as char);
-            }
+            b'\\' => out.push_str("\\\\"),
+            b'"' => out.push_str("\\22"),
             0x20..=0x7e => out.push(byte as char),
             _ => out.push_str(&format!("\\{byte:02X}")),
         }
     }
     out.push('"');
     out
+}
+
+/// `@name` when `name` matches LLVM's unquoted identifier pattern, otherwise
+/// a quoted global. C identifiers already match the unquoted pattern.
+fn llvm_global(name: &str) -> String {
+    if is_unquoted_llvm_name(name) {
+        format!("@{name}")
+    } else {
+        format!("@{}", llvm_string(name))
+    }
+}
+
+fn is_unquoted_llvm_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    let start = matches!(first, b'A'..=b'Z' | b'a'..=b'z' | b'$' | b'.' | b'_' | b'-');
+    start
+        && bytes.all(|byte| {
+            matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'$' | b'.' | b'_' | b'-')
+        })
 }
 
 #[cfg(test)]
@@ -560,6 +586,21 @@ mod tests {
         let _ = std::fs::remove_file(&cfile);
         let _ = std::fs::remove_file(&bin);
         (ran.status.code().unwrap_or(101), ran.stdout, ran.stderr)
+    }
+
+    #[test]
+    fn source_filename_escapes_and_assembles() {
+        let name = "a\"b\\c\n\t\u{7f}.c";
+        let ir = crate::compile_to_ir("int main(void) { return 7; }\n", name).unwrap();
+        let expected = format!("source_filename = {}\n", super::llvm_string(name));
+        assert!(ir.starts_with(&expected), "{ir}");
+        assert!(expected.contains("\\22"));
+        assert!(expected.contains("\\\\"));
+        assert!(!expected.contains("\\\""));
+        assert_eq!(run_binary(&ir).0, 7);
+        assert_eq!(super::llvm_global("main"), "@main");
+        assert_eq!(super::llvm_global("a\"b"), "@\"a\\22b\"");
+        assert_eq!(super::llvm_global(""), "@\"\"");
     }
 
     #[test]

@@ -85,7 +85,7 @@ Reaching the closing brace of an `int` function lowers to `ret i32 0`. That is w
 
 Unsupported or invalid input is a diagnostic. It is not ignored and it is not lowered.
 
-The lexer rejects the preprocessor (`#`), trigraphs and line splicing are not performed, and string literals, character constants, floating constants, binary literals, integer suffixes, and non-ASCII bytes are errors.
+The lexer rejects the preprocessor (`#`). Trigraphs are not recognized. A backslash immediately before a new-line, including at the end of a `//` or `/*` comment, is a diagnostic rather than a line splice. String literals, character constants, floating constants, binary literals, integer suffixes, and non-ASCII bytes are errors. An integer constant that does not fit in signed 32-bit `int` is a diagnostic, including a value that does not fit in 64 bits. C11 6.4.4.1 would otherwise try `long`, `long long`, and, for octal and hex, unsigned types. Those types are outside this subset, so the constant is rejected instead of given a wider type.
 
 The parser or checker rejects pointers, arrays, structs, unions, enums, typedefs, globals, `static` / `extern` / qualifiers, prototypes without a body, nested functions, variadic functions, `sizeof`, casts, the comma operator, `?:`, bitwise and shift operators, `++` / `--`, compound assignment, member access, `switch`, `do`/`while`, and `goto`. Other C11 keywords (`char`, `float`, `_Bool`, …) are recognized so they produce a specific "not supported" diagnostic.
 

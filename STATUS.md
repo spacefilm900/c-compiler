@@ -78,7 +78,7 @@ After pull request 1 was opened, the App was active on this repository:
 
 - Check run `CodeRabbit` on `3b9d33e`, app `coderabbitai`, conclusion **success**, completed 2026-11-09 00:13:11Z. GitHub URL: https://github.com/spacefilm900/c-compiler/runs/128907038494. Details URL: https://app.coderabbit.ai/change-stack/spacefilm900/c-compiler/pull/1. The check summary says `Result: Success - Review completed`.
 - `coderabbitai[bot]` commented on the pull request at 2026-11-09 00:04:08Z and posted a review state `COMMENTED` with 3 inline comments. The comment's run configuration names file `.coderabbit.yaml`, layers `Repository YAML`, review profile `CHILL`, and plan `Advanced`.
-- The three comments are minor notes on `src/irgen.rs` (quote escaping in `source_filename`), `src/lexer.rs` (backslash line splice inside a `//` comment), and `src/lexer.rs` (integer literals that overflow `i64` panic instead of a diagnostic). They were not applied. This pull request imports the tested tree and does not change the language.
+- The three comments on the import commit were fixed in a later commit. `"` in an LLVM string is emitted as `\22` (and `\` as `\\`); a backslash-newline, including inside a comment, is a diagnostic; an integer constant that does not fit in signed 32-bit `int` is a diagnostic instead of a panic. C11 6.4.4.1's wider types were not added. Locally, after that fix: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **23 passed, 0 failed**, `make` produced `build/compiler`, and `python3 harness/run_tests.py` **17/17 passed** (rustc 1.85.1, Ubuntu Clang 18.1.3).
 
 No subscription was started and no account permissions were changed from this import. Nothing further is required to turn the App on for this repository; it already reviewed the import. The skills package remains uninstalled.
 
@@ -105,7 +105,8 @@ Negative cases covered inside `cargo test` (each must be a non-zero diagnostic, 
 
 ## Limitations
 
-- No preprocessor, trigraphs, digraphs, or line splicing.
+- No preprocessor, trigraphs, or digraphs. A backslash-newline is rejected, including when it ends a `//` comment or appears inside a block comment. It is not deleted the way C translation phase 2 would delete it.
+- Integer constants must fit in signed 32-bit `int`. A value that overflows `i64` while parsing uses the same "does not fit in int" diagnostic. `long` and unsigned types from C11 6.4.4.1 are not supported.
 - No pointers, arrays, structs, unions, enums, typedefs, globals, or other types.
 - No string or character literals, floats, `sizeof`, casts, bitwise operators, shifts, `++`/`--`, compound assignment, `?:`, or the comma operator.
 - No `switch`, `do`/`while`, or `goto`.
@@ -131,7 +132,7 @@ The workflow file from the tested archive is unchanged. Its first comment still 
 
 1. Accept prototypes so mutually recursive functions can be declared before use.
 2. Add file-scope variables, then pointers and arrays, still rejecting anything not yet implemented.
-3. The CodeRabbit notes left on the import (quote escaping in IR strings, `//` comments that end in `\`, and integer literals that overflow `i64`) are edge cases outside the current tests. They are not part of this import.
+3. Record the Actions and CodeRabbit results for the review-fix commit once those checks finish.
 
 ## Clean-room reminder
 
