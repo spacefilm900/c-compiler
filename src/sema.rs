@@ -7,8 +7,10 @@
 //! File-scope objects and functions follow C11 6.2.2 linkage and 6.9.2
 //! tentative definitions. A prototype makes a function visible before its
 //! body, which is what mutual recursion needs. A global initializer must be
-//! an integer constant expression in the operators this subset already
-//! implements (C11 6.6).
+//! an integer constant expression (C11 6.6). Assignment, `++`/`--`, calls,
+//! and the comma operator are rejected there, including when they sit in an
+//! evaluated operand. An unevaluated operand (`sizeof`, or the skipped arm
+//! of `&&`, `||`, or `?:`) may contain them.
 
 use std::collections::{HashMap, HashSet};
 
@@ -359,6 +361,11 @@ impl Sema {
                 expr.column(),
                 format!("initializer of '{name}' overflows 'int'"),
             ),
+            Err(ConstError::Shift) => self.err(
+                expr.line(),
+                expr.column(),
+                format!("initializer of '{name}' uses an undefined shift"),
+            ),
         }
     }
 
@@ -566,6 +573,11 @@ impl Sema {
             Expr::Bin { .. } => return self.check_bin(expr),
             Expr::Unary { .. } => return self.check_unary(expr),
             Expr::Assign { .. } => return self.check_assign(expr),
+            Expr::CompoundAssign { .. } => return self.check_compound_assign(expr),
+            Expr::IncDec { .. } => return self.check_incdec(expr),
+            Expr::Cond { .. } => return self.check_cond(expr),
+            Expr::Comma { .. } => return self.check_comma(expr),
+            Expr::Sizeof { .. } => return self.check_sizeof(expr),
             Expr::Call { .. } => return self.check_call(expr),
         }
         expr.set_ty(TypeName::Int);
@@ -631,6 +643,107 @@ impl Sema {
             self.check_lvalue(target)?;
             self.check_expr(value)?;
             self.require_int(value)?;
+        }
+        expr.set_ty(TypeName::Int);
+        Ok(())
+    }
+
+    fn check_compound_assign(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        if let Expr::CompoundAssign { target, value, .. } = expr {
+            self.check_lvalue(target)?;
+            self.check_expr(value)?;
+            self.require_int(value)?;
+        }
+        expr.set_ty(TypeName::Int);
+        Ok(())
+    }
+
+    fn check_incdec(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        if let Expr::IncDec { target, .. } = expr {
+            self.check_lvalue(target)?;
+        }
+        expr.set_ty(TypeName::Int);
+        Ok(())
+    }
+
+    /// Both arms are type-checked. They must both be `int` or both be `void`.
+    /// Only the chosen arm is evaluated, which constant folding honors.
+    fn check_cond(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        let ty = if let Expr::Cond {
+            cond,
+            then_expr,
+            else_expr,
+            line,
+            column,
+            ..
+        } = expr
+        {
+            let line = *line;
+            let column = *column;
+            self.check_expr(cond)?;
+            self.require_int(cond)?;
+            self.check_expr(then_expr)?;
+            self.check_expr(else_expr)?;
+            match (then_expr.ty(), else_expr.ty()) {
+                (Some(ty @ TypeName::Int), Some(TypeName::Int)) => ty,
+                (Some(ty @ TypeName::Void), Some(TypeName::Void)) => ty,
+                _ => {
+                    return self.err(
+                        line,
+                        column,
+                        "incompatible operand types in the conditional operator",
+                    );
+                }
+            }
+        } else {
+            unreachable!("conditional expression");
+        };
+        expr.set_ty(ty);
+        Ok(())
+    }
+
+    /// The left operand is evaluated and discarded. The result has the type
+    /// of the right operand. There is a sequence point between the two.
+    fn check_comma(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        let ty = if let Expr::Comma { left, right, .. } = expr {
+            self.check_expr(left)?;
+            self.check_expr(right)?;
+            right.ty().expect("comma operand is typed")
+        } else {
+            unreachable!("comma expression");
+        };
+        expr.set_ty(ty);
+        Ok(())
+    }
+
+    /// `sizeof` does not evaluate its operand. The result is an `int` with
+    /// value 4 until this subset has `size_t`. `void` is incomplete.
+    fn check_sizeof(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        if let Expr::Sizeof {
+            operand,
+            line,
+            column,
+            ..
+        } = expr
+        {
+            let line = *line;
+            let column = *column;
+            match operand {
+                SizeofOperand::Type(TypeName::Void) => {
+                    return self.err(line, column, "sizeof applied to incomplete type 'void'");
+                }
+                SizeofOperand::Type(TypeName::Int) => {}
+                SizeofOperand::Expr(inner) => {
+                    self.check_expr(inner)?;
+                    if inner.ty() == Some(TypeName::Void) {
+                        return self.err(
+                            inner.line(),
+                            inner.column(),
+                            "sizeof applied to incomplete type 'void'",
+                        );
+                    }
+                }
+            }
         }
         expr.set_ty(TypeName::Int);
         Ok(())
@@ -799,29 +912,56 @@ enum ConstError {
     NotConst,
     DivZero,
     Overflow,
+    Shift,
 }
 
 /// Integer constant expression using the operators this subset implements.
 ///
-/// `&&` and `||` skip the right operand when the left decides the result, so
-/// `0 && (1/0)` folds to 0. Signed `+`, `-`, `*`, and unary `-` must stay
-/// inside `int` (C11 6.6p4); so must `INT_MIN / -1` and `INT_MIN % -1`. An
-/// evaluated division or remainder by zero is rejected.
+/// `&&`, `||`, and `?:` skip the operand that is not evaluated, so
+/// `0 && (1/0)` and `0 ? 1/0 : 4` fold without diagnosing the division.
+/// `sizeof` is not evaluated and yields 4. Signed `+`, `-`, `*`, and unary
+/// `-` must stay inside `int` (C11 6.6p4); so must `INT_MIN / -1` and
+/// `INT_MIN % -1`. An evaluated division or remainder by zero is rejected.
+///
+/// A shift count outside `0..31`, a left shift of a negative value, and a
+/// left shift whose mathematical result does not fit in signed 32-bit `int`
+/// (including `1 << 31`) are rejected. Right shifts are arithmetic.
+/// Assignment, `++`/`--`, calls, and comma are not constant expressions when
+/// they are evaluated.
 fn eval_const_expr(expr: &Expr) -> Result<i32, ConstError> {
     match expr {
         Expr::Int { value, .. } => Ok(*value),
+        Expr::Sizeof { .. } => Ok(4),
         Expr::Unary { op, expr, .. } => {
             let value = eval_const_expr(expr)?;
             match op {
                 UnaryOp::Plus => Ok(value),
                 UnaryOp::Minus => value.checked_neg().ok_or(ConstError::Overflow),
                 UnaryOp::Not => Ok(i32::from(value == 0)),
+                UnaryOp::BitNot => Ok(!value),
             }
         }
         Expr::Bin {
             op, left, right, ..
         } => eval_binop(*op, left, right),
-        Expr::Var { .. } | Expr::Assign { .. } | Expr::Call { .. } => Err(ConstError::NotConst),
+        Expr::Cond {
+            cond,
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            if eval_const_expr(cond)? != 0 {
+                eval_const_expr(then_expr)
+            } else {
+                eval_const_expr(else_expr)
+            }
+        }
+        Expr::Var { .. }
+        | Expr::Assign { .. }
+        | Expr::CompoundAssign { .. }
+        | Expr::IncDec { .. }
+        | Expr::Call { .. }
+        | Expr::Comma { .. } => Err(ConstError::NotConst),
     }
 }
 
@@ -854,10 +994,36 @@ fn eval_binop(op: BinOp, left: &Expr, right: &Expr) -> Result<i32, ConstError> {
                 BinOp::Gt => Ok(i32::from(left > right)),
                 BinOp::Le => Ok(i32::from(left <= right)),
                 BinOp::Ge => Ok(i32::from(left >= right)),
+                BinOp::BitAnd => Ok(left & right),
+                BinOp::BitOr => Ok(left | right),
+                BinOp::BitXor => Ok(left ^ right),
+                BinOp::Shl => shl_const(left, right),
+                BinOp::Shr => shr_const(left, right),
                 BinOp::And | BinOp::Or => unreachable!("logical operators"),
             }
         }
     }
+}
+
+/// C11 left shift is defined for a nonnegative `left` when `left * 2^right`
+/// fits in signed `int`. `1 << 31` does not fit. The count must be in `0..31`.
+fn shl_const(left: i32, right: i32) -> Result<i32, ConstError> {
+    if !(0..32).contains(&right) || left < 0 {
+        return Err(ConstError::Shift);
+    }
+    let shifted = i64::from(left) << right;
+    if shifted > i64::from(i32::MAX) {
+        return Err(ConstError::Overflow);
+    }
+    Ok(shifted as i32)
+}
+
+/// Signed right shift is arithmetic. The count must be in `0..31`.
+fn shr_const(left: i32, right: i32) -> Result<i32, ConstError> {
+    if !(0..32).contains(&right) {
+        return Err(ConstError::Shift);
+    }
+    Ok(left >> right)
 }
 
 fn div_const(left: i32, right: i32) -> Result<i32, ConstError> {
@@ -1139,5 +1305,93 @@ int is_even(int n) { if (n == 0) return 1; return is_odd(n - 1); }
 int is_odd(int n) { if (n == 0) return 0; return is_even(n - 1); }
 ",
         );
+    }
+
+    #[test]
+    fn folds_bitwise_shifts_sizeof_and_conditional() {
+        let unit = analyzed(
+            "\
+int bits = (6 & 3) | (1 ^ 4);
+int tilde = ~0;
+int shl = 1 << 4;
+int shr = -8 >> 1;
+int wide = (-2147483647 - 1) >> 1;
+int pick = 1 ? 7 : 1 / 0;
+int other = 0 ? 1 / 0 : 5;
+int quiet_or = 1 || (1 / 0);
+int sz = sizeof(int);
+int sz_expr = sizeof(1 / 0);
+int self_sz = sizeof(self_sz);
+int nested = sizeof sizeof(int);
+int n;
+int uneval_inc = 0 ? n++ : 9;
+int skipped = 0 && (n = 3);
+int foo(void);
+int uneval_call = 1 ? 4 : foo();
+",
+        );
+        let value = |name: &str| {
+            unit.globals
+                .iter()
+                .find(|global| global.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"))
+                .init
+        };
+        assert_eq!(value("bits"), Some((6 & 3) | (1 ^ 4)));
+        assert_eq!(value("tilde"), Some(-1));
+        assert_eq!(value("shl"), Some(16));
+        assert_eq!(value("shr"), Some(-4));
+        assert_eq!(value("wide"), Some(i32::MIN >> 1));
+        assert_eq!(value("pick"), Some(7));
+        assert_eq!(value("other"), Some(5));
+        assert_eq!(value("quiet_or"), Some(1));
+        assert_eq!(value("sz"), Some(4));
+        assert_eq!(value("sz_expr"), Some(4));
+        assert_eq!(value("self_sz"), Some(4));
+        assert_eq!(value("nested"), Some(4));
+        assert_eq!(value("uneval_inc"), Some(9));
+        assert_eq!(value("skipped"), Some(0));
+        assert_eq!(value("uneval_call"), Some(4));
+
+        assert!(sema_err("int g = (1, 2);").contains("not a constant expression"));
+        assert!(sema_err("int n; int g = n++;").contains("not a constant expression"));
+        assert!(sema_err("int n; int g = ++n;").contains("not a constant expression"));
+        assert!(sema_err("int n; int g = n = 1;").contains("not a constant expression"));
+        assert!(sema_err("int n; int g = n += 1;").contains("not a constant expression"));
+        assert!(sema_err("int f(void); int g = f();").contains("not a constant expression"));
+        assert!(sema_err("int n; int g = 1 ? n++ : 2;").contains("not a constant expression"));
+        assert!(sema_err("int g = 1 << 31;").contains("overflows 'int'"));
+        assert!(sema_err("int g = 1 << 32;").contains("undefined shift"));
+        assert!(sema_err("int g = 1 << -1;").contains("undefined shift"));
+        assert!(sema_err("int g = -1 << 1;").contains("undefined shift"));
+        assert!(sema_err("int g = 8 >> -1;").contains("undefined shift"));
+        assert!(sema_err("int g = 8 >> 32;").contains("undefined shift"));
+        assert!(sema_err("int g = 0 & (1 / 0);").contains("divides by zero"));
+        assert!(sema_err("int g = 0 ? (1 / 0) : 1 / 0;").contains("divides by zero"));
+        assert!(sema_err("int main(void) { return ++1; }").contains("not assignable"));
+        assert!(sema_err("int main(void) { int x; x++ ++; return x; }").contains("not assignable"));
+        assert!(sema_err("int main(void) { int x; ++ ++x; return x; }").contains("not assignable"));
+        assert!(
+            sema_err("int main(void) { int x; (x + 1) += 2; return x; }")
+                .contains("not assignable")
+        );
+        assert!(sema_err(
+            "int main(void) { int a; int b; int c; int d; a ? b : c = d; return 0; }"
+        )
+        .contains("not assignable"));
+        assert!(
+            sema_err("void f(void); int main(void) { return 1 ? f() : 2; }")
+                .contains("incompatible operand types")
+        );
+        assert!(
+            sema_err("int main(void) { return sizeof(void); }").contains("incomplete type 'void'")
+        );
+        assert!(
+            sema_err("void f(void); int main(void) { return sizeof(f()); }")
+                .contains("incomplete type 'void'")
+        );
+        sema_ok("void f(void); void g(void); void h(int c) { c ? f() : g(); }");
+        sema_ok("void f(void); int main(void) { return (f(), 3); }");
+        sema_ok("int main(void) { int x; x = 1; x += 2; ++x; x++; return sizeof(x++); }");
     }
 }

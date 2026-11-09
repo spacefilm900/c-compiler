@@ -83,6 +83,8 @@ pub enum TokenKind {
     AmpEq,
     PipeEq,
     CaretEq,
+    ShlEq,
+    ShrEq,
     PlusPlus,
     MinusMinus,
     Arrow,

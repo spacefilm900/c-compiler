@@ -5,8 +5,21 @@
 //! not allocate on every iteration. File-scope objects are LLVM globals.
 //! Internal linkage is `internal`; a declaration with no definition in this
 //! translation unit is `external global` or `declare`. `&&` and `||` are
-//! short-circuiting and produce 0 or 1. Signed division and remainder use
-//! `sdiv` and `srem`, which round toward zero as C requires.
+//! short-circuiting and produce 0 or 1. `?:` evaluates only the chosen arm.
+//! Signed division and remainder use `sdiv` and `srem`, which round toward
+//! zero as C requires.
+//!
+//! `>>` is `ashr` (arithmetic). `<<` is `shl`. A shift count outside `0..31`,
+//! a left shift of a negative `int`, and a left shift whose mathematical
+//! result does not fit in signed 32-bit `int` are undefined. Those counts are
+//! not masked: LLVM `shl` / `ashr` are poison when the count is not in range,
+//! and a negative left operand is still emitted as `shl`. Constant
+//! initializers reject those cases; a runtime expression does not.
+//!
+//! `++` / `--` and compound assignment load the scalar once, after the
+//! right-hand side of a compound assignment has been evaluated, then store.
+//! The lvalue address is that variable and is not recomputed. `sizeof` is the
+//! constant 4 and its operand is not emitted.
 
 use crate::ast::*;
 
@@ -398,6 +411,16 @@ impl Gen {
                 self.emit(&format!("  {tmp} = sub i32 0, {value}"));
                 Some(tmp)
             }
+            Expr::Unary {
+                op: UnaryOp::BitNot,
+                expr,
+                ..
+            } => {
+                let value = self.gen_val(expr);
+                let tmp = self.fresh();
+                self.emit(&format!("  {tmp} = xor i32 {value}, -1"));
+                Some(tmp)
+            }
             Expr::Bin { op, .. } if op.is_cmp() || matches!(op, BinOp::And | BinOp::Or) => {
                 Some(self.zext_cond(expr))
             }
@@ -407,15 +430,10 @@ impl Gen {
                 let left = self.gen_val(left);
                 let right = self.gen_val(right);
                 let tmp = self.fresh();
-                let inst = match op {
-                    BinOp::Add => "add",
-                    BinOp::Sub => "sub",
-                    BinOp::Mul => "mul",
-                    BinOp::Div => "sdiv",
-                    BinOp::Mod => "srem",
-                    _ => unreachable!("logical operator"),
-                };
-                self.emit(&format!("  {tmp} = {inst} i32 {left}, {right}"));
+                self.emit(&format!(
+                    "  {tmp} = {} i32 {left}, {right}",
+                    value_inst(*op)
+                ));
                 Some(tmp)
             }
             Expr::Assign { target, value, .. } => {
@@ -424,6 +442,46 @@ impl Gen {
                 self.emit(&format!("  store i32 {value}, ptr {slot}, align 4"));
                 Some(value)
             }
+            Expr::CompoundAssign {
+                op, target, value, ..
+            } => {
+                let slot = target.var_slot().expect("assignable variable").to_string();
+                let rhs = self.gen_val(value);
+                let old = self.fresh();
+                self.emit(&format!("  {old} = load i32, ptr {slot}, align 4"));
+                let updated = self.fresh();
+                self.emit(&format!(
+                    "  {updated} = {} i32 {old}, {rhs}",
+                    value_inst(*op)
+                ));
+                self.emit(&format!("  store i32 {updated}, ptr {slot}, align 4"));
+                Some(updated)
+            }
+            Expr::IncDec { op, target, .. } => {
+                let slot = target.var_slot().expect("assignable variable").to_string();
+                let old = self.fresh();
+                self.emit(&format!("  {old} = load i32, ptr {slot}, align 4"));
+                let updated = self.fresh();
+                let inst = if op.is_increment() { "add" } else { "sub" };
+                self.emit(&format!("  {updated} = {inst} i32 {old}, 1"));
+                self.emit(&format!("  store i32 {updated}, ptr {slot}, align 4"));
+                if op.is_prefix() {
+                    Some(updated)
+                } else {
+                    Some(old)
+                }
+            }
+            Expr::Cond {
+                cond,
+                then_expr,
+                else_expr,
+                ..
+            } => self.gen_ternary(cond, then_expr, else_expr),
+            Expr::Comma { left, right, .. } => {
+                let _ = self.gen_expr(left);
+                self.gen_expr(right)
+            }
+            Expr::Sizeof { .. } => Some("4".to_string()),
             Expr::Call { args, resolved, .. } => {
                 let resolved = resolved.as_ref().expect("resolved call");
                 let values: Vec<String> = args.iter().map(|arg| self.gen_val(arg)).collect();
@@ -523,6 +581,43 @@ impl Gen {
         tmp
     }
 
+    /// Only the chosen arm is evaluated. Both arms have the same type.
+    fn gen_ternary(&mut self, cond: &Expr, then_expr: &Expr, else_expr: &Expr) -> Option<String> {
+        let cond = self.gen_cond(cond);
+        let then_label = self.label();
+        let else_label = self.label();
+        let end_label = self.label();
+        self.br_cond(&cond, &then_label, &else_label);
+        self.start(then_label);
+        let then_val = self.gen_expr(then_expr);
+        assert!(
+            !self.terminated,
+            "internal compiler error: expression terminated a block"
+        );
+        let then_block = self.cur.clone();
+        self.br(&end_label);
+        self.start(else_label);
+        let else_val = self.gen_expr(else_expr);
+        assert!(
+            !self.terminated,
+            "internal compiler error: expression terminated a block"
+        );
+        let else_block = self.cur.clone();
+        self.br(&end_label);
+        self.start(end_label);
+        match (then_val, else_val) {
+            (Some(then_val), Some(else_val)) => {
+                let tmp = self.fresh();
+                self.emit(&format!(
+                    "  {tmp} = phi i32 [ {then_val}, %{then_block} ], [ {else_val}, %{else_block} ]"
+                ));
+                Some(tmp)
+            }
+            (None, None) => None,
+            _ => unreachable!("conditional arms have different types"),
+        }
+    }
+
     fn gen_or(&mut self, left: &Expr, right: &Expr) -> String {
         let left = self.gen_cond(left);
         let true_label = self.label();
@@ -567,6 +662,31 @@ fn llvm_global(name: &str) -> String {
         format!("@{name}")
     } else {
         format!("@{}", llvm_string(name))
+    }
+}
+
+fn value_inst(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "add",
+        BinOp::Sub => "sub",
+        BinOp::Mul => "mul",
+        BinOp::Div => "sdiv",
+        BinOp::Mod => "srem",
+        BinOp::BitAnd => "and",
+        BinOp::BitOr => "or",
+        BinOp::BitXor => "xor",
+        BinOp::Shl => "shl",
+        BinOp::Shr => "ashr",
+        BinOp::Eq
+        | BinOp::Ne
+        | BinOp::Lt
+        | BinOp::Gt
+        | BinOp::Le
+        | BinOp::Ge
+        | BinOp::And
+        | BinOp::Or => {
+            unreachable!("comparison or logical operator")
+        }
     }
 }
 
@@ -686,6 +806,40 @@ int main(void) { counter = id(4); return counter; }
         assert!(!ir.contains("define i32 @add"), "{ir}");
         assert!(!ir.contains("declare i32 @id"), "{ir}");
         assert_eq!(run_binary(&ir).0, 7);
+    }
+
+    #[test]
+    fn operators_lower_and_sizeof_is_not_emitted() {
+        let ir = crate::compile_to_ir(
+            "\
+int g = 1 << 4;
+int h = sizeof(int);
+int i = ~0;
+int j = 0 ? 1 : 6;
+int main(void) {
+    int x = 1;
+    int y = sizeof(x = 5);
+    int z = x++;
+    int w = 0 ? y : z;
+    g += 1;
+    return y + w + (x << 1) + (-8 >> 1) + (~x & 7) + g;
+}
+",
+            "ops.c",
+        )
+        .unwrap();
+        assert!(ir.contains("@g = global i32 16, align 4"), "{ir}");
+        assert!(ir.contains("@h = global i32 4, align 4"), "{ir}");
+        assert!(ir.contains("@i = global i32 -1, align 4"), "{ir}");
+        assert!(ir.contains("@j = global i32 6, align 4"), "{ir}");
+        assert!(ir.contains("shl i32"), "{ir}");
+        assert!(ir.contains("ashr i32"), "{ir}");
+        assert!(ir.contains("xor i32"), "{ir}");
+        assert!(ir.contains("phi i32"), "{ir}");
+        assert!(!ir.contains("store i32 5"), "{ir}");
+        // y = 4, w = z = 1, x becomes 2, 2 << 1 = 4, -8 >> 1 = -4,
+        // ~2 & 7 = 5, g becomes 17. 4 + 1 + 4 - 4 + 5 + 17 = 27.
+        assert_eq!(run_binary(&ir).0, 27);
     }
 
     #[test]

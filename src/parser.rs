@@ -1,9 +1,9 @@
 //! Recursive-descent parser for a C subset.
 //!
-//! Expression precedence follows the C standard: assignment is right
-//! associative and looser than `||`, which is looser than `&&`, equality,
-//! relational, additive, and multiplicative operators. A dangling `else`
-//! binds to the nearest `if`.
+//! Expression precedence follows the C standard. From loosest to tightest:
+//! comma, assignment, `?:`, `||`, `&&`, `|`, `^`, `&`, equality, relational,
+//! shifts, additive, multiplicative, then unary and postfix. Assignment and
+//! `?:` are right associative. A dangling `else` binds to the nearest `if`.
 
 use crate::ast::*;
 use crate::diag::Diagnostic;
@@ -515,45 +515,46 @@ impl Parser<'_> {
         })
     }
 
+    /// Comma operator. Argument lists and declarators call
+    /// [`Self::parse_assignment`] instead, so those commas stay separators.
     fn parse_expression(&mut self) -> Result<Expr, Diagnostic> {
-        let expr = self.parse_assignment()?;
-        if self.current().kind == TokenKind::Comma {
-            return Err(self.error("the comma operator is not supported"));
+        let mut left = self.parse_assignment()?;
+        while self.current().kind == TokenKind::Comma {
+            let op = self.advance();
+            let right = self.parse_assignment()?;
+            left = Expr::comma(left, right, op.line, op.column);
         }
-        Ok(expr)
-    }
-
-    fn parse_assignment(&mut self) -> Result<Expr, Diagnostic> {
-        let left = self.parse_logical_or()?;
-        if self.match_kind(TokenKind::Assign) {
-            let line = left.line();
-            let column = left.column();
-            let value = self.parse_assignment()?;
-            return Ok(Expr::assign(left, value, line, column));
-        }
-        self.reject_unsupported_infix()?;
         Ok(left)
     }
 
-    fn reject_unsupported_infix(&self) -> Result<(), Diagnostic> {
-        let message = match self.current().kind {
-            TokenKind::Amp => "bitwise AND is not supported",
-            TokenKind::Pipe => "bitwise OR is not supported",
-            TokenKind::Caret => "bitwise XOR is not supported",
-            TokenKind::Tilde => "bitwise complement is not supported",
-            TokenKind::Shl | TokenKind::Shr => "shift operators are not supported",
-            TokenKind::PlusEq
-            | TokenKind::MinusEq
-            | TokenKind::StarEq
-            | TokenKind::SlashEq
-            | TokenKind::PercentEq
-            | TokenKind::AmpEq
-            | TokenKind::PipeEq
-            | TokenKind::CaretEq => "compound assignment is not supported",
-            TokenKind::Question => "the conditional operator is not supported",
-            _ => return Ok(()),
+    fn parse_assignment(&mut self) -> Result<Expr, Diagnostic> {
+        let left = self.parse_conditional()?;
+        let Some(kind) = assign_kind(self.current().kind) else {
+            return Ok(left);
         };
-        Err(self.error(message))
+        self.advance();
+        let line = left.line();
+        let column = left.column();
+        let value = self.parse_assignment()?;
+        Ok(match kind {
+            AssignKind::Plain => Expr::assign(left, value, line, column),
+            AssignKind::Compound(binop) => Expr::compound(binop, left, value, line, column),
+        })
+    }
+
+    /// `?:` is right associative. The middle operand is a full expression,
+    /// so it may contain a comma; the third operand may not.
+    fn parse_conditional(&mut self) -> Result<Expr, Diagnostic> {
+        let cond = self.parse_logical_or()?;
+        if !self.match_kind(TokenKind::Question) {
+            return Ok(cond);
+        }
+        let line = cond.line();
+        let column = cond.column();
+        let then_expr = self.parse_expression()?;
+        self.expect(TokenKind::Colon, "':'")?;
+        let else_expr = self.parse_conditional()?;
+        Ok(Expr::cond(cond, then_expr, else_expr, line, column))
     }
 
     fn parse_logical_or(&mut self) -> Result<Expr, Diagnostic> {
@@ -567,11 +568,41 @@ impl Parser<'_> {
     }
 
     fn parse_logical_and(&mut self) -> Result<Expr, Diagnostic> {
-        let mut left = self.parse_equality()?;
+        let mut left = self.parse_bit_or()?;
         while self.current().kind == TokenKind::AndAnd {
             let op = self.advance();
-            let right = self.parse_equality()?;
+            let right = self.parse_bit_or()?;
             left = Expr::bin(BinOp::And, left, right, op.line, op.column);
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_or(&mut self) -> Result<Expr, Diagnostic> {
+        let mut left = self.parse_bit_xor()?;
+        while self.current().kind == TokenKind::Pipe {
+            let op = self.advance();
+            let right = self.parse_bit_xor()?;
+            left = Expr::bin(BinOp::BitOr, left, right, op.line, op.column);
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_xor(&mut self) -> Result<Expr, Diagnostic> {
+        let mut left = self.parse_bit_and()?;
+        while self.current().kind == TokenKind::Caret {
+            let op = self.advance();
+            let right = self.parse_bit_and()?;
+            left = Expr::bin(BinOp::BitXor, left, right, op.line, op.column);
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_and(&mut self) -> Result<Expr, Diagnostic> {
+        let mut left = self.parse_equality()?;
+        while self.current().kind == TokenKind::Amp {
+            let op = self.advance();
+            let right = self.parse_equality()?;
+            left = Expr::bin(BinOp::BitAnd, left, right, op.line, op.column);
         }
         Ok(left)
     }
@@ -592,7 +623,7 @@ impl Parser<'_> {
     }
 
     fn parse_relational(&mut self) -> Result<Expr, Diagnostic> {
-        let mut left = self.parse_additive()?;
+        let mut left = self.parse_shift()?;
         while matches!(
             self.current().kind,
             TokenKind::Lt | TokenKind::Gt | TokenKind::Le | TokenKind::Ge
@@ -603,6 +634,21 @@ impl Parser<'_> {
                 TokenKind::Gt => BinOp::Gt,
                 TokenKind::Le => BinOp::Le,
                 _ => BinOp::Ge,
+            };
+            let right = self.parse_shift()?;
+            left = Expr::bin(kind, left, right, op.line, op.column);
+        }
+        Ok(left)
+    }
+
+    fn parse_shift(&mut self) -> Result<Expr, Diagnostic> {
+        let mut left = self.parse_additive()?;
+        while matches!(self.current().kind, TokenKind::Shl | TokenKind::Shr) {
+            let op = self.advance();
+            let kind = if op.kind == TokenKind::Shl {
+                BinOp::Shl
+            } else {
+                BinOp::Shr
             };
             let right = self.parse_additive()?;
             left = Expr::bin(kind, left, right, op.line, op.column);
@@ -646,25 +692,70 @@ impl Parser<'_> {
     fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
         let token = self.current().clone();
         match token.kind {
-            TokenKind::Plus | TokenKind::Minus | TokenKind::Bang => {
+            TokenKind::Plus | TokenKind::Minus | TokenKind::Bang | TokenKind::Tilde => {
                 self.advance();
                 let op = match token.kind {
                     TokenKind::Plus => UnaryOp::Plus,
                     TokenKind::Minus => UnaryOp::Minus,
-                    _ => UnaryOp::Not,
+                    TokenKind::Bang => UnaryOp::Not,
+                    _ => UnaryOp::BitNot,
                 };
                 let expr = self.parse_unary()?;
                 Ok(Expr::unary(op, expr, token.line, token.column))
             }
             TokenKind::PlusPlus | TokenKind::MinusMinus => {
-                Err(self.error("increment and decrement operators are not supported"))
+                self.advance();
+                let op = if token.kind == TokenKind::PlusPlus {
+                    IncOp::PreInc
+                } else {
+                    IncOp::PreDec
+                };
+                let expr = self.parse_unary()?;
+                Ok(Expr::incdec(op, expr, token.line, token.column))
             }
+            TokenKind::KwSizeof => self.parse_sizeof(token.line, token.column),
             TokenKind::Amp => Err(self.error("the address-of operator is not supported")),
             TokenKind::Star => Err(self.error("pointer dereference is not supported")),
-            TokenKind::Tilde => Err(self.error("bitwise complement is not supported")),
-            TokenKind::KwSizeof => Err(self.error("sizeof is not supported")),
             _ => self.parse_postfix(),
         }
+    }
+
+    /// `sizeof (type-name)` when the parenthesis starts a type. Otherwise
+    /// `sizeof unary-expression`. The operand is not evaluated later.
+    fn parse_sizeof(&mut self, line: usize, column: usize) -> Result<Expr, Diagnostic> {
+        self.advance();
+        if self.current().kind == TokenKind::LParen && looks_like_type(self.lookahead()) {
+            self.advance();
+            let ty = self.parse_sizeof_type()?;
+            self.expect(TokenKind::RParen, "')'")?;
+            return Ok(Expr::sizeof_type(ty, line, column));
+        }
+        let expr = self.parse_unary()?;
+        Ok(Expr::sizeof_expr(expr, line, column))
+    }
+
+    fn parse_sizeof_type(&mut self) -> Result<TypeName, Diagnostic> {
+        if let Some(message) = unsupported(self.current().kind) {
+            return Err(self.error(message));
+        }
+        let ty = match self.current().kind {
+            TokenKind::KwInt => TypeName::Int,
+            TokenKind::KwVoid => TypeName::Void,
+            _ => {
+                return Err(self.error(format!(
+                    "expected a type name, found {}",
+                    found(self.current())
+                )));
+            }
+        };
+        self.advance();
+        if self.current().kind == TokenKind::Star {
+            return Err(self.error("pointers are not supported"));
+        }
+        if self.current().kind == TokenKind::LBrack {
+            return Err(self.error("arrays are not supported"));
+        }
+        Ok(ty)
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, Diagnostic> {
@@ -693,7 +784,13 @@ impl Parser<'_> {
                 }
                 TokenKind::LBrack => return Err(self.error("arrays are not supported")),
                 TokenKind::PlusPlus | TokenKind::MinusMinus => {
-                    return Err(self.error("increment and decrement operators are not supported"));
+                    let op_token = self.advance();
+                    let op = if op_token.kind == TokenKind::PlusPlus {
+                        IncOp::PostInc
+                    } else {
+                        IncOp::PostDec
+                    };
+                    expr = Expr::incdec(op, expr, op_token.line, op_token.column);
                 }
                 TokenKind::Arrow => {
                     return Err(self.error("pointer member access is not supported"));
@@ -808,6 +905,33 @@ struct ParsedParams {
     prototype: bool,
 }
 
+enum AssignKind {
+    Plain,
+    Compound(BinOp),
+}
+
+fn assign_kind(kind: TokenKind) -> Option<AssignKind> {
+    Some(match kind {
+        TokenKind::Assign => AssignKind::Plain,
+        TokenKind::PlusEq => AssignKind::Compound(BinOp::Add),
+        TokenKind::MinusEq => AssignKind::Compound(BinOp::Sub),
+        TokenKind::StarEq => AssignKind::Compound(BinOp::Mul),
+        TokenKind::SlashEq => AssignKind::Compound(BinOp::Div),
+        TokenKind::PercentEq => AssignKind::Compound(BinOp::Mod),
+        TokenKind::AmpEq => AssignKind::Compound(BinOp::BitAnd),
+        TokenKind::PipeEq => AssignKind::Compound(BinOp::BitOr),
+        TokenKind::CaretEq => AssignKind::Compound(BinOp::BitXor),
+        TokenKind::ShlEq => AssignKind::Compound(BinOp::Shl),
+        TokenKind::ShrEq => AssignKind::Compound(BinOp::Shr),
+        _ => return None,
+    })
+}
+
+/// A token that can begin a type name in `sizeof ( type-name )`.
+fn looks_like_type(kind: TokenKind) -> bool {
+    matches!(kind, TokenKind::KwInt | TokenKind::KwVoid) || unsupported(kind).is_some()
+}
+
 fn starts_declaration(kind: TokenKind) -> bool {
     matches!(
         kind,
@@ -842,7 +966,6 @@ fn unsupported(kind: TokenKind) -> Option<&'static str> {
         TokenKind::KwRegister => "register is not supported",
         TokenKind::KwAuto => "auto is not supported",
         TokenKind::KwInline => "inline is not supported",
-        TokenKind::KwSizeof => "sizeof is not supported",
         TokenKind::KwSwitch | TokenKind::KwCase | TokenKind::KwDefault => "switch is not supported",
         TokenKind::KwDo => "do-while loops are not supported",
         TokenKind::KwGoto => "goto is not supported",
@@ -1092,13 +1215,11 @@ func int main
         assert!(parse_err("int main(void) { char c; return 0; }")
             .contains("type 'char' is not supported"));
         assert!(parse_err("struct S { int x; };").contains("structs are not supported"));
-        assert!(parse_err("int main(void) { return 1 & 2; }").contains("bitwise AND"));
-        assert!(parse_err("int main(void) { x++; }").contains("increment and decrement"));
-        assert!(
-            parse_err("int main(void) { return sizeof(int); }").contains("sizeof is not supported")
-        );
-        assert!(parse_err("int main(void) { return 1 ? 2 : 3; }").contains("conditional operator"));
-        assert!(parse_err("int main(void) { return (1, 2); }").contains("comma operator"));
+        assert!(parse_err("int main(void) { return &x; }").contains("address-of"));
+        assert!(parse_err("int main(void) { return *p; }").contains("pointer dereference"));
+        assert!(parse_err("int main(void) { return sizeof(char); }").contains("type 'char'"));
+        assert!(parse_err("int main(void) { return sizeof(int *); }").contains("pointers"));
+        assert!(parse_err("int main(void) { return a ? b; }").contains("expected ':'"));
         assert!(parse_err("int add();").contains("old-style function declarations"));
         assert!(
             parse_err("int main(void) { int inner(void) { return 1; } }")
@@ -1118,6 +1239,258 @@ func int main
         assert!(parse_err("int *f(void) { return 0; }").contains("pointers are not supported"));
         assert!(parse_err("int main(void) { return (int)1; }").contains("casts are not supported"));
         assert!(parse_err("int f(int a, ...) { return a; }").contains("variadic"));
+    }
+
+    #[test]
+    fn integer_operator_precedence() {
+        assert_eq!(
+            parsed("int main(void) { return 1 + 2 << 3; }\n"),
+            "\
+func int main
+  block
+    return
+      <<
+        +
+          int 1
+          int 2
+        int 3
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { return 1 << 2 + 3; }\n"),
+            "\
+func int main
+  block
+    return
+      <<
+        int 1
+        +
+          int 2
+          int 3
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { return 5 & 3 == 1; }\n"),
+            "\
+func int main
+  block
+    return
+      &
+        int 5
+        ==
+          int 3
+          int 1
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { return 1 | 2 & 3 ^ 4; }\n"),
+            "\
+func int main
+  block
+    return
+      |
+        int 1
+        ^
+          &
+            int 2
+            int 3
+          int 4
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { return 1 || 2 | 3 && 4; }\n"),
+            "\
+func int main
+  block
+    return
+      ||
+        int 1
+        &&
+          |
+            int 2
+            int 3
+          int 4
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { return a ? b : c ? d : e; }\n"),
+            "\
+func int main
+  block
+    return
+      ?:
+        var a
+        var b
+        ?:
+          var c
+          var d
+          var e
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { return a ? b, c : d; }\n"),
+            "\
+func int main
+  block
+    return
+      ?:
+        var a
+        ,
+          var b
+          var c
+        var d
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { return a ? b : c, d; }\n"),
+            "\
+func int main
+  block
+    return
+      ,
+        ?:
+          var a
+          var b
+          var c
+        var d
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { a = b ? c : d; }\n"),
+            "\
+func int main
+  block
+    expr
+      assign
+        var a
+        ?:
+          var b
+          var c
+          var d
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { a ? b : c = d; }\n"),
+            "\
+func int main
+  block
+    expr
+      assign
+        ?:
+          var a
+          var b
+          var c
+        var d
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { a += b += 1; }\n"),
+            "\
+func int main
+  block
+    expr
+      +=
+        var a
+        +=
+          var b
+          int 1
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { x <<= 2; y >>= 1; }\n"),
+            "\
+func int main
+  block
+    expr
+      <<=
+        var x
+        int 2
+    expr
+      >>=
+        var y
+        int 1
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { ++x; x--; }\n"),
+            "\
+func int main
+  block
+    expr
+      pre++
+        var x
+    expr
+      post--
+        var x
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { return ~1 + !2; }\n"),
+            "\
+func int main
+  block
+    return
+      +
+        bnot
+          int 1
+        not
+          int 2
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { return sizeof(int) + sizeof x; }\n"),
+            "\
+func int main
+  block
+    return
+      +
+        sizeof int
+        sizeof
+          var x
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { return (a = 1, b = 2); }\n"),
+            "\
+func int main
+  block
+    return
+      ,
+        assign
+          var a
+          int 1
+        assign
+          var b
+          int 2
+"
+        );
+        assert_eq!(
+            parsed("int add(int a, int b); int main(void) { return add(1, (2, 3)); }\n"),
+            "\
+proto int add
+  param a
+  param b
+func int main
+  block
+    return
+      call add
+        int 1
+        ,
+          int 2
+          int 3
+"
+        );
+        assert_eq!(
+            parsed("int a = 1 << 4, b = sizeof(int);\n"),
+            "\
+global a =
+  <<
+    int 1
+    int 4
+global b =
+  sizeof int
+"
+        );
     }
 
     #[test]
