@@ -39,7 +39,7 @@ Harness programs: `01_return_const` (42), `02_add` (5), `03_loop` (55), `04_call
 
 Negative cases covered inside `cargo test` (each must be a non-zero diagnostic, not a successful compile): missing semicolon, missing `)`, pointers, arrays, structs, address-of, pointer dereference, `sizeof(float)`, `sizeof(int *)`, `sizeof(void)`, a `?:` missing `:`, old-style `int f();` declarations, unnamed parameters on a definition, `static` locals, block-scope `extern`, function initializers, multiple storage-class specifiers, `void` variables, storage class on a parameter, nested functions, `switch`, `do`/`while`, stray `else`, casts to `float` or `int *`, varargs, strings, floats, invalid integer suffixes (`1Ll`, `1uu`), integer constants that fit in no target type, out-of-range hex and octal escapes, empty and multi-character character constants, unknown escapes, unterminated comments, preprocessor lines, non-ASCII, invalid type-specifier combinations (`short long`, `unsigned signed`, `long long long`, `int int`, `char int`), conflicting integer types (`char` vs `signed char`, `int` vs `unsigned`, `long` vs `long long`), undeclared names, redefinitions, conflicting function types, a variable redeclared as a function, conflicting linkage, non-constant, divide-by-zero, and overflowing global initializers, undefined shifts in a constant initializer (`1 << 32`, `1 << -1`, `-1 << 1`, `1 << 40`), `1 << 31` and `1L << 63` as overflowing constants, `++` / assignment / comma in an evaluated constant expression, a `?:` mixing `void` with an integer, `++` or compound assignment applied to a non-lvalue, bad call arity against a prototype, a static function that is used but not defined, `break`/`continue` outside a loop, `void` returns, non-assignable expressions, calls of non-functions, and a call to a function that has not been declared yet.
 
-GitHub Actions for this step is recorded after the pull request's workflow runs finish.
+GitHub Actions for this step is in the step 3 record below.
 
 ## Implemented
 
@@ -113,12 +113,32 @@ A file-scope function with no storage class is treated as `extern`, so `static i
 - `.github/workflows/ci.yml` runs on `push` and `pull_request` with `contents: read`, a 20-minute job timeout, and cancel-in-progress for the same ref. The runner is `ubuntu-24.04`. It installs Rust 1.85.1 (`rustfmt`, `clippy`) and apt packages `clang`, `llvm`, `make`, and `python3`, and refuses Clang older than 15. Steps: `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo test --offline --lib`, `make`, `python3 harness/run_tests.py`.
 - Pinned actions: `actions/checkout@11d5960a326750d5838078e36cf38b85af677262` (v4.4.0), `dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8` (v1) with toolchain `1.85.1`.
 - `.coderabbit.yaml` follows CodeRabbit schema `https://coderabbit.ai/integrations/schema.v2.json`. The review profile is `CHILL`. The file does not install the GitHub App.
-- Milestone 1's Actions runs and the CodeRabbit review on pull request 1 are in the record below. Step 2's Actions runs and the CodeRabbit review are in the step 2 record below. Step 3's run is added when that workflow finishes.
+- Milestone 1's Actions runs and the CodeRabbit review on pull request 1 are in the record below. Step 2's Actions runs and the CodeRabbit review are in the step 2 record below. Step 3's Actions runs and the CodeRabbit review are in the step 3 record below.
 
 ## Next actions
 
 1. Milestone 2 step 4: pointers and arrays.
-2. Record the Actions and CodeRabbit results for the step 3 pull request once those checks finish.
+
+## Milestone 2 step 3 record
+
+Local results are in the table above: `cargo test --offline --lib` **34 passed**, `python3 harness/run_tests.py` **47/47 passed**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. Those commands were run again after the constant `?:` conversion fix, with the same results.
+
+### GitHub Actions
+
+Observed on commit `29d1635ec612101aaadf3995e471e71b7efb9c02`. Both runs completed with conclusion **success**. Each job's log contains `test result: ok. 34 passed; 0 failed` and `47/47 passed`. Both jobs reported rustc 1.85.1 (4eb161250 2025-03-15), Ubuntu clang 18.1.3, Ubuntu LLVM 18.1.3 (`llvm-as --version`), GNU Make 4.3, and Python 3.12.3. Both logs contain `34 passed; 0 failed` and `47/47 passed`.
+
+| Event | Run | Job | Conclusion |
+| --- | --- | --- | --- |
+| `push` | https://github.com/spacefilm900/c-compiler/actions/runs/42608147836 | https://github.com/spacefilm900/c-compiler/actions/runs/42608147836/job/129129299371 | success (2026-11-09 11:19:46Z–11:20:39Z) |
+| `pull_request` | https://github.com/spacefilm900/c-compiler/actions/runs/42608159630 | https://github.com/spacefilm900/c-compiler/actions/runs/42608159630/job/129129339364 | success (2026-11-09 11:19:52Z–11:20:38Z) |
+
+Commit `ec14e21`, before the conditional conversion fix, is not the head.
+
+### CodeRabbit
+
+CodeRabbit reviewed pull request 4 on `ec14e21`. The review posted one inline comment, on `src/sema.rs`. A constant `?:` kept the chosen arm's type. `unsigned long g = 1 ? -1 : 1u` folded to all-ones instead of `4294967295`, and `(1 ? -1 : 1u) > 0` folded to 0. That was fixed in `29d1635`: the chosen arm is converted to the conditional's result type, and the unit test plus `tests/47_const_types.c` cover both cases.
+
+The follow-up review on `29d1635` (review `5825162941`, submitted 2026-11-09 11:24:01Z) posted no new inline comments. Its summary repeated the docstring-coverage pre-merge note. No function docstrings were added. The sources document modules and the language rules, not every function. The same note on pull request 3 was left that way.
 
 ## Milestone 2 step 2 record
 
