@@ -372,7 +372,7 @@ impl Parser<'_> {
             ty,
             forward_tag: flags.forward_tag,
             introduced_tag: flags.introduced_tag,
-            shadow_decl: self.shadow_decl.clone(),
+            shadow_decl: self.shadow_decl.take(),
             line: flags.line,
             column: flags.column,
         })

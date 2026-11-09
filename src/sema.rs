@@ -666,6 +666,15 @@ impl Sema {
                     format!("variable has incomplete type '{}'", ty.display()),
                 );
             };
+            // An unbraced union consumes one initializer, the first member.
+            // Every member is at offset 0, so walking all of them would store
+            // later items on top of the same bytes and steal them from the
+            // enclosing initializer.
+            let fields: Vec<_> = if ty.is_union() {
+                fields.into_iter().take(1).collect()
+            } else {
+                fields
+            };
             for field in &fields {
                 if *pos >= items.len() {
                     break;
@@ -862,7 +871,15 @@ impl Sema {
         for store in stores {
             folded.push((store.offset, self.fold_one(name, &store.expr, &store.ty)?));
         }
-        Ok(assemble(ty, &folded, 0))
+        let value = assemble(ty, &folded, 0);
+        if !union_bytes_ok(ty, &value) {
+            return self.err(
+                stores.first().map(|store| store.expr.line()).unwrap_or(1),
+                stores.first().map(|store| store.expr.column()).unwrap_or(1),
+                format!("initializer of '{name}' uses an address in a union"),
+            );
+        }
+        Ok(value)
     }
 
     fn fold_one(&self, name: &str, expr: &Expr, dest: &CType) -> Result<ConstInit, Diagnostic> {
@@ -1343,10 +1360,16 @@ impl Sema {
         };
         let (slot, ty) = match sym {
             Symbol::Var(var) => (var.slot, var.ty),
-            Symbol::Func(func) => (
-                format!("@{}", func.symbol),
-                CType::func(func.ret, func.params, func.variadic),
-            ),
+            Symbol::Func(func) => {
+                // A function used as a value is a use. A static function that
+                // is never defined must still be diagnosed, and the IR must
+                // not name it without a declaration.
+                self.note_use(&name, line, column);
+                (
+                    format!("@{}", func.symbol),
+                    CType::func(func.ret, func.params, func.variadic),
+                )
+            }
         };
         if let Expr::Var { resolved, .. } = expr {
             *resolved = Some(VarRes { slot });
@@ -2461,6 +2484,38 @@ fn classify_init(ty: &CType, mut stores: Vec<ElemStore>) -> CheckedInit {
         return CheckedInit::Scalar(stores.remove(0).expr);
     }
     CheckedInit::Aggregate(stores)
+}
+
+/// A union constant is rendered as raw bytes. An address in that constant
+/// needs a relocation, which those bytes cannot hold.
+fn union_bytes_ok(ty: &CType, value: &ConstInit) -> bool {
+    match value {
+        ConstInit::Zero | ConstInit::Int(_) => true,
+        ConstInit::Ptr(_) | ConstInit::PtrToInt { .. } => !ty.is_union(),
+        ConstInit::Aggregate(items) => {
+            if ty.is_union() {
+                return items.first().is_none_or(const_has_no_address);
+            }
+            if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
+                return fields
+                    .iter()
+                    .zip(items)
+                    .all(|(field, item)| union_bytes_ok(&field.ty, item));
+            }
+            if let Some(elem) = ty.array_elem() {
+                return items.iter().all(|item| union_bytes_ok(elem, item));
+            }
+            true
+        }
+    }
+}
+
+fn const_has_no_address(value: &ConstInit) -> bool {
+    match value {
+        ConstInit::Zero | ConstInit::Int(_) => true,
+        ConstInit::Ptr(_) | ConstInit::PtrToInt { .. } => false,
+        ConstInit::Aggregate(items) => items.iter().all(const_has_no_address),
+    }
 }
 
 fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
@@ -3738,5 +3793,20 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
         )
         .contains("returning a struct or union by value"));
         assert!(sema_err("enum E { A = 1, A = 2 };").contains("redefinition of 'A'"));
+        assert!(
+            sema_err("static int f(void); int main(void) { int (*p)(void) = f; return 0; }")
+                .contains("static function 'f' is used but not defined")
+        );
+        assert!(sema_err("int g; union U { int *p; long l; } u = { &g };")
+            .contains("address in a union"));
+        sema_ok("struct T { int a; }; int main(void) { union T; int x = 1; return x; }");
+        let err = crate::compile_to_ir(
+            "#include <stdarg.h>\nint f(va_list ap) { return va_arg(ap, int); }\n",
+            "va.c",
+        );
+        assert!(err
+            .unwrap_err()
+            .to_string()
+            .contains("__cc_va_arg_is_not_supported"));
     }
 }

@@ -523,6 +523,15 @@ impl Gen {
     /// integer is `ptrtoint` to the destination width. That is the
     /// implementation-defined conversion Clang uses on x86_64-pc-linux-gnu.
     fn convert(&mut self, value: &str, from: &CType, to: &CType) -> String {
+        // C11 6.3.1.2: a pointer converts to `_Bool` as 0 when null and 1
+        // otherwise. Truncating the address to a byte is not that conversion.
+        if from.is_pointer() && to.as_integer() == Some(TypeName::Bool) {
+            let cmp = self.fresh();
+            let tmp = self.fresh();
+            self.emit(&format!("  {cmp} = icmp ne ptr {value}, null"));
+            self.emit(&format!("  {tmp} = zext i1 {cmp} to i8"));
+            return tmp;
+        }
         if let (Some(from_i), Some(to_i)) = (from.as_integer(), to.as_integer()) {
             // `_Bool` is 0 or 1. A same-width truncation would keep the low
             // byte, so `( _Bool )2` would stay 2.
@@ -1409,7 +1418,12 @@ fn render_union_const(ty: &CType, value: &ConstInit) -> String {
     let size = ty.size().unwrap_or(0) as usize;
     let align = usize::try_from(ty.align().max(1)).unwrap_or(1);
     let mut bytes = vec![0u8; size];
-    let _ = write_const_bytes(ty, value, &mut bytes, 0);
+    // Semantic analysis rejects an address constant in a union before this
+    // runs. A `false` result here is a bug in that check, not a zero.
+    assert!(
+        write_const_bytes(ty, value, &mut bytes, 0),
+        "union initializer contains a value that is not a byte constant"
+    );
     if bytes.iter().all(|byte| *byte == 0) {
         return "zeroinitializer".to_string();
     }

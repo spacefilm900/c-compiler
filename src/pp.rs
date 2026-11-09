@@ -1153,16 +1153,17 @@ impl Processor {
         }
         dirs.extend(self.include_dirs.iter().cloned());
         dirs.extend(self.system_dirs.iter().cloned());
-        // `#include_next` starts at the directory after the one that provided
-        // the current file.
-        let mut past = after.is_none();
-        for dir in dirs {
-            if !past {
-                if after.is_some_and(|found| dir == found) {
-                    past = true;
-                }
-                continue;
-            }
+        // `#include_next` resumes after the last copy of the directory that
+        // provided the current file. If that directory is not in this search
+        // list, the directive behaves like `#include`.
+        let start = match after {
+            Some(found) => dirs
+                .iter()
+                .rposition(|dir| dir == found)
+                .map_or(0, |index| index + 1),
+            None => 0,
+        };
+        for dir in dirs.into_iter().skip(start) {
             let path = dir.join(name);
             if path.is_file() {
                 return Ok((path, dir));
