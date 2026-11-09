@@ -2,9 +2,11 @@
 //!
 //! `int` is a 32-bit two's complement value, matching the System V x86-64 ABI.
 //! Locals are `alloca`s in the entry block so a declaration inside a loop does
-//! not allocate on every iteration. `&&` and `||` are short-circuiting and
-//! produce 0 or 1. Signed division and remainder use `sdiv` and `srem`, which
-//! round toward zero as C requires.
+//! not allocate on every iteration. File-scope objects are LLVM globals.
+//! Internal linkage is `internal`; a declaration with no definition in this
+//! translation unit is `external global` or `declare`. `&&` and `||` are
+//! short-circuiting and produce 0 or 1. Signed division and remainder use
+//! `sdiv` and `srem`, which round toward zero as C requires.
 
 use crate::ast::*;
 
@@ -12,18 +14,70 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("source_filename = {}\n", llvm_string(filename)));
     out.push_str("target triple = \"x86_64-pc-linux-gnu\"\n\n");
-    for func in &unit.functions {
-        out.push_str(&render_function(func));
-        out.push_str("\n\n");
+    let mut wrote_prelude = false;
+    for global in &unit.globals {
+        out.push_str(&render_global(global));
+        out.push('\n');
+        wrote_prelude = true;
+    }
+    for decl in &unit.func_decls {
+        out.push_str(&render_declare(decl));
+        out.push('\n');
+        wrote_prelude = true;
+    }
+    if wrote_prelude {
+        out.push('\n');
+    }
+    for decl in &unit.decls {
+        if let TopDecl::Func(func) = decl {
+            if func.body.is_some() {
+                out.push_str(&render_function(func));
+                out.push_str("\n\n");
+            }
+        }
     }
     out
 }
 
-fn render_function(func: &FuncDef) -> String {
-    let mut gen = Gen::default();
-    let ret = match func.ret_type {
+fn render_global(global: &IrGlobal) -> String {
+    let name = llvm_global(&global.name);
+    if let Some(value) = global.init {
+        let linkage = match global.linkage {
+            Linkage::Internal => "internal ",
+            Linkage::External => "",
+        };
+        format!("{name} = {linkage}global i32 {value}, align 4")
+    } else {
+        format!("{name} = external global i32, align 4")
+    }
+}
+
+fn render_declare(decl: &IrFunc) -> String {
+    let ret = ir_type(decl.ret);
+    let mut params = String::new();
+    for index in 0..decl.arity {
+        if index > 0 {
+            params.push_str(", ");
+        }
+        params.push_str("i32");
+    }
+    format!("declare {ret} {}({params})", llvm_global(&decl.name))
+}
+
+fn ir_type(ty: TypeName) -> &'static str {
+    match ty {
         TypeName::Int => "i32",
         TypeName::Void => "void",
+    }
+}
+
+fn render_function(func: &FuncDef) -> String {
+    let body = func.body.as_ref().expect("defined function");
+    let mut gen = Gen::default();
+    let ret = ir_type(func.ret_type);
+    let linkage = match func.linkage {
+        Linkage::Internal => "internal ",
+        Linkage::External => "",
     };
     let params = func
         .params
@@ -32,7 +86,7 @@ fn render_function(func: &FuncDef) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     gen.emit(&format!(
-        "define {ret} {}({params}) {{",
+        "define {linkage}{ret} {}({params}) {{",
         llvm_global(&func.name)
     ));
     gen.emit("entry:");
@@ -42,7 +96,7 @@ fn render_function(func: &FuncDef) -> String {
     for param in &func.params {
         gen.emit(&format!("  {} = alloca i32, align 4", param.slot));
     }
-    for slot in local_slots(&func.body) {
+    for slot in local_slots(body) {
         gen.emit(&format!("  {slot} = alloca i32, align 4"));
     }
     for param in &func.params {
@@ -52,7 +106,7 @@ fn render_function(func: &FuncDef) -> String {
         ));
     }
 
-    gen.gen_compound(&func.body);
+    gen.gen_compound(body);
     if !gen.terminated {
         match func.ret_type {
             TypeName::Int => gen.emit("  ret i32 0"),
@@ -601,6 +655,37 @@ mod tests {
         assert_eq!(super::llvm_global("main"), "@main");
         assert_eq!(super::llvm_global("a\"b"), "@\"a\\22b\"");
         assert_eq!(super::llvm_global(""), "@\"\"");
+    }
+
+    #[test]
+    fn globals_and_prototypes_lower() {
+        let ir = crate::compile_to_ir(
+            "\
+static int hidden = 3;
+int counter;
+extern int missing;
+int add(int, int);
+static int id(int x) { return x + hidden; }
+int main(void) { counter = id(4); return counter; }
+",
+            "g.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("@hidden = internal global i32 3, align 4"),
+            "{ir}"
+        );
+        assert!(ir.contains("@counter = global i32 0, align 4"), "{ir}");
+        assert!(
+            ir.contains("@missing = external global i32, align 4"),
+            "{ir}"
+        );
+        assert!(ir.contains("declare i32 @add(i32, i32)"), "{ir}");
+        assert!(ir.contains("define internal i32 @id(i32 %p0)"), "{ir}");
+        assert!(ir.contains("define i32 @main()"), "{ir}");
+        assert!(!ir.contains("define i32 @add"), "{ir}");
+        assert!(!ir.contains("declare i32 @id"), "{ir}");
+        assert_eq!(run_binary(&ir).0, 7);
     }
 
     #[test]
