@@ -21,7 +21,7 @@ Rust, edition 2021, standard library only. No crates.io dependencies (`Cargo.loc
 
 ## Tests for this step
 
-Run on this tree after the step 2 changes, including the review fix that drops the undefined `x += x += 1` case:
+Run locally after the review fix, on the tree committed as `dc32fa1`. The Actions runs of that commit are in the step 2 record below.
 
 | Command | Toolchain | Result |
 | --- | --- | --- |
@@ -96,12 +96,37 @@ A file-scope function with no storage class is treated as `extern`, so `static i
 - `.github/workflows/ci.yml` runs on `push` and `pull_request` with `contents: read`, a 20-minute job timeout, and cancel-in-progress for the same ref. The runner is `ubuntu-24.04`. It installs Rust 1.85.1 (`rustfmt`, `clippy`) and apt packages `clang`, `llvm`, `make`, and `python3`, and refuses Clang older than 15. Steps: `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo test --offline --lib`, `make`, `python3 harness/run_tests.py`.
 - Pinned actions: `actions/checkout@11d5960a326750d5838078e36cf38b85af677262` (v4.4.0), `dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8` (v1) with toolchain `1.85.1`.
 - `.coderabbit.yaml` follows CodeRabbit schema `https://coderabbit.ai/integrations/schema.v2.json`. The review profile is `CHILL`. The file does not install the GitHub App.
-- Milestone 1's Actions runs and the CodeRabbit review on pull request 1 are in the record below. This step's Actions run and CodeRabbit review are added when those checks finish.
+- Milestone 1's Actions runs and the CodeRabbit review on pull request 1 are in the record below. This step's Actions runs and the CodeRabbit review are in the step 2 record below.
 
 ## Next actions
 
 1. Milestone 2 step 3: `char` / `short` / `long` / unsigned, integer promotions, and casts.
-2. Record the Actions and CodeRabbit results for this step once those checks finish.
+
+## Milestone 2 step 2 record
+
+Local results are in the table above: `cargo test --offline --lib` **29 passed**, `python3 harness/run_tests.py` **37/37 passed**, on rustc 1.85.1 and Ubuntu Clang 18.1.3.
+
+### GitHub Actions
+
+Observed on commit `dc32fa16839ad5f2fd5a54f6334f6e40ea359ce9`. Both runs completed with conclusion **success**. Each job's log contains `test result: ok. 29 passed; 0 failed` and `37/37 passed`. The push job reported rustc 1.85.1 (4eb161250 2025-03-15), Ubuntu clang 18.1.3, Ubuntu LLVM 18.1.3 (`llvm-as --version`), GNU Make 4.3, and Python 3.12.3. The pull_request job's log also contains Ubuntu clang 18.1.3, GNU Make 4.3, Python 3.12.3, `29 passed; 0 failed`, and `37/37 passed`.
+
+| Event | Run | Job | Conclusion |
+| --- | --- | --- | --- |
+| `push` | https://github.com/spacefilm900/c-compiler/actions/runs/42598953136 | https://github.com/spacefilm900/c-compiler/actions/runs/42598953136/job/129098387411 | success (2026-11-09 10:10:43Z–10:11:23Z) |
+| `pull_request` | https://github.com/spacefilm900/c-compiler/actions/runs/42598959935 | https://github.com/spacefilm900/c-compiler/actions/runs/42598959935/job/129098409986 | success (2026-11-09 10:11:46Z–10:12:30Z) |
+
+Commit `30f9dd47905de98939b48529381613e7b8481c7e`, before the review fix, also had successful push and pull_request runs of the same job. Those runs are not the head.
+
+### CodeRabbit
+
+CodeRabbit reviewed pull request 3 on `30f9dd4`. Check run `CodeRabbit`, app `coderabbitai`, conclusion **success**, completed 2026-11-09 10:14:36Z. GitHub URL: https://github.com/spacefilm900/c-compiler/runs/129095711382. Details URL: https://app.coderabbit.ai/change-stack/spacefilm900/c-compiler/pull/3.
+
+The review posted two inline comments. Both were fixed in `dc32fa1`:
+
+- `STATUS.md` had called `x += x += 1` defined. That expression modifies one scalar twice with no intervening sequence point, so the sentence now says it is undefined and states only this compiler's evaluation order.
+- `tests/33_compound.c` used that expression. It now uses `x += extra += 1` on two different objects.
+
+The review summary also listed a docstring-coverage pre-merge note. No function docstrings were added. The existing sources document modules and the operators, not every function. No follow-up review on `dc32fa1` had been posted when this record was written.
 
 ## Milestone 1 record
 
