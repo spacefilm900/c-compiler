@@ -4,9 +4,9 @@
 //! analysis so each variable has a stable LLVM alloca name. File-scope objects
 //! use the global's LLVM name instead of an alloca.
 //!
-//! Types are integers, `void`, pointers, and arrays. A function type is not a
-//! value type: parameters and returns use the object type that remains after
-//! the usual parameter adjustment.
+//! Types are integers, `void`, pointers, and arrays, with `const` and
+//! `volatile`. A function type is not a value type: parameters and returns
+//! use the object type that remains after the usual parameter adjustment.
 
 /// Integer and `void` types on `x86_64-pc-linux-gnu` (LP64).
 ///
@@ -183,17 +183,52 @@ impl TypeName {
     }
 }
 
-/// A type this milestone can name: `void`, an integer, a pointer, or an array.
+/// `const` and `volatile` on one type (C11 6.7.3). `restrict` is not accepted.
+///
+/// The same qualifier twice in one specifier or qualifier list is a
+/// diagnostic. Qualifiers from different lists combine: `const int * const`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Quals {
+    pub is_const: bool,
+    pub is_volatile: bool,
+}
+
+impl Quals {
+    pub fn is_empty(self) -> bool {
+        !self.is_const && !self.is_volatile
+    }
+
+    /// `self` has every qualifier `other` has.
+    pub fn includes(self, other: Self) -> bool {
+        (!other.is_const || self.is_const) && (!other.is_volatile || self.is_volatile)
+    }
+
+    pub fn merge(self, other: Self) -> Self {
+        Self {
+            is_const: self.is_const || other.is_const,
+            is_volatile: self.is_volatile || other.is_volatile,
+        }
+    }
+}
+
+/// A type this milestone can name: `void`, an integer, a pointer, or an array,
+/// each of which may be `const` or `volatile`.
 ///
 /// `char` stays distinct from `signed char`. Pointers use one LLVM `ptr`
 /// (opaque pointers). An array with `len == None` is incomplete (`int a[]`).
 /// A pointer is complete even when it points at an incomplete type.
+///
+/// Qualifiers on an array apply to the element type, not the array type
+/// (C11 6.7.3p9), so an array is never wrapped in [`CType::Qualified`].
+/// `const int *` is a pointer to a qualified `int`. `int * const` is a
+/// qualified pointer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CType {
     Void,
     Int(TypeName),
     Pointer(Box<CType>),
     Array(Box<CType>, Option<u64>),
+    Qualified(Quals, Box<CType>),
 }
 
 impl CType {
@@ -217,20 +252,74 @@ impl CType {
         CType::Array(Box::new(elem), len)
     }
 
+    /// Drop one layer of qualifiers. Nested qualifiers, including those on a
+    /// pointee, stay.
+    pub fn unqualified(&self) -> CType {
+        match self {
+            CType::Qualified(_, inner) => (**inner).clone(),
+            other => other.clone(),
+        }
+    }
+
+    /// Qualifiers on this type itself, not on a pointee or element.
+    pub fn quals(&self) -> Quals {
+        match self {
+            CType::Qualified(quals, _) => *quals,
+            _ => Quals::default(),
+        }
+    }
+
+    pub fn is_const(&self) -> bool {
+        self.quals().is_const
+    }
+
+    /// Add qualifiers. An array passes them to its element type (C11 6.7.3p9).
+    pub fn with_quals(self, extra: Quals) -> CType {
+        if extra.is_empty() {
+            return self;
+        }
+        match self {
+            CType::Array(elem, len) => CType::array(elem.with_quals(extra), len),
+            CType::Qualified(existing, inner) => CType::Qualified(existing.merge(extra), inner),
+            other => CType::Qualified(extra, Box::new(other)),
+        }
+    }
+
+    /// The type with its own qualifiers removed, for queries that do not care
+    /// about `const` or `volatile`.
+    fn peel(&self) -> &CType {
+        match self {
+            CType::Qualified(_, inner) => inner.peel(),
+            other => other,
+        }
+    }
+
+    /// A const object, including an array whose elements are const. A pointer
+    /// to a const type is not itself const: `const int *` can be reseated.
+    pub fn is_const_object(&self) -> bool {
+        if self.is_const() {
+            return true;
+        }
+        match self.peel() {
+            CType::Array(elem, _) => elem.is_const_object(),
+            _ => false,
+        }
+    }
+
     pub fn is_void(&self) -> bool {
-        matches!(self, CType::Void)
+        matches!(self.peel(), CType::Void)
     }
 
     pub fn is_integer(&self) -> bool {
-        matches!(self, CType::Int(_))
+        matches!(self.peel(), CType::Int(_))
     }
 
     pub fn is_pointer(&self) -> bool {
-        matches!(self, CType::Pointer(_))
+        matches!(self.peel(), CType::Pointer(_))
     }
 
     pub fn is_array(&self) -> bool {
-        matches!(self, CType::Array(_, _))
+        matches!(self.peel(), CType::Array(_, _))
     }
 
     /// Integer or pointer. Arrays are not scalars; they decay first.
@@ -239,54 +328,64 @@ impl CType {
     }
 
     pub fn is_void_pointer(&self) -> bool {
-        matches!(self, CType::Pointer(inner) if inner.is_void())
+        matches!(self.peel(), CType::Pointer(inner) if inner.is_void())
+    }
+
+    /// `char`, `signed char`, or `unsigned char`, ignoring qualifiers.
+    pub fn is_character(&self) -> bool {
+        matches!(
+            self.as_integer(),
+            Some(TypeName::Char | TypeName::SChar | TypeName::UChar)
+        )
     }
 
     pub fn as_integer(&self) -> Option<TypeName> {
-        match self {
+        match self.peel() {
             CType::Int(ty) => Some(*ty),
             _ => None,
         }
     }
 
     pub fn pointee(&self) -> Option<&CType> {
-        match self {
+        match self.peel() {
             CType::Pointer(inner) => Some(inner),
             _ => None,
         }
     }
 
     pub fn array_elem(&self) -> Option<&CType> {
-        match self {
+        match self.peel() {
             CType::Array(elem, _) => Some(elem),
             _ => None,
         }
     }
 
     pub fn array_len(&self) -> Option<u64> {
-        match self {
+        match self.peel() {
             CType::Array(_, len) => *len,
             _ => None,
         }
     }
 
     pub fn is_complete(&self) -> bool {
-        match self {
+        match self.peel() {
             CType::Void => false,
             CType::Int(_) | CType::Pointer(_) => true,
             CType::Array(elem, Some(_)) => elem.is_complete(),
             CType::Array(_, None) => false,
+            CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
         }
     }
 
     /// Size in bytes. Incomplete types have no size.
     pub fn size(&self) -> Option<u64> {
-        match self {
+        match self.peel() {
             CType::Void => None,
             CType::Int(ty) => Some(ty.size()),
             CType::Pointer(_) => Some(8),
             CType::Array(elem, Some(len)) => elem.size().map(|elem| elem.saturating_mul(*len)),
             CType::Array(_, None) => None,
+            CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
         }
     }
 
@@ -294,9 +393,9 @@ impl CType {
     ///
     /// The System V AMD64 ABI gives an array of 16 bytes or more an alignment
     /// of at least 16. Smaller arrays use the element alignment. Pointers are
-    /// 8-byte aligned.
+    /// 8-byte aligned. Qualifiers do not change the alignment.
     pub fn align(&self) -> u32 {
-        match self {
+        match self.peel() {
             CType::Void => 1,
             CType::Int(ty) => ty.align(),
             CType::Pointer(_) => 8,
@@ -307,11 +406,12 @@ impl CType {
                     _ => elem_align,
                 }
             }
+            CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
         }
     }
 
     pub fn ir_type(&self) -> String {
-        match self {
+        match self.peel() {
             CType::Void => "void".to_string(),
             CType::Int(ty) => ty.ir_type().to_string(),
             CType::Pointer(_) => "ptr".to_string(),
@@ -319,6 +419,7 @@ impl CType {
                 let n = len.unwrap_or(0);
                 format!("[{n} x {}]", elem.ir_type())
             }
+            CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
         }
     }
 
@@ -336,18 +437,17 @@ impl CType {
 
 fn render_type(ty: &CType, name: &str) -> String {
     match ty {
+        CType::Qualified(quals, inner) => match inner.as_ref() {
+            CType::Pointer(pointee) => render_type(pointee, &star_decl(pointee, *quals, name)),
+            CType::Qualified(_, _) | CType::Array(_, _) => render_type(inner, name),
+            CType::Void => join_spec(&format!("{}void", qual_prefix(*quals)), name),
+            CType::Int(scalar) => {
+                join_spec(&format!("{}{}", qual_prefix(*quals), scalar.as_str()), name)
+            }
+        },
         CType::Void => join_spec("void", name),
         CType::Int(scalar) => join_spec(scalar.as_str(), name),
-        CType::Pointer(inner) => {
-            let starred = if matches!(inner.as_ref(), CType::Array(_, _)) {
-                format!("(*{name})")
-            } else if name.is_empty() {
-                "*".to_string()
-            } else {
-                format!("*{name}")
-            };
-            render_type(inner, &starred)
-        }
+        CType::Pointer(inner) => render_type(inner, &star_decl(inner, Quals::default(), name)),
         CType::Array(elem, len) => {
             let bracket = match len {
                 Some(n) => format!("[{n}]"),
@@ -355,6 +455,49 @@ fn render_type(ty: &CType, name: &str) -> String {
             };
             render_type(elem, &format!("{name}{bracket}"))
         }
+    }
+}
+
+fn qual_prefix(quals: Quals) -> String {
+    match (quals.is_const, quals.is_volatile) {
+        (true, true) => "const volatile ".to_string(),
+        (true, false) => "const ".to_string(),
+        (false, true) => "volatile ".to_string(),
+        (false, false) => String::new(),
+    }
+}
+
+/// Text after `*`: empty, ` const`, ` volatile`, or ` const volatile`.
+fn qual_after_star(quals: Quals) -> String {
+    match (quals.is_const, quals.is_volatile) {
+        (true, true) => " const volatile".to_string(),
+        (true, false) => " const".to_string(),
+        (false, true) => " volatile".to_string(),
+        (false, false) => String::new(),
+    }
+}
+
+fn star_decl(pointee: &CType, quals: Quals, name: &str) -> String {
+    let q = qual_after_star(quals);
+    let needs_paren = matches!(pointee.peel(), CType::Array(_, _));
+    if needs_paren {
+        if q.is_empty() {
+            format!("(*{name})")
+        } else if name.is_empty() {
+            format!("(*{q})")
+        } else {
+            format!("(*{q} {name})")
+        }
+    } else if name.is_empty() {
+        if q.is_empty() {
+            "*".to_string()
+        } else {
+            format!("*{q}")
+        }
+    } else if q.is_empty() {
+        format!("*{name}")
+    } else {
+        format!("*{q} {name}")
     }
 }
 
@@ -366,12 +509,18 @@ fn join_spec(spec: &str, name: &str) -> String {
     }
 }
 
-/// Two types are compatible (C11 6.2.7, 6.7.6). Qualifiers are not in this subset.
+/// Two types are compatible (C11 6.2.7, 6.7.6, 6.7.3).
 ///
-/// Arrays are compatible when their elements are and the lengths are equal or
-/// either length is unknown. The composite type keeps a known length.
+/// Qualifiers must match at every level. Arrays are compatible when their
+/// elements are and the lengths are equal or either length is unknown. The
+/// composite type keeps a known length. Function parameters strip top-level
+/// qualifiers before this check (C11 6.7.6.3p15); that happens at the call
+/// site, not here.
 pub fn compatible(left: &CType, right: &CType) -> bool {
-    match (left, right) {
+    if left.quals() != right.quals() {
+        return false;
+    }
+    match (left.peel(), right.peel()) {
         (CType::Void, CType::Void) => true,
         (CType::Int(a), CType::Int(b)) => a == b,
         (CType::Pointer(a), CType::Pointer(b)) => compatible(a, b),
@@ -384,11 +533,12 @@ pub fn compatible(left: &CType, right: &CType) -> bool {
 
 /// Composite type of two compatible types. A known array length wins.
 pub fn composite(left: &CType, right: &CType) -> CType {
-    match (left, right) {
+    let base = match (left.peel(), right.peel()) {
         (CType::Array(a, la), CType::Array(b, lb)) => CType::array(composite(a, b), la.or(*lb)),
         (CType::Pointer(a), CType::Pointer(b)) => CType::pointer(composite(a, b)),
-        _ => left.clone(),
-    }
+        _ => left.peel().clone(),
+    };
+    base.with_quals(left.quals())
 }
 
 pub fn width_mask(width: u32) -> u64 {
@@ -631,6 +781,9 @@ pub struct CallRes {
     pub name: String,
     pub ret: CType,
     pub params: Vec<CType>,
+    /// The callee was declared with `...`. Arguments past `params` use the
+    /// default argument promotions.
+    pub variadic: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -740,6 +893,16 @@ pub enum Expr {
         expr: Box<Expr>,
         line: usize,
         column: usize,
+        ty: Option<CType>,
+    },
+    /// A string literal. `bytes` does not include the implicit NUL. The type
+    /// is `char[N]` with `N == bytes.len() + 1`. `symbol` is the private
+    /// global that holds the literal, filled in when the address is needed.
+    Str {
+        bytes: Vec<u8>,
+        line: usize,
+        column: usize,
+        symbol: Option<String>,
         ty: Option<CType>,
     },
 }
@@ -898,6 +1061,16 @@ impl Expr {
         }
     }
 
+    pub fn str_lit(bytes: Vec<u8>, line: usize, column: usize) -> Self {
+        Expr::Str {
+            bytes,
+            line,
+            column,
+            symbol: None,
+            ty: None,
+        }
+    }
+
     pub fn line(&self) -> usize {
         match self {
             Expr::Int { line, .. }
@@ -913,7 +1086,8 @@ impl Expr {
             | Expr::Sizeof { line, .. }
             | Expr::Cast { line, .. }
             | Expr::Index { line, .. }
-            | Expr::Decay { line, .. } => *line,
+            | Expr::Decay { line, .. }
+            | Expr::Str { line, .. } => *line,
         }
     }
 
@@ -932,7 +1106,8 @@ impl Expr {
             | Expr::Sizeof { column, .. }
             | Expr::Cast { column, .. }
             | Expr::Index { column, .. }
-            | Expr::Decay { column, .. } => *column,
+            | Expr::Decay { column, .. }
+            | Expr::Str { column, .. } => *column,
         }
     }
 
@@ -951,7 +1126,8 @@ impl Expr {
             | Expr::Sizeof { ty, .. }
             | Expr::Cast { ty, .. }
             | Expr::Index { ty, .. }
-            | Expr::Decay { ty, .. } => ty.clone(),
+            | Expr::Decay { ty, .. }
+            | Expr::Str { ty, .. } => ty.clone(),
         }
     }
 
@@ -970,7 +1146,8 @@ impl Expr {
             | Expr::Sizeof { ty: slot, .. }
             | Expr::Cast { ty: slot, .. }
             | Expr::Index { ty: slot, .. }
-            | Expr::Decay { ty: slot, .. } => *slot = Some(ty),
+            | Expr::Decay { ty: slot, .. }
+            | Expr::Str { ty: slot, .. } => *slot = Some(ty),
         }
     }
 
@@ -1073,6 +1250,10 @@ pub struct FuncDef {
     pub ret_type: CType,
     pub name: String,
     pub params: Vec<Param>,
+    /// The parameter list ends with `...`. A definition of a variadic function
+    /// is rejected; only a declaration is kept, so another translation unit
+    /// (the C library) can provide it.
+    pub variadic: bool,
     /// `None` is a prototype. `Some` is a definition.
     pub body: Option<Compound>,
     pub storage: Storage,
@@ -1129,7 +1310,17 @@ pub struct IrFunc {
     pub name: String,
     pub ret: CType,
     pub params: Vec<CType>,
+    pub variadic: bool,
     pub linkage: Linkage,
+}
+
+/// A string literal lowered to a private unnamed_addr constant.
+///
+/// `bytes` includes the terminating NUL. The name is `.str` or `.str.N`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrConst {
+    pub name: String,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -1139,6 +1330,8 @@ pub struct TranslationUnit {
     pub globals: Vec<IrGlobal>,
     /// Prototypes with no definition in this translation unit.
     pub func_decls: Vec<IrFunc>,
+    /// String literals whose address is used, in order of first use.
+    pub strings: Vec<StrConst>,
 }
 
 pub fn dump(unit: &TranslationUnit) -> String {
@@ -1204,6 +1397,9 @@ fn dump_func(out: &mut String, func: &FuncDef, indent: usize) {
             ),
             None => put(out, indent + 1, &format!("param {}", param.ty.display())),
         }
+    }
+    if func.variadic {
+        put(out, indent + 1, "varargs");
     }
     if let Some(body) = &func.body {
         dump_compound(out, body, indent + 1);
@@ -1399,6 +1595,7 @@ fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
             put(out, indent, "decay");
             dump_expr(out, expr, indent + 1);
         }
+        Expr::Str { bytes, .. } => put(out, indent, &dump_string(bytes)),
         Expr::Call { callee, args, .. } => {
             match callee.as_ref() {
                 Expr::Var { name, .. } => put(out, indent, &format!("call {name}")),
@@ -1412,6 +1609,23 @@ fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
             }
         }
     }
+}
+
+fn dump_string(bytes: &[u8]) -> String {
+    let mut text = String::from("string \"");
+    for &byte in bytes {
+        match byte {
+            b'\n' => text.push_str("\\n"),
+            b'\t' => text.push_str("\\t"),
+            b'\r' => text.push_str("\\r"),
+            b'\\' => text.push_str("\\\\"),
+            b'"' => text.push_str("\\\""),
+            0x20..=0x7e => text.push(byte as char),
+            _ => text.push_str(&format!("\\x{byte:02x}")),
+        }
+    }
+    text.push('"');
+    text
 }
 
 fn dump_init(out: &mut String, init: &Init, indent: usize) {

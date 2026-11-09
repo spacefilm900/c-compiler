@@ -2,7 +2,8 @@
 //!
 //! This is a direct tokenization of source text. It does not implement C
 //! translation phases 1–4: no trigraphs, no backslash line splicing, and no
-//! preprocessor. Those inputs are diagnosed rather than ignored.
+//! preprocessor. Those inputs are diagnosed rather than ignored. String
+//! literals are decoded here; adjacent literals are concatenated by the parser.
 
 use crate::ast::TypeName;
 use crate::diag::Diagnostic;
@@ -56,7 +57,7 @@ impl Lexer<'_> {
                 continue;
             }
             if is_ident_start(byte) {
-                self.ident(line, column);
+                self.ident(line, column)?;
                 continue;
             }
             if byte.is_ascii_digit() {
@@ -100,6 +101,7 @@ impl Lexer<'_> {
             column: self.column,
             value: None,
             int_ty: None,
+            bytes: None,
         });
         Ok(self.tokens)
     }
@@ -138,6 +140,7 @@ impl Lexer<'_> {
             column,
             value: None,
             int_ty: None,
+            bytes: None,
         });
     }
 
@@ -190,14 +193,25 @@ impl Lexer<'_> {
         self.fail(line, column, "unterminated block comment")
     }
 
-    fn ident(&mut self, line: usize, column: usize) {
+    fn ident(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
         let start = self.index;
         while self.peek().is_some_and(is_ident_cont) {
             self.bump();
         }
         let spelling = &self.source[start..self.index];
+        // `L"..."`, `u"..."`, `U"..."`, and `u8"..."` are encoding prefixes
+        // (C11 6.4.5). This subset has only ordinary string and character
+        // literals, so a prefix glued to a quote is a diagnostic.
+        if matches!(spelling, "L" | "u" | "U" | "u8") && matches!(self.peek(), Some(b'"' | b'\'')) {
+            return self.fail(
+                line,
+                column,
+                "wide string and character literals are not supported",
+            );
+        }
         let kind = keyword(spelling).unwrap_or(TokenKind::Ident);
         self.push(kind, spelling, line, column);
+        Ok(())
     }
 
     fn number(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
@@ -343,6 +357,7 @@ impl Lexer<'_> {
             column,
             value: Some(bits),
             int_ty: Some(ty),
+            bytes: None,
         });
     }
 
@@ -358,27 +373,36 @@ impl Lexer<'_> {
         }
     }
 
+    /// An ordinary string literal (C11 6.4.5). Escapes are the same set as
+    /// character constants and must fit in `unsigned char`. The token's bytes
+    /// do not include the implicit terminating NUL; the type `char[N]` adds it.
     fn string_literal(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
+        let start = self.index;
         self.bump();
-        while let Some(byte) = self.peek() {
-            if byte == b'\n' || byte == b'\r' {
-                break;
-            }
-            if byte == b'\\' {
-                self.bump();
-                if let Some(next) = self.peek() {
-                    if next != b'\n' && next != b'\r' {
-                        self.bump();
-                    }
+        let mut bytes = Vec::new();
+        loop {
+            match self.peek() {
+                None | Some(b'\n' | b'\r') => {
+                    return self.fail(line, column, "unterminated string literal");
                 }
-                continue;
-            }
-            self.bump();
-            if byte == b'"' {
-                return self.fail(line, column, "string literals are not supported");
+                Some(b'"') => {
+                    self.bump();
+                    break;
+                }
+                _ => bytes.push(self.read_char_byte(line, column, true)?),
             }
         }
-        self.fail(line, column, "unterminated string literal")
+        let spelling = self.source[start..self.index].to_string();
+        self.tokens.push(Token {
+            kind: TokenKind::String,
+            spelling,
+            line,
+            column,
+            value: None,
+            int_ty: None,
+            bytes: Some(bytes),
+        });
+        Ok(())
     }
 
     /// An integer character constant has type `int` (C11 6.4.4.4).
@@ -395,7 +419,7 @@ impl Lexer<'_> {
         if self.peek() == Some(b'\'') {
             return self.fail(line, column, "empty character constant");
         }
-        let value = self.char_body(line, column)?;
+        let value = u32::from(self.read_char_byte(line, column, false)?);
         // The escape is a char, then converted to int (C11 6.4.4.4). char is
         // signed here, so 128..255 become negative.
         if self.peek() != Some(b'\'') {
@@ -415,9 +439,23 @@ impl Lexer<'_> {
         Ok(())
     }
 
-    fn char_body(&mut self, line: usize, column: usize) -> Result<u32, Diagnostic> {
+    /// One source character or one escape, as an `unsigned char` value.
+    ///
+    /// `string` selects the diagnostic for a missing closer. The escape set is
+    /// shared by character constants and string literals (C11 6.4.4.4).
+    fn read_char_byte(
+        &mut self,
+        line: usize,
+        column: usize,
+        string: bool,
+    ) -> Result<u8, Diagnostic> {
+        let unterminated = if string {
+            "unterminated string literal"
+        } else {
+            "unterminated character constant"
+        };
         let Some(byte) = self.peek() else {
-            return self.fail(line, column, "unterminated character constant");
+            return self.fail(line, column, unterminated);
         };
         if byte >= 128 {
             return self.fail(
@@ -428,13 +466,13 @@ impl Lexer<'_> {
         }
         if byte != b'\\' {
             self.bump();
-            return Ok(u32::from(byte));
+            return Ok(byte);
         }
         let esc_line = self.line;
         let esc_column = self.column;
         self.bump();
         let Some(next) = self.peek() else {
-            return self.fail(line, column, "unterminated character constant");
+            return self.fail(line, column, unterminated);
         };
         if next == b'\n' || next == b'\r' {
             return self.fail(
@@ -444,22 +482,23 @@ impl Lexer<'_> {
             );
         }
         self.bump();
-        match next {
-            b'a' => Ok(7),
-            b'b' => Ok(8),
-            b'f' => Ok(12),
-            b'n' => Ok(10),
-            b'r' => Ok(13),
-            b't' => Ok(9),
-            b'v' => Ok(11),
-            b'\\' => Ok(u32::from(b'\\')),
-            b'\'' => Ok(u32::from(b'\'')),
-            b'"' => Ok(u32::from(b'"')),
-            b'?' => Ok(u32::from(b'?')),
-            b'0'..=b'7' => self.octal_escape(next, esc_line, esc_column),
-            b'x' => self.hex_escape(esc_line, esc_column),
-            _ => self.fail(esc_line, esc_column, "unknown escape sequence"),
-        }
+        let value = match next {
+            b'a' => 7,
+            b'b' => 8,
+            b'f' => 12,
+            b'n' => 10,
+            b'r' => 13,
+            b't' => 9,
+            b'v' => 11,
+            b'\\' => u32::from(b'\\'),
+            b'\'' => u32::from(b'\''),
+            b'"' => u32::from(b'"'),
+            b'?' => u32::from(b'?'),
+            b'0'..=b'7' => self.octal_escape(next, esc_line, esc_column)?,
+            b'x' => self.hex_escape(esc_line, esc_column)?,
+            _ => return self.fail(esc_line, esc_column, "unknown escape sequence"),
+        };
+        Ok(value as u8)
     }
 
     fn octal_escape(&mut self, first: u8, line: usize, column: usize) -> Result<u32, Diagnostic> {
@@ -819,8 +858,10 @@ mod tests {
 
     #[test]
     fn rejects_literals_and_preprocessor() {
-        assert!(err("\"hi\"").contains("string literals are not supported"));
         assert!(err("\"hi").contains("unterminated string literal"));
+        assert!(err("L\"hi\"").contains("wide string and character literals"));
+        assert!(err("u8\"hi\"").contains("wide string and character literals"));
+        assert!(err("L'a'").contains("wide string and character literals"));
         assert!(err("1.5").contains("floating constants"));
         assert!(err(".5").contains("floating constants"));
         assert!(err("1e2").contains("floating constants"));
@@ -828,6 +869,32 @@ mod tests {
         assert!(err("#include <stdio.h>").contains("preprocessor directives"));
         assert!(err("int café").contains("non-ASCII"));
         assert!(err("int x = 1 $ 2;").contains("unexpected character '$'"));
+    }
+
+    #[test]
+    fn string_literals_decode_escapes() {
+        let hi = tokens(r#""hi""#);
+        assert_eq!(hi[0].kind, TokenKind::String);
+        assert_eq!(hi[0].bytes.as_deref(), Some(b"hi".as_slice()));
+        assert_eq!(tokens(r#""""#)[0].bytes.as_deref(), Some(b"".as_slice()));
+        assert_eq!(
+            tokens(r#""\n\t\0\x41\101""#)[0].bytes.as_deref(),
+            Some(&[b'\n', b'\t', 0, 0x41, 0o101][..])
+        );
+        assert_eq!(tokens(r#""\xff""#)[0].bytes.as_deref(), Some(&[0xff][..]));
+        assert_eq!(
+            tokens(r#""\'\"\\\?""#)[0].bytes.as_deref(),
+            Some(b"'\"\\?".as_slice())
+        );
+        assert_eq!(
+            tokens(r#""a\1234""#)[0].bytes.as_deref(),
+            Some(&[b'a', 0o123, b'4'][..])
+        );
+        assert!(err(r#""\x100""#).contains("hex escape sequence out of range"));
+        assert!(err(r#""\400""#).contains("octal escape sequence out of range"));
+        assert!(err(r#""\q""#).contains("unknown escape sequence"));
+        assert!(err("\"a\n\"").contains("unterminated string literal"));
+        assert!(err("\"unterminated").contains("unterminated string literal"));
     }
 
     #[test]

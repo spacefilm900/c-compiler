@@ -2,9 +2,9 @@
 
 ## Current milestone
 
-**Milestone 2, step 4 of 6 — pointers and arrays.** Done.
+**Milestone 2, step 5 of 6 — string literals and library calls.** Done.
 
-The compiler is a Rust binary. `make` installs it at `build/compiler`. It accepts the Milestone 1 integer subset, prototypes, file-scope objects, the integer operators, the LP64 integer types, and pointers and arrays: declarators, `void *`, null pointer constants, unary `&` and `*`, pointer arithmetic, casts, array decay, subscripts, brace initializers, and address-constant initializers. It rejects other input with a diagnostic. It is not a full C compiler.
+The compiler is a Rust binary. `make` installs it at `build/compiler`. It accepts the Milestone 1 integer subset, prototypes, file-scope objects, the integer operators, the LP64 integer types, pointers and arrays, string literals, `const` and `volatile`, and calls to variadic external functions such as `printf`. `tests/62_hello.c` is hello world; it compiles and runs. The compiler rejects other input with a diagnostic. It is not a full C compiler.
 
 ## Milestone 2 plan
 
@@ -12,7 +12,7 @@ The compiler is a Rust binary. `make` installs it at `build/compiler`. It accept
 2. **Done.** Remaining integer operators: bitwise, shifts, `++`/`--`, compound assignment, comma, ternary, `sizeof`.
 3. **Done.** `char` / `short` / `long` / unsigned, integer promotions, conversions, and casts.
 4. **Done.** Pointers and arrays.
-5. String literals and external calls such as `printf` / `puts` (hello world).
+5. **Done.** String literals and external calls such as `printf` / `puts` (hello world).
 6. Simple structs.
 
 ## Language
@@ -21,25 +21,25 @@ Rust, edition 2021, standard library only. No crates.io dependencies (`Cargo.loc
 
 ## Tests for this step
 
-Run locally on the first commit of this step, then again after the review fix (reject a global initializer that truncates an address, and reject a subscript of a pointer to an incomplete array). The second run was `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, and `cargo test --offline --lib` (**37 passed, 0 failed**). The harness programs did not change, so `python3 harness/run_tests.py` was not run again. GitHub Actions for this step is recorded after that workflow finishes.
+Run locally on this tree before the pull request. GitHub Actions for this step is not in this file; it is reported with the pull request after the workflow finishes.
 
 | Command | Toolchain | Result |
 | --- | --- | --- |
 | `cargo fmt --all -- --check` | rustc **1.85.1** (4eb161250 2025-03-15) | clean |
 | `cargo clippy --offline --all-targets -- -D warnings` | same | clean |
-| `cargo test --offline --lib` | same | **37 passed, 0 failed** |
+| `cargo test --offline --lib` | same | **41 passed, 0 failed** |
 | `make` | GNU make **4.3** | `build/compiler` produced |
-| `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **61/61 passed** |
+| `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **72/72 passed** |
 
-`cargo test` includes lexer regressions, parser AST dumps (including `int *a[3]` versus `int (*p)[3]`), negative diagnostics, a CLI check, IR checks (a constant return, globals, `declare` / `define internal`, the integer operators, pointer globals, `getelementptr`, assembled and executed), and a differential run of every `tests/*.c` file against `clang -std=c11`. The harness repeats that differential check through `build/compiler` (release binary) and compares exit status, stdout, and stderr.
+`cargo test` includes lexer regressions (string escapes included), parser AST dumps (including `int *a[3]` versus `int (*p)[3]`, a concatenated string, and a variadic prototype), negative diagnostics, a CLI check, IR checks (a constant return, globals, `declare` / `define internal`, the integer operators, pointer globals, `getelementptr`, a private string constant, `declare i32 @printf(ptr, ...)`, `call i32 (ptr, ...) @printf(...)`, assembled and executed), and a differential run of every `tests/*.c` file against `clang -std=c11`. The harness repeats that differential check through `build/compiler` (release binary) and compares exit status, stdout, and stderr.
 
-Harness programs: `01_return_const` (42), `02_add` (5), `03_loop` (55), `04_call` (42), `05_if` (2), `06_logic` (9), `07_while` (6), `08_cmp` (3), `09_arith` (17), `10_shadow` (4), `11_break` (25), `12_recursion` (16), `13_void` (6), `14_fallthrough` (0), `15_comment` (5), `16_decls` (12), `17_empty_params` (7), `18_forward_call` (42), `19_mutual` (2), `20_global_counter` (5), `21_static_global` (7), `22_tentative` (9), `23_shadow_global` (18), `24_const_init` (0), `25_extern_global` (8), `26_unnamed_params` (6), `27_multi_decl` (7), `28_void_forward` (9), `29_extern_def` (11), `30_bitwise` (0), `31_shifts` (0), `32_incdec` (0), `33_compound` (0), `34_ternary` (0), `35_comma` (0), `36_sizeof` (0), `37_const_ops` (0), `38_promotions` (0), `39_unsigned` (0), `40_casts` (0), `41_suffixes` (0), `42_chars` (0), `43_sizeof_types` (0), `44_globals` (0), `45_calls` (0), `46_trunc` (0), `47_const_types` (0), `48_swap` (0), `49_arith` (0), `50_sum` (0), `51_multi` (0), `52_pp` (0), `53_param` (0), `54_global` (0), `55_sizeof` (0), `56_cmp` (0), `57_sort` (0), `58_cast` (0), `59_cond` (0), `60_init` (0), `61_decay` (0).
+Harness programs: `01_return_const` (42), `02_add` (5), `03_loop` (55), `04_call` (42), `05_if` (2), `06_logic` (9), `07_while` (6), `08_cmp` (3), `09_arith` (17), `10_shadow` (4), `11_break` (25), `12_recursion` (16), `13_void` (6), `14_fallthrough` (0), `15_comment` (5), `16_decls` (12), `17_empty_params` (7), `18_forward_call` (42), `19_mutual` (2), `20_global_counter` (5), `21_static_global` (7), `22_tentative` (9), `23_shadow_global` (18), `24_const_init` (0), `25_extern_global` (8), `26_unnamed_params` (6), `27_multi_decl` (7), `28_void_forward` (9), `29_extern_def` (11), `30_bitwise` (0), `31_shifts` (0), `32_incdec` (0), `33_compound` (0), `34_ternary` (0), `35_comma` (0), `36_sizeof` (0), `37_const_ops` (0), `38_promotions` (0), `39_unsigned` (0), `40_casts` (0), `41_suffixes` (0), `42_chars` (0), `43_sizeof_types` (0), `44_globals` (0), `45_calls` (0), `46_trunc` (0), `47_const_types` (0), `48_swap` (0), `49_arith` (0), `50_sum` (0), `51_multi` (0), `52_pp` (0), `53_param` (0), `54_global` (0), `55_sizeof` (0), `56_cmp` (0), `57_sort` (0), `58_cast` (0), `59_cond` (0), `60_init` (0), `61_decay` (0), `62_hello` (0, prints `hello, world`), `63_printf` (0), `64_flags` (0), `65_arith` (0), `66_walk` (0), `67_strlen` (0), `68_reverse` (0), `69_format` (0), `70_io` (0), `71_strings` (0), `72_const` (0).
 
 `cargo test` also links two translation units both ways (this compiler's IR with a Clang object) for `char` / `unsigned char` / `short` / `unsigned short` parameters and returns. Both directions exit 0, matching Clang compiling the whole program.
 
-Negative cases covered inside `cargo test` (each must be a non-zero diagnostic, not a successful compile): missing semicolon, missing `)`, function pointers, variable-length arrays, a non-positive array size, structs, `sizeof(float)`, `sizeof(void)`, a `?:` missing `:`, old-style `int f();` declarations, unnamed parameters on a definition, `static` locals, block-scope `extern`, function initializers, multiple storage-class specifiers, `void` variables, an incomplete local array, storage class on a parameter, nested functions, `switch`, `do`/`while`, stray `else`, casts to `float`, varargs, strings, floats, invalid integer suffixes (`1Ll`, `1uu`), integer constants that fit in no target type, out-of-range hex and octal escapes, empty and multi-character character constants, unknown escapes, unterminated comments, preprocessor lines, non-ASCII, invalid type-specifier combinations (`short long`, `unsigned signed`, `long long long`, `int int`, `char int`), conflicting integer types (`char` vs `signed char`, `int` vs `unsigned`, `long` vs `long long`), incompatible pointer assignment (`int *` from `char *`), arithmetic on `void *`, a subscript of a pointer to an incomplete array, a pointer compared with `0` using `<`, an array assigned to, the address of a non-lvalue, a non-constant pointer initializer, a global initializer that truncates an address (`int x = (int)&g` and `long x = (int)&g`), excess array initializers, undeclared names, redefinitions, conflicting function types, a variable redeclared as a function, conflicting linkage, non-constant, divide-by-zero, and overflowing global initializers, undefined shifts in a constant initializer (`1 << 32`, `1 << -1`, `-1 << 1`, `1 << 40`), `1 << 31` and `1L << 63` as overflowing constants, `++` / assignment / comma in an evaluated constant expression, a `?:` mixing `void` with an integer, `++` or compound assignment applied to a non-lvalue, bad call arity against a prototype, a static function that is used but not defined, `break`/`continue` outside a loop, `void` returns, non-assignable expressions, calls of non-functions, and a call to a function that has not been declared yet.
+Negative cases covered inside `cargo test` (each must be a non-zero diagnostic, not a successful compile): missing semicolon, missing `)`, function pointers, variable-length arrays, a non-positive array size, structs, `sizeof(float)`, `sizeof(void)`, a `?:` missing `:`, old-style `int f();` declarations, unnamed parameters on a definition, `static` locals, block-scope `extern`, function initializers, multiple storage-class specifiers, `void` variables, an incomplete local array, storage class on a parameter, nested functions, `switch`, `do`/`while`, stray `else`, casts to `float`, a definition of a variadic function, `int f(...);` with no named parameter, wide string and character literals, `restrict`, a duplicate `const`, floats, invalid integer suffixes (`1Ll`, `1uu`), integer constants that fit in no target type, out-of-range hex and octal escapes, empty and multi-character character constants, unknown escapes, unterminated string literals, unterminated comments, preprocessor lines, non-ASCII, invalid type-specifier combinations (`short long`, `unsigned signed`, `long long long`, `int int`, `char int`), conflicting integer types (`char` vs `signed char`, `int` vs `unsigned`, `long` vs `long long`), incompatible pointer assignment (`int *` from `char *`, `char *` from `const char *`, `const char **` from `char **`), assignment to a const object (`const int`, `*p` for `const char *`, `char *const`, and an element of `const char[]`), a string that is too long for a character array, a string used to initialize an `int` array, arithmetic on `void *`, a subscript of a pointer to an incomplete array, a pointer compared with `0` using `<`, an array assigned to, the address of a non-lvalue, a non-constant pointer initializer, a global initializer that truncates an address (`int x = (int)&g` and `long x = (int)&g`), excess array initializers, undeclared names, redefinitions, conflicting function types (including a variadic declaration followed by a non-variadic one, and `const int` versus `int` as a return type), a variable redeclared as a function, conflicting linkage, non-constant, divide-by-zero, and overflowing global initializers, undefined shifts in a constant initializer (`1 << 32`, `1 << -1`, `-1 << 1`, `1 << 40`), `1 << 31` and `1L << 63` as overflowing constants, `++` / assignment / comma in an evaluated constant expression, a `?:` mixing `void` with an integer, `++` or compound assignment applied to a non-lvalue, bad call arity against a prototype (including too few arguments to a variadic function), a static function that is used but not defined, `break`/`continue` outside a loop, `void` returns, non-assignable expressions, calls of non-functions, and a call to a function that has not been declared yet. There is no implicit function declaration.
 
-GitHub Actions for this step is in the step 4 record below.
+GitHub Actions for this step is not copied here. The step 4 record below is the previous step.
 
 ## Implemented
 
@@ -52,6 +52,9 @@ GitHub Actions for this step is in the step 4 record below.
 - [x] Bitwise operators, shifts, `++`/`--`, compound assignment, `?:`, comma, and `sizeof`
 - [x] LP64 integer types, promotions, usual arithmetic conversions, casts, and integer-constant suffixes
 - [x] Pointers and arrays: declarators, arithmetic, decay, subscripts, brace initializers, and address constants
+- [x] String literals, character-array initializers, and calls such as `printf` / `puts`
+- [x] `const` and `volatile`, including assignment to const objects and `char *` passed to `const char *`
+- [x] Variadic declarations and calls, with default argument promotions
 - [x] CLI `build/compiler INPUT.c -o OUTPUT.ll`
 - [x] Differential tests against Clang
 
@@ -105,14 +108,43 @@ Arrays may be locals or globals, with any supported element type, including poin
 
 A global initializer may be an integer constant expression or an address constant: `&g`, `&arr[2]`, `arr + 1`, a null pointer constant, or a cast of those. The IR uses `getelementptr (i8, ptr @obj, i64 byte_offset)` and `ptrtoint` / `inttoptr` when the destination is an integer or the pointer was converted from an integer. A cast of an address through a 64-bit integer and back (`(int *)(unsigned long)&g`) is the same address. Truncating an address to 32 bits in a global initializer is rejected; the bits are not known until link time.
 
-An array of 16 bytes or more has alignment at least 16, for locals and globals. That is the System V AMD64 rule. Smaller arrays use the element alignment. Pointers are 8-byte aligned.
+An array of 16 bytes or more has alignment at least 16, for locals and globals. That is the System V AMD64 rule. Smaller arrays use the element alignment. Pointers are 8-byte aligned. String-literal globals use alignment 1.
+
+A string literal uses the same escapes as a character constant. Adjacent literals are concatenated (`"hel" "lo"`). The type is `char[N]`, where `N` counts the terminating NUL, so `sizeof "abc"` is 4 and `sizeof ""` is 1. The literal decays to `char *` except as the operand of `sizeof` or unary `&`. When the address is used, the IR is a `private unnamed_addr constant` array of `i8`, named `.str` or `.str.N`. Identical contents share one global. A literal used only by `sizeof`, or only to initialize a character array, does not allocate that global. Modifying a string literal is undefined and is not diagnosed; the type is `char[N]`, not `const char[N]`. Wide literals (`L`, `u`, `U`, `u8`) are rejected.
+
+A character array (`char`, `signed char`, or `unsigned char`) may be initialized by a string, optionally in one pair of braces. `char s[] = "hi"` has length 3, including NUL. `char s[10] = "hi"` stores `'h'`, `'i'`, NUL, and zeros. `char s[2] = "hi"` stores `'h'` and `'i'` and no NUL (C11 6.7.9). A longer literal is a diagnostic. `char m[][3] = {"hi", "yo"}` takes its outer length from the list. `char *p = "hi"` and `const char *p = "hi"` are address constants. `char *p = "hi" + 1` is the same global plus one byte.
+
+`const` and `volatile` are accepted in declaration specifiers and after `*` in a declarator. The same qualifier twice in one list is a diagnostic. Qualifiers on an array apply to the element type. What is enforced:
+
+- Assignment, `++`/`--`, and compound assignment to a const-qualified type are diagnostics. That includes a `const int`, `*p` when `p` is `const char *`, `p` when `p` is `char *const`, and an element of `const char s[]`. Initialization is still allowed.
+- `char *` may be assigned or passed to `const char *`. `const char *` may not be passed to `char *`. `char **` may not be passed to `const char **`. The same rule applies to `volatile`, and to `void *`: the destination pointee must have every qualifier of the source pointee.
+- Top-level `const` on a parameter is not part of the function type, so `int f(const int)` matches `int f(int)` and `int f(int *const)` matches `int f(int *)`. `const` on a pointee is part of the type, so `const int *` does not match `int *`. A `const` return type is part of the type: `const int f(void)` does not match `int f(void)`.
+- A const object is emitted as an LLVM `constant`. An array of const elements is too. `const int *` is a normal `global`, because the pointer itself can be reseated.
+- Pointer comparisons ignore one level of pointee qualifiers, so `const int *` may be compared with `int *`.
+
+What is not enforced: `volatile` does not change code generation. Loads and stores are ordinary LLVM loads and stores, not `volatile`. This compiler does not optimize, but a later LLVM pass can. A cast may drop `const` or `volatile`; the cast is accepted and a later write is not diagnosed. `restrict` is rejected. Duplicate qualifiers are errors here; Clang only warns.
+
+A variadic declaration such as `int printf(const char *, ...);` is kept. The IR is `declare i32 @printf(ptr, ...)`, with `signext` or `zeroext` on a narrow fixed parameter or return, the same as any other function. A call is `call i32 (ptr, ...) @printf(...)`. Fixed arguments are converted to the parameter type. Further arguments get the default argument promotions: `char` and `short`, signed or unsigned, become `int`. Pointers are not promoted. There are no floating types. `int f(...);` is rejected because C11 requires a named parameter before `...`. A definition that uses `...` is rejected; this subset has no `va_list`. A call still requires a visible declaration. C11 has no implicit declaration, and this compiler does not add one.
+
+Hello world is `tests/62_hello.c`:
+
+```c
+int printf(const char *, ...);
+
+int main(void) {
+    printf("hello, world\n");
+    return 0;
+}
+```
+
+It exits 0 and prints `hello, world` followed by a newline. The harness compares that with Clang.
 
 ## Limitations
 
 - No preprocessor, trigraphs, or digraphs. A backslash-newline is rejected, including when it ends a `//` comment or appears inside a block comment. It is not deleted the way C translation phase 2 would delete it.
 - An integer constant that fits in no type on the C11 6.4.4.1 list for its suffix and base is a diagnostic. A decimal constant that does not fit in signed `long long` is rejected even when it fits in `unsigned long long`.
-- No structs, unions, enums, typedefs, qualifiers, or types other than `void`, the integer types above, pointers to those, and arrays of those. No `_Bool`, `float`, or `double`. No function pointers, no variable-length arrays, and no string literals.
-- No string literals. Multi-character character constants (`'ab'`) are rejected; Clang accepts them as an implementation-defined `int`. A hex or octal escape outside `unsigned char` is a diagnostic, matching Clang. Runtime shift counts outside `0 .. width`, signed left shifts of negative values, and signed left shifts that do not fit are undefined and are not diagnosed outside constant initializers. Signed overflow at runtime is undefined and is not diagnosed.
+- No structs, unions, enums, typedefs, or types other than `void`, the integer types above, pointers to those, and arrays of those. `const` and `volatile` are accepted as described above. `restrict` is not. No `_Bool`, `float`, or `double`. No function pointers and no variable-length arrays. No wide string or character literals.
+- Multi-character character constants (`'ab'`) are rejected; Clang accepts them as an implementation-defined `int`. A hex or octal escape outside `unsigned char` is a diagnostic, matching Clang. Runtime shift counts outside `0 .. width`, signed left shifts of negative values, and signed left shifts that do not fit are undefined and are not diagnosed outside constant initializers. Signed overflow at runtime is undefined and is not diagnosed. Modifying a string literal is undefined and is not diagnosed. `volatile` does not emit volatile loads or stores. A cast may drop `const`.
 - No `switch`, `do`/`while`, or `goto`.
 - An empty parameter list on a declaration that is not a definition (`int f();`) is rejected. C11 treats that as a non-prototype. This subset requires a prototype: `(void)` or a parameter type list. A definition may still use `()`.
 - `static` and `extern` are only accepted at file scope. A `static` local and a block-scope `extern` declaration are diagnostics.
@@ -128,11 +160,17 @@ An array of 16 bytes or more has alignment at least 16, for locals and globals. 
 - `.github/workflows/ci.yml` runs on `push` and `pull_request` with `contents: read`, a 20-minute job timeout, and cancel-in-progress for the same ref. The runner is `ubuntu-24.04`. It installs Rust 1.85.1 (`rustfmt`, `clippy`) and apt packages `clang`, `llvm`, `make`, and `python3`, and refuses Clang older than 15. Steps: `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo test --offline --lib`, `make`, `python3 harness/run_tests.py`.
 - Pinned actions: `actions/checkout@11d5960a326750d5838078e36cf38b85af677262` (v4.4.0), `dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8` (v1) with toolchain `1.85.1`.
 - `.coderabbit.yaml` follows CodeRabbit schema `https://coderabbit.ai/integrations/schema.v2.json`. The review profile is `CHILL`. The file does not install the GitHub App.
-- Milestone 1's Actions runs and the CodeRabbit review on pull request 1 are in the record below. Step 2's Actions runs and the CodeRabbit review are in the step 2 record below. Step 3's Actions runs and the CodeRabbit review are in the step 3 record below. This step's Actions runs and the CodeRabbit review are in the step 4 record below.
+- Milestone 1's Actions runs and the CodeRabbit review on pull request 1 are in the record below. Step 2's Actions runs and the CodeRabbit review are in the step 2 record below. Step 3's Actions runs and the CodeRabbit review are in the step 3 record below. Step 4's Actions runs and the CodeRabbit review are in the step 4 record below. This step's Actions runs are not in this file yet.
 
 ## Next actions
 
-1. Milestone 2 step 5: string literals and external calls such as `printf` / `puts`.
+1. Milestone 2 step 6: simple structs.
+
+## Milestone 2 step 5 record
+
+Local results are in the table above: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **41 passed**, `make` produced `build/compiler`, and `python3 harness/run_tests.py` **72/72 passed**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. Those commands were run on this tree before the pull request. GitHub Actions and CodeRabbit are not recorded here.
+
+`tests/62_hello.c` is the program above. The harness run compared its exit status, stdout, and stderr with `clang -std=c11`. Both print `hello, world` and a newline and exit 0.
 
 ## Milestone 2 step 4 record
 
