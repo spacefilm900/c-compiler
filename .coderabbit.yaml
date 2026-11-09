@@ -30,6 +30,15 @@ reviews:
       instructions: |
         Preserve the harness contract: build/compiler INPUT.c -o OUTPUT.ll, then compare the program's exit status and output with Clang.
         Do not replace this runner with a call into a C compiler frontend.
+        harness/run_wacc.py runs the external Writing a C Compiler suite. It must not invoke that suite's test_compiler script.
+        Invalid programs must be a non-zero exit with no panic. Do not vendor the suite.
+    - path: "harness/wacc_known_failures.txt"
+      instructions: |
+        One suite-relative test path per line, then a short reason category.
+        Do not add a line for a crash, a panic, or a small bug in a feature this compiler already documents as supported.
+    - path: "scripts/**"
+      instructions: |
+        scripts/fetch_wacc_tests.sh must keep the pinned commit. Do not vendor the fetched tree.
     - path: ".github/workflows/**"
       instructions: |
         This workflow is in the tree for import and has not been observed to run on GitHub.

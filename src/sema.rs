@@ -742,7 +742,9 @@ impl Sema {
         if self.check_expr(&mut probe).is_err() {
             return false;
         }
-        self.decay(&mut probe);
+        if self.decay(&mut probe).is_err() {
+            return false;
+        }
         probe.ty().is_some_and(|src| {
             src.unqualified().is_struct() && compatible(&ty.unqualified(), &src.unqualified())
         })
@@ -815,7 +817,7 @@ impl Sema {
     fn check_stores(&mut self, stores: &mut [ElemStore]) -> Result<(), Diagnostic> {
         for store in stores {
             self.check_expr(&mut store.expr)?;
-            self.decay(&mut store.expr);
+            self.decay(&mut store.expr)?;
             self.can_assign(&store.ty.clone(), &store.expr)?;
         }
         Ok(())
@@ -1020,7 +1022,7 @@ impl Sema {
                     }
                     Some(expr) => {
                         self.check_expr(expr)?;
-                        self.decay(expr);
+                        self.decay(expr)?;
                         if self.current_ret.is_void() {
                             return self.err(
                                 line,
@@ -1039,7 +1041,7 @@ impl Sema {
                 ..
             } => {
                 self.check_expr(cond)?;
-                self.decay(cond);
+                self.decay(cond)?;
                 self.require_scalar(cond)?;
                 self.check_stmt(then_stmt)?;
                 if let Some(else_stmt) = else_stmt {
@@ -1049,7 +1051,7 @@ impl Sema {
             }
             Stmt::While { cond, body, .. } => {
                 self.check_expr(cond)?;
-                self.decay(cond);
+                self.decay(cond)?;
                 self.require_scalar(cond)?;
                 self.loop_depth += 1;
                 self.check_stmt(body)?;
@@ -1074,12 +1076,12 @@ impl Sema {
                     }
                     ForInit::Expr(expr) => {
                         self.check_expr(expr)?;
-                        self.decay(expr);
+                        self.decay(expr)?;
                     }
                 }
                 if let Some(cond) = cond {
                     self.check_expr(cond)?;
-                    self.decay(cond);
+                    self.decay(cond)?;
                     self.require_scalar(cond)?;
                 }
                 if let Some(step) = step {
@@ -1093,7 +1095,7 @@ impl Sema {
             Stmt::Expr { expr, .. } => {
                 if let Some(expr) = expr {
                     self.check_expr(expr)?;
-                    self.decay(expr);
+                    self.decay(expr)?;
                 }
                 Ok(())
             }
@@ -1224,23 +1226,37 @@ impl Sema {
     }
 
     /// Array expressions become pointers except as the operand of `sizeof` or `&`.
-    fn decay(&mut self, expr: &mut Expr) {
+    ///
+    /// An lvalue of incomplete type, other than an array, is not converted to
+    /// a value (C11 6.3.2.1p2). A void expression is not an object lvalue, so
+    /// a discarded call that returns `void` stays allowed. `&*p` does not call
+    /// this on the dereference, so a pointer to an incomplete struct may still
+    /// be the operand of `&`.
+    fn decay(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
         self.ensure_string(expr);
         let Some(ty) = expr.ty() else {
-            return;
+            return Ok(());
         };
-        let CType::Array(elem, _) = ty else {
-            return;
-        };
-        let line = expr.line();
-        let column = expr.column();
-        let inner = std::mem::replace(expr, Expr::int(0, TypeName::Int, line, column));
-        *expr = Expr::Decay {
-            expr: Box::new(inner),
-            line,
-            column,
-            ty: Some(CType::pointer(*elem)),
-        };
+        if let CType::Array(elem, _) = ty {
+            let line = expr.line();
+            let column = expr.column();
+            let inner = std::mem::replace(expr, Expr::int(0, TypeName::Int, line, column));
+            *expr = Expr::Decay {
+                expr: Box::new(inner),
+                line,
+                column,
+                ty: Some(CType::pointer(*elem)),
+            };
+            return Ok(());
+        }
+        if !ty.is_void() && !ty.is_complete() {
+            return self.err(
+                expr.line(),
+                expr.column(),
+                format!("cannot use incomplete type '{}' as a value", ty.display()),
+            );
+        }
+        Ok(())
     }
 
     fn check_var(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
@@ -1287,8 +1303,8 @@ impl Sema {
         let ty = if let Expr::Bin { left, right, .. } = expr {
             self.check_expr(left)?;
             self.check_expr(right)?;
-            self.decay(left);
-            self.decay(right);
+            self.decay(left)?;
+            self.decay(right)?;
             if matches!(op, BinOp::And | BinOp::Or) {
                 self.require_scalar(left)?;
                 self.require_scalar(right)?;
@@ -1462,7 +1478,7 @@ impl Sema {
                     CType::pointer(expr.ty().expect("lvalue type"))
                 }
                 UnaryOp::Deref => {
-                    self.decay(expr);
+                    self.decay(expr)?;
                     let ty = expr.ty().expect("typed");
                     let Some(pointee) = ty.pointee().cloned() else {
                         return self.err(
@@ -1474,12 +1490,12 @@ impl Sema {
                     pointee
                 }
                 UnaryOp::Not => {
-                    self.decay(expr);
+                    self.decay(expr)?;
                     self.require_scalar(expr)?;
                     CType::int_type()
                 }
                 UnaryOp::Plus | UnaryOp::Minus | UnaryOp::BitNot => {
-                    self.decay(expr);
+                    self.decay(expr)?;
                     self.require_integer(expr)?;
                     CType::from_name(integer_ty(expr).promote())
                 }
@@ -1495,7 +1511,7 @@ impl Sema {
         let ty = if let Expr::Assign { target, value, .. } = expr {
             self.check_modifiable(target)?;
             self.check_expr(value)?;
-            self.decay(value);
+            self.decay(value)?;
             let dest = target.ty().expect("lvalue type");
             self.can_assign(&dest, value)?;
             dest
@@ -1521,7 +1537,7 @@ impl Sema {
             let column = *column;
             self.check_modifiable(target)?;
             self.check_expr(value)?;
-            self.decay(value);
+            self.decay(value)?;
             let dest = target.ty().expect("lvalue type");
             if !dest.is_scalar() {
                 return self.err(
@@ -1602,12 +1618,12 @@ impl Sema {
             let line = *line;
             let column = *column;
             self.check_expr(cond)?;
-            self.decay(cond);
+            self.decay(cond)?;
             self.require_scalar(cond)?;
             self.check_expr(then_expr)?;
             self.check_expr(else_expr)?;
-            self.decay(then_expr);
-            self.decay(else_expr);
+            self.decay(then_expr)?;
+            self.decay(else_expr)?;
             self.cond_type(then_expr, else_expr, line, column)?
         } else {
             unreachable!("conditional expression");
@@ -1621,9 +1637,9 @@ impl Sema {
     fn check_comma(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
         let ty = if let Expr::Comma { left, right, .. } = expr {
             self.check_expr(left)?;
-            self.decay(left);
+            self.decay(left)?;
             self.check_expr(right)?;
-            self.decay(right);
+            self.decay(right)?;
             right.ty().expect("comma operand is typed")
         } else {
             unreachable!("comma expression");
@@ -1677,7 +1693,7 @@ impl Sema {
             let line = *line;
             let column = *column;
             self.check_expr(inner)?;
-            self.decay(inner);
+            self.decay(inner)?;
             if ty_name.is_array() {
                 return self.err(line, column, "cast to an array type is not supported");
             }
@@ -1776,7 +1792,7 @@ impl Sema {
         if let Expr::Call { args, .. } = expr {
             for (index, arg) in args.iter_mut().enumerate() {
                 self.check_expr(arg)?;
-                self.decay(arg);
+                self.decay(arg)?;
                 if index < params.len() {
                     self.can_assign(&params[index], arg)?;
                 } else {
@@ -1812,8 +1828,8 @@ impl Sema {
             let column = *column;
             self.check_expr(base)?;
             self.check_expr(index)?;
-            self.decay(base);
-            self.decay(index);
+            self.decay(base)?;
+            self.decay(index)?;
             let base_ty = base.ty().expect("typed");
             let index_ty = index.ty().expect("typed");
             let ptr = if base_ty.is_pointer() && index_ty.is_integer() {
@@ -1903,7 +1919,7 @@ impl Sema {
             let column = *column;
             self.check_expr(base)?;
             let base_ty = if arrow {
-                self.decay(base);
+                self.decay(base)?;
                 let ty = base.ty().expect("typed");
                 let Some(pointee) = ty.pointee().cloned() else {
                     return self.err(
@@ -3457,6 +3473,19 @@ struct Node n = {4, 0};
                 .contains("returning a struct by value is not supported")
         );
         assert!(sema_err("struct S; struct S s;").contains("incomplete type 'struct S'"));
+        assert!(
+            sema_err("struct S; struct S *p; int main(void) { *p; return 0; }")
+                .contains("cannot use incomplete type 'struct S' as a value")
+        );
+        assert!(
+            sema_err("int main(void) { struct S *p = 0; *p; return 0; }")
+                .contains("cannot use incomplete type 'struct S' as a value")
+        );
+        assert!(sema_err(
+            "struct S; extern struct S x = {1}; int main(void) { return 0; } struct S { int a; };"
+        )
+        .contains("incomplete type 'struct S'"));
+        sema_ok("struct S; struct S *p; int main(void) { p = 0; return &*p == p; }");
         assert!(
             sema_err("struct S; int main(void) { return sizeof(struct S); }")
                 .contains("incomplete type 'struct S'")
