@@ -1,0 +1,159 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Configuration only. Installing this file does not install the CodeRabbit
+# GitHub App and does not start reviews. The app installation is separate.
+language: en-US
+early_access: false
+tone_instructions: >-
+  Review this clean-room C subset compiler on its own terms. Do not suggest
+  copying or adapting Clang, GCC, or any other C compiler frontend.
+reviews:
+  profile: chill
+  high_level_summary: true
+  poem: false
+  auto_approvals:
+    enabled: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_instructions:
+    - path: "src/**/*.rs"
+      instructions: |
+        The frontend is original. Do not recommend reading, copying, translating, or closely adapting Clang, GCC, or another C compiler's source.
+        Flag incorrect C semantics, silently accepted unsupported syntax, and LLVM IR that would not assemble.
+        Do not ask for language features outside the subset documented in README.md and STATUS.md.
+    - path: "tests/**/*.c"
+      instructions: |
+        These are differential smoke programs for this compiler, compared with Clang only as a black-box oracle.
+        Keep them inside the documented subset. Do not add headers, libc calls, or preprocessor directives.
+    - path: "harness/**/*.py"
+      instructions: |
+        Preserve the harness contract: build/compiler INPUT.c -o OUTPUT.ll, then compare the program's exit status and output with Clang.
+        Do not replace this runner with a call into a C compiler frontend.
+    - path: ".github/workflows/**"
+      instructions: |
+        This workflow is in the tree for import and has not been observed to run on GitHub.
+        Keep permissions at contents: read. Pin actions to full commit SHAs. Do not add write tokens.
+    - path: "Makefile"
+      instructions: |
+        make must keep producing build/compiler. The test target must keep running python3 harness/run_tests.py.
+  tools:
+    ast-grep:
+      enabled: true
+    shellcheck:
+      enabled: true
+    ruff:
+      enabled: false
+    markdownlint:
+      enabled: false
+    github-checks:
+      enabled: true
+    languagetool:
+      enabled: false
+    biome:
+      enabled: false
+    hadolint:
+      enabled: false
+    swiftlint:
+      enabled: false
+    phpstan:
+      enabled: false
+    phpmd:
+      enabled: false
+    phpcs:
+      enabled: false
+    golangci-lint:
+      enabled: false
+    yamllint:
+      enabled: false
+    gitleaks:
+      enabled: true
+    trufflehog:
+      enabled: false
+    checkov:
+      enabled: false
+    tflint:
+      enabled: false
+    detekt:
+      enabled: false
+    eslint:
+      enabled: false
+    flake8:
+      enabled: false
+    fbinfer:
+      enabled: false
+    fortitudeLint:
+      enabled: false
+    rubocop:
+      enabled: false
+    buf:
+      enabled: false
+    regal:
+      enabled: false
+    actionlint:
+      enabled: true
+    zizmor:
+      enabled: false
+    pmd:
+      enabled: false
+    clang:
+      enabled: false
+    cppcheck:
+      enabled: false
+    vale:
+      enabled: false
+    verilator:
+      enabled: false
+    opengrep:
+      enabled: true
+    semgrep:
+      enabled: true
+    circleci:
+      enabled: false
+    clippy:
+      enabled: true
+    sqlfluff:
+      enabled: false
+    squawk:
+      enabled: false
+    trivy:
+      enabled: false
+    prismaLint:
+      enabled: false
+    pylint:
+      enabled: false
+    oxc:
+      enabled: false
+    shopifyThemeCheck:
+      enabled: false
+    luacheck:
+      enabled: false
+    brakeman:
+      enabled: false
+    dotenvLint:
+      enabled: false
+    htmlhint:
+      enabled: false
+    stylelint:
+      enabled: false
+    checkmake:
+      enabled: true
+    osvScanner:
+      enabled: false
+    oasdiff:
+      enabled: false
+    reactDoctor:
+      enabled: false
+    presidio:
+      enabled: false
+    blinter:
+      enabled: false
+    smartyLint:
+      enabled: false
+    emberTemplateLint:
+      enabled: false
+    skillspector:
+      enabled: false
+    psscriptanalyzer:
+      enabled: false
+chat:
+  auto_reply: true

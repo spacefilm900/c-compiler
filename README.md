@@ -1,1 +1,99 @@
-# c-compiler
+# Clean-room C compiler → LLVM IR
+
+A small C compiler that emits textual LLVM IR. LLVM (`clang`, and optionally `opt` / `llc`) optimizes that IR and generates native code. This milestone is a C subset: enough to lex, parse, check, and run integer functions, locals, arithmetic, branches, loops, and calls. It is not a full C compiler.
+
+## Why Rust
+
+The compiler is written in Rust. That is a deliberate break from the usual practice of implementing C in C or C++. Rust gives memory safety without a garbage collector, and Cargo builds a single static binary from the standard library alone. There are no crates.io dependencies, so a checkout builds without fetching packages.
+
+The frontend was written from the C standard, the LLVM Language Reference, and the System V AMD64 ABI. It is not derived from Clang or GCC. Clang is used only as a black-box oracle in the test harness and as the LLVM backend that links the emitted `.ll` file. The compiler does not call into Clang's or GCC's frontend.
+
+## Build
+
+Emitting IR does not need Clang. Running the result does. The IR uses opaque pointers and the triple `x86_64-pc-linux-gnu`, so Clang/LLVM must be 15 or newer.
+
+`rust-toolchain.toml` pins Rust **1.85.1** with the `rustfmt` and `clippy` components. That matches the system `cargo` used for the local unit tests. On that machine, plain `cargo clippy` is not installed; clippy is the rustup command below.
+
+```sh
+make
+# equivalent:
+# cargo build --release
+# cp -f target/release/compiler build/compiler
+```
+
+`make` (GNU make 4.4.1 locally) writes `build/compiler`.
+
+Local execution used Debian Clang/LLVM **19.1.7** unpacked under `~/opt/llvm19-root` and exposed through wrappers on `~/.local/bin`. Any Clang/LLVM 15+ on `PATH` is enough for the harness.
+
+## Contract
+
+```sh
+build/compiler INPUT.c -o OUTPUT.ll
+```
+
+On success the command exits 0 and writes a textual LLVM IR module. On failure it exits non-zero, prints one diagnostic to stderr (`file:line:column: error: ...`), and does not create the output file.
+
+```sh
+clang -w output.ll -o program
+```
+
+## Test
+
+```sh
+make test
+# or, separately:
+cargo test
+python3 harness/run_tests.py
+```
+
+`cargo test` runs the lexer, parser, diagnostic, and IR unit tests, and compares every `tests/*.c` program with Clang. `harness/run_tests.py` is the project differential runner: it compiles each `tests/*.c` with this compiler and with Clang, links both, and compares exit status, stdout, and stderr.
+
+On the machine where system `cargo` is Rust 1.85.1 and has no clippy component, the clippy check that passed was:
+
+```sh
+~/.cargo/bin/rustup run stable cargo clippy --offline --all-targets -- -D warnings
+```
+
+The numeric version of that rustup `stable` toolchain was not recorded.
+
+## CI and CodeRabbit
+
+`.github/workflows/ci.yml` runs on `push` and `pull_request`. The GitHub source of truth is `https://github.com/spacefilm900/c-compiler`. Observed Actions runs, including whether any run has completed, are recorded in `STATUS.md`.
+
+The workflow checks out the repo, installs Rust 1.85.1 (`rustfmt`, `clippy`), and installs Ubuntu 24.04 packages `clang`, `llvm`, `make`, and `python3`. It exits if `clang --version` reports a major version below 15. Then it runs `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo test --offline --lib`, `make`, and `python3 harness/run_tests.py`. The job token can read contents only. The job times out after 20 minutes, and a newer push to the same ref cancels the older run.
+
+Actions are pinned to commits, not floating tags:
+
+- `actions/checkout` `11d5960a326750d5838078e36cf38b85af677262` (v4.4.0)
+- `dtolnay/rust-toolchain` `683b588c487a69d01f6c6ddf40f036ff682cc2c8` (v1), with `toolchain: 1.85.1`
+
+`.coderabbit.yaml` is review configuration validated against CodeRabbit's published schema. The file does not install the GitHub App. Whether the App is active on this repository, and what it did on the import pull request, is recorded in `STATUS.md`. The optional CodeRabbit skills install was skipped.
+
+## Supported subset
+
+- One translation unit of function definitions. `int` is a 32-bit two's complement type. `void` is allowed as a return type and as the sole unnamed parameter (`int main(void)` and `int main()` are both no-parameter definitions).
+- Locals: `int name;`, `int name = expr;`, and multiple declarators (`int a = 1, b = a + 2;`). A declaration inside `for (int i = ...)` is in scope for the condition, step, and body.
+- Statements: blocks, expression statements, empty statements, `return`, `if` / `else` (an `else` binds to the nearest `if`), `while`, `for`, `break`, `continue`.
+- Expressions, with C precedence and associativity: integer constants (decimal, octal, hexadecimal; no suffix; must fit in signed 32-bit), identifiers, parentheses, unary `+` `-` `!`, binary `+` `-` `*` `/` `%`, comparisons, `&&` and `||`, assignment, and direct calls.
+- `/` and `%` are signed and round toward zero. Comparisons and `&&` / `||` produce `0` or `1`. `&&` and `||` evaluate the right operand only when the left operand does not decide the result.
+- A function may call itself. Any other callee must already have been defined. Assignment targets are variables; parentheses do not change that (`(x) = 1` assigns to `x`).
+- `//` line comments and non-nesting `/* */` block comments.
+
+Reaching the closing brace of an `int` function lowers to `ret i32 0`. That is what C requires for `main`. The same lowering is used for every other `int` function. A `void` function that falls off the end lowers to `ret void`.
+
+## Not accepted
+
+Unsupported or invalid input is a diagnostic. It is not ignored and it is not lowered.
+
+The lexer rejects the preprocessor (`#`). Trigraphs are not recognized. A backslash immediately before a new-line, including at the end of a `//` or `/*` comment, is a diagnostic rather than a line splice. String literals, character constants, floating constants, binary literals, integer suffixes, and non-ASCII bytes are errors. An integer constant that does not fit in signed 32-bit `int` is a diagnostic, including a value that does not fit in 64 bits. C11 6.4.4.1 would otherwise try `long`, `long long`, and, for octal and hex, unsigned types. Those types are outside this subset, so the constant is rejected instead of given a wider type.
+
+The parser or checker rejects pointers, arrays, structs, unions, enums, typedefs, globals, `static` / `extern` / qualifiers, prototypes without a body, nested functions, variadic functions, `sizeof`, casts, the comma operator, `?:`, bitwise and shift operators, `++` / `--`, compound assignment, member access, `switch`, `do`/`while`, and `goto`. Other C11 keywords (`char`, `float`, `_Bool`, …) are recognized so they produce a specific "not supported" diagnostic.
+
+## Layout
+
+- `src/` — Rust frontend (`lexer`, `parser`, `ast`, `sema`, `irgen`, `driver`)
+- `build/compiler` — release binary produced by `make` (not committed)
+- `tests/` — C programs for the differential harness
+- `harness/run_tests.py` — Clang oracle
+- `PLAN.md` — staged plan (unchanged starter plan)
+- `STATUS.md` — what this milestone actually does
