@@ -354,6 +354,11 @@ impl Sema {
                 expr.column(),
                 format!("initializer of '{name}' divides by zero"),
             ),
+            Err(ConstError::Overflow) => self.err(
+                expr.line(),
+                expr.column(),
+                format!("initializer of '{name}' overflows 'int'"),
+            ),
         }
     }
 
@@ -793,25 +798,25 @@ fn symbol_name(sym: &Symbol) -> &str {
 enum ConstError {
     NotConst,
     DivZero,
+    Overflow,
 }
 
 /// Integer constant expression using the operators this subset implements.
 ///
 /// `&&` and `||` skip the right operand when the left decides the result, so
-/// `0 && (1/0)` folds to 0. `+`, `-`, and `*` wrap in signed 32-bit arithmetic,
-/// matching the value Clang folds for an overflowing constant initializer.
-/// `INT_MIN / -1` and `INT_MIN % -1` likewise wrap. An evaluated division or
-/// remainder by zero is rejected.
+/// `0 && (1/0)` folds to 0. Signed `+`, `-`, `*`, and unary `-` must stay
+/// inside `int` (C11 6.6p4); so must `INT_MIN / -1` and `INT_MIN % -1`. An
+/// evaluated division or remainder by zero is rejected.
 fn eval_const_expr(expr: &Expr) -> Result<i32, ConstError> {
     match expr {
         Expr::Int { value, .. } => Ok(*value),
         Expr::Unary { op, expr, .. } => {
             let value = eval_const_expr(expr)?;
-            Ok(match op {
-                UnaryOp::Plus => value,
-                UnaryOp::Minus => value.wrapping_neg(),
-                UnaryOp::Not => i32::from(value == 0),
-            })
+            match op {
+                UnaryOp::Plus => Ok(value),
+                UnaryOp::Minus => value.checked_neg().ok_or(ConstError::Overflow),
+                UnaryOp::Not => Ok(i32::from(value == 0)),
+            }
         }
         Expr::Bin {
             op, left, right, ..
@@ -838,9 +843,9 @@ fn eval_binop(op: BinOp, left: &Expr, right: &Expr) -> Result<i32, ConstError> {
             let left = eval_const_expr(left)?;
             let right = eval_const_expr(right)?;
             match op {
-                BinOp::Add => Ok(left.wrapping_add(right)),
-                BinOp::Sub => Ok(left.wrapping_sub(right)),
-                BinOp::Mul => Ok(left.wrapping_mul(right)),
+                BinOp::Add => left.checked_add(right).ok_or(ConstError::Overflow),
+                BinOp::Sub => left.checked_sub(right).ok_or(ConstError::Overflow),
+                BinOp::Mul => left.checked_mul(right).ok_or(ConstError::Overflow),
                 BinOp::Div => div_const(left, right),
                 BinOp::Mod => rem_const(left, right),
                 BinOp::Eq => Ok(i32::from(left == right)),
@@ -860,7 +865,7 @@ fn div_const(left: i32, right: i32) -> Result<i32, ConstError> {
         return Err(ConstError::DivZero);
     }
     if left == i32::MIN && right == -1 {
-        return Ok(i32::MIN);
+        return Err(ConstError::Overflow);
     }
     Ok(left / right)
 }
@@ -870,7 +875,7 @@ fn rem_const(left: i32, right: i32) -> Result<i32, ConstError> {
         return Err(ConstError::DivZero);
     }
     if left == i32::MIN && right == -1 {
-        return Ok(0);
+        return Err(ConstError::Overflow);
     }
     Ok(left % right)
 }
@@ -1016,6 +1021,12 @@ mod tests {
             .contains("initializer of 'g' is not a constant expression"));
         assert!(sema_err("int g = 1 / 0;").contains("initializer of 'g' divides by zero"));
         assert!(sema_err("int g = 1 && (1 / 0);").contains("divides by zero"));
+        assert!(sema_err("int g = 2147483647 + 1;").contains("initializer of 'g' overflows 'int'"));
+        assert!(sema_err("int g = 2147483647 * 2;").contains("overflows 'int'"));
+        assert!(sema_err("int g = (-2147483647 - 1) / -1;")
+            .contains("initializer of 'g' overflows 'int'"));
+        assert!(sema_err("int g = (-2147483647 - 1) % -1;").contains("overflows 'int'"));
+        assert!(sema_err("int g = -(-2147483647 - 1);").contains("overflows 'int'"));
         assert!(
             sema_err("int f(int a, int b); int main(void) { return f(1); }")
                 .contains("expects 2 arguments, found 1")
@@ -1074,12 +1085,10 @@ int zero;
 extern int missing;
 static int hidden = 4;
 int h = 0 && (1 / 0);
-int w = 2147483647 + 1;
 int m = -2147483647 - 1;
-int q = (-2147483647 - 1) / -1;
-int r = (-2147483647 - 1) % -1;
 int d = -5 / 2;
 int s = -5 % 2;
+int quiet = 0 && (2147483647 + 1);
 ",
         );
         let value = |name: &str| {
@@ -1093,12 +1102,10 @@ int s = -5 % 2;
         assert_eq!(value("zero"), Some(0));
         assert_eq!(value("missing"), None);
         assert_eq!(value("h"), Some(0));
-        assert_eq!(value("w"), Some(i32::MIN));
         assert_eq!(value("m"), Some(i32::MIN));
-        assert_eq!(value("q"), Some(i32::MIN));
-        assert_eq!(value("r"), Some(0));
         assert_eq!(value("d"), Some(-2));
         assert_eq!(value("s"), Some(-1));
+        assert_eq!(value("quiet"), Some(0));
         let hidden = unit
             .globals
             .iter()
