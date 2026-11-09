@@ -36,8 +36,9 @@ int main(void) {
     if (x != 14 || extra != 2)
         return 3;
     x = 2;
-    x += x += 1;
-    if (x != 6)
+    extra = 3;
+    x += extra += 1;
+    if (x != 6 || extra != 4)
         return 4;
     if (scale(3) != 13)
         return 5;

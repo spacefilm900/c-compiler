@@ -21,7 +21,7 @@ Rust, edition 2021, standard library only. No crates.io dependencies (`Cargo.loc
 
 ## Tests for this step
 
-Run on this tree after the step 2 changes, before the pull request:
+Run on this tree after the step 2 changes, including the review fix that drops the undefined `x += x += 1` case:
 
 | Command | Toolchain | Result |
 | --- | --- | --- |
@@ -67,7 +67,7 @@ Signed `>>` is arithmetic, including in a constant initializer (`-8 >> 1` is `-4
 
 Prefix and postfix `++`/`--` apply to lvalues: locals, parameters, and globals. The IR loads the scalar once, adds or subtracts 1, and stores the result immediately. Prefix yields the new value; postfix yields the old value. That store is sequenced before the value is used by the surrounding operator. A program that modifies the same scalar twice with no sequence point in between is still undefined, and the tests do not do that. Signed overflow of `++`/`--` is undefined, the same way `+` and `-` are.
 
-Compound assignment (`+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=`) evaluates the lvalue address once, evaluates the right-hand side, then loads, applies the operator, and stores. A variable's address has no side effect, so the load happens after the right-hand side. `x += x += 1` is defined: the inner update is sequenced before the outer one.
+Compound assignment (`+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=`) evaluates the lvalue address once, evaluates the right-hand side, then loads, applies the operator, and stores. A variable's address has no side effect, so this compiler loads the scalar after the right-hand side. `x += x += 1` modifies the same scalar twice in one expression. C11 6.5.16p3 sequences each assignment's store after that assignment's own operand value computations, and it does not sequence the inner store before the outer load. That expression is undefined (C11 6.5p2). The tests do not use it.
 
 The comma operator yields the right operand and has a sequence point between the operands. It is not an integer constant expression when it is evaluated. Clang accepts `int g = (1, 2);` as an extension; this compiler rejects it. A comma in an unevaluated operand, such as `sizeof(1, x)`, is allowed. Commas that separate arguments or declarators are not this operator. `f(1, (2, 3))` is two arguments, and the second is a comma expression.
 
