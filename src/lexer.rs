@@ -73,6 +73,9 @@ impl Lexer<'_> {
                 self.dot(line, column)?;
                 continue;
             }
+            if self.three_char(line, column) {
+                continue;
+            }
             if self.two_char(line, column) {
                 continue;
             }
@@ -352,6 +355,27 @@ impl Lexer<'_> {
         Ok(())
     }
 
+    /// `<<=` and `>>=` must be recognized before `<<` and `>>`.
+    fn three_char(&mut self, line: usize, column: usize) -> bool {
+        let Some(triple) = self.three_bytes() else {
+            return false;
+        };
+        let (kind, spelling) = match &triple {
+            b"<<=" => (TokenKind::ShlEq, "<<="),
+            b">>=" => (TokenKind::ShrEq, ">>="),
+            _ => return false,
+        };
+        self.bump();
+        self.bump();
+        self.bump();
+        self.push(kind, spelling, line, column, None);
+        true
+    }
+
+    fn three_bytes(&self) -> Option<[u8; 3]> {
+        Some([self.peek()?, self.peek_at(1)?, self.peek_at(2)?])
+    }
+
     fn two_char(&mut self, line: usize, column: usize) -> bool {
         let Some(pair) = self.two_bytes() else {
             return false;
@@ -505,7 +529,7 @@ mod tests {
     #[test]
     fn multi_character_operators() {
         assert_eq!(
-            kinds("== != <= >= && || ++ -- << >> += -= *= /= %= &= |= ^= ->"),
+            kinds("== != <= >= && || ++ -- << >> += -= *= /= %= &= |= ^= -> <<= >>="),
             vec![
                 TokenKind::Eq,
                 TokenKind::Ne,
@@ -526,6 +550,20 @@ mod tests {
                 TokenKind::PipeEq,
                 TokenKind::CaretEq,
                 TokenKind::Arrow,
+                TokenKind::ShlEq,
+                TokenKind::ShrEq,
+            ]
+        );
+        assert_eq!(
+            kinds("a << = 1 >> = 2"),
+            vec![
+                TokenKind::Ident,
+                TokenKind::Shl,
+                TokenKind::Assign,
+                TokenKind::Int,
+                TokenKind::Shr,
+                TokenKind::Assign,
+                TokenKind::Int,
             ]
         );
     }

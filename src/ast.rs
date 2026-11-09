@@ -54,6 +54,11 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 impl BinOp {
@@ -72,6 +77,35 @@ impl BinOp {
             BinOp::Ge => ">=",
             BinOp::And => "&&",
             BinOp::Or => "||",
+            BinOp::BitAnd => "&",
+            BinOp::BitOr => "|",
+            BinOp::BitXor => "^",
+            BinOp::Shl => "<<",
+            BinOp::Shr => ">>",
+        }
+    }
+
+    /// Spelling of `E1 op= E2` for the operators that have a compound form.
+    pub fn compound_spelling(self) -> &'static str {
+        match self {
+            BinOp::Add => "+=",
+            BinOp::Sub => "-=",
+            BinOp::Mul => "*=",
+            BinOp::Div => "/=",
+            BinOp::Mod => "%=",
+            BinOp::BitAnd => "&=",
+            BinOp::BitOr => "|=",
+            BinOp::BitXor => "^=",
+            BinOp::Shl => "<<=",
+            BinOp::Shr => ">>=",
+            BinOp::Eq
+            | BinOp::Ne
+            | BinOp::Lt
+            | BinOp::Gt
+            | BinOp::Le
+            | BinOp::Ge
+            | BinOp::And
+            | BinOp::Or => unreachable!("comparisons and && / || have no compound form"),
         }
     }
 
@@ -88,6 +122,33 @@ pub enum UnaryOp {
     Plus,
     Minus,
     Not,
+    BitNot,
+}
+
+/// Prefix and postfix `++` / `--`. The result of either form is not an lvalue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IncOp {
+    PreInc,
+    PreDec,
+    PostInc,
+    PostDec,
+}
+
+impl IncOp {
+    pub fn is_prefix(self) -> bool {
+        matches!(self, IncOp::PreInc | IncOp::PreDec)
+    }
+
+    pub fn is_increment(self) -> bool {
+        matches!(self, IncOp::PreInc | IncOp::PostInc)
+    }
+}
+
+/// Operand of `sizeof`. A type name is only accepted in parentheses.
+#[derive(Debug, Clone)]
+pub enum SizeofOperand {
+    Expr(Box<Expr>),
+    Type(TypeName),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +206,43 @@ pub enum Expr {
         line: usize,
         column: usize,
         resolved: Option<CallRes>,
+        ty: Option<TypeName>,
+    },
+    /// `E1 op= E2`. `target` is the lvalue, evaluated once.
+    CompoundAssign {
+        op: BinOp,
+        target: Box<Expr>,
+        value: Box<Expr>,
+        line: usize,
+        column: usize,
+        ty: Option<TypeName>,
+    },
+    IncDec {
+        op: IncOp,
+        target: Box<Expr>,
+        line: usize,
+        column: usize,
+        ty: Option<TypeName>,
+    },
+    Cond {
+        cond: Box<Expr>,
+        then_expr: Box<Expr>,
+        else_expr: Box<Expr>,
+        line: usize,
+        column: usize,
+        ty: Option<TypeName>,
+    },
+    Comma {
+        left: Box<Expr>,
+        right: Box<Expr>,
+        line: usize,
+        column: usize,
+        ty: Option<TypeName>,
+    },
+    Sizeof {
+        operand: SizeofOperand,
+        line: usize,
+        column: usize,
         ty: Option<TypeName>,
     },
 }
@@ -211,6 +309,66 @@ impl Expr {
         }
     }
 
+    pub fn compound(op: BinOp, target: Expr, value: Expr, line: usize, column: usize) -> Self {
+        Expr::CompoundAssign {
+            op,
+            target: Box::new(target),
+            value: Box::new(value),
+            line,
+            column,
+            ty: None,
+        }
+    }
+
+    pub fn incdec(op: IncOp, target: Expr, line: usize, column: usize) -> Self {
+        Expr::IncDec {
+            op,
+            target: Box::new(target),
+            line,
+            column,
+            ty: None,
+        }
+    }
+
+    pub fn cond(cond: Expr, then_expr: Expr, else_expr: Expr, line: usize, column: usize) -> Self {
+        Expr::Cond {
+            cond: Box::new(cond),
+            then_expr: Box::new(then_expr),
+            else_expr: Box::new(else_expr),
+            line,
+            column,
+            ty: None,
+        }
+    }
+
+    pub fn comma(left: Expr, right: Expr, line: usize, column: usize) -> Self {
+        Expr::Comma {
+            left: Box::new(left),
+            right: Box::new(right),
+            line,
+            column,
+            ty: None,
+        }
+    }
+
+    pub fn sizeof_expr(expr: Expr, line: usize, column: usize) -> Self {
+        Expr::Sizeof {
+            operand: SizeofOperand::Expr(Box::new(expr)),
+            line,
+            column,
+            ty: None,
+        }
+    }
+
+    pub fn sizeof_type(ty_name: TypeName, line: usize, column: usize) -> Self {
+        Expr::Sizeof {
+            operand: SizeofOperand::Type(ty_name),
+            line,
+            column,
+            ty: None,
+        }
+    }
+
     pub fn line(&self) -> usize {
         match self {
             Expr::Int { line, .. }
@@ -218,7 +376,12 @@ impl Expr {
             | Expr::Bin { line, .. }
             | Expr::Unary { line, .. }
             | Expr::Assign { line, .. }
-            | Expr::Call { line, .. } => *line,
+            | Expr::Call { line, .. }
+            | Expr::CompoundAssign { line, .. }
+            | Expr::IncDec { line, .. }
+            | Expr::Cond { line, .. }
+            | Expr::Comma { line, .. }
+            | Expr::Sizeof { line, .. } => *line,
         }
     }
 
@@ -229,7 +392,12 @@ impl Expr {
             | Expr::Bin { column, .. }
             | Expr::Unary { column, .. }
             | Expr::Assign { column, .. }
-            | Expr::Call { column, .. } => *column,
+            | Expr::Call { column, .. }
+            | Expr::CompoundAssign { column, .. }
+            | Expr::IncDec { column, .. }
+            | Expr::Cond { column, .. }
+            | Expr::Comma { column, .. }
+            | Expr::Sizeof { column, .. } => *column,
         }
     }
 
@@ -240,7 +408,12 @@ impl Expr {
             | Expr::Bin { ty, .. }
             | Expr::Unary { ty, .. }
             | Expr::Assign { ty, .. }
-            | Expr::Call { ty, .. } => *ty,
+            | Expr::Call { ty, .. }
+            | Expr::CompoundAssign { ty, .. }
+            | Expr::IncDec { ty, .. }
+            | Expr::Cond { ty, .. }
+            | Expr::Comma { ty, .. }
+            | Expr::Sizeof { ty, .. } => *ty,
         }
     }
 
@@ -251,7 +424,12 @@ impl Expr {
             | Expr::Bin { ty: slot, .. }
             | Expr::Unary { ty: slot, .. }
             | Expr::Assign { ty: slot, .. }
-            | Expr::Call { ty: slot, .. } => *slot = Some(ty),
+            | Expr::Call { ty: slot, .. }
+            | Expr::CompoundAssign { ty: slot, .. }
+            | Expr::IncDec { ty: slot, .. }
+            | Expr::Cond { ty: slot, .. }
+            | Expr::Comma { ty: slot, .. }
+            | Expr::Sizeof { ty: slot, .. } => *slot = Some(ty),
         }
     }
 
@@ -575,6 +753,7 @@ fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
                 UnaryOp::Plus => "pos",
                 UnaryOp::Minus => "neg",
                 UnaryOp::Not => "not",
+                UnaryOp::BitNot => "bnot",
             };
             put(out, indent, spelling);
             dump_expr(out, expr, indent + 1);
@@ -584,6 +763,46 @@ fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
             dump_expr(out, target, indent + 1);
             dump_expr(out, value, indent + 1);
         }
+        Expr::CompoundAssign {
+            op, target, value, ..
+        } => {
+            put(out, indent, op.compound_spelling());
+            dump_expr(out, target, indent + 1);
+            dump_expr(out, value, indent + 1);
+        }
+        Expr::IncDec { op, target, .. } => {
+            let spelling = match op {
+                IncOp::PreInc => "pre++",
+                IncOp::PreDec => "pre--",
+                IncOp::PostInc => "post++",
+                IncOp::PostDec => "post--",
+            };
+            put(out, indent, spelling);
+            dump_expr(out, target, indent + 1);
+        }
+        Expr::Cond {
+            cond,
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            put(out, indent, "?:");
+            dump_expr(out, cond, indent + 1);
+            dump_expr(out, then_expr, indent + 1);
+            dump_expr(out, else_expr, indent + 1);
+        }
+        Expr::Comma { left, right, .. } => {
+            put(out, indent, ",");
+            dump_expr(out, left, indent + 1);
+            dump_expr(out, right, indent + 1);
+        }
+        Expr::Sizeof { operand, .. } => match operand {
+            SizeofOperand::Type(ty) => put(out, indent, &format!("sizeof {}", ty.as_str())),
+            SizeofOperand::Expr(expr) => {
+                put(out, indent, "sizeof");
+                dump_expr(out, expr, indent + 1);
+            }
+        },
         Expr::Call { callee, args, .. } => {
             match callee.as_ref() {
                 Expr::Var { name, .. } => put(out, indent, &format!("call {name}")),
