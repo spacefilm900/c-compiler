@@ -44,7 +44,7 @@ impl Parser<'_> {
     /// object declarations. A definition cannot share its declarator list
     /// with another declarator.
     fn parse_external(&mut self) -> Result<Vec<TopDecl>, Diagnostic> {
-        let specs = self.parse_specs()?;
+        let specs = self.parse_specs(SpecPlace::Declaration)?;
         let first = self.parse_declarator()?;
         if first.function.is_some() && self.current().kind == TokenKind::LBrace {
             return Ok(vec![self.finish_definition(specs, first)?]);
@@ -132,6 +132,7 @@ impl Parser<'_> {
         };
         Ok(TopDecl::Global(GlobalDecl {
             name: declarator.name,
+            ty: specs.ty,
             storage: specs.storage,
             init,
             line: declarator.line,
@@ -139,53 +140,177 @@ impl Parser<'_> {
         }))
     }
 
-    fn parse_specs(&mut self) -> Result<Specs, Diagnostic> {
-        let mut storage = Storage::None;
-        let mut storage_at = None;
-        let mut ty = None;
+    fn parse_specs(&mut self, where_: SpecPlace) -> Result<Specs, Diagnostic> {
+        let mut flags = SpecFlags::default();
         loop {
-            match self.current().kind {
+            let token = self.current().clone();
+            match token.kind {
                 TokenKind::KwStatic | TokenKind::KwExtern => {
-                    if storage != Storage::None {
+                    if where_ != SpecPlace::Declaration {
+                        let message = if where_ == SpecPlace::Parameter {
+                            "storage-class specifiers are not supported on parameters"
+                        } else {
+                            "storage-class specifiers are not allowed in this type name"
+                        };
+                        return Err(self.error(message));
+                    }
+                    if flags.storage != Storage::None {
                         return Err(self.error("multiple storage-class specifiers"));
                     }
-                    let token = self.advance();
-                    storage = if token.kind == TokenKind::KwStatic {
+                    self.advance();
+                    flags.storage = if token.kind == TokenKind::KwStatic {
                         Storage::Static
                     } else {
                         Storage::Extern
                     };
-                    storage_at = Some((token.line, token.column));
+                    flags.storage_at = Some((token.line, token.column));
                 }
-                TokenKind::KwInt | TokenKind::KwVoid => {
-                    if ty.is_some() {
-                        return Err(self.error("multiple type specifiers are not supported"));
-                    }
-                    let token = self.advance();
-                    ty = Some(if token.kind == TokenKind::KwInt {
-                        TypeName::Int
-                    } else {
-                        TypeName::Void
-                    });
+                TokenKind::KwVoid
+                | TokenKind::KwChar
+                | TokenKind::KwShort
+                | TokenKind::KwInt
+                | TokenKind::KwLong
+                | TokenKind::KwSigned
+                | TokenKind::KwUnsigned => {
+                    self.advance();
+                    self.note_type(&mut flags, &token)?;
                 }
                 kind => {
                     if let Some(message) = unsupported(kind) {
                         return Err(self.error(message));
                     }
-                    if ty.is_none() {
-                        return Err(
-                            self.error(format!("expected a type, found {}", found(self.current())))
-                        );
-                    }
                     break;
                 }
             }
         }
+        if !flags.any {
+            return Err(self.error(format!("expected a type, found {}", found(self.current()))));
+        }
+        let ty = self.resolve_type(&flags)?;
         Ok(Specs {
-            storage,
-            storage_at,
-            ty: ty.expect("type specifier"),
+            storage: flags.storage,
+            storage_at: flags.storage_at,
+            ty,
+            line: flags.line,
+            column: flags.column,
         })
+    }
+
+    fn note_type(&self, flags: &mut SpecFlags, token: &Token) -> Result<(), Diagnostic> {
+        flags.any = true;
+        flags.line = token.line;
+        flags.column = token.column;
+        let bad = self.error_at(
+            token.line,
+            token.column,
+            "invalid combination of type specifiers",
+        );
+        match token.kind {
+            TokenKind::KwVoid => {
+                if flags.void {
+                    return Err(bad);
+                }
+                flags.void = true;
+            }
+            TokenKind::KwChar => {
+                if flags.char_ {
+                    return Err(bad);
+                }
+                flags.char_ = true;
+            }
+            TokenKind::KwShort => {
+                flags.short += 1;
+                if flags.short > 1 {
+                    return Err(bad);
+                }
+            }
+            TokenKind::KwInt => {
+                if flags.int_ {
+                    return Err(bad);
+                }
+                flags.int_ = true;
+            }
+            TokenKind::KwLong => {
+                flags.long += 1;
+                if flags.long > 2 {
+                    return Err(bad);
+                }
+            }
+            TokenKind::KwSigned => {
+                if flags.signed || flags.unsigned {
+                    return Err(bad);
+                }
+                flags.signed = true;
+            }
+            TokenKind::KwUnsigned => {
+                if flags.unsigned || flags.signed {
+                    return Err(bad);
+                }
+                flags.unsigned = true;
+            }
+            _ => unreachable!("type specifier"),
+        }
+        Ok(())
+    }
+
+    fn resolve_type(&self, flags: &SpecFlags) -> Result<TypeName, Diagnostic> {
+        let bad = self.error_at(
+            flags.line,
+            flags.column,
+            "invalid combination of type specifiers",
+        );
+        if flags.void {
+            if flags.char_
+                || flags.short != 0
+                || flags.int_
+                || flags.long != 0
+                || flags.signed
+                || flags.unsigned
+            {
+                return Err(bad);
+            }
+            return Ok(TypeName::Void);
+        }
+        if flags.char_ {
+            if flags.short != 0 || flags.int_ || flags.long != 0 {
+                return Err(bad);
+            }
+            return Ok(if flags.unsigned {
+                TypeName::UChar
+            } else if flags.signed {
+                TypeName::SChar
+            } else {
+                TypeName::Char
+            });
+        }
+        if flags.short != 0 && flags.long != 0 {
+            return Err(bad);
+        }
+        if flags.short == 1 {
+            return Ok(if flags.unsigned {
+                TypeName::UShort
+            } else {
+                TypeName::Short
+            });
+        }
+        if flags.long == 2 {
+            return Ok(if flags.unsigned {
+                TypeName::ULongLong
+            } else {
+                TypeName::LongLong
+            });
+        }
+        if flags.long == 1 {
+            return Ok(if flags.unsigned {
+                TypeName::ULong
+            } else {
+                TypeName::Long
+            });
+        }
+        if flags.unsigned {
+            return Ok(TypeName::UInt);
+        }
+        Ok(TypeName::Int)
     }
 
     fn parse_declarator(&mut self) -> Result<Declarator, Diagnostic> {
@@ -247,32 +372,26 @@ impl Parser<'_> {
     }
 
     fn parse_param(&mut self) -> Result<Param, Diagnostic> {
-        let token = self.current().clone();
-        if token.kind == TokenKind::Ellipsis {
+        if self.current().kind == TokenKind::Ellipsis {
             return Err(self.error("variadic functions are not supported"));
         }
-        if matches!(token.kind, TokenKind::KwStatic | TokenKind::KwExtern) {
-            return Err(self.error("storage-class specifiers are not supported on parameters"));
-        }
-        if token.kind != TokenKind::KwInt {
-            if let Some(message) = unsupported(token.kind) {
-                return Err(self.error(message));
+        let specs = self.parse_specs(SpecPlace::Parameter)?;
+        if specs.ty == TypeName::Void {
+            if self.current().kind == TokenKind::Star {
+                return Err(self.error("pointers are not supported"));
             }
-            if token.kind == TokenKind::KwVoid {
-                if matches!(
-                    self.lookahead(),
-                    TokenKind::Ident | TokenKind::Star | TokenKind::LBrack
-                ) {
-                    return Err(self.error("'void' must be the only unnamed parameter"));
-                }
-                return Err(self.error(format!("expected ')', found {}", found(&token))));
+            if matches!(
+                self.current().kind,
+                TokenKind::Ident | TokenKind::LBrack | TokenKind::Comma
+            ) {
+                return Err(self.error_at(
+                    specs.line,
+                    specs.column,
+                    "parameter has incomplete type 'void'",
+                ));
             }
-            return Err(self.error(format!(
-                "expected a parameter type, found {}",
-                found(&token)
-            )));
+            return Err(self.error(format!("expected ')', found {}", found(self.current()))));
         }
-        let type_token = self.advance();
         if self.current().kind == TokenKind::Star {
             return Err(self.error("pointers are not supported"));
         }
@@ -283,6 +402,7 @@ impl Parser<'_> {
             }
             return Ok(Param {
                 name: Some(name.spelling),
+                ty: specs.ty,
                 line: name.line,
                 column: name.column,
                 slot: String::new(),
@@ -295,8 +415,9 @@ impl Parser<'_> {
         if matches!(self.current().kind, TokenKind::Comma | TokenKind::RParen) {
             return Ok(Param {
                 name: None,
-                line: type_token.line,
-                column: type_token.column,
+                ty: specs.ty,
+                line: specs.line,
+                column: specs.column,
                 slot: String::new(),
                 arg_reg: String::new(),
             });
@@ -330,7 +451,7 @@ impl Parser<'_> {
     }
 
     fn parse_block_declaration(&mut self) -> Result<Vec<VarDecl>, Diagnostic> {
-        let specs = self.parse_specs()?;
+        let specs = self.parse_specs(SpecPlace::Declaration)?;
         if let Some((line, column)) = specs.storage_at {
             let message = match specs.storage {
                 Storage::Static => "static local variables are not supported",
@@ -363,6 +484,7 @@ impl Parser<'_> {
             };
             decls.push(VarDecl {
                 name: declarator.name,
+                ty: specs.ty,
                 init,
                 line: declarator.line,
                 column: declarator.column,
@@ -401,9 +523,15 @@ impl Parser<'_> {
                 })
             }
             TokenKind::KwElse => Err(self.error("'else' without a matching 'if'")),
-            TokenKind::KwInt | TokenKind::KwVoid | TokenKind::KwStatic | TokenKind::KwExtern => {
-                Err(self.error("a declaration is not allowed as a statement"))
-            }
+            TokenKind::KwInt
+            | TokenKind::KwVoid
+            | TokenKind::KwChar
+            | TokenKind::KwShort
+            | TokenKind::KwLong
+            | TokenKind::KwSigned
+            | TokenKind::KwUnsigned
+            | TokenKind::KwStatic
+            | TokenKind::KwExtern => Err(self.error("a declaration is not allowed as a statement")),
             TokenKind::Semi => {
                 let token = self.advance();
                 Ok(Stmt::Expr {
@@ -692,6 +820,7 @@ impl Parser<'_> {
     fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
         let token = self.current().clone();
         match token.kind {
+            TokenKind::LParen if looks_like_type(self.lookahead()) => self.parse_cast(),
             TokenKind::Plus | TokenKind::Minus | TokenKind::Bang | TokenKind::Tilde => {
                 self.advance();
                 let op = match token.kind {
@@ -726,7 +855,7 @@ impl Parser<'_> {
         self.advance();
         if self.current().kind == TokenKind::LParen && looks_like_type(self.lookahead()) {
             self.advance();
-            let ty = self.parse_sizeof_type()?;
+            let ty = self.parse_type_name()?;
             self.expect(TokenKind::RParen, "')'")?;
             return Ok(Expr::sizeof_type(ty, line, column));
         }
@@ -734,28 +863,24 @@ impl Parser<'_> {
         Ok(Expr::sizeof_expr(expr, line, column))
     }
 
-    fn parse_sizeof_type(&mut self) -> Result<TypeName, Diagnostic> {
-        if let Some(message) = unsupported(self.current().kind) {
-            return Err(self.error(message));
-        }
-        let ty = match self.current().kind {
-            TokenKind::KwInt => TypeName::Int,
-            TokenKind::KwVoid => TypeName::Void,
-            _ => {
-                return Err(self.error(format!(
-                    "expected a type name, found {}",
-                    found(self.current())
-                )));
-            }
-        };
-        self.advance();
+    fn parse_cast(&mut self) -> Result<Expr, Diagnostic> {
+        let lparen = self.advance();
+        let ty = self.parse_type_name()?;
+        self.expect(TokenKind::RParen, "')'")?;
+        let expr = self.parse_unary()?;
+        Ok(Expr::cast(ty, expr, lparen.line, lparen.column))
+    }
+
+    /// A type name is specifiers only. Pointer and array declarators are rejected.
+    fn parse_type_name(&mut self) -> Result<TypeName, Diagnostic> {
+        let specs = self.parse_specs(SpecPlace::TypeName)?;
         if self.current().kind == TokenKind::Star {
             return Err(self.error("pointers are not supported"));
         }
         if self.current().kind == TokenKind::LBrack {
             return Err(self.error("arrays are not supported"));
         }
-        Ok(ty)
+        Ok(specs.ty)
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, Diagnostic> {
@@ -812,6 +937,7 @@ impl Parser<'_> {
                 self.advance();
                 Ok(Expr::int(
                     token.value.expect("int token"),
+                    token.int_ty.expect("int token type"),
                     token.line,
                     token.column,
                 ))
@@ -821,12 +947,6 @@ impl Parser<'_> {
                 Ok(Expr::var(token.spelling, token.line, token.column))
             }
             TokenKind::LParen => {
-                let next = self.lookahead();
-                if matches!(next, TokenKind::KwInt | TokenKind::KwVoid)
-                    || unsupported(next).is_some()
-                {
-                    return Err(self.error("casts are not supported"));
-                }
                 self.advance();
                 let expr = self.parse_expression()?;
                 self.expect(TokenKind::RParen, "')'")?;
@@ -890,6 +1010,31 @@ struct Specs {
     storage: Storage,
     storage_at: Option<(usize, usize)>,
     ty: TypeName,
+    line: usize,
+    column: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpecPlace {
+    Declaration,
+    Parameter,
+    TypeName,
+}
+
+#[derive(Default)]
+struct SpecFlags {
+    storage: Storage,
+    storage_at: Option<(usize, usize)>,
+    void: bool,
+    char_: bool,
+    short: u8,
+    int_: bool,
+    long: u8,
+    signed: bool,
+    unsigned: bool,
+    any: bool,
+    line: usize,
+    column: usize,
 }
 
 struct Declarator {
@@ -927,16 +1072,26 @@ fn assign_kind(kind: TokenKind) -> Option<AssignKind> {
     })
 }
 
-/// A token that can begin a type name in `sizeof ( type-name )`.
+/// A token that can begin a type name in `sizeof ( type-name )` or a cast.
 fn looks_like_type(kind: TokenKind) -> bool {
-    matches!(kind, TokenKind::KwInt | TokenKind::KwVoid) || unsupported(kind).is_some()
+    is_type_specifier(kind) || unsupported(kind).is_some()
+}
+
+fn is_type_specifier(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::KwVoid
+            | TokenKind::KwChar
+            | TokenKind::KwShort
+            | TokenKind::KwInt
+            | TokenKind::KwLong
+            | TokenKind::KwSigned
+            | TokenKind::KwUnsigned
+    )
 }
 
 fn starts_declaration(kind: TokenKind) -> bool {
-    matches!(
-        kind,
-        TokenKind::KwInt | TokenKind::KwVoid | TokenKind::KwStatic | TokenKind::KwExtern
-    )
+    is_type_specifier(kind) || matches!(kind, TokenKind::KwStatic | TokenKind::KwExtern)
 }
 
 fn found(token: &Token) -> String {
@@ -949,13 +1104,8 @@ fn found(token: &Token) -> String {
 
 fn unsupported(kind: TokenKind) -> Option<&'static str> {
     Some(match kind {
-        TokenKind::KwChar => "type 'char' is not supported",
-        TokenKind::KwShort => "type 'short' is not supported",
-        TokenKind::KwLong => "type 'long' is not supported",
         TokenKind::KwFloat => "type 'float' is not supported",
         TokenKind::KwDouble => "type 'double' is not supported",
-        TokenKind::KwSigned => "signed type specifiers are not supported",
-        TokenKind::KwUnsigned => "unsigned types are not supported",
         TokenKind::KwStruct => "structs are not supported",
         TokenKind::KwUnion => "unions are not supported",
         TokenKind::KwEnum => "enums are not supported",
@@ -1099,8 +1249,8 @@ int main() { return add(19, 23); }
             ),
             "\
 func int add
-  param a
-  param b
+  param int a
+  param int b
   block
     return
       +
@@ -1128,11 +1278,11 @@ int main(void) {
             "\
 func int main
   block
-    decl sum =
+    decl int sum =
       int 0
     for
       init
-        decl i =
+        decl int i =
           int 1
       cond
         <=
@@ -1212,12 +1362,12 @@ func int main
         assert!(parse_err("int a[2];").contains("arrays are not supported"));
         assert!(parse_err("int main(void) { int a[2]; return 0; }")
             .contains("arrays are not supported"));
-        assert!(parse_err("int main(void) { char c; return 0; }")
-            .contains("type 'char' is not supported"));
+        assert!(parse_err("int main(void) { float c; return 0; }")
+            .contains("type 'float' is not supported"));
         assert!(parse_err("struct S { int x; };").contains("structs are not supported"));
         assert!(parse_err("int main(void) { return &x; }").contains("address-of"));
         assert!(parse_err("int main(void) { return *p; }").contains("pointer dereference"));
-        assert!(parse_err("int main(void) { return sizeof(char); }").contains("type 'char'"));
+        assert!(parse_err("int main(void) { return sizeof(float); }").contains("type 'float'"));
         assert!(parse_err("int main(void) { return sizeof(int *); }").contains("pointers"));
         assert!(parse_err("int main(void) { return a ? b; }").contains("expected ':'"));
         assert!(parse_err("int add();").contains("old-style function declarations"));
@@ -1237,7 +1387,13 @@ func int main
         assert!(parse_err("int main(void) { do {} while (0); }").contains("do-while"));
         assert!(parse_err("int main(void) { else; }").contains("'else' without a matching 'if'"));
         assert!(parse_err("int *f(void) { return 0; }").contains("pointers are not supported"));
-        assert!(parse_err("int main(void) { return (int)1; }").contains("casts are not supported"));
+        assert!(parse_err("int main(void) { return (float)1; }").contains("type 'float'"));
+        assert!(parse_err("int main(void) { return (int *)1; }").contains("pointers"));
+        assert!(parse_err("short long x;").contains("invalid combination of type specifiers"));
+        assert!(parse_err("unsigned signed x;").contains("invalid combination of type specifiers"));
+        assert!(parse_err("long long long x;").contains("invalid combination of type specifiers"));
+        assert!(parse_err("int int x;").contains("invalid combination of type specifiers"));
+        assert!(parse_err("char int x;").contains("invalid combination of type specifiers"));
         assert!(parse_err("int f(int a, ...) { return a; }").contains("variadic"));
     }
 
@@ -1468,8 +1624,8 @@ func int main
             parsed("int add(int a, int b); int main(void) { return add(1, (2, 3)); }\n"),
             "\
 proto int add
-  param a
-  param b
+  param int a
+  param int b
 func int main
   block
     return
@@ -1483,11 +1639,11 @@ func int main
         assert_eq!(
             parsed("int a = 1 << 4, b = sizeof(int);\n"),
             "\
-global a =
+global int a =
   <<
     int 1
     int 4
-global b =
+global int b =
   sizeof int
 "
         );
@@ -1507,26 +1663,76 @@ int add(int a, int b) { return a + b; }
 "
             ),
             "\
-static global counter
-extern global shared
-global ready =
+static global int counter
+extern global int shared
+global int ready =
   +
     int 1
     int 2
 proto int add
-  param a
-  param b
+  param int a
+  param int b
 proto int sum
-  param
-  param
+  param int
+  param int
 func int add
-  param a
-  param b
+  param int a
+  param int b
   block
     return
       +
         var a
         var b
+"
+        );
+    }
+
+    #[test]
+    fn integer_types_and_casts() {
+        assert_eq!(
+            parsed(
+                "\
+unsigned long long int u;
+signed char sc;
+short int s;
+int f(char, unsigned);
+char g(long int x) { return (char)x; }
+"
+            ),
+            "\
+global unsigned long long u
+global signed char sc
+global short s
+proto int f
+  param char
+  param unsigned int
+func char g
+  param long x
+  block
+    return
+      cast char
+        var x
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { return (int)1 + 2; }\n"),
+            "\
+func int main
+  block
+    return
+      +
+        cast int
+          int 1
+        int 2
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { return sizeof(unsigned long); }\n"),
+            "\
+func int main
+  block
+    return
+      sizeof unsigned long
 "
         );
     }

@@ -3,6 +3,8 @@
 //! Keywords from ISO C11 are recognized so unsupported ones can be rejected
 //! with a specific diagnostic instead of being treated as identifiers.
 
+use crate::ast::TypeName;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
     Eof,
@@ -108,8 +110,12 @@ pub struct Token {
     pub spelling: String,
     pub line: usize,
     pub column: usize,
-    /// Present for [`TokenKind::Int`]. The value fits in a C `int` (32-bit).
-    pub value: Option<i32>,
+    /// Present for [`TokenKind::Int`]. The low bits of an integer or character
+    /// constant. The type is [`Token::int_ty`].
+    pub value: Option<u64>,
+    /// Type chosen for an integer constant (C11 6.4.4.1) or `int` for a
+    /// character constant (C11 6.4.4.4).
+    pub int_ty: Option<TypeName>,
 }
 
 pub fn keyword(spelling: &str) -> Option<TokenKind> {
