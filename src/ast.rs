@@ -1,7 +1,8 @@
 //! Abstract syntax for the C subset accepted by this milestone.
 //!
-//! Names are resolved later. `slot` fields are filled before semantic analysis
-//! so each variable has a stable LLVM alloca name.
+//! Names are resolved later. Local `slot` fields are filled before semantic
+//! analysis so each variable has a stable LLVM alloca name. File-scope objects
+//! use the global's LLVM name instead of an alloca.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeName {
@@ -16,6 +17,26 @@ impl TypeName {
             TypeName::Void => "void",
         }
     }
+}
+
+/// Storage-class specifier on a file-scope declaration.
+///
+/// At most one of `static` and `extern` is allowed. Absence is not the same
+/// thing as `extern` for objects: a file-scope object with no storage class
+/// has external linkage and is a tentative definition when it has no
+/// initializer (C11 6.2.2, 6.9.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Storage {
+    None,
+    Static,
+    Extern,
+}
+
+/// Linkage after C11 6.2.2 has been applied to a declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Linkage {
+    External,
+    Internal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,7 +277,9 @@ pub struct VarDecl {
 
 #[derive(Debug, Clone)]
 pub struct Param {
-    pub name: String,
+    /// `None` for an unnamed prototype parameter (`int f(int, int)`).
+    /// A function definition's parameters always have names.
+    pub name: Option<String>,
     pub line: usize,
     pub column: usize,
     pub slot: String,
@@ -327,20 +350,67 @@ pub struct FuncDef {
     pub ret_type: TypeName,
     pub name: String,
     pub params: Vec<Param>,
-    pub body: Compound,
+    /// `None` is a prototype. `Some` is a definition.
+    pub body: Option<Compound>,
+    pub storage: Storage,
+    /// Filled in by semantic analysis. The parser sets [`Linkage::External`].
+    pub linkage: Linkage,
+    pub line: usize,
+    pub column: usize,
+}
+
+/// One file-scope object declaration. Several declarations may name the same
+/// object; semantic analysis merges them.
+#[derive(Debug, Clone)]
+pub struct GlobalDecl {
+    pub name: String,
+    pub storage: Storage,
+    pub init: Option<Expr>,
     pub line: usize,
     pub column: usize,
 }
 
 #[derive(Debug, Clone)]
+pub enum TopDecl {
+    Func(FuncDef),
+    Global(GlobalDecl),
+}
+
+/// A file-scope object as it will be emitted. Built by semantic analysis.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IrGlobal {
+    pub name: String,
+    pub linkage: Linkage,
+    /// `None` is an external declaration. `Some` is a definition, including
+    /// a tentative definition completed as zero.
+    pub init: Option<i32>,
+}
+
+/// A function that was declared and not defined. Emitted as `declare`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IrFunc {
+    pub name: String,
+    pub ret: TypeName,
+    pub arity: usize,
+    pub linkage: Linkage,
+}
+
+#[derive(Debug, Clone)]
 pub struct TranslationUnit {
-    pub functions: Vec<FuncDef>,
+    pub decls: Vec<TopDecl>,
+    /// Filled by semantic analysis, in order of first declaration.
+    pub globals: Vec<IrGlobal>,
+    /// Prototypes with no definition in this translation unit.
+    pub func_decls: Vec<IrFunc>,
 }
 
 pub fn dump(unit: &TranslationUnit) -> String {
     let mut out = String::new();
-    for func in &unit.functions {
-        dump_func(&mut out, func, 0);
+    for decl in &unit.decls {
+        match decl {
+            TopDecl::Func(func) => dump_func(&mut out, func, 0),
+            TopDecl::Global(global) => dump_global(&mut out, global, 0),
+        }
     }
     out
 }
@@ -353,16 +423,45 @@ fn put(out: &mut String, indent: usize, text: &str) {
     out.push('\n');
 }
 
+fn storage_prefix(storage: Storage) -> &'static str {
+    match storage {
+        Storage::None => "",
+        Storage::Static => "static ",
+        Storage::Extern => "extern ",
+    }
+}
+
+fn dump_global(out: &mut String, global: &GlobalDecl, indent: usize) {
+    let prefix = storage_prefix(global.storage);
+    if let Some(init) = &global.init {
+        put(out, indent, &format!("{prefix}global {} =", global.name));
+        dump_expr(out, init, indent + 1);
+    } else {
+        put(out, indent, &format!("{prefix}global {}", global.name));
+    }
+}
+
 fn dump_func(out: &mut String, func: &FuncDef, indent: usize) {
+    let kind = if func.body.is_some() { "func" } else { "proto" };
     put(
         out,
         indent,
-        &format!("func {} {}", func.ret_type.as_str(), func.name),
+        &format!(
+            "{}{kind} {} {}",
+            storage_prefix(func.storage),
+            func.ret_type.as_str(),
+            func.name
+        ),
     );
     for param in &func.params {
-        put(out, indent + 1, &format!("param {}", param.name));
+        match &param.name {
+            Some(name) => put(out, indent + 1, &format!("param {name}")),
+            None => put(out, indent + 1, "param"),
+        }
     }
-    dump_compound(out, &func.body, indent + 1);
+    if let Some(body) = &func.body {
+        dump_compound(out, body, indent + 1);
+    }
 }
 
 fn dump_compound(out: &mut String, compound: &Compound, indent: usize) {
