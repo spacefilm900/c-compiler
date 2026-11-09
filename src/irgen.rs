@@ -36,6 +36,13 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
     out.push_str(&format!("source_filename = {}\n", llvm_string(filename)));
     out.push_str("target triple = \"x86_64-pc-linux-gnu\"\n\n");
     let mut wrote_prelude = false;
+    for handle in &unit.structs {
+        if handle.is_complete() {
+            out.push_str(&render_struct(handle));
+            out.push('\n');
+            wrote_prelude = true;
+        }
+    }
     for literal in &unit.strings {
         out.push_str(&render_string(literal));
         out.push('\n');
@@ -86,6 +93,16 @@ fn render_global(global: &IrGlobal) -> String {
     } else {
         format!("{name} = external {kind} {ir}, align {align}")
     }
+}
+
+fn render_struct(handle: &StructRef) -> String {
+    let fields = handle.fields().unwrap_or_default();
+    let body = fields
+        .iter()
+        .map(|field| field.ty.ir_type())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("%{} = type {{ {body} }}", handle.llvm_name())
 }
 
 fn render_string(literal: &StrConst) -> String {
@@ -711,6 +728,15 @@ impl Gen {
             }
             Expr::Decay { expr, .. } => Some(self.gen_addr(expr)),
             Expr::Str { .. } => Some(self.gen_addr(expr)),
+            Expr::Member { ty, .. } => {
+                let addr = self.gen_addr(expr);
+                let ty = ty.clone().expect("typed");
+                if ty.is_array() {
+                    Some(addr)
+                } else {
+                    Some(self.load(&ty, &addr))
+                }
+            }
             Expr::Call { args, resolved, .. } => {
                 self.gen_call(args, resolved.as_ref().expect("resolved call"))
             }
@@ -730,8 +756,49 @@ impl Gen {
             Expr::Index { base, index, .. } => self.gen_ptr_index(base, index),
             Expr::Decay { expr, .. } => self.gen_addr(expr),
             Expr::Str { symbol, .. } => llvm_global(symbol.as_deref().expect("string symbol")),
+            Expr::Member {
+                base, arrow, index, ..
+            } => {
+                let base_ptr = if *arrow {
+                    self.gen_val(base)
+                } else if base.is_lvalue() {
+                    self.gen_addr(base)
+                } else {
+                    self.spill(base)
+                };
+                let struct_ty = if *arrow {
+                    base.ty()
+                        .as_ref()
+                        .and_then(CType::pointee)
+                        .expect("pointer to struct")
+                        .clone()
+                } else {
+                    base.ty().expect("struct")
+                };
+                let index = index.expect("member index");
+                let tmp = self.fresh();
+                self.emit(&format!(
+                    "  {tmp} = getelementptr inbounds {}, ptr {base_ptr}, i32 0, i32 {index}",
+                    struct_ty.ir_type()
+                ));
+                tmp
+            }
             _ => panic!("internal compiler error: address of a non-lvalue"),
         }
+    }
+
+    /// Materialize a struct rvalue so a member can be addressed.
+    fn spill(&mut self, expr: &Expr) -> String {
+        let ty = expr.ty().expect("typed");
+        let value = self.gen_val(expr);
+        let tmp = self.fresh();
+        self.emit(&format!(
+            "  {tmp} = alloca {}, align {}",
+            ty.ir_type(),
+            ty.align()
+        ));
+        self.store(&ty, &value, &tmp);
+        tmp
     }
 
     fn gen_ptr_index(&mut self, base: &Expr, index: &Expr) -> String {
@@ -1237,6 +1304,20 @@ fn render_const(ty: &CType, value: &ConstInit) -> String {
             format!("ptrtoint ({} to {ir})", render_ptr_operand(ptr))
         }
         ConstInit::Aggregate(items) => {
+            if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
+                if fields.len() != items.len() {
+                    return "zeroinitializer".to_string();
+                }
+                let parts = items
+                    .iter()
+                    .zip(fields.iter())
+                    .map(|(item, field)| {
+                        format!("{} {}", field.ty.ir_type(), render_const(&field.ty, item))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return format!("{{ {parts} }}");
+            }
             let Some(elem) = ty.array_elem() else {
                 return "zeroinitializer".to_string();
             };
@@ -1813,6 +1894,32 @@ char exact[2] = \"hi\";
         let sized =
             crate::compile_to_ir("int main(void) { return sizeof \"abc\"; }\n", "sz.c").unwrap();
         assert!(!sized.contains("@.str"), "{sized}");
+    }
+
+    #[test]
+    fn struct_ir_names_the_type_and_geps_members() {
+        let source = "\
+struct S { char c; int i; };
+struct S g = {1, 2};
+int main(void) {
+    struct S s;
+    s.c = 3;
+    s.i = g.i;
+    struct S t;
+    t = s;
+    return t.i + t.c;
+}
+";
+        let ir = crate::compile_to_ir(source, "struct.c").unwrap();
+        assert!(ir.contains("%struct.S = type { i8, i32 }"), "{ir}");
+        assert!(
+            ir.contains("@g = global %struct.S { i8 1, i32 2 }, align 4"),
+            "{ir}"
+        );
+        assert!(ir.contains("getelementptr inbounds %struct.S, ptr"), "{ir}");
+        assert!(ir.contains("load %struct.S, ptr"), "{ir}");
+        assert!(ir.contains("store %struct.S"), "{ir}");
+        assert_eq!(run_binary(&ir), run_reference(source));
     }
 
     #[test]

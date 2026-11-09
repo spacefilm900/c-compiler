@@ -5,6 +5,8 @@
 //! shifts, additive, multiplicative, then unary and postfix. Assignment and
 //! `?:` are right associative. A dangling `else` binds to the nearest `if`.
 
+use std::collections::{HashMap, HashSet};
+
 use crate::ast::*;
 use crate::diag::Diagnostic;
 use crate::token::{Token, TokenKind};
@@ -14,6 +16,10 @@ pub fn parse(tokens: &[Token], filename: &str) -> Result<TranslationUnit, Diagno
         tokens,
         index: 0,
         filename,
+        tags: Vec::new(),
+        structs: Vec::new(),
+        llvm_names: HashSet::new(),
+        next_struct: 0,
     }
     .parse_translation_unit()
 }
@@ -22,19 +28,28 @@ struct Parser<'a> {
     tokens: &'a [Token],
     index: usize,
     filename: &'a str,
+    /// Tag namespace, innermost scope last. Ordinary identifiers are not here.
+    tags: Vec<HashMap<String, StructRef>>,
+    /// Completed structs, in definition order.
+    structs: Vec<StructRef>,
+    llvm_names: HashSet<String>,
+    next_struct: u32,
 }
 
 impl Parser<'_> {
     fn parse_translation_unit(&mut self) -> Result<TranslationUnit, Diagnostic> {
+        self.push_tags();
         let mut decls = Vec::new();
         while self.current().kind != TokenKind::Eof {
             decls.extend(self.parse_external()?);
         }
+        self.pop_tags();
         Ok(TranslationUnit {
             decls,
             globals: Vec::new(),
             func_decls: Vec::new(),
             strings: Vec::new(),
+            structs: std::mem::take(&mut self.structs),
         })
     }
 
@@ -47,7 +62,12 @@ impl Parser<'_> {
     /// declarator, so `int *a, b;` declares one pointer and one `int`.
     fn parse_external(&mut self) -> Result<Vec<TopDecl>, Diagnostic> {
         let specs = self.parse_specs(SpecPlace::Declaration)?;
-        let base = CType::from_name(specs.ty).with_quals(specs.quals);
+        if self.current().kind == TokenKind::Semi {
+            self.finish_tag_only(&specs)?;
+            self.expect(TokenKind::Semi, "';'")?;
+            return Ok(Vec::new());
+        }
+        let base = specs.ty.clone();
         let first = self.parse_named_decl(base.clone())?;
         if first.is_function() && self.current().kind == TokenKind::LBrace {
             return Ok(vec![self.finish_definition(specs, first)?]);
@@ -98,7 +118,15 @@ impl Parser<'_> {
                 ));
             }
         }
-        let body = self.parse_compound()?;
+        self.push_tags();
+        for (name, handle) in declarator.param_tags {
+            self.tags
+                .last_mut()
+                .expect("function scope")
+                .insert(name, handle);
+        }
+        let body = self.parse_compound_scoped(false)?;
+        self.pop_tags();
         Ok(TopDecl::Func(FuncDef {
             ret_type: ret,
             name: declarator.name,
@@ -178,10 +206,14 @@ impl Parser<'_> {
             match token.kind {
                 TokenKind::KwStatic | TokenKind::KwExtern => {
                     if where_ != SpecPlace::Declaration {
-                        let message = if where_ == SpecPlace::Parameter {
-                            "storage-class specifiers are not supported on parameters"
-                        } else {
-                            "storage-class specifiers are not allowed in this type name"
+                        let message = match where_ {
+                            SpecPlace::Parameter => {
+                                "storage-class specifiers are not supported on parameters"
+                            }
+                            SpecPlace::Member => "storage class is not allowed on a struct member",
+                            SpecPlace::Declaration | SpecPlace::TypeName => {
+                                "storage-class specifiers are not allowed in this type name"
+                            }
                         };
                         return Err(self.error(message));
                     }
@@ -210,6 +242,17 @@ impl Parser<'_> {
                     self.advance();
                     self.note_qualifier(&mut flags, &token)?;
                 }
+                TokenKind::KwStruct => {
+                    if flags.struct_ty.is_some() || flags.has_scalar() {
+                        return Err(self.error("invalid combination of type specifiers"));
+                    }
+                    let (ty, forward, line, column) = self.parse_struct_specifier()?;
+                    flags.any = true;
+                    flags.struct_ty = Some(ty);
+                    flags.forward_tag = forward;
+                    flags.line = line;
+                    flags.column = column;
+                }
                 kind => {
                     if let Some(message) = unsupported(kind) {
                         return Err(self.error(message));
@@ -221,12 +264,12 @@ impl Parser<'_> {
         if !flags.any {
             return Err(self.error(format!("expected a type, found {}", found(self.current()))));
         }
-        let ty = self.resolve_type(&flags)?;
+        let ty = self.resolve_type(&flags)?.with_quals(flags.quals);
         Ok(Specs {
             storage: flags.storage,
             storage_at: flags.storage_at,
             ty,
-            quals: flags.quals,
+            forward_tag: flags.forward_tag,
             line: flags.line,
             column: flags.column,
         })
@@ -260,6 +303,13 @@ impl Parser<'_> {
     }
 
     fn note_type(&self, flags: &mut SpecFlags, token: &Token) -> Result<(), Diagnostic> {
+        if flags.struct_ty.is_some() {
+            return Err(self.error_at(
+                token.line,
+                token.column,
+                "invalid combination of type specifiers",
+            ));
+        }
         flags.any = true;
         flags.line = token.line;
         flags.column = token.column;
@@ -316,7 +366,21 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn resolve_type(&self, flags: &SpecFlags) -> Result<TypeName, Diagnostic> {
+    fn resolve_type(&self, flags: &SpecFlags) -> Result<CType, Diagnostic> {
+        if let Some(ty) = &flags.struct_ty {
+            if flags.has_scalar() {
+                return Err(self.error_at(
+                    flags.line,
+                    flags.column,
+                    "invalid combination of type specifiers",
+                ));
+            }
+            return Ok(ty.clone());
+        }
+        Ok(CType::from_name(self.resolve_scalar(flags)?))
+    }
+
+    fn resolve_scalar(&self, flags: &SpecFlags) -> Result<TypeName, Diagnostic> {
         let bad = self.error_at(
             flags.line,
             flags.column,
@@ -376,6 +440,219 @@ impl Parser<'_> {
         Ok(TypeName::Int)
     }
 
+    /// `struct tag` or `struct tag { members }`.
+    ///
+    /// A brace list defines the type in the current scope. A use with no
+    /// braces names the visible tag, or declares an incomplete one here when
+    /// none is visible. `forward` is set when the visible tag lives in an
+    /// outer scope, so a lone `struct tag;` can hide it (C11 6.7.2.3).
+    fn parse_struct_specifier(
+        &mut self,
+    ) -> Result<(CType, Option<String>, usize, usize), Diagnostic> {
+        let kw = self.advance();
+        if self.current().kind != TokenKind::Ident {
+            return Err(self.error_at(kw.line, kw.column, "anonymous structs are not supported"));
+        }
+        let tag_tok = self.advance();
+        let tag = tag_tok.spelling.clone();
+        if self.current().kind == TokenKind::LBrace {
+            let ty = self.define_struct(&tag, tag_tok.line, tag_tok.column)?;
+            return Ok((ty, None, tag_tok.line, tag_tok.column));
+        }
+        if let Some(existing) = self.lookup_tag_current(&tag) {
+            return Ok((CType::Struct(existing), None, tag_tok.line, tag_tok.column));
+        }
+        if let Some(outer) = self.lookup_tag(&tag) {
+            return Ok((
+                CType::Struct(outer),
+                Some(tag),
+                tag_tok.line,
+                tag_tok.column,
+            ));
+        }
+        let created = self.declare_fresh_tag(&tag);
+        Ok((CType::Struct(created), None, tag_tok.line, tag_tok.column))
+    }
+
+    fn define_struct(
+        &mut self,
+        tag: &str,
+        line: usize,
+        column: usize,
+    ) -> Result<CType, Diagnostic> {
+        let handle = if let Some(existing) = self.lookup_tag_current(tag) {
+            if existing.is_complete() {
+                return Err(self.error_at(line, column, format!("redefinition of struct '{tag}'")));
+            }
+            existing
+        } else {
+            self.declare_fresh_tag(tag)
+        };
+        self.expect(TokenKind::LBrace, "'{'")?;
+        let mut fields = self.parse_member_list()?;
+        self.expect(TokenKind::RBrace, "'}'")?;
+        if fields.is_empty() {
+            return Err(self.error_at(line, column, format!("struct '{tag}' has no members")));
+        }
+        let spec: Vec<(u64, u32)> = fields
+            .iter()
+            .map(|field| {
+                (
+                    field.ty.size().expect("complete field"),
+                    field.ty.member_align(),
+                )
+            })
+            .collect();
+        let Some((offsets, size, align)) = layout_record(&spec) else {
+            return Err(self.error_at(line, column, format!("struct '{tag}' is too large")));
+        };
+        for (field, offset) in fields.iter_mut().zip(offsets) {
+            field.offset = offset;
+        }
+        let llvm_name = self.alloc_llvm_name(tag);
+        handle.complete(fields, size, align, llvm_name);
+        self.structs.push(handle.clone());
+        Ok(CType::Struct(handle))
+    }
+
+    fn parse_member_list(&mut self) -> Result<Vec<StructField>, Diagnostic> {
+        let mut fields = Vec::new();
+        let mut names = HashSet::new();
+        if self.current().kind == TokenKind::RBrace {
+            return Ok(fields);
+        }
+        while !matches!(self.current().kind, TokenKind::RBrace | TokenKind::Eof) {
+            if self.current().kind == TokenKind::Colon {
+                return Err(self.error("bit-fields are not supported"));
+            }
+            let specs = self.parse_specs(SpecPlace::Member)?;
+            if self.current().kind == TokenKind::Colon {
+                return Err(self.error("bit-fields are not supported"));
+            }
+            if self.current().kind == TokenKind::Semi {
+                return Err(self.error("anonymous struct members are not supported"));
+            }
+            loop {
+                let named = self.parse_named_decl(specs.ty.clone())?;
+                if self.current().kind == TokenKind::Colon {
+                    return Err(self.error("bit-fields are not supported"));
+                }
+                let DeclKind::Object(ty) = named.kind else {
+                    return Err(self.error_at(
+                        named.line,
+                        named.column,
+                        "function members are not supported",
+                    ));
+                };
+                if ty.is_array() && ty.array_len().is_none() {
+                    return Err(self.error_at(
+                        named.line,
+                        named.column,
+                        "flexible array members are not supported",
+                    ));
+                }
+                if !ty.is_complete() {
+                    return Err(self.error_at(
+                        named.line,
+                        named.column,
+                        format!(
+                            "member '{}' has incomplete type '{}'",
+                            named.name,
+                            ty.display()
+                        ),
+                    ));
+                }
+                if !names.insert(named.name.clone()) {
+                    return Err(self.error_at(
+                        named.line,
+                        named.column,
+                        format!("duplicate member '{}'", named.name),
+                    ));
+                }
+                fields.push(StructField {
+                    name: named.name,
+                    ty,
+                    offset: 0,
+                });
+                if self.match_kind(TokenKind::Comma) {
+                    if matches!(
+                        self.current().kind,
+                        TokenKind::Semi | TokenKind::RBrace | TokenKind::Eof
+                    ) {
+                        return Err(self.error("expected a member declarator"));
+                    }
+                    continue;
+                }
+                break;
+            }
+            self.expect(TokenKind::Semi, "';'")?;
+        }
+        Ok(fields)
+    }
+
+    /// A declaration that is only a tag (`struct node;` or `struct S { ... };`).
+    fn finish_tag_only(&mut self, specs: &Specs) -> Result<(), Diagnostic> {
+        if !specs.ty.unqualified().is_struct() {
+            return Err(self.error("expected a declarator"));
+        }
+        if specs.storage != Storage::None {
+            return Err(self.error(
+                "storage class on a struct declaration with no declarator is not supported",
+            ));
+        }
+        if let Some(tag) = &specs.forward_tag {
+            // `struct S;` in this scope hides an outer `struct S`.
+            self.declare_fresh_tag(tag);
+        }
+        Ok(())
+    }
+
+    fn declare_fresh_tag(&mut self, tag: &str) -> StructRef {
+        let handle = StructRef::new_incomplete(self.next_struct, tag);
+        self.next_struct += 1;
+        self.tags
+            .last_mut()
+            .expect("tag scope")
+            .insert(tag.to_string(), handle.clone());
+        handle
+    }
+
+    fn lookup_tag(&self, tag: &str) -> Option<StructRef> {
+        for scope in self.tags.iter().rev() {
+            if let Some(found) = scope.get(tag) {
+                return Some(found.clone());
+            }
+        }
+        None
+    }
+
+    fn lookup_tag_current(&self, tag: &str) -> Option<StructRef> {
+        self.tags.last().and_then(|scope| scope.get(tag).cloned())
+    }
+
+    fn alloc_llvm_name(&mut self, tag: &str) -> String {
+        let base = format!("struct.{tag}");
+        if self.llvm_names.insert(base.clone()) {
+            return base;
+        }
+        let mut n = 1u32;
+        loop {
+            let name = format!("{base}.{n}");
+            if self.llvm_names.insert(name.clone()) {
+                return name;
+            }
+            n += 1;
+        }
+    }
+
+    fn push_tags(&mut self) {
+        self.tags.push(HashMap::new());
+    }
+
+    fn pop_tags(&mut self) {
+        self.tags.pop();
+    }
+
     /// A named declarator. `int *a, b` parses two of these against one base type.
     fn parse_named_decl(&mut self, base: CType) -> Result<NamedDecl, Diagnostic> {
         let raw = self.parse_raw_declarator(false)?;
@@ -386,12 +663,21 @@ impl Parser<'_> {
                 return Err(self.error_at(line, column, "expected an identifier"));
             }
         };
-        let kind = self.layer_to_kind(self.derive(base, &raw, line, column)?)?;
+        let layer = self.derive(base, &raw, line, column)?;
+        let param_tags = match &layer {
+            Layer::Function { introduced, .. } => introduced
+                .iter()
+                .map(|(name, handle)| (name.clone(), handle.clone()))
+                .collect(),
+            Layer::Object(_) => Vec::new(),
+        };
+        let kind = self.layer_to_kind(layer)?;
         Ok(NamedDecl {
             name,
             line,
             column,
             kind,
+            param_tags,
         })
     }
 
@@ -403,6 +689,7 @@ impl Parser<'_> {
                 params,
                 prototype,
                 variadic,
+                introduced: _,
             } => DeclKind::Function {
                 ret,
                 params,
@@ -414,11 +701,25 @@ impl Parser<'_> {
 
     fn parse_param_list(&mut self) -> Result<ParsedParams, Diagnostic> {
         self.expect(TokenKind::LParen, "'('")?;
+        // Tags declared in a parameter list have prototype scope, or the
+        // function's block scope when this declarator is a definition. The
+        // map is returned either way; the caller keeps it only for a body.
+        self.push_tags();
+        let parsed = self.parse_param_list_in_scope();
+        let introduced = self.tags.last().expect("parameter scope").clone();
+        self.pop_tags();
+        let mut parsed = parsed?;
+        parsed.introduced = introduced;
+        Ok(parsed)
+    }
+
+    fn parse_param_list_in_scope(&mut self) -> Result<ParsedParams, Diagnostic> {
         if self.match_kind(TokenKind::RParen) {
             return Ok(ParsedParams {
                 params: Vec::new(),
                 prototype: false,
                 variadic: false,
+                introduced: HashMap::new(),
             });
         }
         if self.current().kind == TokenKind::KwVoid && self.lookahead() == TokenKind::RParen {
@@ -428,6 +729,7 @@ impl Parser<'_> {
                 params: Vec::new(),
                 prototype: true,
                 variadic: false,
+                introduced: HashMap::new(),
             });
         }
         let mut params = Vec::new();
@@ -455,12 +757,13 @@ impl Parser<'_> {
             params,
             prototype: true,
             variadic,
+            introduced: HashMap::new(),
         })
     }
 
     fn parse_param(&mut self) -> Result<Param, Diagnostic> {
         let specs = self.parse_specs(SpecPlace::Parameter)?;
-        let base = CType::from_name(specs.ty).with_quals(specs.quals);
+        let base = specs.ty.clone();
         if !self.starts_raw_declarator() {
             if base.is_void() {
                 if self.current().kind == TokenKind::Comma {
@@ -515,6 +818,9 @@ impl Parser<'_> {
         match ty {
             CType::Array(elem, _) => Ok(CType::pointer(*elem)),
             CType::Void => Err(self.error_at(line, column, "parameter has incomplete type 'void'")),
+            other if other.unqualified().is_struct() => {
+                Err(self.error_at(line, column, "passing a struct by value is not supported"))
+            }
             other if !other.is_complete() => Err(self.error_at(
                 line,
                 column,
@@ -714,6 +1020,7 @@ impl Parser<'_> {
                             params: params.params.clone(),
                             prototype: params.prototype,
                             variadic: params.variadic,
+                            introduced: params.introduced.clone(),
                         },
                         inner,
                         line,
@@ -752,7 +1059,24 @@ impl Parser<'_> {
     }
 
     fn parse_compound(&mut self) -> Result<Compound, Diagnostic> {
+        self.parse_compound_scoped(true)
+    }
+
+    /// `new_scope` is false for a function body, which shares its tag scope
+    /// with the parameter list.
+    fn parse_compound_scoped(&mut self, new_scope: bool) -> Result<Compound, Diagnostic> {
         let brace = self.expect(TokenKind::LBrace, "'{'")?;
+        if new_scope {
+            self.push_tags();
+        }
+        let parsed = self.parse_compound_items(brace.line, brace.column);
+        if new_scope {
+            self.pop_tags();
+        }
+        parsed
+    }
+
+    fn parse_compound_items(&mut self, line: usize, column: usize) -> Result<Compound, Diagnostic> {
         let mut items = Vec::new();
         while !matches!(self.current().kind, TokenKind::RBrace | TokenKind::Eof) {
             if starts_declaration(self.current().kind) {
@@ -768,13 +1092,18 @@ impl Parser<'_> {
         self.expect(TokenKind::RBrace, "'}'")?;
         Ok(Compound {
             items,
-            line: brace.line,
-            column: brace.column,
+            line,
+            column,
         })
     }
 
     fn parse_block_declaration(&mut self) -> Result<Vec<VarDecl>, Diagnostic> {
         let specs = self.parse_specs(SpecPlace::Declaration)?;
+        if self.current().kind == TokenKind::Semi {
+            self.finish_tag_only(&specs)?;
+            self.expect(TokenKind::Semi, "';'")?;
+            return Ok(Vec::new());
+        }
         if let Some((line, column)) = specs.storage_at {
             let message = match specs.storage {
                 Storage::Static => "static local variables are not supported",
@@ -783,7 +1112,7 @@ impl Parser<'_> {
             };
             return Err(self.error_at(line, column, message));
         }
-        let base = CType::from_name(specs.ty).with_quals(specs.quals);
+        let base = specs.ty.clone();
         let mut decls = Vec::new();
         loop {
             let declarator = self.parse_named_decl(base.clone())?;
@@ -935,6 +1264,13 @@ impl Parser<'_> {
     }
 
     fn parse_for(&mut self) -> Result<Stmt, Diagnostic> {
+        self.push_tags();
+        let parsed = self.parse_for_in_scope();
+        self.pop_tags();
+        parsed
+    }
+
+    fn parse_for_in_scope(&mut self) -> Result<Stmt, Diagnostic> {
         let token = self.advance();
         self.expect(TokenKind::LParen, "'('")?;
         let init = if self.match_kind(TokenKind::Semi) {
@@ -1188,6 +1524,9 @@ impl Parser<'_> {
     /// `=` initializer: an assignment expression, or a brace list. A trailing
     /// comma is allowed. An empty list is not (C11).
     fn parse_initializer(&mut self) -> Result<Init, Diagnostic> {
+        if matches!(self.current().kind, TokenKind::Dot | TokenKind::LBrack) {
+            return Err(self.error("designated initializers are not supported"));
+        }
         if self.current().kind != TokenKind::LBrace {
             return Ok(Init::Expr(self.parse_assignment()?));
         }
@@ -1241,7 +1580,7 @@ impl Parser<'_> {
     /// function pointer is rejected.
     fn parse_type_name(&mut self) -> Result<CType, Diagnostic> {
         let specs = self.parse_specs(SpecPlace::TypeName)?;
-        let base = CType::from_name(specs.ty).with_quals(specs.quals);
+        let base = specs.ty.clone();
         if !self.starts_raw_declarator() {
             return Ok(base);
         }
@@ -1297,10 +1636,15 @@ impl Parser<'_> {
                     };
                     expr = Expr::incdec(op, expr, op_token.line, op_token.column);
                 }
-                TokenKind::Arrow => {
-                    return Err(self.error("pointer member access is not supported"));
+                TokenKind::Arrow | TokenKind::Dot => {
+                    let arrow = self.current().kind == TokenKind::Arrow;
+                    let op = self.advance();
+                    if self.current().kind != TokenKind::Ident {
+                        return Err(self.error("expected a member name"));
+                    }
+                    let name = self.advance();
+                    expr = Expr::member(expr, name.spelling, arrow, op.line, op.column);
                 }
-                TokenKind::Dot => return Err(self.error("member access is not supported")),
                 TokenKind::Ellipsis => {
                     return Err(self.error("unexpected '...'"));
                 }
@@ -1399,8 +1743,10 @@ impl Parser<'_> {
 struct Specs {
     storage: Storage,
     storage_at: Option<(usize, usize)>,
-    ty: TypeName,
-    quals: Quals,
+    ty: CType,
+    /// Tag to redeclare in the current scope when this specifier is a lone
+    /// `struct tag;` and the visible tag belongs to an outer scope.
+    forward_tag: Option<String>,
     line: usize,
     column: usize,
 }
@@ -1410,6 +1756,7 @@ enum SpecPlace {
     Declaration,
     Parameter,
     TypeName,
+    Member,
 }
 
 #[derive(Default)]
@@ -1424,9 +1771,23 @@ struct SpecFlags {
     signed: bool,
     unsigned: bool,
     quals: Quals,
+    struct_ty: Option<CType>,
+    forward_tag: Option<String>,
     any: bool,
     line: usize,
     column: usize,
+}
+
+impl SpecFlags {
+    fn has_scalar(&self) -> bool {
+        self.void
+            || self.char_
+            || self.short != 0
+            || self.int_
+            || self.long != 0
+            || self.signed
+            || self.unsigned
+    }
 }
 
 struct NamedDecl {
@@ -1434,6 +1795,10 @@ struct NamedDecl {
     line: usize,
     column: usize,
     kind: DeclKind,
+    /// Tags declared in this function's parameter list. Empty for an object.
+    /// A definition installs them in the function's block scope; a prototype
+    /// drops them when the declarator ends (C11 6.2.1).
+    param_tags: Vec<(String, StructRef)>,
 }
 
 impl NamedDecl {
@@ -1459,6 +1824,7 @@ enum Layer {
         params: Vec<Param>,
         prototype: bool,
         variadic: bool,
+        introduced: HashMap<String, StructRef>,
     },
 }
 
@@ -1475,6 +1841,8 @@ struct ParsedParams {
     /// `false` only for an empty `()` list, which is not a prototype.
     prototype: bool,
     variadic: bool,
+    /// Tags whose scope is this parameter list.
+    introduced: HashMap<String, StructRef>,
 }
 
 fn decl_name(raw: &RawDecl) -> Option<(String, usize, usize)> {
@@ -1611,7 +1979,8 @@ fn eval_ice(expr: &Expr) -> Result<BVal, BoundErr> {
         | Expr::IncDec { .. }
         | Expr::Comma { .. }
         | Expr::Index { .. }
-        | Expr::Decay { .. } => Err(BoundErr::Vla),
+        | Expr::Decay { .. }
+        | Expr::Member { .. } => Err(BoundErr::Vla),
     }
 }
 
@@ -1923,6 +2292,7 @@ fn is_type_specifier(kind: TokenKind) -> bool {
             | TokenKind::KwLong
             | TokenKind::KwSigned
             | TokenKind::KwUnsigned
+            | TokenKind::KwStruct
     )
 }
 
@@ -1930,7 +2300,11 @@ fn starts_declaration(kind: TokenKind) -> bool {
     is_type_specifier(kind)
         || matches!(
             kind,
-            TokenKind::KwStatic | TokenKind::KwExtern | TokenKind::KwConst | TokenKind::KwVolatile
+            TokenKind::KwStatic
+                | TokenKind::KwExtern
+                | TokenKind::KwConst
+                | TokenKind::KwVolatile
+                | TokenKind::KwStruct
         )
 }
 
@@ -1946,7 +2320,6 @@ fn unsupported(kind: TokenKind) -> Option<&'static str> {
     Some(match kind {
         TokenKind::KwFloat => "type 'float' is not supported",
         TokenKind::KwDouble => "type 'double' is not supported",
-        TokenKind::KwStruct => "structs are not supported",
         TokenKind::KwUnion => "unions are not supported",
         TokenKind::KwEnum => "enums are not supported",
         TokenKind::KwTypedef => "typedef is not supported",
@@ -2253,7 +2626,9 @@ global int [] a =
         assert!(parse_err("int main(void { return 0; }").contains("expected ')'"));
         assert!(parse_err("int main(void) { float c; return 0; }")
             .contains("type 'float' is not supported"));
-        assert!(parse_err("struct S { int x; };").contains("structs are not supported"));
+        assert!(parse_err("union U { int x; };").contains("unions are not supported"));
+        assert!(parse_err("struct { int x; } s;").contains("anonymous structs are not supported"));
+        assert!(parse_err("struct S { int x: 3; };").contains("bit-fields are not supported"));
         assert!(parse_err("int main(void) { return sizeof(float); }").contains("type 'float'"));
         assert!(parse_err("int (*fp)(void);").contains("function pointers are not supported"));
         assert!(parse_err("int a[n];").contains("variable-length arrays are not supported"));
@@ -2319,6 +2694,45 @@ global char [2] s =
             parsed("int *const p;\n"),
             "\
 global int * const p
+"
+        );
+    }
+
+    #[test]
+    fn struct_declarators_and_member_access() {
+        assert_eq!(
+            parsed(
+                "\
+struct S { int x; char c; };
+struct S s;
+struct S *p;
+"
+            ),
+            "\
+global struct S s
+global struct S * p
+"
+        );
+        assert_eq!(
+            parsed("int main(void) { return a.b + p->c; }\n"),
+            "\
+func int main
+  block
+    return
+      +
+        member b
+          var a
+        arrow c
+          var p
+"
+        );
+        assert_eq!(
+            parsed("struct S { int x; } s = {1, 2};\n"),
+            "\
+global struct S s =
+  list
+    int 1
+    int 2
 "
         );
     }

@@ -7,7 +7,8 @@
 //! File-scope objects and functions follow C11 6.2.2 linkage and 6.9.2
 //! tentative definitions. A prototype makes a function visible before its
 //! body, which is what mutual recursion needs. A global initializer must be
-//! an integer constant expression (C11 6.6). Assignment, `++`/`--`, calls,
+//! a constant (C11 6.6): an integer constant, an address constant, or a brace
+//! list of those. Assignment, `++`/`--`, calls,
 //! and the comma operator are rejected there, including when they sit in an
 //! evaluated operand. An unevaluated operand (`sizeof`, or the skipped arm
 //! of `&&`, `||`, or `?:`) may contain them.
@@ -114,6 +115,13 @@ impl Sema {
             ty = shaped_ty.clone();
         }
         decl.ty = ty.clone();
+        if !ty.is_array() && !ty.is_complete() {
+            return self.err(
+                decl.line,
+                decl.column,
+                format!("variable '{name}' has incomplete type '{}'", ty.display()),
+            );
+        }
         let prior = self.file_get(&name);
         let prior_linkage = match &prior {
             None => None,
@@ -171,6 +179,13 @@ impl Sema {
     }
 
     fn declare_func(&mut self, func: &mut FuncDef) -> Result<(), Diagnostic> {
+        if func.ret_type.unqualified().is_struct() {
+            return self.err(
+                func.line,
+                func.column,
+                "returning a struct by value is not supported",
+            );
+        }
         let mut seen = HashSet::new();
         for param in &func.params {
             let Some(name) = &param.name else {
@@ -419,7 +434,7 @@ impl Sema {
     }
 
     fn shape_initializer(
-        &self,
+        &mut self,
         ty: &CType,
         init: &Init,
         line: usize,
@@ -465,7 +480,7 @@ impl Sema {
     }
 
     fn infer_array_len(
-        &self,
+        &mut self,
         elem: &CType,
         items: &[Init],
         line: usize,
@@ -479,10 +494,8 @@ impl Sema {
         let mut scratch = Vec::new();
         while pos < items.len() {
             let start = pos;
-            if string_payload(&items[pos]).is_some() && is_char_array(elem) {
-                pos += 1;
-            } else if matches!(items[pos], Init::List { .. }) || elem.is_scalar() {
-                if matches!(items[pos], Init::List { .. }) {
+            if self.opens_subobject(elem, &items[pos]) {
+                if !elem.is_scalar() {
                     self.fill_object(elem, &items[pos], 0, &mut scratch, line, column)?;
                 }
                 pos += 1;
@@ -498,7 +511,7 @@ impl Sema {
     }
 
     fn fill_object(
-        &self,
+        &mut self,
         ty: &CType,
         init: &Init,
         base: u64,
@@ -515,6 +528,19 @@ impl Sema {
             });
             return Ok(());
         }
+        if let Init::Expr(expr) = init {
+            if ty.is_struct() {
+                if string_payload(init).is_some() {
+                    return self.err(line, column, "struct initializer must be a brace list");
+                }
+                stores.push(ElemStore {
+                    offset: base,
+                    ty: ty.clone(),
+                    expr: expr.clone(),
+                });
+                return Ok(());
+            }
+        }
         if let Some(bytes) = string_payload(init).map(|bytes| bytes.to_vec()) {
             if is_char_array(ty) {
                 return self.fill_from_string(ty, &bytes, base, stores, init);
@@ -527,6 +553,9 @@ impl Sema {
                     "a string literal cannot initialize this array",
                 );
             }
+        }
+        if ty.is_struct() {
+            return self.fill_struct(ty, init, base, stores, line, column);
         }
         let CType::Array(elem, Some(len)) = ty else {
             return self.err(line, column, "array initializer must be a brace list");
@@ -556,7 +585,7 @@ impl Sema {
                     continue;
                 }
             }
-            if matches!(items[pos], Init::List { .. }) || elem.is_scalar() {
+            if self.opens_subobject(elem, &items[pos]) {
                 self.fill_object(elem, &items[pos], off, stores, *line, *column)?;
                 pos += 1;
             } else {
@@ -568,7 +597,7 @@ impl Sema {
     }
 
     fn fill_unbraced(
-        &self,
+        &mut self,
         ty: &CType,
         items: &[Init],
         pos: &mut usize,
@@ -585,6 +614,28 @@ impl Sema {
             *pos += 1;
             return Ok(());
         }
+        if ty.is_struct() {
+            let Some(fields) = ty.struct_ref().and_then(StructRef::fields) else {
+                return self.err(
+                    line,
+                    column,
+                    format!("variable has incomplete type '{}'", ty.display()),
+                );
+            };
+            for field in &fields {
+                if *pos >= items.len() {
+                    break;
+                }
+                let off = base + field.offset;
+                if self.opens_subobject(&field.ty, &items[*pos]) {
+                    self.fill_object(&field.ty, &items[*pos], off, stores, line, column)?;
+                    *pos += 1;
+                } else {
+                    self.fill_unbraced(&field.ty, items, pos, off, stores, (line, column))?;
+                }
+            }
+            return Ok(());
+        }
         let CType::Array(elem, Some(len)) = ty else {
             return self.err(line, column, "array initializer must be a brace list");
         };
@@ -594,7 +645,7 @@ impl Sema {
                 break;
             }
             let off = base + index * elem_size;
-            if matches!(items[*pos], Init::List { .. }) || elem.is_scalar() {
+            if self.opens_subobject(elem, &items[*pos]) {
                 self.fill_object(elem, &items[*pos], off, stores, line, column)?;
                 *pos += 1;
             } else {
@@ -602,6 +653,78 @@ impl Sema {
             }
         }
         Ok(())
+    }
+
+    fn fill_struct(
+        &mut self,
+        ty: &CType,
+        init: &Init,
+        base: u64,
+        stores: &mut Vec<ElemStore>,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        let Some(fields) = ty.struct_ref().and_then(StructRef::fields) else {
+            return self.err(
+                line,
+                column,
+                format!("variable has incomplete type '{}'", ty.display()),
+            );
+        };
+        let Init::List {
+            items,
+            line,
+            column,
+        } = init
+        else {
+            let (line, column) = init_pos(init);
+            return self.err(line, column, "struct initializer must be a brace list");
+        };
+        let mut pos = 0usize;
+        for field in &fields {
+            if pos >= items.len() {
+                break;
+            }
+            let off = base + field.offset;
+            if self.opens_subobject(&field.ty, &items[pos]) {
+                self.fill_object(&field.ty, &items[pos], off, stores, *line, *column)?;
+                pos += 1;
+            } else {
+                self.fill_unbraced(&field.ty, items, &mut pos, off, stores, (*line, *column))?;
+            }
+        }
+        if pos < items.len() {
+            return self.err(*line, *column, "excess elements in struct initializer");
+        }
+        Ok(())
+    }
+
+    /// One initializer element covers this subobject: a brace list, a scalar,
+    /// a string for a character array, or an expression of the struct type.
+    fn opens_subobject(&mut self, ty: &CType, init: &Init) -> bool {
+        takes_one_init(ty, init) || self.covers_struct(ty, init)
+    }
+
+    /// An expression whose type is this struct initializes the whole field,
+    /// instead of the first scalar inside it (`struct Line l = {p, q}`).
+    fn covers_struct(&mut self, ty: &CType, init: &Init) -> bool {
+        if !ty.unqualified().is_struct() {
+            return false;
+        }
+        let Init::Expr(expr) = init else {
+            return false;
+        };
+        if string_payload(init).is_some() {
+            return false;
+        }
+        let mut probe = expr.clone();
+        if self.check_expr(&mut probe).is_err() {
+            return false;
+        }
+        self.decay(&mut probe);
+        probe.ty().is_some_and(|src| {
+            src.unqualified().is_struct() && compatible(&ty.unqualified(), &src.unqualified())
+        })
     }
 
     fn scalar_expr(&self, init: &Init) -> Result<Expr, Diagnostic> {
@@ -735,6 +858,13 @@ impl Sema {
                 Ok(ptr) => Ok(ConstInit::Ptr(ptr)),
                 Err(_) => self.const_diag(name, expr),
             };
+        }
+        if dest.is_struct() {
+            return self.err(
+                expr.line(),
+                expr.column(),
+                format!("initializer of '{name}' is not a constant expression"),
+            );
         }
         self.err(
             expr.line(),
@@ -976,11 +1106,16 @@ impl Sema {
             (decl.ty.clone(), Vec::new())
         };
         if !ty.is_complete() {
-            return self.err(
-                decl.line,
-                decl.column,
-                format!("array size missing in '{}'", decl.name),
-            );
+            let message = if ty.is_array() {
+                format!("array size missing in '{}'", decl.name)
+            } else {
+                format!(
+                    "variable '{}' has incomplete type '{}'",
+                    decl.name,
+                    ty.display()
+                )
+            };
+            return self.err(decl.line, decl.column, message);
         }
         decl.ty = ty.clone();
         // The declarator is in scope for its initializer (C scope rules).
@@ -993,11 +1128,7 @@ impl Sema {
         if decl.init.is_some() {
             let mut stores = stores;
             self.check_stores(&mut stores)?;
-            decl.checked = Some(if ty.is_array() {
-                CheckedInit::Aggregate(stores)
-            } else {
-                CheckedInit::Scalar(stores.remove(0).expr)
-            });
+            decl.checked = Some(classify_init(&ty, stores));
         }
         Ok(())
     }
@@ -1023,6 +1154,7 @@ impl Sema {
             Expr::Index { .. } => self.check_index(expr),
             Expr::Decay { .. } => Ok(()),
             Expr::Str { .. } => self.check_str(expr),
+            Expr::Member { .. } => self.check_member(expr),
         }
     }
 
@@ -1299,7 +1431,7 @@ impl Sema {
             self.ensure_string(expr);
             match op {
                 UnaryOp::Addr => {
-                    if !is_lvalue(expr) {
+                    if !expr.is_lvalue() {
                         return self.err(
                             line,
                             column,
@@ -1370,6 +1502,16 @@ impl Sema {
             self.check_expr(value)?;
             self.decay(value);
             let dest = target.ty().expect("lvalue type");
+            if !dest.is_scalar() {
+                return self.err(
+                    line,
+                    column,
+                    format!(
+                        "compound assignment requires a scalar, found '{}'",
+                        dest.display()
+                    ),
+                );
+            }
             if dest.is_pointer() {
                 if !matches!(op, BinOp::Add | BinOp::Sub) {
                     return self.err(
@@ -1406,6 +1548,13 @@ impl Sema {
             let column = *column;
             self.check_modifiable(target)?;
             let dest = target.ty().expect("lvalue type");
+            if !dest.is_scalar() {
+                return self.err(
+                    line,
+                    column,
+                    format!("++ and -- require a scalar, found '{}'", dest.display()),
+                );
+            }
             if dest.is_pointer() {
                 self.require_complete_pointee(&dest, line, column)?;
             }
@@ -1685,6 +1834,13 @@ impl Sema {
         if ty.is_array() {
             return self.err(expr.line(), expr.column(), "array type is not assignable");
         }
+        if !ty.is_complete() {
+            return self.err(
+                expr.line(),
+                expr.column(),
+                format!("cannot assign to incomplete type '{}'", ty.display()),
+            );
+        }
         if ty.is_const() {
             return self.err(
                 expr.line(),
@@ -1692,9 +1848,88 @@ impl Sema {
                 format!("cannot assign to const-qualified type '{}'", ty.display()),
             );
         }
+        if ty.is_struct() {
+            if ty.contains_const() {
+                return self.err(
+                    expr.line(),
+                    expr.column(),
+                    "cannot assign to a struct with a const member",
+                );
+            }
+            return Ok(());
+        }
         if !ty.is_scalar() {
             return self.err(expr.line(), expr.column(), "expression is not assignable");
         }
+        Ok(())
+    }
+
+    fn check_member(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        let ty = if let Expr::Member {
+            base,
+            field,
+            arrow,
+            line,
+            column,
+            index,
+            offset,
+            ..
+        } = expr
+        {
+            let field_name = field.clone();
+            let arrow = *arrow;
+            let line = *line;
+            let column = *column;
+            self.check_expr(base)?;
+            let base_ty = if arrow {
+                self.decay(base);
+                let ty = base.ty().expect("typed");
+                let Some(pointee) = ty.pointee().cloned() else {
+                    return self.err(
+                        line,
+                        column,
+                        format!("member reference type '{}' is not a pointer", ty.display()),
+                    );
+                };
+                pointee
+            } else {
+                base.ty().expect("typed")
+            };
+            let Some(handle) = base_ty.struct_ref().cloned() else {
+                return self.err(
+                    line,
+                    column,
+                    format!(
+                        "member reference base type '{}' is not a struct",
+                        base_ty.display()
+                    ),
+                );
+            };
+            if !handle.is_complete() {
+                return self.err(
+                    line,
+                    column,
+                    format!("member access on incomplete type 'struct {}'", handle.tag()),
+                );
+            }
+            let Some((found_index, found)) = handle.field(&field_name) else {
+                return self.err(
+                    line,
+                    column,
+                    format!(
+                        "no member named '{field_name}' in 'struct {}'",
+                        handle.tag()
+                    ),
+                );
+            };
+            *index = Some(found_index);
+            *offset = Some(found.offset);
+            // The struct object's qualifiers apply to the member (C11 6.5.2.3).
+            found.ty.with_quals(base_ty.quals())
+        } else {
+            unreachable!("member expression");
+        };
+        expr.set_ty(ty);
         Ok(())
     }
 
@@ -1706,6 +1941,7 @@ impl Sema {
                 op: UnaryOp::Deref, ..
             } => self.check_unary(expr),
             Expr::Str { .. } => self.check_str(expr),
+            Expr::Member { .. } => self.check_member(expr),
             _ => self.err(expr.line(), expr.column(), "expression is not assignable"),
         }
     }
@@ -1731,6 +1967,12 @@ impl Sema {
             );
         }
         if dest.is_integer() && src_ty.is_integer() {
+            return Ok(());
+        }
+        if dest.unqualified().is_struct()
+            && src_ty.unqualified().is_struct()
+            && compatible(&dest.unqualified(), &src_ty.unqualified())
+        {
             return Ok(());
         }
         if dest.is_pointer()
@@ -1871,19 +2113,6 @@ fn integer_ty(expr: &Expr) -> TypeName {
         .expect("integer expression")
 }
 
-fn is_lvalue(expr: &Expr) -> bool {
-    matches!(
-        expr,
-        Expr::Var { .. }
-            | Expr::Index { .. }
-            | Expr::Str { .. }
-            | Expr::Unary {
-                op: UnaryOp::Deref,
-                ..
-            }
-    )
-}
-
 fn init_pos(init: &Init) -> (usize, usize) {
     match init {
         Init::Expr(expr) => (expr.line(), expr.column()),
@@ -1992,6 +2221,26 @@ fn is_null_pointer_constant(expr: &Expr) -> bool {
     }
 }
 
+fn takes_one_init(ty: &CType, init: &Init) -> bool {
+    if matches!(init, Init::List { .. }) || ty.is_scalar() {
+        return true;
+    }
+    string_payload(init).is_some() && is_char_array(ty)
+}
+
+fn classify_init(ty: &CType, mut stores: Vec<ElemStore>) -> CheckedInit {
+    // A single store of the whole object is a scalar or a struct copy.
+    // One store of a field, including the only field, stays an aggregate
+    // store at that field's offset.
+    let whole = stores.len() == 1
+        && (ty.is_scalar()
+            || (ty.is_struct() && compatible(&stores[0].ty.unqualified(), &ty.unqualified())));
+    if whole {
+        return CheckedInit::Scalar(stores.remove(0).expr);
+    }
+    CheckedInit::Aggregate(stores)
+}
+
 fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
     if ty.is_scalar() {
         return stores
@@ -1999,6 +2248,13 @@ fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
             .find(|(offset, _)| *offset == base)
             .map(|(_, value)| value.clone())
             .unwrap_or_else(|| zero_const(ty));
+    }
+    if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
+        let mut items = Vec::new();
+        for field in &fields {
+            items.push(assemble(&field.ty, stores, base + field.offset));
+        }
+        return ConstInit::Aggregate(items);
     }
     let CType::Array(elem, Some(len)) = ty else {
         return ConstInit::Zero;
@@ -2217,6 +2473,26 @@ fn designator(expr: &Expr) -> Result<(String, i64), ConstError> {
             expr,
             ..
         } => pointer_object(expr),
+        Expr::Member {
+            base,
+            offset,
+            arrow,
+            ..
+        } => {
+            let member_off = i64::try_from(offset.ok_or(ConstError::NotConst)?)
+                .map_err(|_| ConstError::Overflow(TypeName::Long))?;
+            let (name, base_off) = if *arrow {
+                pointer_object(base)?
+            } else {
+                designator(base)?
+            };
+            Ok((
+                name,
+                base_off
+                    .checked_add(member_off)
+                    .ok_or(ConstError::Overflow(TypeName::Long))?,
+            ))
+        }
         _ => Err(ConstError::NotConst),
     }
 }
@@ -2333,7 +2609,8 @@ fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
         | Expr::Comma { .. }
         | Expr::Index { .. }
         | Expr::Decay { .. }
-        | Expr::Str { .. } => Err(ConstError::NotConst),
+        | Expr::Str { .. }
+        | Expr::Member { .. } => Err(ConstError::NotConst),
     }
 }
 
@@ -2632,7 +2909,10 @@ mod tests {
 
     fn sema_err(source: &str) -> String {
         let tokens = lex(source, "neg.c").unwrap();
-        let mut unit = parse(&tokens, "neg.c").unwrap();
+        let mut unit = match parse(&tokens, "neg.c") {
+            Ok(unit) => unit,
+            Err(err) => return err.to_string(),
+        };
         analyze(&mut unit, "neg.c").unwrap_err().to_string()
     }
 
@@ -3078,6 +3358,108 @@ int main(void) {
         sema_ok("int g; long x = (long)&g;");
         assert!(
             sema_err("int main(void) { int (*p)[]; return p[0][0]; }").contains("incomplete type")
+        );
+    }
+
+    #[test]
+    fn struct_layout_members_and_diagnostics() {
+        let unit = analyzed(
+            "\
+struct S { char c; int i; long l; };
+struct S g = {1, 2, 3};
+struct Node { int val; struct Node *next; };
+struct Node n = {4, 0};
+",
+        );
+        let s = unit
+            .structs
+            .iter()
+            .find(|handle| handle.tag() == "S")
+            .expect("struct S");
+        assert_eq!(s.size(), Some(16));
+        assert_eq!(s.align(), 8);
+        let fields = s.fields().expect("complete");
+        assert_eq!(fields[0].name, "c");
+        assert_eq!(fields[0].offset, 0);
+        assert_eq!(fields[1].name, "i");
+        assert_eq!(fields[1].offset, 4);
+        assert_eq!(fields[2].offset, 8);
+        assert!(s.field("missing").is_none());
+        assert_eq!(s.field("i").unwrap().1.offset, 4);
+        let node = unit
+            .structs
+            .iter()
+            .find(|handle| handle.tag() == "Node")
+            .expect("struct Node");
+        assert_eq!(node.size(), Some(16));
+        assert!(node.field("next").unwrap().1.ty.is_pointer());
+        let g = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "g")
+            .unwrap();
+        match &g.init {
+            Some(ConstInit::Aggregate(items)) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], ConstInit::Int(1));
+                assert_eq!(items[1], ConstInit::Int(2));
+                assert_eq!(items[2], ConstInit::Int(3));
+            }
+            other => panic!("expected aggregate, got {other:?}"),
+        }
+
+        assert!(
+            sema_err("struct S { int x; }; void f(struct S s) { (void)s; }")
+                .contains("passing a struct by value is not supported")
+        );
+        assert!(
+            sema_err("struct S { int x; }; struct S f(void) { struct S s; return s; }")
+                .contains("returning a struct by value is not supported")
+        );
+        assert!(sema_err("struct S; struct S s;").contains("incomplete type 'struct S'"));
+        assert!(
+            sema_err("struct S; int main(void) { return sizeof(struct S); }")
+                .contains("incomplete type 'struct S'")
+        );
+        assert!(
+            sema_err("struct S; int main(void) { struct S *p; return p->x; }")
+                .contains("incomplete type 'struct S'")
+        );
+        assert!(
+            sema_err("struct S { int x; }; int main(void) { struct S s; return s.y; }")
+                .contains("no member named 'y'")
+        );
+        assert!(sema_err("struct S { int x; }; struct S { int y; };")
+            .contains("redefinition of struct 'S'"));
+        assert!(sema_err("struct S { int x; int x; };").contains("duplicate member"));
+        assert!(sema_err("struct S { int n; int a[]; };").contains("flexible array"));
+        assert!(sema_err("struct S { int x : 3; };").contains("bit-fields"));
+        assert!(sema_err("struct { int x; } s;").contains("anonymous structs"));
+        assert!(sema_err("struct S {};").contains("no members"));
+        assert!(
+            sema_err("struct S { int x; int y; }; struct S s = { .y = 1 };")
+                .contains("designated initializers")
+        );
+        assert!(sema_err(
+            "struct S { const int x; int y; }; void f(struct S *a, struct S *b) { *a = *b; }"
+        )
+        .contains("const member"));
+        assert!(
+            sema_err("struct S { int x; }; int main(void) { struct S s; s++; return 0; }")
+                .contains("++ and -- require a scalar")
+        );
+        assert!(sema_err("void f(struct A *p); void f(struct A *p);")
+            .contains("conflicting types for 'f'"));
+        assert!(
+            sema_err("struct S { int x; int y; }; struct S s = {1, 2, 3};")
+                .contains("excess elements in struct initializer")
+        );
+        sema_ok(
+            "\
+struct S { int x; };
+void f(struct S *p);
+void f(struct S *p) { p->x = 1; }
+",
         );
     }
 }
