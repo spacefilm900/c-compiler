@@ -1941,7 +1941,13 @@ impl Sema {
                 op: UnaryOp::Deref, ..
             } => self.check_unary(expr),
             Expr::Str { .. } => self.check_str(expr),
-            Expr::Member { .. } => self.check_member(expr),
+            Expr::Member { .. } => {
+                self.check_member(expr)?;
+                if !expr.is_lvalue() {
+                    return self.err(expr.line(), expr.column(), "expression is not assignable");
+                }
+                Ok(())
+            }
             _ => self.err(expr.line(), expr.column(), "expression is not assignable"),
         }
     }
@@ -3412,6 +3418,14 @@ struct Node n = {4, 0};
             sema_err("struct S { int x; }; void f(struct S s) { (void)s; }")
                 .contains("passing a struct by value is not supported")
         );
+        assert!(sema_err("struct S { int x; }; int f(struct S);")
+            .contains("passing a struct by value is not supported"));
+        assert!(sema_err("struct S { struct S { int x; } in; int y; };")
+            .contains("redefinition of struct 'S'"));
+        assert!(sema_err(
+            "struct S { int x; }; int main(void) { struct S s; struct S t; (s = t).x = 1; return 0; }"
+        )
+        .contains("expression is not assignable"));
         assert!(
             sema_err("struct S { int x; }; struct S f(void) { struct S s; return s; }")
                 .contains("returning a struct by value is not supported")

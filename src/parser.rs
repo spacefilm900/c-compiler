@@ -20,6 +20,7 @@ pub fn parse(tokens: &[Token], filename: &str) -> Result<TranslationUnit, Diagno
         structs: Vec::new(),
         llvm_names: HashSet::new(),
         next_struct: 0,
+        defining: HashSet::new(),
     }
     .parse_translation_unit()
 }
@@ -34,6 +35,9 @@ struct Parser<'a> {
     structs: Vec<StructRef>,
     llvm_names: HashSet<String>,
     next_struct: u32,
+    /// Structs whose member lists are being parsed. A nested definition of
+    /// one of these tags is a redefinition, not a completion.
+    defining: HashSet<u32>,
 }
 
 impl Parser<'_> {
@@ -481,7 +485,7 @@ impl Parser<'_> {
         column: usize,
     ) -> Result<CType, Diagnostic> {
         let handle = if let Some(existing) = self.lookup_tag_current(tag) {
-            if existing.is_complete() {
+            if existing.is_complete() || self.defining.contains(&existing.id()) {
                 return Err(self.error_at(line, column, format!("redefinition of struct '{tag}'")));
             }
             existing
@@ -489,7 +493,11 @@ impl Parser<'_> {
             self.declare_fresh_tag(tag)
         };
         self.expect(TokenKind::LBrace, "'{'")?;
-        let mut fields = self.parse_member_list()?;
+        let id = handle.id();
+        self.defining.insert(id);
+        let parsed = self.parse_member_list();
+        self.defining.remove(&id);
+        let mut fields = parsed?;
         self.expect(TokenKind::RBrace, "'}'")?;
         if fields.is_empty() {
             return Err(self.error_at(line, column, format!("struct '{tag}' has no members")));
@@ -776,9 +784,10 @@ impl Parser<'_> {
                 return Err(self.error(format!("expected ')', found {}", found(self.current()))));
             }
             if matches!(self.current().kind, TokenKind::Comma | TokenKind::RParen) {
+                let ty = self.adjust_parameter(base, specs.line, specs.column)?;
                 return Ok(Param {
                     name: None,
-                    ty: base,
+                    ty,
                     line: specs.line,
                     column: specs.column,
                     slot: String::new(),
