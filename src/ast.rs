@@ -789,12 +789,14 @@ pub fn convert_bits(bits: u64, from: TypeName, to: TypeName) -> u64 {
     }
 }
 
-/// Storage-class specifier on a file-scope declaration.
+/// Storage-class specifier on a declaration.
 ///
 /// At most one of `static` and `extern` is allowed. Absence is not the same
 /// thing as `extern` for objects: a file-scope object with no storage class
 /// has external linkage and is a tentative definition when it has no
-/// initializer (C11 6.2.2, 6.9.2).
+/// initializer (C11 6.2.2, 6.9.2). A block-scope object with no storage class
+/// has automatic storage and no linkage. Block-scope `static` has static
+/// storage duration and still no linkage. Block-scope `extern` has linkage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Storage {
     #[default]
@@ -1424,8 +1426,11 @@ impl Expr {
 pub struct VarDecl {
     pub name: String,
     pub ty: CType,
+    pub storage: Storage,
     pub init: Option<Init>,
-    /// Filled by semantic analysis when `init` is present.
+    /// Filled by semantic analysis for an automatic initializer. A `static`
+    /// initializer is folded into a global and stays `None` here, so the
+    /// function does not store it on every entry.
     pub checked: Option<CheckedInit>,
     pub line: usize,
     pub column: usize,
@@ -1481,6 +1486,18 @@ pub enum Stmt {
         line: usize,
         column: usize,
     },
+    /// `do` statement `while` `(` expression `)` `;`.
+    ///
+    /// `continue` jumps to the condition, not to the top of the body.
+    Do {
+        body: Box<Stmt>,
+        cond: Expr,
+        line: usize,
+        column: usize,
+    },
+    /// A function declaration inside a block. The body is always absent; a
+    /// nested definition is rejected by the parser.
+    FuncDecl(FuncDef),
     Expr {
         expr: Option<Expr>,
         line: usize,
@@ -1667,6 +1684,17 @@ fn dump_func(out: &mut String, func: &FuncDef, indent: usize) {
     }
 }
 
+fn dump_local(out: &mut String, decl: &VarDecl, indent: usize) {
+    let prefix = storage_prefix(decl.storage);
+    let ty = decl.ty.display();
+    if let Some(init) = &decl.init {
+        put(out, indent, &format!("{prefix}decl {ty} {} =", decl.name));
+        dump_init(out, init, indent + 1);
+    } else {
+        put(out, indent, &format!("{prefix}decl {ty} {}", decl.name));
+    }
+}
+
 fn dump_compound(out: &mut String, compound: &Compound, indent: usize) {
     put(out, indent, "block");
     for item in &compound.items {
@@ -1677,15 +1705,8 @@ fn dump_compound(out: &mut String, compound: &Compound, indent: usize) {
 fn dump_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
     match stmt {
         Stmt::Compound(compound) => dump_compound(out, compound, indent),
-        Stmt::Decl(decl) => {
-            let ty = decl.ty.display();
-            if let Some(init) = &decl.init {
-                put(out, indent, &format!("decl {ty} {} =", decl.name));
-                dump_init(out, init, indent + 1);
-            } else {
-                put(out, indent, &format!("decl {ty} {}", decl.name));
-            }
-        }
+        Stmt::Decl(decl) => dump_local(out, decl, indent),
+        Stmt::FuncDecl(func) => dump_func(out, func, indent),
         Stmt::Return { expr, .. } => {
             put(out, indent, "return");
             if let Some(expr) = expr {
@@ -1732,20 +1753,7 @@ fn dump_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
                 ForInit::Decl(decls) => {
                     put(out, indent + 1, "init");
                     for decl in decls {
-                        if let Some(init) = &decl.init {
-                            put(
-                                out,
-                                indent + 2,
-                                &format!("decl {} {} =", decl.ty.display(), decl.name),
-                            );
-                            dump_init(out, init, indent + 3);
-                        } else {
-                            put(
-                                out,
-                                indent + 2,
-                                &format!("decl {} {}", decl.ty.display(), decl.name),
-                            );
-                        }
+                        dump_local(out, decl, indent + 2);
                     }
                 }
             }
@@ -1759,6 +1767,13 @@ fn dump_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
             }
             put(out, indent + 1, "body");
             dump_stmt(out, body, indent + 2);
+        }
+        Stmt::Do { body, cond, .. } => {
+            put(out, indent, "do");
+            put(out, indent + 1, "body");
+            dump_stmt(out, body, indent + 2);
+            put(out, indent + 1, "cond");
+            dump_expr(out, cond, indent + 2);
         }
         Stmt::Expr { expr, .. } => {
             put(out, indent, "expr");
