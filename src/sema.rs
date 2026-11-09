@@ -27,7 +27,7 @@ pub fn analyze(unit: &mut TranslationUnit, filename: &str) -> Result<(), Diagnos
         filename: filename.to_string(),
         scopes: vec![HashMap::new()],
         loop_depth: 0,
-        current_ret: TypeName::Int,
+        current_ret: CType::int_type(),
         global_order: Vec::new(),
         func_order: Vec::new(),
     };
@@ -45,14 +45,14 @@ pub fn analyze(unit: &mut TranslationUnit, filename: &str) -> Result<(), Diagnos
     sema.finish(unit)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum GlobalState {
     /// `extern` with no initializer and no tentative definition yet.
     Declared,
     /// A declaration with no initializer and no `extern` yet.
     Tentative,
-    /// Low [`TypeName::width`] bits of the initializer.
-    Defined(u64),
+    /// Folded initializer, including a zero of the object's type.
+    Defined(ConstInit),
 }
 
 #[derive(Clone)]
@@ -65,7 +65,7 @@ struct GlobalInfo {
 struct VarSym {
     name: String,
     slot: String,
-    ty: TypeName,
+    ty: CType,
     /// `None` for a block-scope variable, which has no linkage.
     global: Option<GlobalInfo>,
 }
@@ -73,8 +73,8 @@ struct VarSym {
 #[derive(Clone)]
 struct FuncSym {
     name: String,
-    ret: TypeName,
-    params: Vec<TypeName>,
+    ret: CType,
+    params: Vec<CType>,
     linkage: Linkage,
     defined: bool,
     used: bool,
@@ -92,7 +92,7 @@ struct Sema {
     filename: String,
     scopes: Vec<HashMap<String, Symbol>>,
     loop_depth: u32,
-    current_ret: TypeName,
+    current_ret: CType,
     global_order: Vec<String>,
     func_order: Vec<String>,
 }
@@ -100,6 +100,16 @@ struct Sema {
 impl Sema {
     fn declare_global(&mut self, decl: &mut GlobalDecl) -> Result<(), Diagnostic> {
         let name = decl.name.clone();
+        let mut ty = decl.ty.clone();
+        let shaped = if let Some(init) = &decl.init {
+            Some(self.shape_initializer(&ty, init, decl.line, decl.column)?)
+        } else {
+            None
+        };
+        if let Some((shaped_ty, _)) = &shaped {
+            ty = shaped_ty.clone();
+        }
+        decl.ty = ty.clone();
         let prior = self.file_get(&name);
         let prior_linkage = match &prior {
             None => None,
@@ -111,13 +121,15 @@ impl Sema {
                 );
             }
             Some(Symbol::Var(var)) => {
-                if var.ty != decl.ty {
+                if !compatible(&var.ty, &ty) {
                     return self.err(
                         decl.line,
                         decl.column,
                         format!("conflicting types for '{name}'"),
                     );
                 }
+                ty = composite(&var.ty, &ty);
+                decl.ty = ty.clone();
                 Some(var.global.as_ref().expect("file-scope variable").linkage)
             }
         };
@@ -135,19 +147,18 @@ impl Sema {
             self.insert_file(Symbol::Var(VarSym {
                 name: name.clone(),
                 slot: format!("@{name}"),
-                ty: decl.ty,
+                ty: ty.clone(),
                 global: Some(GlobalInfo { linkage, state }),
             }));
+        } else {
+            self.set_global_type(&name, ty.clone());
         }
-        if decl.init.is_some() {
+        if let Some((_, mut stores)) = shaped {
             if matches!(self.global_state(&name), Some(GlobalState::Defined(_))) {
                 return self.err(decl.line, decl.column, format!("redefinition of '{name}'"));
             }
-            let init = decl.init.as_mut().expect("initializer");
-            let dest = decl.ty;
-            self.check_expr(init)?;
-            self.require_integer(init)?;
-            let value = self.fold_initializer(&name, init, dest)?;
+            self.check_stores(&mut stores)?;
+            let value = self.fold_stores(&name, &ty, &stores)?;
             self.set_global_state(&name, GlobalState::Defined(value));
         } else if decl.storage != Storage::Extern {
             self.upgrade_tentative(&name);
@@ -169,7 +180,7 @@ impl Sema {
                 );
             }
         }
-        let params: Vec<TypeName> = func.params.iter().map(|param| param.ty).collect();
+        let params: Vec<CType> = func.params.iter().map(|param| param.ty.clone()).collect();
         let name = func.name.clone();
         let prior = self.file_get(&name);
         let prior_linkage = match &prior {
@@ -192,7 +203,7 @@ impl Sema {
                 self.func_order.push(name.clone());
                 self.insert_file(Symbol::Func(FuncSym {
                     name,
-                    ret: func.ret_type,
+                    ret: func.ret_type.clone(),
                     params: params.clone(),
                     linkage,
                     defined: is_def,
@@ -202,7 +213,14 @@ impl Sema {
                 }));
             }
             Some(Symbol::Func(existing)) => {
-                if existing.ret != func.ret_type || existing.params != params {
+                if !compatible(&existing.ret, &func.ret_type)
+                    || existing.params.len() != params.len()
+                    || existing
+                        .params
+                        .iter()
+                        .zip(&params)
+                        .any(|(old, new)| !compatible(old, new))
+                {
                     return self.err(
                         func.line,
                         func.column,
@@ -222,7 +240,7 @@ impl Sema {
     }
 
     fn check_function(&mut self, func: &mut FuncDef) -> Result<(), Diagnostic> {
-        self.current_ret = func.ret_type;
+        self.current_ret = func.ret_type.clone();
         self.push();
         for param in &func.params {
             let Some(name) = param.name.clone() else {
@@ -231,7 +249,7 @@ impl Sema {
             self.insert(Symbol::Var(VarSym {
                 name,
                 slot: param.slot.clone(),
-                ty: param.ty,
+                ty: param.ty.clone(),
                 global: None,
             }));
         }
@@ -243,6 +261,7 @@ impl Sema {
 
     fn finish(&mut self, unit: &mut TranslationUnit) -> Result<(), Diagnostic> {
         let mut missing_static = None;
+        let mut incomplete_array = None;
         let mut func_decls = Vec::new();
         let mut globals = Vec::new();
         {
@@ -262,7 +281,7 @@ impl Sema {
                 } else {
                     func_decls.push(IrFunc {
                         name: func.name.clone(),
-                        ret: func.ret,
+                        ret: func.ret.clone(),
                         params: func.params.clone(),
                         linkage: func.linkage,
                     });
@@ -274,14 +293,21 @@ impl Sema {
                         continue;
                     };
                     let info = var.global.as_ref().expect("global");
-                    let init = match info.state {
+                    if incomplete_array.is_none()
+                        && var.ty.is_array()
+                        && var.ty.array_len().is_none()
+                        && !matches!(info.state, GlobalState::Declared)
+                    {
+                        incomplete_array = Some(var.name.clone());
+                    }
+                    let init = match &info.state {
                         GlobalState::Declared => None,
-                        GlobalState::Tentative => Some(0),
-                        GlobalState::Defined(value) => Some(value),
+                        GlobalState::Tentative => Some(zero_const(&var.ty)),
+                        GlobalState::Defined(value) => Some(value.clone()),
                     };
                     globals.push(IrGlobal {
                         name: var.name.clone(),
-                        ty: var.ty,
+                        ty: var.ty.clone(),
                         linkage: info.linkage,
                         init,
                     });
@@ -294,6 +320,19 @@ impl Sema {
                 column,
                 format!("static function '{name}' is used but not defined"),
             );
+        }
+        if let Some(name) = incomplete_array {
+            let (line, column) = unit
+                .decls
+                .iter()
+                .find_map(|decl| match decl {
+                    TopDecl::Global(global) if global.name == name => {
+                        Some((global.line, global.column))
+                    }
+                    _ => None,
+                })
+                .unwrap_or((1, 1));
+            return self.err(line, column, format!("array size missing in '{name}'"));
         }
         unit.func_decls = func_decls;
         unit.globals = globals;
@@ -357,17 +396,237 @@ impl Sema {
         Ok(linkage)
     }
 
-    fn fold_initializer(&self, name: &str, expr: &Expr, dest: TypeName) -> Result<u64, Diagnostic> {
-        match eval_const_expr(expr) {
-            Ok(value) => {
-                debug_assert_eq!(Some(value.ty), expr.ty());
-                Ok(convert_bits(value.bits, value.ty, dest))
+    fn shape_initializer(
+        &self,
+        ty: &CType,
+        init: &Init,
+        line: usize,
+        column: usize,
+    ) -> Result<(CType, Vec<ElemStore>), Diagnostic> {
+        let mut ty = ty.clone();
+        if let CType::Array(elem, None) = &ty {
+            let Init::List {
+                items,
+                line,
+                column,
+            } = init
+            else {
+                let (line, column) = init_pos(init);
+                return self.err(line, column, "array initializer must be a brace list");
+            };
+            let count = self.infer_array_len(elem, items, *line, *column)?;
+            ty = CType::array((**elem).clone(), Some(count));
+        }
+        let mut stores = Vec::new();
+        self.fill_object(&ty, init, 0, &mut stores, line, column)?;
+        if stores.is_empty() && !ty.is_array() {
+            return self.err(line, column, "empty initializer list");
+        }
+        Ok((ty, stores))
+    }
+
+    fn infer_array_len(
+        &self,
+        elem: &CType,
+        items: &[Init],
+        line: usize,
+        column: usize,
+    ) -> Result<u64, Diagnostic> {
+        if items.is_empty() {
+            return self.err(line, column, "empty initializer list");
+        }
+        let mut pos = 0usize;
+        let mut count = 0u64;
+        let mut scratch = Vec::new();
+        while pos < items.len() {
+            let start = pos;
+            if matches!(items[pos], Init::List { .. }) || elem.is_scalar() {
+                if matches!(items[pos], Init::List { .. }) {
+                    self.fill_object(elem, &items[pos], 0, &mut scratch, line, column)?;
+                }
+                pos += 1;
+            } else {
+                self.fill_unbraced(elem, items, &mut pos, 0, &mut scratch, (line, column))?;
             }
-            Err(ConstError::NotConst) => self.err(
-                expr.line(),
-                expr.column(),
-                format!("initializer of '{name}' is not a constant expression"),
-            ),
+            if pos == start {
+                return self.err(line, column, "empty initializer list");
+            }
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    fn fill_object(
+        &self,
+        ty: &CType,
+        init: &Init,
+        base: u64,
+        stores: &mut Vec<ElemStore>,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        if ty.is_scalar() {
+            let expr = self.scalar_expr(init)?;
+            stores.push(ElemStore {
+                offset: base,
+                ty: ty.clone(),
+                expr,
+            });
+            return Ok(());
+        }
+        let CType::Array(elem, Some(len)) = ty else {
+            return self.err(line, column, "array initializer must be a brace list");
+        };
+        let Init::List {
+            items,
+            line,
+            column,
+        } = init
+        else {
+            let (line, column) = init_pos(init);
+            return self.err(line, column, "array initializer must be a brace list");
+        };
+        let elem_size = elem.size().expect("complete array element");
+        let mut pos = 0usize;
+        let mut index = 0u64;
+        while pos < items.len() {
+            if index >= *len {
+                return self.err(*line, *column, "excess elements in array initializer");
+            }
+            let off = base + index * elem_size;
+            if matches!(items[pos], Init::List { .. }) || elem.is_scalar() {
+                self.fill_object(elem, &items[pos], off, stores, *line, *column)?;
+                pos += 1;
+            } else {
+                self.fill_unbraced(elem, items, &mut pos, off, stores, (*line, *column))?;
+            }
+            index += 1;
+        }
+        Ok(())
+    }
+
+    fn fill_unbraced(
+        &self,
+        ty: &CType,
+        items: &[Init],
+        pos: &mut usize,
+        base: u64,
+        stores: &mut Vec<ElemStore>,
+        at: (usize, usize),
+    ) -> Result<(), Diagnostic> {
+        let (line, column) = at;
+        if ty.is_scalar() {
+            if *pos >= items.len() {
+                return Ok(());
+            }
+            self.fill_object(ty, &items[*pos], base, stores, line, column)?;
+            *pos += 1;
+            return Ok(());
+        }
+        let CType::Array(elem, Some(len)) = ty else {
+            return self.err(line, column, "array initializer must be a brace list");
+        };
+        let elem_size = elem.size().expect("complete array element");
+        for index in 0..*len {
+            if *pos >= items.len() {
+                break;
+            }
+            let off = base + index * elem_size;
+            if matches!(items[*pos], Init::List { .. }) || elem.is_scalar() {
+                self.fill_object(elem, &items[*pos], off, stores, line, column)?;
+                *pos += 1;
+            } else {
+                self.fill_unbraced(elem, items, pos, off, stores, (line, column))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn scalar_expr(&self, init: &Init) -> Result<Expr, Diagnostic> {
+        match init {
+            Init::Expr(expr) => Ok(expr.clone()),
+            Init::List {
+                items,
+                line,
+                column,
+            } => {
+                if items.len() != 1 {
+                    let message = if items.is_empty() {
+                        "empty initializer list"
+                    } else {
+                        "excess elements in scalar initializer"
+                    };
+                    return self.err(*line, *column, message);
+                }
+                match &items[0] {
+                    Init::Expr(expr) => Ok(expr.clone()),
+                    Init::List { line, column, .. } => {
+                        self.err(*line, *column, "excess braces around scalar initializer")
+                    }
+                }
+            }
+        }
+    }
+
+    fn check_stores(&mut self, stores: &mut [ElemStore]) -> Result<(), Diagnostic> {
+        for store in stores {
+            self.check_expr(&mut store.expr)?;
+            self.decay(&mut store.expr);
+            self.can_assign(&store.ty.clone(), &store.expr)?;
+        }
+        Ok(())
+    }
+
+    fn fold_stores(
+        &self,
+        name: &str,
+        ty: &CType,
+        stores: &[ElemStore],
+    ) -> Result<ConstInit, Diagnostic> {
+        let mut folded = Vec::new();
+        for store in stores {
+            folded.push((store.offset, self.fold_one(name, &store.expr, &store.ty)?));
+        }
+        Ok(assemble(ty, &folded, 0))
+    }
+
+    fn fold_one(&self, name: &str, expr: &Expr, dest: &CType) -> Result<ConstInit, Diagnostic> {
+        if let Some(dest_int) = dest.as_integer() {
+            if let Ok(value) = eval_const_expr(expr) {
+                return Ok(ConstInit::Int(convert_bits(value.bits, value.ty, dest_int)));
+            }
+            if let Expr::Cast {
+                ty_name,
+                expr: inner,
+                ..
+            } = expr
+            {
+                if ty_name.is_integer() {
+                    if let Ok(ptr) = eval_ptr(inner) {
+                        return Ok(ptr_as_int(ptr, dest_int));
+                    }
+                }
+            }
+            return self.const_diag(name, expr);
+        }
+        if dest.is_pointer() {
+            if is_null_pointer_constant(expr) {
+                return Ok(ConstInit::Ptr(PtrConst::Null));
+            }
+            return match eval_ptr(expr) {
+                Ok(ptr) => Ok(ConstInit::Ptr(ptr)),
+                Err(_) => self.const_diag(name, expr),
+            };
+        }
+        self.err(
+            expr.line(),
+            expr.column(),
+            format!("initializer of '{name}' is not a constant expression"),
+        )
+    }
+
+    fn const_diag(&self, name: &str, expr: &Expr) -> Result<ConstInit, Diagnostic> {
+        match eval_const_expr(expr) {
             Err(ConstError::DivZero) => self.err(
                 expr.line(),
                 expr.column(),
@@ -383,6 +642,11 @@ impl Sema {
                 expr.column(),
                 format!("initializer of '{name}' uses an undefined shift"),
             ),
+            _ => self.err(
+                expr.line(),
+                expr.column(),
+                format!("initializer of '{name}' is not a constant expression"),
+            ),
         }
     }
 
@@ -392,8 +656,14 @@ impl Sema {
 
     fn global_state(&self, name: &str) -> Option<GlobalState> {
         match self.scopes.first().expect("file scope").get(name) {
-            Some(Symbol::Var(var)) => var.global.as_ref().map(|info| info.state),
+            Some(Symbol::Var(var)) => var.global.as_ref().map(|info| info.state.clone()),
             _ => None,
+        }
+    }
+
+    fn set_global_type(&mut self, name: &str, ty: CType) {
+        if let Some(Symbol::Var(var)) = self.scopes.first_mut().expect("file scope").get_mut(name) {
+            var.ty = ty;
         }
     }
 
@@ -467,13 +737,13 @@ impl Sema {
                 let column = *column;
                 match expr {
                     None => {
-                        if self.current_ret != TypeName::Void {
+                        if !self.current_ret.is_void() {
                             return self.err(
                                 line,
                                 column,
                                 format!(
                                     "return with no value in a function returning '{}'",
-                                    self.current_ret.as_str()
+                                    self.current_ret.display()
                                 ),
                             );
                         }
@@ -481,14 +751,15 @@ impl Sema {
                     }
                     Some(expr) => {
                         self.check_expr(expr)?;
-                        if self.current_ret == TypeName::Void {
+                        self.decay(expr);
+                        if self.current_ret.is_void() {
                             return self.err(
                                 line,
                                 column,
                                 "return with a value in a function returning 'void'",
                             );
                         }
-                        self.require_integer(expr)
+                        self.can_assign(&self.current_ret.clone(), expr)
                     }
                 }
             }
@@ -499,7 +770,8 @@ impl Sema {
                 ..
             } => {
                 self.check_expr(cond)?;
-                self.require_integer(cond)?;
+                self.decay(cond);
+                self.require_scalar(cond)?;
                 self.check_stmt(then_stmt)?;
                 if let Some(else_stmt) = else_stmt {
                     self.check_stmt(else_stmt)?;
@@ -508,7 +780,8 @@ impl Sema {
             }
             Stmt::While { cond, body, .. } => {
                 self.check_expr(cond)?;
-                self.require_integer(cond)?;
+                self.decay(cond);
+                self.require_scalar(cond)?;
                 self.loop_depth += 1;
                 self.check_stmt(body)?;
                 self.loop_depth -= 1;
@@ -530,11 +803,15 @@ impl Sema {
                             self.check_decl(decl)?;
                         }
                     }
-                    ForInit::Expr(expr) => self.check_expr(expr)?,
+                    ForInit::Expr(expr) => {
+                        self.check_expr(expr)?;
+                        self.decay(expr);
+                    }
                 }
                 if let Some(cond) = cond {
                     self.check_expr(cond)?;
-                    self.require_integer(cond)?;
+                    self.decay(cond);
+                    self.require_scalar(cond)?;
                 }
                 if let Some(step) = step {
                     self.check_expr(step)?;
@@ -547,6 +824,7 @@ impl Sema {
             Stmt::Expr { expr, .. } => {
                 if let Some(expr) = expr {
                     self.check_expr(expr)?;
+                    self.decay(expr);
                 }
                 Ok(())
             }
@@ -573,16 +851,35 @@ impl Sema {
                 format!("redefinition of '{}'", decl.name),
             );
         }
+        let init = decl.init.clone();
+        let (ty, stores) = if let Some(init) = &init {
+            self.shape_initializer(&decl.ty, init, decl.line, decl.column)?
+        } else {
+            (decl.ty.clone(), Vec::new())
+        };
+        if !ty.is_complete() {
+            return self.err(
+                decl.line,
+                decl.column,
+                format!("array size missing in '{}'", decl.name),
+            );
+        }
+        decl.ty = ty.clone();
         // The declarator is in scope for its initializer (C scope rules).
         self.insert(Symbol::Var(VarSym {
             name: decl.name.clone(),
             slot: decl.slot.clone(),
-            ty: decl.ty,
+            ty: ty.clone(),
             global: None,
         }));
-        if let Some(init) = &mut decl.init {
-            self.check_expr(init)?;
-            self.require_integer(init)?;
+        if decl.init.is_some() {
+            let mut stores = stores;
+            self.check_stores(&mut stores)?;
+            decl.checked = Some(if ty.is_array() {
+                CheckedInit::Aggregate(stores)
+            } else {
+                CheckedInit::Scalar(stores.remove(0).expr)
+            });
         }
         Ok(())
     }
@@ -591,7 +888,7 @@ impl Sema {
         match expr {
             Expr::Int { value_ty, .. } => {
                 let value_ty = *value_ty;
-                expr.set_ty(value_ty);
+                expr.set_ty(CType::from_name(value_ty));
                 Ok(())
             }
             Expr::Var { .. } => self.check_var(expr),
@@ -605,7 +902,28 @@ impl Sema {
             Expr::Sizeof { .. } => self.check_sizeof(expr),
             Expr::Cast { .. } => self.check_cast(expr),
             Expr::Call { .. } => self.check_call(expr),
+            Expr::Index { .. } => self.check_index(expr),
+            Expr::Decay { .. } => Ok(()),
         }
+    }
+
+    /// Array expressions become pointers except as the operand of `sizeof` or `&`.
+    fn decay(&mut self, expr: &mut Expr) {
+        let Some(ty) = expr.ty() else {
+            return;
+        };
+        let CType::Array(elem, _) = ty else {
+            return;
+        };
+        let line = expr.line();
+        let column = expr.column();
+        let inner = std::mem::replace(expr, Expr::int(0, TypeName::Int, line, column));
+        *expr = Expr::Decay {
+            expr: Box::new(inner),
+            line,
+            column,
+            ty: Some(CType::pointer(*elem)),
+        };
     }
 
     fn check_var(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
@@ -643,22 +961,36 @@ impl Sema {
     }
 
     fn check_bin(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
-        let ty = if let Expr::Bin {
-            op, left, right, ..
-        } = expr
-        {
+        let (op, line, column) = match expr {
+            Expr::Bin {
+                op, line, column, ..
+            } => (*op, *line, *column),
+            _ => unreachable!("binary expression"),
+        };
+        let ty = if let Expr::Bin { left, right, .. } = expr {
             self.check_expr(left)?;
             self.check_expr(right)?;
-            self.require_integer(left)?;
-            self.require_integer(right)?;
-            let left_ty = left.ty().expect("typed");
-            let right_ty = right.ty().expect("typed");
-            if op.is_cmp() || matches!(op, BinOp::And | BinOp::Or) {
-                TypeName::Int
-            } else if matches!(op, BinOp::Shl | BinOp::Shr) {
-                left_ty.promote()
+            self.decay(left);
+            self.decay(right);
+            if matches!(op, BinOp::And | BinOp::Or) {
+                self.require_scalar(left)?;
+                self.require_scalar(right)?;
+                CType::int_type()
+            } else if op.is_cmp() {
+                self.check_compare(op, left, right, line, column)?
+            } else if matches!(op, BinOp::Add | BinOp::Sub) {
+                self.check_additive(op, left, right, line, column)?
             } else {
-                left_ty.usual(right_ty)
+                self.require_integer(left)?;
+                self.require_integer(right)?;
+                let left_ty = integer_ty(left);
+                let right_ty = integer_ty(right);
+                let result = if matches!(op, BinOp::Shl | BinOp::Shr) {
+                    left_ty.promote()
+                } else {
+                    left_ty.usual(right_ty)
+                };
+                CType::from_name(result)
             }
         } else {
             unreachable!("binary expression");
@@ -667,14 +999,171 @@ impl Sema {
         Ok(())
     }
 
+    fn check_compare(
+        &self,
+        op: BinOp,
+        left: &Expr,
+        right: &Expr,
+        line: usize,
+        column: usize,
+    ) -> Result<CType, Diagnostic> {
+        let left_ty = left.ty().expect("typed");
+        let right_ty = right.ty().expect("typed");
+        if left_ty.is_integer() && right_ty.is_integer() {
+            return Ok(CType::int_type());
+        }
+        let equality = matches!(op, BinOp::Eq | BinOp::Ne);
+        let pointers_ok = if equality {
+            pointer_equality(&left_ty, &right_ty)
+                || (left_ty.is_pointer() && is_null_pointer_constant(right))
+                || (right_ty.is_pointer() && is_null_pointer_constant(left))
+        } else {
+            // Relational operators require compatible object pointers. A null
+            // pointer constant is not included, and `void *` is not compatible
+            // with `int *`. Clang warns for those and still compiles; this
+            // compiler rejects them.
+            left_ty.is_pointer() && right_ty.is_pointer() && compatible(&left_ty, &right_ty)
+        };
+        if pointers_ok {
+            return Ok(CType::int_type());
+        }
+        self.err(
+            line,
+            column,
+            format!(
+                "invalid operands to '{}' ({} and {})",
+                op.as_str(),
+                left_ty.display(),
+                right_ty.display()
+            ),
+        )
+    }
+
+    fn check_additive(
+        &self,
+        op: BinOp,
+        left: &Expr,
+        right: &Expr,
+        line: usize,
+        column: usize,
+    ) -> Result<CType, Diagnostic> {
+        let left_ty = left.ty().expect("typed");
+        let right_ty = right.ty().expect("typed");
+        if left_ty.is_integer() && right_ty.is_integer() {
+            return Ok(CType::from_name(integer_ty(left).usual(integer_ty(right))));
+        }
+        if op == BinOp::Add {
+            if let Some(ptr) = pointer_plus_int(&left_ty, &right_ty) {
+                self.require_complete_pointee(&ptr, line, column)?;
+                return Ok(ptr);
+            }
+        }
+        if op == BinOp::Sub && left_ty.is_pointer() && right_ty.is_integer() {
+            self.require_complete_pointee(&left_ty, line, column)?;
+            return Ok(left_ty);
+        }
+        if op == BinOp::Sub && left_ty.is_pointer() && right_ty.is_pointer() {
+            if !compatible(&left_ty, &right_ty) {
+                return self.err(
+                    line,
+                    column,
+                    format!(
+                        "invalid operands to '-' ({} and {})",
+                        left_ty.display(),
+                        right_ty.display()
+                    ),
+                );
+            }
+            self.require_complete_pointee(&left_ty, line, column)?;
+            return Ok(CType::from_name(TypeName::Long));
+        }
+        self.err(
+            line,
+            column,
+            format!(
+                "invalid operands to '{}' ({} and {})",
+                op.as_str(),
+                left_ty.display(),
+                right_ty.display()
+            ),
+        )
+    }
+
+    fn require_complete_pointee(
+        &self,
+        ptr: &CType,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        let Some(pointee) = ptr.pointee() else {
+            return self.err(line, column, "pointer arithmetic requires a pointer");
+        };
+        if pointee.is_void() {
+            return self.err(
+                line,
+                column,
+                "arithmetic on a pointer to void is not supported",
+            );
+        }
+        if !pointee.is_complete() {
+            return self.err(
+                line,
+                column,
+                format!(
+                    "arithmetic on a pointer to incomplete type '{}'",
+                    pointee.display()
+                ),
+            );
+        }
+        Ok(())
+    }
+
     fn check_unary(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
-        let ty = if let Expr::Unary { op, expr, .. } = expr {
+        let ty = if let Expr::Unary {
+            op,
+            expr,
+            line,
+            column,
+            ..
+        } = expr
+        {
+            let op = *op;
+            let line = *line;
+            let column = *column;
             self.check_expr(expr)?;
-            self.require_integer(expr)?;
-            if *op == UnaryOp::Not {
-                TypeName::Int
-            } else {
-                expr.ty().expect("typed").promote()
+            match op {
+                UnaryOp::Addr => {
+                    if !is_lvalue(expr) {
+                        return self.err(
+                            line,
+                            column,
+                            "cannot take the address of this expression",
+                        );
+                    }
+                    CType::pointer(expr.ty().expect("lvalue type"))
+                }
+                UnaryOp::Deref => {
+                    self.decay(expr);
+                    let ty = expr.ty().expect("typed");
+                    let Some(pointee) = ty.pointee().cloned() else {
+                        return self.err(
+                            line,
+                            column,
+                            format!("indirection requires a pointer, found '{}'", ty.display()),
+                        );
+                    };
+                    pointee
+                }
+                UnaryOp::Not => {
+                    self.decay(expr);
+                    self.require_scalar(expr)?;
+                    CType::int_type()
+                }
+                UnaryOp::Plus | UnaryOp::Minus | UnaryOp::BitNot => {
+                    self.decay(expr);
+                    self.require_integer(expr)?;
+                    CType::from_name(integer_ty(expr).promote())
+                }
             }
         } else {
             unreachable!("unary expression");
@@ -685,10 +1174,12 @@ impl Sema {
 
     fn check_assign(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
         let ty = if let Expr::Assign { target, value, .. } = expr {
-            self.check_lvalue(target)?;
+            self.check_modifiable(target)?;
             self.check_expr(value)?;
-            self.require_integer(value)?;
-            target.ty().expect("lvalue type")
+            self.decay(value);
+            let dest = target.ty().expect("lvalue type");
+            self.can_assign(&dest, value)?;
+            dest
         } else {
             unreachable!("assignment");
         };
@@ -697,11 +1188,39 @@ impl Sema {
     }
 
     fn check_compound_assign(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
-        let ty = if let Expr::CompoundAssign { target, value, .. } = expr {
-            self.check_lvalue(target)?;
+        let ty = if let Expr::CompoundAssign {
+            op,
+            target,
+            value,
+            line,
+            column,
+            ..
+        } = expr
+        {
+            let op = *op;
+            let line = *line;
+            let column = *column;
+            self.check_modifiable(target)?;
             self.check_expr(value)?;
-            self.require_integer(value)?;
-            target.ty().expect("lvalue type")
+            self.decay(value);
+            let dest = target.ty().expect("lvalue type");
+            if dest.is_pointer() {
+                if !matches!(op, BinOp::Add | BinOp::Sub) {
+                    return self.err(
+                        line,
+                        column,
+                        format!(
+                            "pointer compound assignment does not allow '{}'",
+                            op.compound_spelling()
+                        ),
+                    );
+                }
+                self.require_integer(value)?;
+                self.require_complete_pointee(&dest, line, column)?;
+            } else {
+                self.require_integer(value)?;
+            }
+            dest
         } else {
             unreachable!("compound assignment");
         };
@@ -710,9 +1229,21 @@ impl Sema {
     }
 
     fn check_incdec(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
-        let ty = if let Expr::IncDec { target, .. } = expr {
-            self.check_lvalue(target)?;
-            target.ty().expect("lvalue type")
+        let ty = if let Expr::IncDec {
+            target,
+            line,
+            column,
+            ..
+        } = expr
+        {
+            let line = *line;
+            let column = *column;
+            self.check_modifiable(target)?;
+            let dest = target.ty().expect("lvalue type");
+            if dest.is_pointer() {
+                self.require_complete_pointee(&dest, line, column)?;
+            }
+            dest
         } else {
             unreachable!("increment");
         };
@@ -735,22 +1266,13 @@ impl Sema {
             let line = *line;
             let column = *column;
             self.check_expr(cond)?;
-            self.require_integer(cond)?;
+            self.decay(cond);
+            self.require_scalar(cond)?;
             self.check_expr(then_expr)?;
             self.check_expr(else_expr)?;
-            match (then_expr.ty(), else_expr.ty()) {
-                (Some(TypeName::Void), Some(TypeName::Void)) => TypeName::Void,
-                (Some(left), Some(right)) if left.is_integer() && right.is_integer() => {
-                    left.usual(right)
-                }
-                _ => {
-                    return self.err(
-                        line,
-                        column,
-                        "incompatible operand types in the conditional operator",
-                    );
-                }
-            }
+            self.decay(then_expr);
+            self.decay(else_expr);
+            self.cond_type(then_expr, else_expr, line, column)?
         } else {
             unreachable!("conditional expression");
         };
@@ -763,7 +1285,9 @@ impl Sema {
     fn check_comma(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
         let ty = if let Expr::Comma { left, right, .. } = expr {
             self.check_expr(left)?;
+            self.decay(left);
             self.check_expr(right)?;
+            self.decay(right);
             right.ty().expect("comma operand is typed")
         } else {
             unreachable!("comma expression");
@@ -785,24 +1309,22 @@ impl Sema {
         {
             let line = *line;
             let column = *column;
-            match operand {
-                SizeofOperand::Type(TypeName::Void) => {
-                    return self.err(line, column, "sizeof applied to incomplete type 'void'");
-                }
-                SizeofOperand::Type(_) => {}
+            let sized = match operand {
+                SizeofOperand::Type(ty) => ty.clone(),
                 SizeofOperand::Expr(inner) => {
                     self.check_expr(inner)?;
-                    if inner.ty() == Some(TypeName::Void) {
-                        return self.err(
-                            inner.line(),
-                            inner.column(),
-                            "sizeof applied to incomplete type 'void'",
-                        );
-                    }
+                    inner.ty().expect("sizeof operand is typed")
                 }
+            };
+            if sized.size().is_none() {
+                return self.err(
+                    line,
+                    column,
+                    format!("sizeof applied to incomplete type '{}'", sized.display()),
+                );
             }
         }
-        expr.set_ty(TypeName::ULong);
+        expr.set_ty(CType::from_name(TypeName::ULong));
         Ok(())
     }
 
@@ -810,13 +1332,35 @@ impl Sema {
         let ty_name = if let Expr::Cast {
             ty_name,
             expr: inner,
+            line,
+            column,
             ..
         } = expr
         {
-            let ty_name = *ty_name;
+            let ty_name = ty_name.clone();
+            let line = *line;
+            let column = *column;
             self.check_expr(inner)?;
-            if ty_name != TypeName::Void {
-                self.require_integer(inner)?;
+            self.decay(inner);
+            if ty_name.is_array() {
+                return self.err(line, column, "cast to an array type is not supported");
+            }
+            if !ty_name.is_void() {
+                let src = inner.ty().expect("typed");
+                let ok = (ty_name.is_integer() && src.is_integer())
+                    || (ty_name.is_pointer() && (src.is_pointer() || src.is_integer()))
+                    || (ty_name.is_integer() && src.is_pointer());
+                if !ok {
+                    return self.err(
+                        line,
+                        column,
+                        format!(
+                            "cast from '{}' to '{}' is not supported",
+                            src.display(),
+                            ty_name.display()
+                        ),
+                    );
+                }
             }
             ty_name
         } else {
@@ -882,16 +1426,17 @@ impl Sema {
             );
         }
         if let Expr::Call { args, .. } = expr {
-            for arg in args {
+            for (arg, param_ty) in args.iter_mut().zip(params.iter()) {
                 self.check_expr(arg)?;
-                self.require_integer(arg)?;
+                self.decay(arg);
+                self.can_assign(param_ty, arg)?;
             }
         }
         self.note_use(&name, line, column);
         if let Expr::Call { resolved, .. } = expr {
             *resolved = Some(CallRes {
                 name: fname,
-                ret,
+                ret: ret.clone(),
                 params,
             });
         }
@@ -899,41 +1444,117 @@ impl Sema {
         Ok(())
     }
 
-    fn check_lvalue(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
-        let line = expr.line();
-        let column = expr.column();
-        let name = match expr {
-            Expr::Var { name, .. } => name.clone(),
-            _ => return self.err(line, column, "expression is not assignable"),
-        };
-        let sym = match self.lookup(&name) {
-            Some(sym) => sym,
-            None => {
+    fn check_index(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        let ty = if let Expr::Index {
+            base,
+            index,
+            line,
+            column,
+            ..
+        } = expr
+        {
+            let line = *line;
+            let column = *column;
+            self.check_expr(base)?;
+            self.check_expr(index)?;
+            self.decay(base);
+            self.decay(index);
+            let base_ty = base.ty().expect("typed");
+            let index_ty = index.ty().expect("typed");
+            let ptr = if base_ty.is_pointer() && index_ty.is_integer() {
+                base_ty
+            } else if index_ty.is_pointer() && base_ty.is_integer() {
+                index_ty
+            } else {
+                return self.err(line, column, "subscripted value is not an array or pointer");
+            };
+            let pointee = ptr.pointee().expect("pointer").clone();
+            if pointee.is_void() {
                 return self.err(
                     line,
                     column,
-                    format!("use of undeclared identifier '{name}'"),
+                    "subscript of a pointer to void is not supported",
                 );
             }
+            pointee
+        } else {
+            unreachable!("index");
         };
-        let (slot, ty) = match sym {
-            Symbol::Var(var) => (var.slot, var.ty),
-            Symbol::Func(_) => return self.err(line, column, "expression is not assignable"),
-        };
-        if let Expr::Var { resolved, .. } = expr {
-            *resolved = Some(VarRes { slot });
-        }
         expr.set_ty(ty);
         Ok(())
+    }
+
+    fn check_modifiable(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        self.prepare_lvalue(expr)?;
+        let ty = expr.ty().expect("lvalue type");
+        if ty.is_array() {
+            return self.err(expr.line(), expr.column(), "array type is not assignable");
+        }
+        if !ty.is_scalar() {
+            return self.err(expr.line(), expr.column(), "expression is not assignable");
+        }
+        Ok(())
+    }
+
+    fn prepare_lvalue(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        match expr {
+            Expr::Var { .. } => self.check_var(expr),
+            Expr::Index { .. } => self.check_index(expr),
+            Expr::Unary {
+                op: UnaryOp::Deref, ..
+            } => self.check_unary(expr),
+            _ => self.err(expr.line(), expr.column(), "expression is not assignable"),
+        }
+    }
+
+    /// Implicit assignment conversion (C11 6.5.16.1).
+    ///
+    /// Arithmetic types convert. A pointer may be assigned a compatible
+    /// pointer, `void *` in either direction with an object pointer, or a
+    /// null pointer constant. Any other pointer mismatch is an error. Clang
+    /// only warns for incompatible pointer types (`-Wincompatible-pointer-types`)
+    /// and still emits code; this compiler rejects the program.
+    fn can_assign(&self, dest: &CType, src: &Expr) -> Result<(), Diagnostic> {
+        let src_ty = src.ty().expect("typed");
+        if src_ty.is_void() {
+            return self.err(
+                src.line(),
+                src.column(),
+                "void value used where a value is required",
+            );
+        }
+        if dest.is_integer() && src_ty.is_integer() {
+            return Ok(());
+        }
+        if dest.is_pointer()
+            && ((src_ty.is_pointer() && (compatible(dest, &src_ty) || void_ptr_mix(dest, &src_ty)))
+                || is_null_pointer_constant(src))
+        {
+            return Ok(());
+        }
+        self.err(
+            src.line(),
+            src.column(),
+            format!(
+                "incompatible types assigning '{}' to '{}'",
+                src_ty.display(),
+                dest.display()
+            ),
+        )
     }
 
     fn require_integer(&self, expr: &Expr) -> Result<(), Diagnostic> {
         match expr.ty() {
             Some(ty) if ty.is_integer() => Ok(()),
-            Some(_) => self.err(
+            Some(ty) if ty.is_void() => self.err(
                 expr.line(),
                 expr.column(),
                 "void value used where a value is required",
+            ),
+            Some(ty) => self.err(
+                expr.line(),
+                expr.column(),
+                format!("expected an integer, found '{}'", ty.display()),
             ),
             None => self.err(
                 expr.line(),
@@ -941,6 +1562,66 @@ impl Sema {
                 "internal compiler error: expression has no type",
             ),
         }
+    }
+
+    fn require_scalar(&self, expr: &Expr) -> Result<(), Diagnostic> {
+        match expr.ty() {
+            Some(ty) if ty.is_scalar() => Ok(()),
+            Some(ty) if ty.is_void() => self.err(
+                expr.line(),
+                expr.column(),
+                "void value used where a value is required",
+            ),
+            Some(ty) => self.err(
+                expr.line(),
+                expr.column(),
+                format!("expected a scalar, found '{}'", ty.display()),
+            ),
+            None => self.err(
+                expr.line(),
+                expr.column(),
+                "internal compiler error: expression has no type",
+            ),
+        }
+    }
+
+    fn cond_type(
+        &self,
+        then_expr: &Expr,
+        else_expr: &Expr,
+        line: usize,
+        column: usize,
+    ) -> Result<CType, Diagnostic> {
+        let left = then_expr.ty().expect("typed");
+        let right = else_expr.ty().expect("typed");
+        if left.is_void() && right.is_void() {
+            return Ok(CType::Void);
+        }
+        if left.is_integer() && right.is_integer() {
+            return Ok(CType::from_name(
+                left.as_integer()
+                    .unwrap()
+                    .usual(right.as_integer().unwrap()),
+            ));
+        }
+        if left.is_pointer() && right.is_pointer() && compatible(&left, &right) {
+            return Ok(composite(&left, &right));
+        }
+        if left.is_pointer() && is_null_pointer_constant(else_expr) {
+            return Ok(left);
+        }
+        if right.is_pointer() && is_null_pointer_constant(then_expr) {
+            return Ok(right);
+        }
+        if void_ptr_mix(&left, &right) {
+            let void_ptr = if left.is_void_pointer() { left } else { right };
+            return Ok(void_ptr);
+        }
+        self.err(
+            line,
+            column,
+            "incompatible operand types in the conditional operator",
+        )
     }
 
     fn push(&mut self) {
@@ -976,6 +1657,306 @@ impl Sema {
         message: impl Into<String>,
     ) -> Result<T, Diagnostic> {
         Err(Diagnostic::new(&self.filename, line, column, message))
+    }
+}
+
+fn integer_ty(expr: &Expr) -> TypeName {
+    expr.ty()
+        .and_then(|ty| ty.as_integer())
+        .expect("integer expression")
+}
+
+fn is_lvalue(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Var { .. }
+            | Expr::Index { .. }
+            | Expr::Unary {
+                op: UnaryOp::Deref,
+                ..
+            }
+    )
+}
+
+fn init_pos(init: &Init) -> (usize, usize) {
+    match init {
+        Init::Expr(expr) => (expr.line(), expr.column()),
+        Init::List { line, column, .. } => (*line, *column),
+    }
+}
+
+fn zero_const(ty: &CType) -> ConstInit {
+    if ty.is_integer() {
+        ConstInit::Int(0)
+    } else if ty.is_pointer() {
+        ConstInit::Ptr(PtrConst::Null)
+    } else {
+        ConstInit::Zero
+    }
+}
+
+fn pointer_plus_int(left: &CType, right: &CType) -> Option<CType> {
+    if left.is_pointer() && right.is_integer() {
+        Some(left.clone())
+    } else if right.is_pointer() && left.is_integer() {
+        Some(right.clone())
+    } else {
+        None
+    }
+}
+
+fn pointer_equality(left: &CType, right: &CType) -> bool {
+    left.is_pointer()
+        && right.is_pointer()
+        && (compatible(left, right) || void_ptr_mix(left, right))
+}
+
+fn void_ptr_mix(left: &CType, right: &CType) -> bool {
+    left.is_pointer() && right.is_pointer() && (left.is_void_pointer() || right.is_void_pointer())
+}
+
+/// An integer constant expression with value 0, or that expression cast to `void *`.
+fn is_null_pointer_constant(expr: &Expr) -> bool {
+    match expr {
+        Expr::Cast { ty_name, expr, .. } if ty_name.is_void_pointer() => {
+            is_null_pointer_constant(expr)
+        }
+        _ => match eval_const_expr(expr) {
+            Ok(value) => value.ty.is_integer() && (value.bits & value.ty.mask()) == 0,
+            Err(_) => false,
+        },
+    }
+}
+
+fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
+    if ty.is_scalar() {
+        return stores
+            .iter()
+            .find(|(offset, _)| *offset == base)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(|| zero_const(ty));
+    }
+    let CType::Array(elem, Some(len)) = ty else {
+        return ConstInit::Zero;
+    };
+    let elem_size = elem.size().unwrap_or(0);
+    let mut items = Vec::new();
+    for index in 0..*len {
+        items.push(assemble(elem, stores, base + index * elem_size));
+    }
+    ConstInit::Aggregate(items)
+}
+
+fn ptr_as_int(ptr: PtrConst, dest: TypeName) -> ConstInit {
+    match ptr {
+        PtrConst::Null => ConstInit::Int(0),
+        PtrConst::IntToPtr(bits) => ConstInit::Int(convert_bits(bits, TypeName::ULong, dest)),
+        other => ConstInit::PtrToInt {
+            ptr: other,
+            width: dest.width(),
+        },
+    }
+}
+
+fn eval_ptr(expr: &Expr) -> Result<PtrConst, ConstError> {
+    if is_null_pointer_constant(expr)
+        && expr
+            .ty()
+            .is_some_and(|ty| ty.is_integer() || ty.is_pointer())
+    {
+        return Ok(PtrConst::Null);
+    }
+    match expr {
+        Expr::Unary {
+            op: UnaryOp::Addr,
+            expr,
+            ..
+        } => {
+            let (name, offset) = designator(expr)?;
+            Ok(PtrConst::Addr { name, offset })
+        }
+        Expr::Decay { expr, .. } => {
+            let (name, offset) = designator(expr)?;
+            Ok(PtrConst::Addr { name, offset })
+        }
+        Expr::Bin {
+            op: BinOp::Add,
+            left,
+            right,
+            ..
+        } => add_ptr_const(left, right, false),
+        Expr::Bin {
+            op: BinOp::Sub,
+            left,
+            right,
+            ..
+        } if left.ty().is_some_and(|ty| ty.is_pointer())
+            && right.ty().is_some_and(|ty| ty.is_integer()) =>
+        {
+            add_ptr_const(left, right, true)
+        }
+        Expr::Cast { ty_name, expr, .. } if ty_name.is_pointer() => {
+            if expr.ty().is_some_and(|ty| ty.is_pointer()) {
+                eval_ptr(expr)
+            } else {
+                int_expr_to_ptr(expr)
+            }
+        }
+        Expr::Cond {
+            cond,
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            let cond = eval_const_expr(cond)?;
+            let chosen = if is_zero(&cond) { else_expr } else { then_expr };
+            eval_ptr(chosen)
+        }
+        _ => Err(ConstError::NotConst),
+    }
+}
+
+fn add_ptr_const(left: &Expr, right: &Expr, negate: bool) -> Result<PtrConst, ConstError> {
+    let (ptr_expr, int_expr) = if left.ty().is_some_and(|ty| ty.is_pointer()) {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    let base = eval_ptr(ptr_expr)?;
+    let mut index = const_index(int_expr)?;
+    if negate {
+        index = index
+            .checked_neg()
+            .ok_or(ConstError::Overflow(TypeName::Long))?;
+    }
+    let size = ptr_expr
+        .ty()
+        .as_ref()
+        .and_then(CType::pointee)
+        .and_then(CType::size)
+        .ok_or(ConstError::NotConst)? as i64;
+    let delta = index
+        .checked_mul(size)
+        .ok_or(ConstError::Overflow(TypeName::Long))?;
+    match base {
+        PtrConst::Addr { name, offset } => Ok(PtrConst::Addr {
+            name,
+            offset: offset
+                .checked_add(delta)
+                .ok_or(ConstError::Overflow(TypeName::Long))?,
+        }),
+        PtrConst::Null => {
+            if delta == 0 {
+                Ok(PtrConst::Null)
+            } else {
+                Ok(PtrConst::IntToPtr(delta as u64))
+            }
+        }
+        PtrConst::IntToPtr(bits) => Ok(PtrConst::IntToPtr(bits.wrapping_add(delta as u64))),
+    }
+}
+
+/// An integer expression used as a pointer: a constant, or a cast of an
+/// address through an integer. A 64-bit integer keeps every address bit.
+/// A narrower integer keeps the low bits and extends them back the way the
+/// integer type does (sign-extend signed, zero-extend unsigned).
+fn int_expr_to_ptr(expr: &Expr) -> Result<PtrConst, ConstError> {
+    if let Expr::Cast {
+        ty_name,
+        expr: inner,
+        ..
+    } = expr
+    {
+        if let Some(int_ty) = ty_name.as_integer() {
+            if let Ok(ptr) = eval_ptr(inner) {
+                return narrow_ptr(ptr, int_ty);
+            }
+        }
+    }
+    let value = eval_const_expr(expr)?;
+    let bits = convert_bits(value.bits, value.ty, TypeName::ULong);
+    if bits == 0 {
+        Ok(PtrConst::Null)
+    } else {
+        Ok(PtrConst::IntToPtr(bits))
+    }
+}
+
+fn narrow_ptr(ptr: PtrConst, int_ty: TypeName) -> Result<PtrConst, ConstError> {
+    if int_ty.width() >= 64 {
+        return Ok(ptr);
+    }
+    match ptr {
+        PtrConst::Null => Ok(PtrConst::Null),
+        PtrConst::IntToPtr(bits) => {
+            let narrowed = convert_bits(bits, TypeName::ULong, int_ty);
+            Ok(PtrConst::IntToPtr(convert_bits(
+                narrowed,
+                int_ty,
+                TypeName::ULong,
+            )))
+        }
+        // A file-scope address truncated to 32 bits is still a relocation.
+        // Only the low bits survive, so it is not the original address constant.
+        PtrConst::Addr { .. } => Err(ConstError::NotConst),
+    }
+}
+
+fn const_index(expr: &Expr) -> Result<i64, ConstError> {
+    let value = eval_const_expr(expr)?;
+    if value.ty.is_signed() {
+        Ok(sign_extend(value.bits, value.ty.width()))
+    } else {
+        let bits = value.bits & value.ty.mask();
+        if bits > i64::MAX as u64 {
+            Err(ConstError::Overflow(value.ty))
+        } else {
+            Ok(bits as i64)
+        }
+    }
+}
+
+fn designator(expr: &Expr) -> Result<(String, i64), ConstError> {
+    match expr {
+        Expr::Var { resolved, .. } => {
+            let slot = &resolved.as_ref().ok_or(ConstError::NotConst)?.slot;
+            let Some(name) = slot.strip_prefix('@') else {
+                return Err(ConstError::NotConst);
+            };
+            Ok((name.to_string(), 0))
+        }
+        Expr::Index {
+            base, index, ty, ..
+        } => {
+            let elem = ty
+                .as_ref()
+                .and_then(CType::size)
+                .ok_or(ConstError::NotConst)? as i64;
+            let step = const_index(index)?;
+            let (name, offset) = pointer_object(base)?;
+            Ok((
+                name,
+                offset
+                    .checked_add(
+                        step.checked_mul(elem)
+                            .ok_or(ConstError::Overflow(TypeName::Long))?,
+                    )
+                    .ok_or(ConstError::Overflow(TypeName::Long))?,
+            ))
+        }
+        Expr::Unary {
+            op: UnaryOp::Deref,
+            expr,
+            ..
+        } => pointer_object(expr),
+        _ => Err(ConstError::NotConst),
+    }
+}
+
+fn pointer_object(expr: &Expr) -> Result<(String, i64), ConstError> {
+    match eval_ptr(expr)? {
+        PtrConst::Addr { name, offset } => Ok((name, offset)),
+        _ => Err(ConstError::NotConst),
     }
 }
 
@@ -1034,7 +2015,7 @@ fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
                 SizeofOperand::Expr(inner) => inner.ty().expect("sizeof operand is typed").size(),
             };
             Ok(CVal {
-                bits: size,
+                bits: size.ok_or(ConstError::NotConst)?,
                 ty: TypeName::ULong,
             })
         }
@@ -1057,23 +2038,23 @@ fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
                 then_expr
             };
             let value = eval_const_expr(chosen)?;
-            let result = ty.expect("typed conditional");
-            if !result.is_integer() {
-                return Err(ConstError::NotConst);
-            }
+            let result = ty
+                .as_ref()
+                .and_then(CType::as_integer)
+                .ok_or(ConstError::NotConst)?;
             Ok(CVal {
                 bits: convert_bits(value.bits, value.ty, result),
                 ty: result,
             })
         }
         Expr::Cast { ty_name, expr, .. } => {
-            if *ty_name == TypeName::Void {
+            let Some(dest) = ty_name.as_integer() else {
                 return Err(ConstError::NotConst);
-            }
+            };
             let value = eval_const_expr(expr)?;
             Ok(CVal {
-                bits: convert_bits(value.bits, value.ty, *ty_name),
-                ty: *ty_name,
+                bits: convert_bits(value.bits, value.ty, dest),
+                ty: dest,
             })
         }
         Expr::Var { .. }
@@ -1081,11 +2062,16 @@ fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
         | Expr::CompoundAssign { .. }
         | Expr::IncDec { .. }
         | Expr::Call { .. }
-        | Expr::Comma { .. } => Err(ConstError::NotConst),
+        | Expr::Comma { .. }
+        | Expr::Index { .. }
+        | Expr::Decay { .. } => Err(ConstError::NotConst),
     }
 }
 
 fn eval_unary(op: UnaryOp, expr: &Expr) -> Result<CVal, ConstError> {
+    if matches!(op, UnaryOp::Addr | UnaryOp::Deref) {
+        return Err(ConstError::NotConst);
+    }
     let value = promote_val(eval_const_expr(expr)?);
     match op {
         UnaryOp::Plus => Ok(value),
@@ -1095,6 +2081,7 @@ fn eval_unary(op: UnaryOp, expr: &Expr) -> Result<CVal, ConstError> {
             bits: (!value.bits) & value.ty.mask(),
             ty: value.ty,
         }),
+        UnaryOp::Addr | UnaryOp::Deref => Err(ConstError::NotConst),
     }
 }
 
@@ -1533,7 +2520,7 @@ int quiet = 0 && (2147483647 + 1);
                 .iter()
                 .find(|global| global.name == name)
                 .unwrap()
-                .init
+                .int_init()
         };
         assert_eq!(value("g"), Some(7));
         assert_eq!(value("zero"), Some(0));
@@ -1549,7 +2536,7 @@ int quiet = 0 && (2147483647 + 1);
             .find(|global| global.name == "hidden")
             .unwrap();
         assert_eq!(hidden.linkage, Linkage::Internal);
-        assert_eq!(hidden.init, Some(4));
+        assert_eq!(hidden.int_init(), Some(4));
 
         let forward = analyzed(
             "\
@@ -1562,7 +2549,7 @@ int only(int);
         );
         assert_eq!(forward.func_decls.len(), 1);
         assert_eq!(forward.func_decls[0].name, "only");
-        assert_eq!(forward.func_decls[0].params, vec![TypeName::Int]);
+        assert_eq!(forward.func_decls[0].params, vec![CType::int_type()]);
         match &forward.decls[2] {
             TopDecl::Func(func) => assert_eq!(func.linkage, Linkage::Internal),
             TopDecl::Global(_) => panic!("expected the static function"),
@@ -1606,7 +2593,7 @@ int uneval_call = 1 ? 4 : foo();
                 .iter()
                 .find(|global| global.name == name)
                 .unwrap_or_else(|| panic!("missing {name}"))
-                .init
+                .int_init()
         };
         assert_eq!(value("bits"), Some((6 & 3) | (1 ^ 4)));
         assert_eq!(value("tilde"), Some((-1i32) as u32 as u64));
@@ -1700,7 +2687,7 @@ int cond_cmp = (1 ? -1 : 1u) > 0;
                 .iter()
                 .find(|global| global.name == name)
                 .unwrap_or_else(|| panic!("missing {name}"))
-                .init
+                .int_init()
         };
         assert_eq!(value("cmp"), Some(0));
         assert_eq!(value("cmp_long"), Some(1));
@@ -1721,5 +2708,40 @@ int cond_cmp = (1 ? -1 : 1u) > 0;
         sema_ok("long g = 1L << 40;");
         assert!(sema_err("int g = 2147483647 + 1;").contains("overflows 'int'"));
         sema_ok("char g = 1000;");
+    }
+
+    #[test]
+    fn pointers_and_arrays() {
+        sema_ok(
+            "\
+int g;
+int *p = &g;
+int a[] = {1, 2, 3};
+int *q = &a[1];
+int *r = a + 1;
+int main(void) {
+    int x = 1;
+    int *lp = &x;
+    *lp = 2;
+    return a[0] + *q + (p != 0);
+}
+",
+        );
+        assert!(
+            sema_err("int main(void) { int *p; char *c; p = c; return 0; }")
+                .contains("incompatible types assigning 'char *' to 'int *'")
+        );
+        assert!(sema_err("int main(void) { void *v; v = v + 1; return 0; }")
+            .contains("arithmetic on a pointer to void"));
+        assert!(sema_err("int main(void) { int a[]; return 0; }").contains("array size missing"));
+        assert!(sema_err("int a[2] = {1, 2, 3};").contains("excess elements in array initializer"));
+        assert!(sema_err("int main(void) { int *p; return p < 0; }")
+            .contains("invalid operands to '<'"));
+        assert!(sema_err("int *p = 1;").contains("incompatible types"));
+        sema_ok("int *p = 0; int *q = (void *)0;");
+        sema_ok("void *v; int *p; void id(void) { v = p; p = v; }");
+        assert!(sema_err("int main(void) { int a[3]; a = a; return 0; }")
+            .contains("array type is not assignable"));
+        assert!(sema_err("int main(void) { return &1; }").contains("cannot take the address"));
     }
 }

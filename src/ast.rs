@@ -3,6 +3,10 @@
 //! Names are resolved later. Local `slot` fields are filled before semantic
 //! analysis so each variable has a stable LLVM alloca name. File-scope objects
 //! use the global's LLVM name instead of an alloca.
+//!
+//! Types are integers, `void`, pointers, and arrays. A function type is not a
+//! value type: parameters and returns use the object type that remains after
+//! the usual parameter adjustment.
 
 /// Integer and `void` types on `x86_64-pc-linux-gnu` (LP64).
 ///
@@ -179,6 +183,214 @@ impl TypeName {
     }
 }
 
+/// A type this milestone can name: `void`, an integer, a pointer, or an array.
+///
+/// `char` stays distinct from `signed char`. Pointers use one LLVM `ptr`
+/// (opaque pointers). An array with `len == None` is incomplete (`int a[]`).
+/// A pointer is complete even when it points at an incomplete type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CType {
+    Void,
+    Int(TypeName),
+    Pointer(Box<CType>),
+    Array(Box<CType>, Option<u64>),
+}
+
+impl CType {
+    pub fn from_name(ty: TypeName) -> Self {
+        if ty == TypeName::Void {
+            CType::Void
+        } else {
+            CType::Int(ty)
+        }
+    }
+
+    pub fn int_type() -> Self {
+        CType::Int(TypeName::Int)
+    }
+
+    pub fn pointer(pointee: CType) -> Self {
+        CType::Pointer(Box::new(pointee))
+    }
+
+    pub fn array(elem: CType, len: Option<u64>) -> Self {
+        CType::Array(Box::new(elem), len)
+    }
+
+    pub fn is_void(&self) -> bool {
+        matches!(self, CType::Void)
+    }
+
+    pub fn is_integer(&self) -> bool {
+        matches!(self, CType::Int(_))
+    }
+
+    pub fn is_pointer(&self) -> bool {
+        matches!(self, CType::Pointer(_))
+    }
+
+    pub fn is_array(&self) -> bool {
+        matches!(self, CType::Array(_, _))
+    }
+
+    /// Integer or pointer. Arrays are not scalars; they decay first.
+    pub fn is_scalar(&self) -> bool {
+        self.is_integer() || self.is_pointer()
+    }
+
+    pub fn is_void_pointer(&self) -> bool {
+        matches!(self, CType::Pointer(inner) if inner.is_void())
+    }
+
+    pub fn as_integer(&self) -> Option<TypeName> {
+        match self {
+            CType::Int(ty) => Some(*ty),
+            _ => None,
+        }
+    }
+
+    pub fn pointee(&self) -> Option<&CType> {
+        match self {
+            CType::Pointer(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    pub fn array_elem(&self) -> Option<&CType> {
+        match self {
+            CType::Array(elem, _) => Some(elem),
+            _ => None,
+        }
+    }
+
+    pub fn array_len(&self) -> Option<u64> {
+        match self {
+            CType::Array(_, len) => *len,
+            _ => None,
+        }
+    }
+
+    pub fn is_complete(&self) -> bool {
+        match self {
+            CType::Void => false,
+            CType::Int(_) | CType::Pointer(_) => true,
+            CType::Array(elem, Some(_)) => elem.is_complete(),
+            CType::Array(_, None) => false,
+        }
+    }
+
+    /// Size in bytes. Incomplete types have no size.
+    pub fn size(&self) -> Option<u64> {
+        match self {
+            CType::Void => None,
+            CType::Int(ty) => Some(ty.size()),
+            CType::Pointer(_) => Some(8),
+            CType::Array(elem, Some(len)) => elem.size().map(|elem| elem.saturating_mul(*len)),
+            CType::Array(_, None) => None,
+        }
+    }
+
+    /// Alignment in bytes.
+    ///
+    /// The System V AMD64 ABI gives an array of 16 bytes or more an alignment
+    /// of at least 16. Smaller arrays use the element alignment. Pointers are
+    /// 8-byte aligned.
+    pub fn align(&self) -> u32 {
+        match self {
+            CType::Void => 1,
+            CType::Int(ty) => ty.align(),
+            CType::Pointer(_) => 8,
+            CType::Array(elem, _) => {
+                let elem_align = elem.align();
+                match self.size() {
+                    Some(size) if size >= 16 => elem_align.max(16),
+                    _ => elem_align,
+                }
+            }
+        }
+    }
+
+    pub fn ir_type(&self) -> String {
+        match self {
+            CType::Void => "void".to_string(),
+            CType::Int(ty) => ty.ir_type().to_string(),
+            CType::Pointer(_) => "ptr".to_string(),
+            CType::Array(elem, len) => {
+                let n = len.unwrap_or(0);
+                format!("[{n} x {}]", elem.ir_type())
+            }
+        }
+    }
+
+    /// `signext` / `zeroext` for integer parameters narrower than 32 bits.
+    /// Pointers are passed as `ptr` with no extension attribute.
+    pub fn abi_attr(&self) -> Option<&'static str> {
+        self.as_integer().and_then(TypeName::abi_attr)
+    }
+
+    /// C spelling of the type, such as `int *`, `int *[3]`, or `int (*)[3]`.
+    pub fn display(&self) -> String {
+        render_type(self, "")
+    }
+}
+
+fn render_type(ty: &CType, name: &str) -> String {
+    match ty {
+        CType::Void => join_spec("void", name),
+        CType::Int(scalar) => join_spec(scalar.as_str(), name),
+        CType::Pointer(inner) => {
+            let starred = if matches!(inner.as_ref(), CType::Array(_, _)) {
+                format!("(*{name})")
+            } else if name.is_empty() {
+                "*".to_string()
+            } else {
+                format!("*{name}")
+            };
+            render_type(inner, &starred)
+        }
+        CType::Array(elem, len) => {
+            let bracket = match len {
+                Some(n) => format!("[{n}]"),
+                None => "[]".to_string(),
+            };
+            render_type(elem, &format!("{name}{bracket}"))
+        }
+    }
+}
+
+fn join_spec(spec: &str, name: &str) -> String {
+    if name.is_empty() {
+        spec.to_string()
+    } else {
+        format!("{spec} {name}")
+    }
+}
+
+/// Two types are compatible (C11 6.2.7, 6.7.6). Qualifiers are not in this subset.
+///
+/// Arrays are compatible when their elements are and the lengths are equal or
+/// either length is unknown. The composite type keeps a known length.
+pub fn compatible(left: &CType, right: &CType) -> bool {
+    match (left, right) {
+        (CType::Void, CType::Void) => true,
+        (CType::Int(a), CType::Int(b)) => a == b,
+        (CType::Pointer(a), CType::Pointer(b)) => compatible(a, b),
+        (CType::Array(a, la), CType::Array(b, lb)) => {
+            (la.is_none() || lb.is_none() || la == lb) && compatible(a, b)
+        }
+        _ => false,
+    }
+}
+
+/// Composite type of two compatible types. A known array length wins.
+pub fn composite(left: &CType, right: &CType) -> CType {
+    match (left, right) {
+        (CType::Array(a, la), CType::Array(b, lb)) => CType::array(composite(a, b), la.or(*lb)),
+        (CType::Pointer(a), CType::Pointer(b)) => CType::pointer(composite(a, b)),
+        _ => left.clone(),
+    }
+}
+
 pub fn width_mask(width: u32) -> u64 {
     if width >= 64 {
         u64::MAX
@@ -317,6 +529,8 @@ pub enum UnaryOp {
     Minus,
     Not,
     BitNot,
+    Addr,
+    Deref,
 }
 
 /// Prefix and postfix `++` / `--`. The result of either form is not an lvalue.
@@ -342,7 +556,69 @@ impl IncOp {
 #[derive(Debug, Clone)]
 pub enum SizeofOperand {
     Expr(Box<Expr>),
-    Type(TypeName),
+    Type(CType),
+}
+
+/// Brace-enclosed initializer, or a single expression.
+///
+/// `int x = {1}` is a scalar wrapped in one pair of braces. Arrays use a list.
+/// A trailing comma is dropped by the parser.
+#[derive(Debug, Clone)]
+pub enum Init {
+    Expr(Expr),
+    List {
+        items: Vec<Init>,
+        line: usize,
+        column: usize,
+    },
+}
+
+/// One scalar or pointer store inside an aggregate initializer.
+///
+/// `offset` is the byte offset from the start of the object. Semantic analysis
+/// fills these after the destination type is known, including a length inferred
+/// from `int a[] = {1, 2, 3}`.
+#[derive(Debug, Clone)]
+pub struct ElemStore {
+    pub offset: u64,
+    pub ty: CType,
+    pub expr: Expr,
+}
+
+/// Initializer after type checking. Aggregates are flat element stores; the
+/// bytes that are not listed are zero.
+#[derive(Debug, Clone)]
+pub enum CheckedInit {
+    Scalar(Expr),
+    Aggregate(Vec<ElemStore>),
+}
+
+/// A pointer constant (C11 6.6): null, an address, or an integer converted to
+/// a pointer. The address is a file-scope object plus a byte offset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PtrConst {
+    Null,
+    Addr {
+        name: String,
+        offset: i64,
+    },
+    /// Low 64 bits of an integer, converted with `inttoptr`.
+    IntToPtr(u64),
+}
+
+/// Constant initializer value. Integers keep the low bits of their type.
+/// `Zero` is the all-zero value of whatever type it is attached to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConstInit {
+    Zero,
+    Int(u64),
+    Ptr(PtrConst),
+    /// `ptrtoint` of a pointer constant, then truncated to `width` bits.
+    PtrToInt {
+        ptr: PtrConst,
+        width: u32,
+    },
+    Aggregate(Vec<ConstInit>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -353,8 +629,8 @@ pub struct VarRes {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallRes {
     pub name: String,
-    pub ret: TypeName,
-    pub params: Vec<TypeName>,
+    pub ret: CType,
+    pub params: Vec<CType>,
 }
 
 #[derive(Debug, Clone)]
@@ -366,14 +642,14 @@ pub enum Expr {
         value_ty: TypeName,
         line: usize,
         column: usize,
-        ty: Option<TypeName>,
+        ty: Option<CType>,
     },
     Var {
         name: String,
         line: usize,
         column: usize,
         resolved: Option<VarRes>,
-        ty: Option<TypeName>,
+        ty: Option<CType>,
     },
     Bin {
         op: BinOp,
@@ -381,21 +657,21 @@ pub enum Expr {
         right: Box<Expr>,
         line: usize,
         column: usize,
-        ty: Option<TypeName>,
+        ty: Option<CType>,
     },
     Unary {
         op: UnaryOp,
         expr: Box<Expr>,
         line: usize,
         column: usize,
-        ty: Option<TypeName>,
+        ty: Option<CType>,
     },
     Assign {
         target: Box<Expr>,
         value: Box<Expr>,
         line: usize,
         column: usize,
-        ty: Option<TypeName>,
+        ty: Option<CType>,
     },
     Call {
         callee: Box<Expr>,
@@ -403,7 +679,7 @@ pub enum Expr {
         line: usize,
         column: usize,
         resolved: Option<CallRes>,
-        ty: Option<TypeName>,
+        ty: Option<CType>,
     },
     /// `E1 op= E2`. `target` is the lvalue, evaluated once.
     CompoundAssign {
@@ -412,14 +688,14 @@ pub enum Expr {
         value: Box<Expr>,
         line: usize,
         column: usize,
-        ty: Option<TypeName>,
+        ty: Option<CType>,
     },
     IncDec {
         op: IncOp,
         target: Box<Expr>,
         line: usize,
         column: usize,
-        ty: Option<TypeName>,
+        ty: Option<CType>,
     },
     Cond {
         cond: Box<Expr>,
@@ -427,28 +703,44 @@ pub enum Expr {
         else_expr: Box<Expr>,
         line: usize,
         column: usize,
-        ty: Option<TypeName>,
+        ty: Option<CType>,
     },
     Comma {
         left: Box<Expr>,
         right: Box<Expr>,
         line: usize,
         column: usize,
-        ty: Option<TypeName>,
+        ty: Option<CType>,
     },
     Sizeof {
         operand: SizeofOperand,
         line: usize,
         column: usize,
-        ty: Option<TypeName>,
+        ty: Option<CType>,
     },
     /// `(type)expr`, including `(void)expr`.
     Cast {
-        ty_name: TypeName,
+        ty_name: CType,
         expr: Box<Expr>,
         line: usize,
         column: usize,
-        ty: Option<TypeName>,
+        ty: Option<CType>,
+    },
+    /// `base[index]`, an lvalue of the element type. The base is decayed.
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+        line: usize,
+        column: usize,
+        ty: Option<CType>,
+    },
+    /// Array-to-pointer decay inserted by semantic analysis. The inner
+    /// expression keeps its array type; this node's type is the pointer.
+    Decay {
+        expr: Box<Expr>,
+        line: usize,
+        column: usize,
+        ty: Option<CType>,
     },
 }
 
@@ -463,7 +755,7 @@ impl Expr {
         }
     }
 
-    pub fn cast(ty_name: TypeName, expr: Expr, line: usize, column: usize) -> Self {
+    pub fn cast(ty_name: CType, expr: Expr, line: usize, column: usize) -> Self {
         Expr::Cast {
             ty_name,
             expr: Box::new(expr),
@@ -576,9 +868,30 @@ impl Expr {
         }
     }
 
-    pub fn sizeof_type(ty_name: TypeName, line: usize, column: usize) -> Self {
+    pub fn sizeof_type(ty_name: CType, line: usize, column: usize) -> Self {
         Expr::Sizeof {
             operand: SizeofOperand::Type(ty_name),
+            line,
+            column,
+            ty: None,
+        }
+    }
+
+    pub fn index(base: Expr, index: Expr, line: usize, column: usize) -> Self {
+        Expr::Index {
+            base: Box::new(base),
+            index: Box::new(index),
+            line,
+            column,
+            ty: None,
+        }
+    }
+
+    pub fn decay(expr: Expr) -> Self {
+        let line = expr.line();
+        let column = expr.column();
+        Expr::Decay {
+            expr: Box::new(expr),
             line,
             column,
             ty: None,
@@ -598,7 +911,9 @@ impl Expr {
             | Expr::Cond { line, .. }
             | Expr::Comma { line, .. }
             | Expr::Sizeof { line, .. }
-            | Expr::Cast { line, .. } => *line,
+            | Expr::Cast { line, .. }
+            | Expr::Index { line, .. }
+            | Expr::Decay { line, .. } => *line,
         }
     }
 
@@ -615,11 +930,13 @@ impl Expr {
             | Expr::Cond { column, .. }
             | Expr::Comma { column, .. }
             | Expr::Sizeof { column, .. }
-            | Expr::Cast { column, .. } => *column,
+            | Expr::Cast { column, .. }
+            | Expr::Index { column, .. }
+            | Expr::Decay { column, .. } => *column,
         }
     }
 
-    pub fn ty(&self) -> Option<TypeName> {
+    pub fn ty(&self) -> Option<CType> {
         match self {
             Expr::Int { ty, .. }
             | Expr::Var { ty, .. }
@@ -632,11 +949,13 @@ impl Expr {
             | Expr::Cond { ty, .. }
             | Expr::Comma { ty, .. }
             | Expr::Sizeof { ty, .. }
-            | Expr::Cast { ty, .. } => *ty,
+            | Expr::Cast { ty, .. }
+            | Expr::Index { ty, .. }
+            | Expr::Decay { ty, .. } => ty.clone(),
         }
     }
 
-    pub fn set_ty(&mut self, ty: TypeName) {
+    pub fn set_ty(&mut self, ty: CType) {
         match self {
             Expr::Int { ty: slot, .. }
             | Expr::Var { ty: slot, .. }
@@ -649,7 +968,9 @@ impl Expr {
             | Expr::Cond { ty: slot, .. }
             | Expr::Comma { ty: slot, .. }
             | Expr::Sizeof { ty: slot, .. }
-            | Expr::Cast { ty: slot, .. } => *slot = Some(ty),
+            | Expr::Cast { ty: slot, .. }
+            | Expr::Index { ty: slot, .. }
+            | Expr::Decay { ty: slot, .. } => *slot = Some(ty),
         }
     }
 
@@ -667,8 +988,10 @@ impl Expr {
 #[derive(Debug, Clone)]
 pub struct VarDecl {
     pub name: String,
-    pub ty: TypeName,
-    pub init: Option<Expr>,
+    pub ty: CType,
+    pub init: Option<Init>,
+    /// Filled by semantic analysis when `init` is present.
+    pub checked: Option<CheckedInit>,
     pub line: usize,
     pub column: usize,
     pub slot: String,
@@ -679,7 +1002,7 @@ pub struct Param {
     /// `None` for an unnamed prototype parameter (`int f(int, int)`).
     /// A function definition's parameters always have names.
     pub name: Option<String>,
-    pub ty: TypeName,
+    pub ty: CType,
     pub line: usize,
     pub column: usize,
     pub slot: String,
@@ -747,7 +1070,7 @@ pub struct Compound {
 
 #[derive(Debug, Clone)]
 pub struct FuncDef {
-    pub ret_type: TypeName,
+    pub ret_type: CType,
     pub name: String,
     pub params: Vec<Param>,
     /// `None` is a prototype. `Some` is a definition.
@@ -764,9 +1087,9 @@ pub struct FuncDef {
 #[derive(Debug, Clone)]
 pub struct GlobalDecl {
     pub name: String,
-    pub ty: TypeName,
+    pub ty: CType,
     pub storage: Storage,
-    pub init: Option<Expr>,
+    pub init: Option<Init>,
     pub line: usize,
     pub column: usize,
 }
@@ -781,20 +1104,31 @@ pub enum TopDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IrGlobal {
     pub name: String,
-    pub ty: TypeName,
+    pub ty: CType,
     pub linkage: Linkage,
     /// `None` is an external declaration. `Some` is a definition, including
-    /// a tentative definition completed as zero. The value is the low
-    /// [`TypeName::width`] bits.
-    pub init: Option<u64>,
+    /// a tentative definition completed as zero.
+    pub init: Option<ConstInit>,
+}
+
+impl IrGlobal {
+    /// Low bits of an integer definition. `None` when the global is not an
+    /// integer constant (a pointer, an aggregate, or an external declaration).
+    pub fn int_init(&self) -> Option<u64> {
+        match &self.init {
+            Some(ConstInit::Int(bits)) => Some(*bits),
+            Some(ConstInit::Zero) if self.ty.is_integer() => Some(0),
+            _ => None,
+        }
+    }
 }
 
 /// A function that was declared and not defined. Emitted as `declare`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IrFunc {
     pub name: String,
-    pub ret: TypeName,
-    pub params: Vec<TypeName>,
+    pub ret: CType,
+    pub params: Vec<CType>,
     pub linkage: Linkage,
 }
 
@@ -836,14 +1170,14 @@ fn storage_prefix(storage: Storage) -> &'static str {
 
 fn dump_global(out: &mut String, global: &GlobalDecl, indent: usize) {
     let prefix = storage_prefix(global.storage);
-    let ty = global.ty.as_str();
+    let ty = global.ty.display();
     if let Some(init) = &global.init {
         put(
             out,
             indent,
             &format!("{prefix}global {ty} {} =", global.name),
         );
-        dump_expr(out, init, indent + 1);
+        dump_init(out, init, indent + 1);
     } else {
         put(out, indent, &format!("{prefix}global {ty} {}", global.name));
     }
@@ -857,7 +1191,7 @@ fn dump_func(out: &mut String, func: &FuncDef, indent: usize) {
         &format!(
             "{}{kind} {} {}",
             storage_prefix(func.storage),
-            func.ret_type.as_str(),
+            func.ret_type.display(),
             func.name
         ),
     );
@@ -866,9 +1200,9 @@ fn dump_func(out: &mut String, func: &FuncDef, indent: usize) {
             Some(name) => put(
                 out,
                 indent + 1,
-                &format!("param {} {name}", param.ty.as_str()),
+                &format!("param {} {name}", param.ty.display()),
             ),
-            None => put(out, indent + 1, &format!("param {}", param.ty.as_str())),
+            None => put(out, indent + 1, &format!("param {}", param.ty.display())),
         }
     }
     if let Some(body) = &func.body {
@@ -887,10 +1221,10 @@ fn dump_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
     match stmt {
         Stmt::Compound(compound) => dump_compound(out, compound, indent),
         Stmt::Decl(decl) => {
-            let ty = decl.ty.as_str();
+            let ty = decl.ty.display();
             if let Some(init) = &decl.init {
                 put(out, indent, &format!("decl {ty} {} =", decl.name));
-                dump_expr(out, init, indent + 1);
+                dump_init(out, init, indent + 1);
             } else {
                 put(out, indent, &format!("decl {ty} {}", decl.name));
             }
@@ -945,14 +1279,14 @@ fn dump_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
                             put(
                                 out,
                                 indent + 2,
-                                &format!("decl {} {} =", decl.ty.as_str(), decl.name),
+                                &format!("decl {} {} =", decl.ty.display(), decl.name),
                             );
-                            dump_expr(out, init, indent + 3);
+                            dump_init(out, init, indent + 3);
                         } else {
                             put(
                                 out,
                                 indent + 2,
-                                &format!("decl {} {}", decl.ty.as_str(), decl.name),
+                                &format!("decl {} {}", decl.ty.display(), decl.name),
                             );
                         }
                     }
@@ -1001,6 +1335,8 @@ fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
                 UnaryOp::Minus => "neg",
                 UnaryOp::Not => "not",
                 UnaryOp::BitNot => "bnot",
+                UnaryOp::Addr => "addr",
+                UnaryOp::Deref => "deref",
             };
             put(out, indent, spelling);
             dump_expr(out, expr, indent + 1);
@@ -1044,14 +1380,23 @@ fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
             dump_expr(out, right, indent + 1);
         }
         Expr::Sizeof { operand, .. } => match operand {
-            SizeofOperand::Type(ty) => put(out, indent, &format!("sizeof {}", ty.as_str())),
+            SizeofOperand::Type(ty) => put(out, indent, &format!("sizeof {}", ty.display())),
             SizeofOperand::Expr(expr) => {
                 put(out, indent, "sizeof");
                 dump_expr(out, expr, indent + 1);
             }
         },
         Expr::Cast { ty_name, expr, .. } => {
-            put(out, indent, &format!("cast {}", ty_name.as_str()));
+            put(out, indent, &format!("cast {}", ty_name.display()));
+            dump_expr(out, expr, indent + 1);
+        }
+        Expr::Index { base, index, .. } => {
+            put(out, indent, "index");
+            dump_expr(out, base, indent + 1);
+            dump_expr(out, index, indent + 1);
+        }
+        Expr::Decay { expr, .. } => {
+            put(out, indent, "decay");
             dump_expr(out, expr, indent + 1);
         }
         Expr::Call { callee, args, .. } => {
@@ -1064,6 +1409,18 @@ fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
             }
             for arg in args {
                 dump_expr(out, arg, indent + 1);
+            }
+        }
+    }
+}
+
+fn dump_init(out: &mut String, init: &Init, indent: usize) {
+    match init {
+        Init::Expr(expr) => dump_expr(out, expr, indent),
+        Init::List { items, .. } => {
+            put(out, indent, "list");
+            for item in items {
+                dump_init(out, item, indent + 1);
             }
         }
     }

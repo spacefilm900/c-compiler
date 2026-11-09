@@ -61,12 +61,12 @@ fn render_global(global: &IrGlobal) -> String {
     let name = llvm_global(&global.name);
     let ir = global.ty.ir_type();
     let align = global.ty.align();
-    if let Some(value) = global.init {
+    if let Some(value) = &global.init {
         let linkage = match global.linkage {
             Linkage::Internal => "internal ",
             Linkage::External => "",
         };
-        let spelled = global.ty.format_bits(value);
+        let spelled = render_const(&global.ty, value);
         format!("{name} = {linkage}global {ir} {spelled}, align {align}")
     } else {
         format!("{name} = external global {ir}, align {align}")
@@ -77,36 +77,37 @@ fn render_declare(decl: &IrFunc) -> String {
     let params = decl
         .params
         .iter()
-        .map(|ty| param_ir(*ty, None))
+        .map(|ty| param_ir(ty, None))
         .collect::<Vec<_>>()
         .join(", ");
     format!(
         "declare {}{} {}({params})",
-        ret_prefix(decl.ret),
+        ret_prefix(&decl.ret),
         decl.ret.ir_type(),
         llvm_global(&decl.name)
     )
 }
 
-fn ret_prefix(ty: TypeName) -> String {
+fn ret_prefix(ty: &CType) -> String {
     match ty.abi_attr() {
         Some(attr) => format!("{attr} "),
         None => String::new(),
     }
 }
 
-fn param_ir(ty: TypeName, name: Option<&str>) -> String {
+fn param_ir(ty: &CType, name: Option<&str>) -> String {
+    let ir = ty.ir_type();
     match (ty.abi_attr(), name) {
-        (Some(attr), Some(name)) => format!("{} {attr} {name}", ty.ir_type()),
-        (Some(attr), None) => format!("{} {attr}", ty.ir_type()),
-        (None, Some(name)) => format!("{} {name}", ty.ir_type()),
-        (None, None) => ty.ir_type().to_string(),
+        (Some(attr), Some(name)) => format!("{ir} {attr} {name}"),
+        (Some(attr), None) => format!("{ir} {attr}"),
+        (None, Some(name)) => format!("{ir} {name}"),
+        (None, None) => ir,
     }
 }
 
 fn render_function(func: &FuncDef) -> String {
     let body = func.body.as_ref().expect("defined function");
-    let mut gen = Gen::new(func.ret_type);
+    let mut gen = Gen::new(func.ret_type.clone());
     let linkage = match func.linkage {
         Linkage::Internal => "internal ",
         Linkage::External => "",
@@ -114,12 +115,12 @@ fn render_function(func: &FuncDef) -> String {
     let params = func
         .params
         .iter()
-        .map(|param| param_ir(param.ty, Some(&param.arg_reg)))
+        .map(|param| param_ir(&param.ty, Some(&param.arg_reg)))
         .collect::<Vec<_>>()
         .join(", ");
     gen.emit(&format!(
         "define {linkage}{}{} {}({params}) {{",
-        ret_prefix(func.ret_type),
+        ret_prefix(&func.ret_type),
         func.ret_type.ir_type(),
         llvm_global(&func.name)
     ));
@@ -154,8 +155,10 @@ fn render_function(func: &FuncDef) -> String {
 
     gen.gen_compound(body);
     if !gen.terminated {
-        if func.ret_type == TypeName::Void {
+        if func.ret_type.is_void() {
             gen.emit("  ret void");
+        } else if func.ret_type.is_pointer() {
+            gen.emit("  ret ptr null");
         } else {
             gen.emit(&format!("  ret {} 0", func.ret_type.ir_type()));
         }
@@ -164,7 +167,7 @@ fn render_function(func: &FuncDef) -> String {
     gen.lines.join("\n")
 }
 
-fn local_slots(compound: &Compound) -> Vec<(String, TypeName)> {
+fn local_slots(compound: &Compound) -> Vec<(String, CType)> {
     let mut slots = Vec::new();
     for item in &compound.items {
         collect_slots(item, &mut slots);
@@ -172,9 +175,9 @@ fn local_slots(compound: &Compound) -> Vec<(String, TypeName)> {
     slots
 }
 
-fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, TypeName)>) {
+fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, CType)>) {
     match stmt {
-        Stmt::Decl(decl) => slots.push((decl.slot.clone(), decl.ty)),
+        Stmt::Decl(decl) => slots.push((decl.slot.clone(), decl.ty.clone())),
         Stmt::Compound(compound) => {
             for item in &compound.items {
                 collect_slots(item, slots);
@@ -194,7 +197,7 @@ fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, TypeName)>) {
         Stmt::For { init, body, .. } => {
             if let ForInit::Decl(decls) = init {
                 for decl in decls {
-                    slots.push((decl.slot.clone(), decl.ty));
+                    slots.push((decl.slot.clone(), decl.ty.clone()));
                 }
             }
             collect_slots(body, slots);
@@ -210,11 +213,11 @@ struct Gen {
     cur: String,
     terminated: bool,
     loops: Vec<(String, String)>,
-    ret_ty: TypeName,
+    ret_ty: CType,
 }
 
 impl Gen {
-    fn new(ret_ty: TypeName) -> Self {
+    fn new(ret_ty: CType) -> Self {
         Self {
             lines: Vec::new(),
             tmp: 0,
@@ -296,7 +299,8 @@ impl Gen {
                 self.ensure_block();
                 if let Some(expr) = expr {
                     let value = self.gen_val(expr);
-                    let value = self.convert(&value, expr.ty().expect("typed"), self.ret_ty);
+                    let value =
+                        self.convert(&value, &expr.ty().expect("typed"), &self.ret_ty.clone());
                     self.emit(&format!("  ret {} {value}", self.ret_ty.ir_type()));
                 } else {
                     self.emit("  ret void");
@@ -337,14 +341,46 @@ impl Gen {
     }
 
     fn gen_decl(&mut self, decl: &VarDecl) {
-        if let Some(init) = &decl.init {
-            let value = self.gen_val(init);
-            let value = self.convert(&value, init.ty().expect("typed"), decl.ty);
-            self.store(decl.ty, &value, &decl.slot);
+        let Some(checked) = &decl.checked else {
+            return;
+        };
+        match checked {
+            CheckedInit::Scalar(init) => {
+                let value = self.gen_val(init);
+                let value = self.convert(&value, &init.ty().expect("typed"), &decl.ty);
+                self.store(&decl.ty, &value, &decl.slot);
+            }
+            CheckedInit::Aggregate(stores) => {
+                let mut ready = Vec::new();
+                for store in stores {
+                    let value = self.gen_val(&store.expr);
+                    let value = self.convert(&value, &store.expr.ty().expect("typed"), &store.ty);
+                    ready.push((store.offset, store.ty.clone(), value));
+                }
+                self.emit(&format!(
+                    "  store {} zeroinitializer, ptr {}, align {}",
+                    decl.ty.ir_type(),
+                    decl.slot,
+                    decl.ty.align()
+                ));
+                for (offset, ty, value) in ready {
+                    let addr = if offset == 0 {
+                        decl.slot.clone()
+                    } else {
+                        let tmp = self.fresh();
+                        self.emit(&format!(
+                            "  {tmp} = getelementptr inbounds i8, ptr {}, i64 {offset}",
+                            decl.slot
+                        ));
+                        tmp
+                    };
+                    self.store(&ty, &value, &addr);
+                }
+            }
         }
     }
 
-    fn store(&mut self, ty: TypeName, value: &str, slot: &str) {
+    fn store(&mut self, ty: &CType, value: &str, slot: &str) {
         self.emit(&format!(
             "  store {} {value}, ptr {slot}, align {}",
             ty.ir_type(),
@@ -352,7 +388,7 @@ impl Gen {
         ));
     }
 
-    fn load(&mut self, ty: TypeName, slot: &str) -> String {
+    fn load(&mut self, ty: &CType, slot: &str) -> String {
         let tmp = self.fresh();
         self.emit(&format!(
             "  {tmp} = load {}, ptr {slot}, align {}",
@@ -362,26 +398,70 @@ impl Gen {
         tmp
     }
 
-    /// Convert `value` from `from` to `to`. Same-width conversions, including
-    /// signed/unsigned of one width, need no instruction.
-    fn convert(&mut self, value: &str, from: TypeName, to: TypeName) -> String {
-        if from.width() == to.width() {
+    /// Convert `value` from `from` to `to`.
+    ///
+    /// Integer conversions are `sext`, `zext`, or `trunc`. Same-width
+    /// signed/unsigned changes need no instruction. Pointer-to-pointer is a
+    /// no-op with opaque pointers. Integer-to-pointer sign- or zero-extends
+    /// to i64 and uses `inttoptr`; a constant 0 becomes `null`. Pointer-to-
+    /// integer is `ptrtoint` to the destination width. That is the
+    /// implementation-defined conversion Clang uses on x86_64-pc-linux-gnu.
+    fn convert(&mut self, value: &str, from: &CType, to: &CType) -> String {
+        if let (Some(from_i), Some(to_i)) = (from.as_integer(), to.as_integer()) {
+            if from_i.width() == to_i.width() {
+                return value.to_string();
+            }
+            let op = if to_i.width() < from_i.width() {
+                "trunc"
+            } else if from_i.is_signed() {
+                "sext"
+            } else {
+                "zext"
+            };
+            let tmp = self.fresh();
+            self.emit(&format!(
+                "  {tmp} = {op} {} {value} to {}",
+                from_i.ir_type(),
+                to_i.ir_type()
+            ));
+            return tmp;
+        }
+        if from.is_pointer() && to.is_pointer() {
             return value.to_string();
         }
-        let op = if to.width() < from.width() {
-            "trunc"
-        } else if from.is_signed() {
-            "sext"
+        if from.is_integer() && to.is_pointer() {
+            if value == "0" {
+                return "null".to_string();
+            }
+            let wide = self.convert(value, from, &CType::from_name(TypeName::Long));
+            let tmp = self.fresh();
+            self.emit(&format!("  {tmp} = inttoptr i64 {wide} to ptr"));
+            return tmp;
+        }
+        if from.is_pointer() && to.is_integer() {
+            let tmp = self.fresh();
+            self.emit(&format!(
+                "  {tmp} = ptrtoint ptr {value} to {}",
+                to.ir_type()
+            ));
+            return tmp;
+        }
+        value.to_string()
+    }
+
+    fn extend_i64(&mut self, value: &str, ty: &CType) -> String {
+        self.convert(value, ty, &CType::from_name(TypeName::Long))
+    }
+
+    /// A pointer operand, or a null pointer constant turned into `ptr null`.
+    fn as_ptr(&mut self, expr: &Expr) -> String {
+        let value = self.gen_val(expr);
+        let ty = expr.ty().expect("typed");
+        if ty.is_pointer() {
+            value
         } else {
-            "zext"
-        };
-        let tmp = self.fresh();
-        self.emit(&format!(
-            "  {tmp} = {op} {} {value} to {}",
-            from.ir_type(),
-            to.ir_type()
-        ));
-        tmp
+            self.convert(&value, &ty, &CType::pointer(CType::Void))
+        }
     }
 
     fn gen_if(&mut self, cond: &Expr, then_stmt: &Stmt, else_stmt: Option<&Stmt>) {
@@ -479,8 +559,12 @@ impl Gen {
             Expr::Int { bits, value_ty, .. } => Some(value_ty.format_bits(*bits)),
             Expr::Var { resolved, ty, .. } => {
                 let slot = &resolved.as_ref().expect("resolved variable").slot;
-                let ty = ty.expect("typed variable");
-                Some(self.load(ty, slot))
+                let ty = ty.clone().expect("typed variable");
+                if ty.is_array() {
+                    Some(slot.clone())
+                } else {
+                    Some(self.load(&ty, slot))
+                }
             }
             Expr::Unary {
                 op: UnaryOp::Not, ..
@@ -492,7 +576,8 @@ impl Gen {
             } => {
                 let value = self.gen_val(expr);
                 let src = expr.ty().expect("typed");
-                Some(self.convert(&value, src, src.promote()))
+                let promoted = CType::from_name(src.as_integer().expect("integer").promote());
+                Some(self.convert(&value, &src, &promoted))
             }
             Expr::Unary {
                 op: UnaryOp::Minus,
@@ -504,18 +589,58 @@ impl Gen {
                 expr,
                 ..
             } => Some(self.gen_neg_or_not(expr, "xor")),
+            Expr::Unary {
+                op: UnaryOp::Addr,
+                expr,
+                ..
+            } => Some(self.gen_addr(expr)),
+            Expr::Unary {
+                op: UnaryOp::Deref,
+                expr,
+                ty,
+                ..
+            } => {
+                let addr = self.gen_val(expr);
+                let ty = ty.clone().expect("typed");
+                if ty.is_void() {
+                    None
+                } else if ty.is_array() {
+                    Some(addr)
+                } else {
+                    Some(self.load(&ty, &addr))
+                }
+            }
             Expr::Bin { op, .. } if op.is_cmp() || matches!(op, BinOp::And | BinOp::Or) => {
                 Some(self.zext_cond(expr))
+            }
+            Expr::Bin {
+                op: BinOp::Sub,
+                left,
+                right,
+                ..
+            } if left.ty().is_some_and(|ty| ty.is_pointer())
+                && right.ty().is_some_and(|ty| ty.is_pointer()) =>
+            {
+                Some(self.gen_ptr_diff(left, right))
+            }
+            Expr::Bin {
+                op,
+                left,
+                right,
+                ty,
+                ..
+            } if ty.as_ref().is_some_and(|ty| ty.is_pointer()) => {
+                Some(self.gen_ptr_arith(*op, left, right))
             }
             Expr::Bin {
                 op, left, right, ..
             } => Some(self.gen_arith(*op, left, right)),
             Expr::Assign { target, value, .. } => {
-                let slot = target.var_slot().expect("assignable variable").to_string();
+                let addr = self.gen_addr(target);
                 let dest = target.ty().expect("lvalue type");
                 let raw = self.gen_val(value);
-                let stored = self.convert(&raw, value.ty().expect("typed"), dest);
-                self.store(dest, &stored, &slot);
+                let stored = self.convert(&raw, &value.ty().expect("typed"), &dest);
+                self.store(&dest, &stored, &addr);
                 Some(stored)
             }
             Expr::CompoundAssign {
@@ -528,7 +653,7 @@ impl Gen {
                 else_expr,
                 ty,
                 ..
-            } => self.gen_ternary(cond, then_expr, else_expr, ty.expect("typed")),
+            } => self.gen_ternary(cond, then_expr, else_expr, ty.clone().expect("typed")),
             Expr::Comma { left, right, .. } => {
                 let _ = self.gen_expr(left);
                 self.gen_expr(right)
@@ -537,29 +662,121 @@ impl Gen {
                 let size = match operand {
                     SizeofOperand::Type(ty) => ty.size(),
                     SizeofOperand::Expr(inner) => inner.ty().expect("typed").size(),
-                };
+                }
+                .expect("sizeof of a complete type");
                 Some(TypeName::ULong.format_bits(size))
             }
             Expr::Cast { ty_name, expr, .. } => {
-                if *ty_name == TypeName::Void {
+                if ty_name.is_void() {
                     let _ = self.gen_expr(expr);
                     None
                 } else {
                     let value = self.gen_val(expr);
-                    Some(self.convert(&value, expr.ty().expect("typed"), *ty_name))
+                    Some(self.convert(&value, &expr.ty().expect("typed"), ty_name))
                 }
             }
+            Expr::Index {
+                base, index, ty, ..
+            } => {
+                let addr = self.gen_ptr_index(base, index);
+                let ty = ty.clone().expect("typed");
+                if ty.is_array() {
+                    Some(addr)
+                } else {
+                    Some(self.load(&ty, &addr))
+                }
+            }
+            Expr::Decay { expr, .. } => Some(self.gen_addr(expr)),
             Expr::Call { args, resolved, .. } => {
                 self.gen_call(args, resolved.as_ref().expect("resolved call"))
             }
         }
     }
 
+    fn gen_addr(&mut self, expr: &Expr) -> String {
+        match expr {
+            Expr::Var { resolved, .. } => {
+                resolved.as_ref().expect("resolved variable").slot.clone()
+            }
+            Expr::Unary {
+                op: UnaryOp::Deref,
+                expr,
+                ..
+            } => self.gen_val(expr),
+            Expr::Index { base, index, .. } => self.gen_ptr_index(base, index),
+            Expr::Decay { expr, .. } => self.gen_addr(expr),
+            _ => panic!("internal compiler error: address of a non-lvalue"),
+        }
+    }
+
+    fn gen_ptr_index(&mut self, base: &Expr, index: &Expr) -> String {
+        let (ptr_expr, int_expr) = if base.ty().is_some_and(|ty| ty.is_pointer()) {
+            (base, index)
+        } else {
+            (index, base)
+        };
+        self.gen_gep(ptr_expr, int_expr, false)
+    }
+
+    fn gen_ptr_arith(&mut self, op: BinOp, left: &Expr, right: &Expr) -> String {
+        let (ptr_expr, int_expr, negate) = if left.ty().is_some_and(|ty| ty.is_pointer()) {
+            (left, right, op == BinOp::Sub)
+        } else {
+            (right, left, false)
+        };
+        self.gen_gep(ptr_expr, int_expr, negate)
+    }
+
+    fn gen_gep(&mut self, ptr_expr: &Expr, int_expr: &Expr, negate: bool) -> String {
+        let ptr = self.gen_val(ptr_expr);
+        let idx = self.gen_val(int_expr);
+        let mut idx = self.extend_i64(&idx, &int_expr.ty().expect("integer index"));
+        if negate {
+            let tmp = self.fresh();
+            self.emit(&format!("  {tmp} = sub i64 0, {idx}"));
+            idx = tmp;
+        }
+        let elem = ptr_expr
+            .ty()
+            .as_ref()
+            .and_then(CType::pointee)
+            .expect("pointer")
+            .ir_type();
+        let tmp = self.fresh();
+        self.emit(&format!(
+            "  {tmp} = getelementptr inbounds {elem}, ptr {ptr}, i64 {idx}"
+        ));
+        tmp
+    }
+
+    fn gen_ptr_diff(&mut self, left: &Expr, right: &Expr) -> String {
+        let left_val = self.gen_val(left);
+        let right_val = self.gen_val(right);
+        let left_int = self.fresh();
+        let right_int = self.fresh();
+        self.emit(&format!("  {left_int} = ptrtoint ptr {left_val} to i64"));
+        self.emit(&format!("  {right_int} = ptrtoint ptr {right_val} to i64"));
+        let diff = self.fresh();
+        self.emit(&format!("  {diff} = sub i64 {left_int}, {right_int}"));
+        let size = left
+            .ty()
+            .as_ref()
+            .and_then(CType::pointee)
+            .and_then(CType::size)
+            .expect("complete pointee");
+        if size == 1 {
+            return diff;
+        }
+        let tmp = self.fresh();
+        self.emit(&format!("  {tmp} = sdiv exact i64 {diff}, {size}"));
+        tmp
+    }
+
     fn gen_neg_or_not(&mut self, expr: &Expr, kind: &str) -> String {
         let src = expr.ty().expect("typed");
-        let dest = src.promote();
+        let dest = CType::from_name(src.as_integer().expect("integer").promote());
         let value = self.gen_val(expr);
-        let value = self.convert(&value, src, dest);
+        let value = self.convert(&value, &src, &dest);
         let tmp = self.fresh();
         if kind == "sub" {
             self.emit(&format!("  {tmp} = sub {} 0, {value}", dest.ir_type()));
@@ -572,15 +789,18 @@ impl Gen {
     fn gen_arith(&mut self, op: BinOp, left: &Expr, right: &Expr) -> String {
         let left_ty = left.ty().expect("typed");
         let right_ty = right.ty().expect("typed");
+        let left_i = left_ty.as_integer().expect("integer");
+        let right_i = right_ty.as_integer().expect("integer");
         let common = if matches!(op, BinOp::Shl | BinOp::Shr) {
-            left_ty.promote()
+            left_i.promote()
         } else {
-            left_ty.usual(right_ty)
+            left_i.usual(right_i)
         };
+        let common_ty = CType::from_name(common);
         let left_val = self.gen_val(left);
-        let left_val = self.convert(&left_val, left_ty, common);
+        let left_val = self.convert(&left_val, &left_ty, &common_ty);
         let right_val = self.gen_val(right);
-        let right_val = self.convert(&right_val, right_ty, common);
+        let right_val = self.convert(&right_val, &right_ty, &common_ty);
         let tmp = self.fresh();
         self.emit(&format!(
             "  {tmp} = {} {} {left_val}, {right_val}",
@@ -591,43 +811,75 @@ impl Gen {
     }
 
     fn gen_compound_assign(&mut self, op: BinOp, target: &Expr, value: &Expr) -> String {
-        let slot = target.var_slot().expect("assignable variable").to_string();
         let dest = target.ty().expect("lvalue type");
         let rhs_ty = value.ty().expect("typed");
+        // The right-hand side is evaluated before the lvalue is loaded. The
+        // address is still computed only once.
         let rhs = self.gen_val(value);
-        let old = self.load(dest, &slot);
+        let addr = self.gen_addr(target);
+        let old = self.load(&dest, &addr);
+        if dest.is_pointer() {
+            let mut idx = self.extend_i64(&rhs, &rhs_ty);
+            if op == BinOp::Sub {
+                let tmp = self.fresh();
+                self.emit(&format!("  {tmp} = sub i64 0, {idx}"));
+                idx = tmp;
+            }
+            let elem = dest.pointee().expect("pointer").ir_type();
+            let updated = self.fresh();
+            self.emit(&format!(
+                "  {updated} = getelementptr inbounds {elem}, ptr {old}, i64 {idx}"
+            ));
+            self.store(&dest, &updated, &addr);
+            return updated;
+        }
+        let dest_i = dest.as_integer().expect("integer");
+        let rhs_i = rhs_ty.as_integer().expect("integer");
         let common = if matches!(op, BinOp::Shl | BinOp::Shr) {
-            dest.promote()
+            dest_i.promote()
         } else {
-            dest.usual(rhs_ty)
+            dest_i.usual(rhs_i)
         };
-        let old_c = self.convert(&old, dest, common);
-        let rhs_c = self.convert(&rhs, rhs_ty, common);
+        let common_ty = CType::from_name(common);
+        let old_c = self.convert(&old, &dest, &common_ty);
+        let rhs_c = self.convert(&rhs, &rhs_ty, &common_ty);
         let updated = self.fresh();
         self.emit(&format!(
             "  {updated} = {} {} {old_c}, {rhs_c}",
             value_inst(op, common.is_signed()),
             common.ir_type()
         ));
-        let stored = self.convert(&updated, common, dest);
-        self.store(dest, &stored, &slot);
+        let stored = self.convert(&updated, &common_ty, &dest);
+        self.store(&dest, &stored, &addr);
         stored
     }
 
     fn gen_incdec(&mut self, op: IncOp, target: &Expr) -> String {
-        let slot = target.var_slot().expect("assignable variable").to_string();
         let dest = target.ty().expect("lvalue type");
-        let old = self.load(dest, &slot);
-        let common = dest.usual(TypeName::Int);
-        let old_c = self.convert(&old, dest, common);
+        let addr = self.gen_addr(target);
+        let old = self.load(&dest, &addr);
+        if dest.is_pointer() {
+            let elem = dest.pointee().expect("pointer").ir_type();
+            let step = if op.is_increment() { "1" } else { "-1" };
+            let updated = self.fresh();
+            self.emit(&format!(
+                "  {updated} = getelementptr inbounds {elem}, ptr {old}, i64 {step}"
+            ));
+            self.store(&dest, &updated, &addr);
+            return if op.is_prefix() { updated } else { old };
+        }
+        let dest_i = dest.as_integer().expect("integer");
+        let common = dest_i.usual(TypeName::Int);
+        let common_ty = CType::from_name(common);
+        let old_c = self.convert(&old, &dest, &common_ty);
         let updated = self.fresh();
         let inst = if op.is_increment() { "add" } else { "sub" };
         self.emit(&format!(
             "  {updated} = {inst} {} {old_c}, 1",
             common.ir_type()
         ));
-        let stored = self.convert(&updated, common, dest);
-        self.store(dest, &stored, &slot);
+        let stored = self.convert(&updated, &common_ty, &dest);
+        self.store(&dest, &stored, &addr);
         if op.is_prefix() {
             stored
         } else {
@@ -639,19 +891,19 @@ impl Gen {
         let mut rendered = Vec::new();
         for (arg, param_ty) in args.iter().zip(&resolved.params) {
             let value = self.gen_val(arg);
-            let value = self.convert(&value, arg.ty().expect("typed"), *param_ty);
-            rendered.push(param_ir(*param_ty, Some(&value)));
+            let value = self.convert(&value, &arg.ty().expect("typed"), param_ty);
+            rendered.push(param_ir(param_ty, Some(&value)));
         }
         let arglist = rendered.join(", ");
         let callee = llvm_global(&resolved.name);
-        if resolved.ret == TypeName::Void {
+        if resolved.ret.is_void() {
             self.emit(&format!("  call void {callee}({arglist})"));
             None
         } else {
             let tmp = self.fresh();
             self.emit(&format!(
                 "  {tmp} = call {}{} {callee}({arglist})",
-                ret_prefix(resolved.ret),
+                ret_prefix(&resolved.ret),
                 resolved.ret.ir_type()
             ));
             Some(tmp)
@@ -672,11 +924,24 @@ impl Gen {
             } if op.is_cmp() => {
                 let left_ty = left.ty().expect("typed");
                 let right_ty = right.ty().expect("typed");
-                let common = left_ty.usual(right_ty);
+                if left_ty.is_pointer() || right_ty.is_pointer() {
+                    let left_val = self.as_ptr(left);
+                    let right_val = self.as_ptr(right);
+                    let tmp = self.fresh();
+                    self.emit(&format!(
+                        "  {tmp} = icmp {} ptr {left_val}, {right_val}",
+                        ptr_pred(*op)
+                    ));
+                    return tmp;
+                }
+                let left_i = left_ty.as_integer().expect("integer");
+                let right_i = right_ty.as_integer().expect("integer");
+                let common = left_i.usual(right_i);
+                let common_ty = CType::from_name(common);
                 let left_val = self.gen_val(left);
-                let left_val = self.convert(&left_val, left_ty, common);
+                let left_val = self.convert(&left_val, &left_ty, &common_ty);
                 let right_val = self.gen_val(right);
-                let right_val = self.convert(&right_val, right_ty, common);
+                let right_val = self.convert(&right_val, &right_ty, &common_ty);
                 let tmp = self.fresh();
                 self.emit(&format!(
                     "  {tmp} = icmp {} {} {left_val}, {right_val}",
@@ -711,7 +976,11 @@ impl Gen {
                 let value = self.gen_val(expr);
                 let ty = expr.ty().expect("typed");
                 let tmp = self.fresh();
-                self.emit(&format!("  {tmp} = icmp ne {} {value}, 0", ty.ir_type()));
+                if ty.is_pointer() {
+                    self.emit(&format!("  {tmp} = icmp ne ptr {value}, null"));
+                } else {
+                    self.emit(&format!("  {tmp} = icmp ne {} {value}, 0", ty.ir_type()));
+                }
                 tmp
             }
         }
@@ -744,7 +1013,7 @@ impl Gen {
         cond: &Expr,
         then_expr: &Expr,
         else_expr: &Expr,
-        result: TypeName,
+        result: CType,
     ) -> Option<String> {
         let cond = self.gen_cond(cond);
         let then_label = self.label();
@@ -754,7 +1023,7 @@ impl Gen {
         self.start(then_label);
         let then_val = self
             .gen_expr(then_expr)
-            .map(|value| self.convert(&value, then_expr.ty().expect("typed"), result));
+            .map(|value| self.convert(&value, &then_expr.ty().expect("typed"), &result));
         assert!(
             !self.terminated,
             "internal compiler error: expression terminated a block"
@@ -764,7 +1033,7 @@ impl Gen {
         self.start(else_label);
         let else_val = self
             .gen_expr(else_expr)
-            .map(|value| self.convert(&value, else_expr.ty().expect("typed"), result));
+            .map(|value| self.convert(&value, &else_expr.ty().expect("typed"), &result));
         assert!(
             !self.terminated,
             "internal compiler error: expression terminated a block"
@@ -873,6 +1142,89 @@ fn value_inst(op: BinOp, signed: bool) -> &'static str {
         | BinOp::Or => {
             unreachable!("comparison or logical operator")
         }
+    }
+}
+
+fn ptr_pred(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Eq => "eq",
+        BinOp::Ne => "ne",
+        BinOp::Lt => "ult",
+        BinOp::Gt => "ugt",
+        BinOp::Le => "ule",
+        BinOp::Ge => "uge",
+        _ => unreachable!("pointer comparison"),
+    }
+}
+
+fn render_const(ty: &CType, value: &ConstInit) -> String {
+    match value {
+        ConstInit::Zero => zero_const_spelling(ty),
+        ConstInit::Int(bits) => ty
+            .as_integer()
+            .expect("integer constant")
+            .format_bits(*bits),
+        ConstInit::Ptr(ptr) => render_ptr(ptr),
+        ConstInit::PtrToInt { ptr, width } => {
+            let ir = match width {
+                8 => "i8",
+                16 => "i16",
+                32 => "i32",
+                _ => "i64",
+            };
+            format!("ptrtoint ({} to {ir})", render_ptr_operand(ptr))
+        }
+        ConstInit::Aggregate(items) => {
+            let CType::Array(elem, _) = ty else {
+                return "zeroinitializer".to_string();
+            };
+            let parts = items
+                .iter()
+                .map(|item| format!("{} {}", elem.ir_type(), render_const(elem, item)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{parts}]")
+        }
+    }
+}
+
+fn zero_const_spelling(ty: &CType) -> String {
+    if let Some(int) = ty.as_integer() {
+        int.format_bits(0)
+    } else if ty.is_pointer() {
+        "null".to_string()
+    } else {
+        "zeroinitializer".to_string()
+    }
+}
+
+fn render_ptr(ptr: &PtrConst) -> String {
+    match ptr {
+        PtrConst::Null => "null".to_string(),
+        PtrConst::IntToPtr(bits) => format!("inttoptr (i64 {} to ptr)", i64_literal(*bits)),
+        PtrConst::Addr { name, offset } if *offset == 0 => llvm_global(name),
+        PtrConst::Addr { name, offset } => {
+            format!(
+                "getelementptr (i8, ptr {}, i64 {offset})",
+                llvm_global(name)
+            )
+        }
+    }
+}
+
+fn render_ptr_operand(ptr: &PtrConst) -> String {
+    match ptr {
+        PtrConst::Addr { name, offset } if *offset == 0 => format!("ptr {}", llvm_global(name)),
+        other => format!("ptr {}", render_ptr(other)),
+    }
+}
+
+fn i64_literal(bits: u64) -> String {
+    let signed = bits as i64;
+    if signed < 0 {
+        signed.to_string()
+    } else {
+        bits.to_string()
     }
 }
 
@@ -1262,6 +1614,61 @@ int main(void) {
         let _ = std::fs::remove_file(&clang_main);
         let _ = std::fs::remove_file(&clang_obj);
         let _ = std::fs::remove_file(&bin2);
+    }
+
+    #[test]
+    fn pointer_and_array_ir() {
+        let ir = crate::compile_to_ir(
+            "\
+int g;
+int a[3] = {1, 2};
+int *p = &g;
+int *q = &a[2];
+int *z = 0;
+int main(void) {
+    int x = 1;
+    int *lp = &x;
+    *lp = *p + a[1];
+    lp = lp + 1;
+    return *q + (z == 0);
+}
+",
+            "ptr.c",
+        )
+        .unwrap();
+        assert!(ir.contains("@p = global ptr @g, align 8"), "{ir}");
+        assert!(
+            ir.contains("@q = global ptr getelementptr (i8, ptr @a, i64 8), align 8"),
+            "{ir}"
+        );
+        assert!(ir.contains("@z = global ptr null, align 8"), "{ir}");
+        assert!(
+            ir.contains("@a = global [3 x i32] [i32 1, i32 2, i32 0], align 4"),
+            "{ir}"
+        );
+        assert!(ir.contains("getelementptr inbounds i32, ptr"), "{ir}");
+        assert!(!ir.contains("inttoptr"), "{ir}");
+        let (code, _, _) = run_binary(&ir);
+        assert_eq!(
+            code,
+            run_reference(
+                "\
+int g;
+int a[3] = {1, 2};
+int *p = &g;
+int *q = &a[2];
+int *z = 0;
+int main(void) {
+    int x = 1;
+    int *lp = &x;
+    *lp = *p + a[1];
+    lp = lp + 1;
+    return *q + (z == 0);
+}
+"
+            )
+            .0
+        );
     }
 
     #[test]
