@@ -6,12 +6,18 @@
 //!
 //! File-scope objects and functions follow C11 6.2.2 linkage and 6.9.2
 //! tentative definitions. A prototype makes a function visible before its
-//! body, which is what mutual recursion needs. A global initializer must be
-//! a constant (C11 6.6): an integer constant, an address constant, or a brace
-//! list of those. Assignment, `++`/`--`, calls,
-//! and the comma operator are rejected there, including when they sit in an
-//! evaluated operand. An unevaluated operand (`sizeof`, or the skipped arm
-//! of `&&`, `||`, or `?:`) may contain them.
+//! body, which is what mutual recursion needs. A block-scope `extern`
+//! declaration, and a block-scope function declaration, name that same
+//! entity when the linkage agrees. The entity is not visible outside the
+//! block until a file-scope declaration names it. A block-scope `static`
+//! object has no linkage and static storage duration; its initializer is a
+//! constant, the same rules as a file-scope initializer.
+//!
+//! A global or `static` initializer must be a constant (C11 6.6): an integer
+//! constant, an address constant, or a brace list of those. Assignment,
+//! `++`/`--`, calls, and the comma operator are rejected there, including
+//! when they sit in an evaluated operand. An unevaluated operand (`sizeof`,
+//! or the skipped arm of `&&`, `||`, or `?:`) may contain them.
 
 use std::collections::{HashMap, HashSet};
 
@@ -46,9 +52,12 @@ pub fn analyze_tokens(
         scopes: vec![HashMap::new()],
         loop_depth: 0,
         current_ret: CType::int_type(),
+        current_func: String::new(),
         global_order: Vec::new(),
         func_order: Vec::new(),
         strings: Vec::new(),
+        static_locals: Vec::new(),
+        static_seq: 0,
     };
     for decl in &mut unit.decls {
         match decl {
@@ -85,8 +94,14 @@ struct VarSym {
     name: String,
     slot: String,
     ty: CType,
-    /// `None` for a block-scope variable, which has no linkage.
+    /// `None` means no linkage: a parameter, an automatic variable, or a
+    /// block-scope `static` (C11 6.2.2p6). `Some` is a file-scope object or a
+    /// block-scope `extern` that refers to one.
     global: Option<GlobalInfo>,
+    /// File-scope symbols introduced only by a block declaration stay hidden
+    /// from lookup until a file-scope declaration names them. Symbols that
+    /// do not live in the file scope leave this `true`.
+    file_visible: bool,
 }
 
 #[derive(Clone)]
@@ -100,6 +115,8 @@ struct FuncSym {
     used: bool,
     use_line: usize,
     use_column: usize,
+    /// See [`VarSym::file_visible`].
+    file_visible: bool,
 }
 
 #[derive(Clone)]
@@ -117,10 +134,17 @@ struct Sema {
     scopes: Vec<HashMap<String, Symbol>>,
     loop_depth: u32,
     current_ret: CType,
+    /// Name of the function whose body is being checked. Static locals use it
+    /// in their LLVM symbol so two functions can each have a `static int x`.
+    current_func: String,
     global_order: Vec<String>,
     func_order: Vec<String>,
     /// String literals that need a private global, keyed by bytes including NUL.
     strings: Vec<(Vec<u8>, String)>,
+    /// Block-scope `static` objects. They have no linkage, so they are not in
+    /// the file-scope symbol table. The name is an LLVM symbol, not the C name.
+    static_locals: Vec<IrGlobal>,
+    static_seq: u32,
 }
 
 impl Sema {
@@ -182,8 +206,10 @@ impl Sema {
                 slot: format!("@{name}"),
                 ty: ty.clone(),
                 global: Some(GlobalInfo { linkage, state }),
+                file_visible: true,
             }));
         } else {
+            self.reveal_file(&name);
             self.set_global_type(&name, ty.clone());
         }
         if let Some((_, mut stores)) = shaped {
@@ -258,9 +284,11 @@ impl Sema {
                     used: false,
                     use_line: 0,
                     use_column: 0,
+                    file_visible: true,
                 }));
             }
             Some(Symbol::Func(existing)) => {
+                self.reveal_file(&name);
                 if !compatible(&existing.ret, &func.ret_type)
                     || existing.variadic != func.variadic
                     || existing.params.len() != params.len()
@@ -290,6 +318,7 @@ impl Sema {
 
     fn check_function(&mut self, func: &mut FuncDef) -> Result<(), Diagnostic> {
         self.current_ret = func.ret_type.clone();
+        self.current_func = func.name.clone();
         self.push();
         for param in &func.params {
             let Some(name) = param.name.clone() else {
@@ -300,6 +329,7 @@ impl Sema {
                 slot: param.slot.clone(),
                 ty: param.ty.clone(),
                 global: None,
+                file_visible: true,
             }));
         }
         let body = func.body.as_mut().expect("defined function");
@@ -385,6 +415,7 @@ impl Sema {
             return self.err(line, column, format!("array size missing in '{name}'"));
         }
         unit.func_decls = func_decls;
+        globals.append(&mut self.static_locals);
         unit.globals = globals;
         unit.strings = self
             .strings
@@ -1058,6 +1089,15 @@ impl Sema {
                 self.loop_depth -= 1;
                 Ok(())
             }
+            Stmt::Do { body, cond, .. } => {
+                self.loop_depth += 1;
+                self.check_stmt(body)?;
+                self.loop_depth -= 1;
+                self.check_expr(cond)?;
+                self.decay(cond)?;
+                self.require_scalar(cond)
+            }
+            Stmt::FuncDecl(func) => self.declare_block_func(func),
             Stmt::For {
                 init,
                 cond,
@@ -1115,6 +1155,58 @@ impl Sema {
     }
 
     fn check_decl(&mut self, decl: &mut VarDecl) -> Result<(), Diagnostic> {
+        match decl.storage {
+            Storage::Extern => self.declare_block_extern(decl),
+            Storage::Static => self.declare_static_local(decl),
+            Storage::None => self.declare_auto(decl),
+        }
+    }
+
+    /// An automatic local. A second declaration in the same scope is an error
+    /// whether or not the earlier one has linkage (C11 6.7p3).
+    fn declare_auto(&mut self, decl: &mut VarDecl) -> Result<(), Diagnostic> {
+        if let Some(existing) = self.lookup_local(&decl.name).cloned() {
+            let message = match existing {
+                Symbol::Func(_) => {
+                    format!(
+                        "redefinition of '{}' as different kind of symbol",
+                        decl.name
+                    )
+                }
+                Symbol::Var(_) => format!("redefinition of '{}'", decl.name),
+            };
+            return self.err(decl.line, decl.column, message);
+        }
+        let init = decl.init.clone();
+        let (ty, stores) = if let Some(init) = &init {
+            self.shape_initializer(&decl.ty, init, decl.line, decl.column)?
+        } else {
+            (decl.ty.clone(), Vec::new())
+        };
+        if !ty.is_complete() {
+            return self.err(decl.line, decl.column, incomplete_local(&decl.name, &ty));
+        }
+        decl.ty = ty.clone();
+        // The declarator is in scope for its initializer (C scope rules).
+        self.insert(Symbol::Var(VarSym {
+            name: decl.name.clone(),
+            slot: decl.slot.clone(),
+            ty: ty.clone(),
+            global: None,
+            file_visible: true,
+        }));
+        if decl.init.is_some() {
+            let mut stores = stores;
+            self.check_stores(&mut stores)?;
+            decl.checked = Some(classify_init(&ty, stores));
+        }
+        Ok(())
+    }
+
+    /// Block-scope `static`. No linkage, so each declaration is a distinct
+    /// object, and the initializer is required to be constant (C11 6.7.9).
+    /// The object is initialized once, before startup, not on each entry.
+    fn declare_static_local(&mut self, decl: &mut VarDecl) -> Result<(), Diagnostic> {
         if self.lookup_local(&decl.name).is_some() {
             return self.err(
                 decl.line,
@@ -1129,31 +1221,379 @@ impl Sema {
             (decl.ty.clone(), Vec::new())
         };
         if !ty.is_complete() {
-            let message = if ty.is_array() {
-                format!("array size missing in '{}'", decl.name)
-            } else {
-                format!(
-                    "variable '{}' has incomplete type '{}'",
-                    decl.name,
-                    ty.display()
-                )
-            };
-            return self.err(decl.line, decl.column, message);
+            return self.err(decl.line, decl.column, incomplete_local(&decl.name, &ty));
         }
+        let symbol = self.fresh_static_name(&decl.name);
+        let slot = format!("@{symbol}");
         decl.ty = ty.clone();
-        // The declarator is in scope for its initializer (C scope rules).
+        decl.slot = slot.clone();
+        decl.checked = None;
         self.insert(Symbol::Var(VarSym {
             name: decl.name.clone(),
-            slot: decl.slot.clone(),
+            slot,
             ty: ty.clone(),
             global: None,
+            file_visible: true,
         }));
-        if decl.init.is_some() {
+        let value = if decl.init.is_some() {
             let mut stores = stores;
             self.check_stores(&mut stores)?;
-            decl.checked = Some(classify_init(&ty, stores));
-        }
+            self.fold_stores(&decl.name, &ty, &stores)?
+        } else {
+            zero_const(&ty)
+        };
+        self.static_locals.push(IrGlobal {
+            name: symbol,
+            ty,
+            linkage: Linkage::Internal,
+            init: Some(value),
+        });
         Ok(())
+    }
+
+    /// Block-scope `extern`. Linkage comes from the visible prior declaration
+    /// (C11 6.2.2p4). A prior with no linkage yields external linkage, and
+    /// that is a different object from the no-linkage one. The same scope
+    /// cannot mix linkage and no linkage (C11 6.7p3). An initializer is
+    /// forbidden (C11 6.7.9p5).
+    fn declare_block_extern(&mut self, decl: &mut VarDecl) -> Result<(), Diagnostic> {
+        if decl.init.is_some() {
+            return self.err(
+                decl.line,
+                decl.column,
+                "a block-scope declaration with linkage cannot have an initializer",
+            );
+        }
+        let name = decl.name.clone();
+        if self.lookup_local(&name).is_some() {
+            return self.redeclare_block_extern(decl);
+        }
+        let linkage = self.inherited_object_linkage(&name, decl.line, decl.column)?;
+        let mut local_ty = decl.ty.clone();
+        if let Some(prior) = self.visible_linked_var(&name) {
+            if !compatible(&prior.ty, &local_ty) {
+                return self.err(
+                    decl.line,
+                    decl.column,
+                    format!("conflicting types for '{name}'"),
+                );
+            }
+            local_ty = composite(&prior.ty, &local_ty);
+        }
+        if !local_ty.is_array() && !local_ty.is_complete() {
+            return self.err(
+                decl.line,
+                decl.column,
+                format!(
+                    "variable '{name}' has incomplete type '{}'",
+                    local_ty.display()
+                ),
+            );
+        }
+        let slot = self.bind_file_object(&name, &local_ty, linkage, decl.line, decl.column)?;
+        decl.ty = local_ty.clone();
+        decl.slot = slot.clone();
+        decl.checked = None;
+        self.insert(Symbol::Var(VarSym {
+            name,
+            slot,
+            ty: local_ty,
+            global: Some(GlobalInfo {
+                linkage,
+                state: GlobalState::Declared,
+            }),
+            file_visible: true,
+        }));
+        Ok(())
+    }
+
+    fn redeclare_block_extern(&mut self, decl: &mut VarDecl) -> Result<(), Diagnostic> {
+        let name = decl.name.clone();
+        let existing = self.lookup_local(&name).expect("same-scope name").clone();
+        let Symbol::Var(var) = existing else {
+            return self.err(
+                decl.line,
+                decl.column,
+                format!("redefinition of '{name}' as different kind of symbol"),
+            );
+        };
+        if var.global.is_none() {
+            return self.err(decl.line, decl.column, format!("redefinition of '{name}'"));
+        }
+        if !compatible(&var.ty, &decl.ty) {
+            return self.err(
+                decl.line,
+                decl.column,
+                format!("conflicting types for '{name}'"),
+            );
+        }
+        let local_ty = composite(&var.ty, &decl.ty);
+        if let Some(Symbol::Var(file_var)) = self.file_get(&name) {
+            if !compatible(&file_var.ty, &local_ty) {
+                return self.err(
+                    decl.line,
+                    decl.column,
+                    format!("conflicting types for '{name}'"),
+                );
+            }
+            self.set_global_type(&name, composite(&file_var.ty, &local_ty));
+        }
+        self.set_local_var_type(&name, local_ty.clone());
+        decl.ty = local_ty;
+        decl.slot = var.slot;
+        decl.checked = None;
+        Ok(())
+    }
+
+    /// A function declaration in a block. No storage class means `extern`
+    /// (C11 6.2.2p5). `static` is not allowed (C11 6.7.1p7). A nested body is
+    /// rejected by the parser, so this is never a definition.
+    fn declare_block_func(&mut self, func: &mut FuncDef) -> Result<(), Diagnostic> {
+        if func.ret_type.unqualified().is_struct() {
+            return self.err(
+                func.line,
+                func.column,
+                "returning a struct by value is not supported",
+            );
+        }
+        if func.storage == Storage::Static {
+            return self.err(
+                func.line,
+                func.column,
+                "a function declared in block scope cannot have 'static' storage class",
+            );
+        }
+        if let Some(param) = duplicate_param(func) {
+            let name = param.name.clone().unwrap_or_default();
+            return self.err(
+                param.line,
+                param.column,
+                format!("redefinition of parameter '{name}'"),
+            );
+        }
+        let params: Vec<CType> = func
+            .params
+            .iter()
+            .map(|param| param.ty.unqualified())
+            .collect();
+        let name = func.name.clone();
+        if self.lookup_local(&name).is_some() {
+            return self.redeclare_block_func(func, &params);
+        }
+        let linkage = self.inherited_func_linkage(&name, func.line, func.column)?;
+        func.linkage = linkage;
+        self.bind_file_func(func, &params, linkage)?;
+        let defined = self
+            .file_get(&name)
+            .map(|sym| matches!(sym, Symbol::Func(func) if func.defined))
+            .unwrap_or(false);
+        self.insert(Symbol::Func(FuncSym {
+            name,
+            ret: func.ret_type.clone(),
+            params,
+            variadic: func.variadic,
+            linkage,
+            defined,
+            used: false,
+            use_line: 0,
+            use_column: 0,
+            file_visible: true,
+        }));
+        Ok(())
+    }
+
+    fn redeclare_block_func(
+        &mut self,
+        func: &mut FuncDef,
+        params: &[CType],
+    ) -> Result<(), Diagnostic> {
+        let name = func.name.clone();
+        let existing = self.lookup_local(&name).expect("same-scope name").clone();
+        let Symbol::Func(prior) = existing else {
+            return self.err(
+                func.line,
+                func.column,
+                format!("redefinition of '{name}' as different kind of symbol"),
+            );
+        };
+        if !function_types_match(&prior, &func.ret_type, params, func.variadic) {
+            return self.err(
+                func.line,
+                func.column,
+                format!("conflicting types for '{name}'"),
+            );
+        }
+        func.linkage = prior.linkage;
+        Ok(())
+    }
+
+    fn inherited_object_linkage(
+        &self,
+        name: &str,
+        line: usize,
+        column: usize,
+    ) -> Result<Linkage, Diagnostic> {
+        match self.lookup(name) {
+            None => Ok(Linkage::External),
+            Some(Symbol::Var(var)) => Ok(var
+                .global
+                .map(|info| info.linkage)
+                .unwrap_or(Linkage::External)),
+            Some(Symbol::Func(_)) => self.err(
+                line,
+                column,
+                format!("redefinition of '{name}' as different kind of symbol"),
+            ),
+        }
+    }
+
+    fn inherited_func_linkage(
+        &self,
+        name: &str,
+        line: usize,
+        column: usize,
+    ) -> Result<Linkage, Diagnostic> {
+        match self.lookup(name) {
+            None => Ok(Linkage::External),
+            Some(Symbol::Func(func)) => Ok(func.linkage),
+            Some(Symbol::Var(var)) if var.global.is_none() => Ok(Linkage::External),
+            Some(Symbol::Var(_)) => self.err(
+                line,
+                column,
+                format!("redefinition of '{name}' as different kind of symbol"),
+            ),
+        }
+    }
+
+    fn visible_linked_var(&self, name: &str) -> Option<VarSym> {
+        match self.lookup(name) {
+            Some(Symbol::Var(var)) if var.global.is_some() => Some(var),
+            _ => None,
+        }
+    }
+
+    /// Record the file-scope object a block-scope `extern` refers to.
+    ///
+    /// The returned slot is the LLVM global. The caller's local type is not
+    /// replaced by a hidden file-scope type: `extern int a[]` stays incomplete
+    /// when the complete `int a[3]` is not visible. The file entity still
+    /// keeps the composite type, which is what the global is emitted as.
+    fn bind_file_object(
+        &mut self,
+        name: &str,
+        local_ty: &CType,
+        linkage: Linkage,
+        line: usize,
+        column: usize,
+    ) -> Result<String, Diagnostic> {
+        match self.file_get(name) {
+            Some(Symbol::Func(_)) => self.err(
+                line,
+                column,
+                format!("redefinition of '{name}' as different kind of symbol"),
+            ),
+            Some(Symbol::Var(var)) => {
+                let file_linkage = var.global.as_ref().expect("file-scope object").linkage;
+                self.same_linkage(
+                    linkage,
+                    Some(file_linkage),
+                    Storage::Extern,
+                    line,
+                    column,
+                    name,
+                )?;
+                if !compatible(&var.ty, local_ty) {
+                    return self.err(line, column, format!("conflicting types for '{name}'"));
+                }
+                self.set_global_type(name, composite(&var.ty, local_ty));
+                Ok(var.slot)
+            }
+            None => {
+                let slot = format!("@{name}");
+                self.global_order.push(name.to_string());
+                self.insert_file(Symbol::Var(VarSym {
+                    name: name.to_string(),
+                    slot: slot.clone(),
+                    ty: local_ty.clone(),
+                    global: Some(GlobalInfo {
+                        linkage,
+                        state: GlobalState::Declared,
+                    }),
+                    file_visible: false,
+                }));
+                Ok(slot)
+            }
+        }
+    }
+
+    fn bind_file_func(
+        &mut self,
+        func: &FuncDef,
+        params: &[CType],
+        linkage: Linkage,
+    ) -> Result<(), Diagnostic> {
+        let name = &func.name;
+        match self.file_get(name) {
+            Some(Symbol::Var(_)) => self.err(
+                func.line,
+                func.column,
+                format!("redefinition of '{name}' as different kind of symbol"),
+            ),
+            Some(Symbol::Func(existing)) => {
+                let file_linkage = existing.linkage;
+                self.same_linkage(
+                    linkage,
+                    Some(file_linkage),
+                    Storage::Extern,
+                    func.line,
+                    func.column,
+                    name,
+                )?;
+                if !function_types_match(&existing, &func.ret_type, params, func.variadic) {
+                    return self.err(
+                        func.line,
+                        func.column,
+                        format!("conflicting types for '{name}'"),
+                    );
+                }
+                Ok(())
+            }
+            None => {
+                self.func_order.push(name.clone());
+                self.insert_file(Symbol::Func(FuncSym {
+                    name: name.clone(),
+                    ret: func.ret_type.clone(),
+                    params: params.to_vec(),
+                    variadic: func.variadic,
+                    linkage,
+                    defined: false,
+                    used: false,
+                    use_line: 0,
+                    use_column: 0,
+                    file_visible: false,
+                }));
+                Ok(())
+            }
+        }
+    }
+
+    fn fresh_static_name(&mut self, var: &str) -> String {
+        self.static_seq += 1;
+        format!("{}.{var}.{}", self.current_func, self.static_seq)
+    }
+
+    fn set_local_var_type(&mut self, name: &str, ty: CType) {
+        if let Some(Symbol::Var(var)) = self.scopes.last_mut().expect("scope").get_mut(name) {
+            var.ty = ty;
+        }
+    }
+
+    fn reveal_file(&mut self, name: &str) {
+        match self.scopes.first_mut().expect("file scope").get_mut(name) {
+            Some(Symbol::Var(var)) => var.file_visible = true,
+            Some(Symbol::Func(func)) => func.file_visible = true,
+            None => {}
+        }
     }
 
     fn check_expr(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
@@ -2128,8 +2568,14 @@ impl Sema {
     }
 
     fn lookup(&self, name: &str) -> Option<Symbol> {
-        for scope in self.scopes.iter().rev() {
+        for (index, scope) in self.scopes.iter().enumerate().rev() {
             if let Some(sym) = scope.get(name) {
+                // A block-scope extern creates a file-scope entity so later
+                // declarations can link to it. That entity is not in scope
+                // until a file-scope declaration says so (C11 6.2.1).
+                if index == 0 && !symbol_file_visible(sym) {
+                    continue;
+                }
                 return Some(sym.clone());
             }
         }
@@ -2559,6 +3005,45 @@ fn symbol_name(sym: &Symbol) -> &str {
     }
 }
 
+fn symbol_file_visible(sym: &Symbol) -> bool {
+    match sym {
+        Symbol::Var(var) => var.file_visible,
+        Symbol::Func(func) => func.file_visible,
+    }
+}
+
+fn incomplete_local(name: &str, ty: &CType) -> String {
+    if ty.is_array() {
+        format!("array size missing in '{name}'")
+    } else {
+        format!("variable '{name}' has incomplete type '{}'", ty.display())
+    }
+}
+
+fn duplicate_param(func: &FuncDef) -> Option<&Param> {
+    let mut seen = HashSet::new();
+    for param in &func.params {
+        let Some(name) = &param.name else {
+            continue;
+        };
+        if !seen.insert(name.as_str()) {
+            return Some(param);
+        }
+    }
+    None
+}
+
+fn function_types_match(existing: &FuncSym, ret: &CType, params: &[CType], variadic: bool) -> bool {
+    compatible(&existing.ret, ret)
+        && existing.variadic == variadic
+        && existing.params.len() == params.len()
+        && existing
+            .params
+            .iter()
+            .zip(params)
+            .all(|(old, new)| compatible(old, new))
+}
+
 enum ConstError {
     NotConst,
     DivZero,
@@ -2921,8 +3406,12 @@ fn number_compound(compound: &mut Compound, next: &mut u32) {
 fn number_stmt(stmt: &mut Stmt, next: &mut u32) {
     match stmt {
         Stmt::Decl(decl) => {
-            *next += 1;
-            decl.slot = format!("%v{next}");
+            // `static` and `extern` are globals. Their slots are the LLVM
+            // symbol, assigned while checking the declaration.
+            if decl.storage == Storage::None {
+                *next += 1;
+                decl.slot = format!("%v{next}");
+            }
         }
         Stmt::Compound(compound) => number_compound(compound, next),
         Stmt::If {
@@ -2935,7 +3424,7 @@ fn number_stmt(stmt: &mut Stmt, next: &mut u32) {
                 number_stmt(else_stmt, next);
             }
         }
-        Stmt::While { body, .. } => number_stmt(body, next),
+        Stmt::While { body, .. } | Stmt::Do { body, .. } => number_stmt(body, next),
         Stmt::For { init, body, .. } => {
             if let ForInit::Decl(decls) = init {
                 for decl in decls {
@@ -2945,7 +3434,11 @@ fn number_stmt(stmt: &mut Stmt, next: &mut u32) {
             }
             number_stmt(body, next);
         }
-        Stmt::Return { .. } | Stmt::Expr { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::FuncDecl(_)
+        | Stmt::Return { .. }
+        | Stmt::Expr { .. }
+        | Stmt::Break { .. }
+        | Stmt::Continue { .. } => {}
     }
 }
 
@@ -3096,6 +3589,101 @@ mod tests {
             sema_err("int printf(const char *, ...); int main(void) { return printf(); }")
                 .contains("expects at least 1 argument, found 0")
         );
+        assert!(
+            sema_err("int main(void) { int a = 1; static int b = a * 2; return b; }")
+                .contains("initializer of 'b' is not a constant expression")
+        );
+        assert!(sema_err("int main(void) { static int a[]; return 0; }")
+            .contains("array size missing in 'a'"));
+        assert!(
+            sema_err("int main(void) { static int x; static int x; return x; }")
+                .contains("redefinition of 'x'")
+        );
+        assert!(
+            sema_err("int main(void) { int x; static int x; return x; }")
+                .contains("redefinition of 'x'")
+        );
+        assert!(
+            sema_err("int main(void) { static int x; extern int x; return x; }")
+                .contains("redefinition of 'x'")
+        );
+        assert!(
+            sema_err("int main(void) { int x; extern int x; return x; }")
+                .contains("redefinition of 'x'")
+        );
+        assert!(
+            sema_err("int main(void) { extern int x; int x; return x; }")
+                .contains("redefinition of 'x'")
+        );
+        assert!(
+            sema_err("int f(int i) { extern int i; return i; }").contains("redefinition of 'i'")
+        );
+        assert!(sema_err("int main(void) { extern int x = 1; return x; }")
+            .contains("cannot have an initializer"));
+        assert!(
+            sema_err("int main(void) { extern int x; extern long x; return x; }")
+                .contains("conflicting types for 'x'")
+        );
+        assert!(
+            sema_err("int x; int main(void) { extern char x; return 0; }")
+                .contains("conflicting types for 'x'")
+        );
+        assert!(
+            sema_err("static int x; int main(void) { int x; { extern int x; return x; } }")
+                .contains("non-static declaration of 'x' follows a static declaration")
+        );
+        assert!(
+            sema_err("int main(void) { static int foo(void); return foo(); }")
+                .contains("cannot have 'static' storage class")
+        );
+        assert!(
+            sema_err("int foo(void); int main(void) { extern int foo; return 0; }")
+                .contains("different kind of symbol")
+        );
+        assert!(
+            sema_err("int foo; int main(void) { int foo(void); return 0; }")
+                .contains("different kind of symbol")
+        );
+        assert!(
+            sema_err("int main(void) { int foo(void); int foo = 1; return foo; }")
+                .contains("different kind of symbol")
+        );
+        assert!(
+            sema_err("int main(void) { int foo = 1; int foo(void); return foo; }")
+                .contains("different kind of symbol")
+        );
+        assert!(sema_err(
+            "int main(void) { int foo(int a); return foo(1); } int foo(void) { return 1; }"
+        )
+        .contains("conflicting types for 'foo'"));
+        assert!(sema_err(
+            "int main(void) { int foo(void); return foo(); } static int foo(void) { return 1; }"
+        )
+        .contains("static declaration of 'foo' follows a non-static declaration"));
+        assert!(sema_err("int f(void) { { extern int a; } return a; }")
+            .contains("undeclared identifier 'a'"));
+        assert!(
+            sema_err("int main(void) { do { int a = 1; } while (a < 2); return 0; }")
+                .contains("undeclared identifier 'a'")
+        );
+        assert!(sema_err(
+            "void g(void) { return; } int main(void) { do ; while (g()); return 0; }"
+        )
+        .contains("void value used where a value is required"));
+    }
+
+    #[test]
+    fn static_extern_and_block_functions_are_in_scope() {
+        sema_ok("int main(void) { static int x = 1; return x; }");
+        sema_ok("int main(void) { static int x; return x; }");
+        sema_ok("static int x = 1; int main(void) { extern int x; return x; }");
+        sema_ok("int x = 1; int main(void) { int x = 2; { extern int x; return x; } }");
+        sema_ok("static int f(void) { return 1; } int main(void) { int f(void); return f(); }");
+        sema_ok("int main(void) { int g(int); return g(1); } int g(int x) { return x; }");
+        sema_ok("int main(void) { extern int g(int); extern int g(int); return 0; }");
+        sema_ok("int main(void) { do { break; } while (1); return 0; }");
+        sema_ok("int main(void) { static int a[] = {1, 2}; return a[1]; }");
+        sema_ok("int main(void) { static int x; static int *p = &x; return *p; }");
     }
 
     #[test]
