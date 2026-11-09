@@ -193,6 +193,15 @@ impl Parser<'_> {
         } else {
             None
         };
+        // Checked here, not in semantic analysis: completing this struct tag
+        // later updates the shared type, so the later pass would see a
+        // complete type. C11 6.7.9p3 requires a complete type at the initializer.
+        self.reject_incomplete_initializer(
+            &ty,
+            init.is_some(),
+            declarator.line,
+            declarator.column,
+        )?;
         Ok(TopDecl::Global(GlobalDecl {
             name: declarator.name,
             ty,
@@ -1106,6 +1115,25 @@ impl Parser<'_> {
         })
     }
 
+    /// An initializer needs a complete type, except an array whose length comes
+    /// from the list (C11 6.7.9p3).
+    fn reject_incomplete_initializer(
+        &self,
+        ty: &CType,
+        has_init: bool,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        if !has_init || ty.is_complete() || matches!(ty, CType::Array(_, None)) {
+            return Ok(());
+        }
+        Err(self.error_at(
+            line,
+            column,
+            format!("variable has incomplete type '{}'", ty.display()),
+        ))
+    }
+
     fn parse_block_declaration(&mut self) -> Result<Vec<VarDecl>, Diagnostic> {
         let specs = self.parse_specs(SpecPlace::Declaration)?;
         if self.current().kind == TokenKind::Semi {
@@ -1147,6 +1175,12 @@ impl Parser<'_> {
             } else {
                 None
             };
+            self.reject_incomplete_initializer(
+                &ty,
+                init.is_some(),
+                declarator.line,
+                declarator.column,
+            )?;
             decls.push(VarDecl {
                 name: declarator.name,
                 ty,
