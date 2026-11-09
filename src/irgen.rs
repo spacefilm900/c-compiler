@@ -31,11 +31,29 @@
 
 use crate::ast::*;
 
+/// System V AMD64 layout for `x86_64-pc-linux-gnu`.
+///
+/// `i64` is aligned to 8 bytes, which is what `long` requires. LLVM's default
+/// layout, used when this line is absent, aligns `i64` to 4 bytes. A struct
+/// `getelementptr` is then folded with the wrong field offset: `struct { char
+/// c; long l; }` puts `l` at 4 instead of 8. The string is the one Clang
+/// attaches to this triple.
+const DATA_LAYOUT: &str =
+    "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128";
+
 pub fn render(unit: &TranslationUnit, filename: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("source_filename = {}\n", llvm_string(filename)));
+    out.push_str(&format!("target datalayout = \"{DATA_LAYOUT}\"\n"));
     out.push_str("target triple = \"x86_64-pc-linux-gnu\"\n\n");
     let mut wrote_prelude = false;
+    for handle in &unit.structs {
+        if handle.is_complete() {
+            out.push_str(&render_struct(handle));
+            out.push('\n');
+            wrote_prelude = true;
+        }
+    }
     for literal in &unit.strings {
         out.push_str(&render_string(literal));
         out.push('\n');
@@ -51,16 +69,30 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
         out.push('\n');
         wrote_prelude = true;
     }
-    if wrote_prelude {
-        out.push('\n');
-    }
+    let mut functions = Vec::new();
+    let mut needs_memmove = false;
     for decl in &unit.decls {
         if let TopDecl::Func(func) = decl {
             if func.body.is_some() {
-                out.push_str(&render_function(func));
-                out.push_str("\n\n");
+                let (text, copied) = render_function(func);
+                needs_memmove |= copied;
+                functions.push(text);
             }
         }
+    }
+    if needs_memmove {
+        // Overlap is allowed, so `s = s` is defined. The copy is the object
+        // representation, padding included. An aggregate load/store is not:
+        // LLVM may leave the padding `undef`.
+        out.push_str("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)\n");
+        wrote_prelude = true;
+    }
+    if wrote_prelude {
+        out.push('\n');
+    }
+    for text in functions {
+        out.push_str(&text);
+        out.push_str("\n\n");
     }
     out
 }
@@ -86,6 +118,16 @@ fn render_global(global: &IrGlobal) -> String {
     } else {
         format!("{name} = external {kind} {ir}, align {align}")
     }
+}
+
+fn render_struct(handle: &StructRef) -> String {
+    let fields = handle.fields().unwrap_or_default();
+    let body = fields
+        .iter()
+        .map(|field| field.ty.ir_type())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("%{} = type {{ {body} }}", handle.llvm_name())
 }
 
 fn render_string(literal: &StrConst) -> String {
@@ -128,7 +170,7 @@ fn param_ir(ty: &CType, name: Option<&str>) -> String {
     }
 }
 
-fn render_function(func: &FuncDef) -> String {
+fn render_function(func: &FuncDef) -> (String, bool) {
     let body = func.body.as_ref().expect("defined function");
     let mut gen = Gen::new(func.ret_type.clone());
     let linkage = match func.linkage {
@@ -187,7 +229,7 @@ fn render_function(func: &FuncDef) -> String {
         }
     }
     gen.emit("}");
-    gen.lines.join("\n")
+    (gen.lines.join("\n"), gen.needs_memmove)
 }
 
 fn local_slots(compound: &Compound) -> Vec<(String, CType)> {
@@ -237,6 +279,8 @@ struct Gen {
     terminated: bool,
     loops: Vec<(String, String)>,
     ret_ty: CType,
+    /// A whole-struct copy used `llvm.memmove`, which keeps padding bytes.
+    needs_memmove: bool,
 }
 
 impl Gen {
@@ -249,6 +293,7 @@ impl Gen {
             terminated: false,
             loops: Vec::new(),
             ret_ty,
+            needs_memmove: false,
         }
     }
 }
@@ -369,6 +414,12 @@ impl Gen {
         };
         match checked {
             CheckedInit::Scalar(init) => {
+                if decl.ty.is_struct() {
+                    if let Some(src) = self.struct_bytes(init) {
+                        self.copy_struct(&decl.ty, &src, &decl.slot);
+                        return;
+                    }
+                }
                 let value = self.gen_val(init);
                 let value = self.convert(&value, &init.ty().expect("typed"), &decl.ty);
                 self.store(&decl.ty, &value, &decl.slot);
@@ -401,6 +452,31 @@ impl Gen {
                 }
             }
         }
+    }
+
+    /// Byte copy of a struct, including padding. `llvm.memmove` allows the
+    /// source and destination to be the same object.
+    fn copy_struct(&mut self, ty: &CType, src: &str, dest: &str) {
+        let size = ty.size().expect("complete struct");
+        self.needs_memmove = true;
+        self.emit(&format!(
+            "  call void @llvm.memmove.p0.p0.i64(ptr {dest}, ptr {src}, i64 {size}, i1 false)"
+        ));
+    }
+
+    /// Address of a struct object whose bytes should be copied. An assignment
+    /// result is the object just stored, so `u = (s = t)` copies from `s`.
+    fn struct_bytes(&mut self, expr: &Expr) -> Option<String> {
+        if expr.ty().is_some_and(|ty| ty.is_struct()) && expr.is_lvalue() {
+            return Some(self.gen_addr(expr));
+        }
+        if let Expr::Assign { target, .. } = expr {
+            if target.ty().is_some_and(|ty| ty.is_struct()) {
+                let _ = self.gen_expr(expr);
+                return Some(self.gen_addr(target));
+            }
+        }
+        None
     }
 
     fn store(&mut self, ty: &CType, value: &str, slot: &str) {
@@ -661,10 +737,20 @@ impl Gen {
             Expr::Assign { target, value, .. } => {
                 let addr = self.gen_addr(target);
                 let dest = target.ty().expect("lvalue type");
-                let raw = self.gen_val(value);
-                let stored = self.convert(&raw, &value.ty().expect("typed"), &dest);
-                self.store(&dest, &stored, &addr);
-                Some(stored)
+                if dest.is_struct() {
+                    if let Some(src) = self.struct_bytes(value) {
+                        self.copy_struct(&dest, &src, &addr);
+                    } else {
+                        let raw = self.gen_val(value);
+                        self.store(&dest, &raw, &addr);
+                    }
+                    Some(self.load(&dest, &addr))
+                } else {
+                    let raw = self.gen_val(value);
+                    let stored = self.convert(&raw, &value.ty().expect("typed"), &dest);
+                    self.store(&dest, &stored, &addr);
+                    Some(stored)
+                }
             }
             Expr::CompoundAssign {
                 op, target, value, ..
@@ -711,6 +797,15 @@ impl Gen {
             }
             Expr::Decay { expr, .. } => Some(self.gen_addr(expr)),
             Expr::Str { .. } => Some(self.gen_addr(expr)),
+            Expr::Member { ty, .. } => {
+                let addr = self.gen_addr(expr);
+                let ty = ty.clone().expect("typed");
+                if ty.is_array() {
+                    Some(addr)
+                } else {
+                    Some(self.load(&ty, &addr))
+                }
+            }
             Expr::Call { args, resolved, .. } => {
                 self.gen_call(args, resolved.as_ref().expect("resolved call"))
             }
@@ -730,8 +825,49 @@ impl Gen {
             Expr::Index { base, index, .. } => self.gen_ptr_index(base, index),
             Expr::Decay { expr, .. } => self.gen_addr(expr),
             Expr::Str { symbol, .. } => llvm_global(symbol.as_deref().expect("string symbol")),
+            Expr::Member {
+                base, arrow, index, ..
+            } => {
+                let base_ptr = if *arrow {
+                    self.gen_val(base)
+                } else if base.is_lvalue() {
+                    self.gen_addr(base)
+                } else {
+                    self.spill(base)
+                };
+                let struct_ty = if *arrow {
+                    base.ty()
+                        .as_ref()
+                        .and_then(CType::pointee)
+                        .expect("pointer to struct")
+                        .clone()
+                } else {
+                    base.ty().expect("struct")
+                };
+                let index = index.expect("member index");
+                let tmp = self.fresh();
+                self.emit(&format!(
+                    "  {tmp} = getelementptr inbounds {}, ptr {base_ptr}, i32 0, i32 {index}",
+                    struct_ty.ir_type()
+                ));
+                tmp
+            }
             _ => panic!("internal compiler error: address of a non-lvalue"),
         }
+    }
+
+    /// Materialize a struct rvalue so a member can be addressed.
+    fn spill(&mut self, expr: &Expr) -> String {
+        let ty = expr.ty().expect("typed");
+        let value = self.gen_val(expr);
+        let tmp = self.fresh();
+        self.emit(&format!(
+            "  {tmp} = alloca {}, align {}",
+            ty.ir_type(),
+            ty.align()
+        ));
+        self.store(&ty, &value, &tmp);
+        tmp
     }
 
     fn gen_ptr_index(&mut self, base: &Expr, index: &Expr) -> String {
@@ -1237,6 +1373,20 @@ fn render_const(ty: &CType, value: &ConstInit) -> String {
             format!("ptrtoint ({} to {ir})", render_ptr_operand(ptr))
         }
         ConstInit::Aggregate(items) => {
+            if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
+                if fields.len() != items.len() {
+                    return "zeroinitializer".to_string();
+                }
+                let parts = items
+                    .iter()
+                    .zip(fields.iter())
+                    .map(|(item, field)| {
+                        format!("{} {}", field.ty.ir_type(), render_const(&field.ty, item))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return format!("{{ {parts} }}");
+            }
             let Some(elem) = ty.array_elem() else {
                 return "zeroinitializer".to_string();
             };
@@ -1508,6 +1658,7 @@ int main(void) {
         assert!(ir.contains("define i32 @main()"));
         assert!(ir.contains("ret i32 42"));
         assert!(ir.contains("target triple = \"x86_64-pc-linux-gnu\""));
+        assert!(ir.contains(&format!("target datalayout = \"{}\"", super::DATA_LAYOUT)));
         assert_eq!(run_binary(&ir).0, 42);
     }
 
@@ -1813,6 +1964,35 @@ char exact[2] = \"hi\";
         let sized =
             crate::compile_to_ir("int main(void) { return sizeof \"abc\"; }\n", "sz.c").unwrap();
         assert!(!sized.contains("@.str"), "{sized}");
+    }
+
+    #[test]
+    fn struct_ir_names_the_type_and_geps_members() {
+        let source = "\
+struct S { char c; int i; };
+struct S g = {1, 2};
+int main(void) {
+    struct S s;
+    s.c = 3;
+    s.i = g.i;
+    struct S t;
+    t = s;
+    return t.i + t.c;
+}
+";
+        let ir = crate::compile_to_ir(source, "struct.c").unwrap();
+        assert!(ir.contains("%struct.S = type { i8, i32 }"), "{ir}");
+        assert!(
+            ir.contains("@g = global %struct.S { i8 1, i32 2 }, align 4"),
+            "{ir}"
+        );
+        assert!(ir.contains("getelementptr inbounds %struct.S, ptr"), "{ir}");
+        assert!(ir.contains("call void @llvm.memmove.p0.p0.i64("), "{ir}");
+        assert!(
+            ir.contains("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)"),
+            "{ir}"
+        );
+        assert_eq!(run_binary(&ir), run_reference(source));
     }
 
     #[test]

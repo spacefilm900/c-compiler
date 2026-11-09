@@ -4,9 +4,14 @@
 //! analysis so each variable has a stable LLVM alloca name. File-scope objects
 //! use the global's LLVM name instead of an alloca.
 //!
-//! Types are integers, `void`, pointers, and arrays, with `const` and
-//! `volatile`. A function type is not a value type: parameters and returns
-//! use the object type that remains after the usual parameter adjustment.
+//! Types are integers, `void`, pointers, arrays, and structs, with `const`
+//! and `volatile`. A function type is not a value type: parameters and
+//! returns use the object type that remains after the usual parameter
+//! adjustment. A struct is one declaration: the same tag in another scope is
+//! a different type, and completing the type updates every use of it.
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Integer and `void` types on `x86_64-pc-linux-gnu` (LP64).
 ///
@@ -211,23 +216,173 @@ impl Quals {
     }
 }
 
-/// A type this milestone can name: `void`, an integer, a pointer, or an array,
-/// each of which may be `const` or `volatile`.
+/// One field of a completed struct. `offset` is the byte offset from the
+/// start of the object, including the padding the System V AMD64 ABI inserts
+/// so the field is aligned to [`CType::member_align`].
+#[derive(Debug, Clone)]
+pub struct StructField {
+    pub name: String,
+    pub ty: CType,
+    pub offset: u64,
+}
+
+/// Identity of one struct declaration.
+///
+/// Copies share the body. Completing an incomplete type is visible through
+/// every [`CType::Struct`] that names it, which is what a later
+/// `struct node { ... };` does to an earlier `struct node *`. Equality is the
+/// declaration, not the list of fields: two structs with the same members and
+/// different tags are not compatible (C11 6.2.7).
+#[derive(Clone)]
+pub struct StructRef {
+    id: u32,
+    data: Rc<RefCell<StructBody>>,
+}
+
+struct StructBody {
+    tag: String,
+    fields: Option<Vec<StructField>>,
+    size: u64,
+    align: u32,
+    llvm_name: String,
+}
+
+impl PartialEq for StructRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for StructRef {}
+
+impl std::fmt::Debug for StructRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let body = self.data.borrow();
+        write!(f, "struct {}#{}", body.tag, self.id)
+    }
+}
+
+impl StructRef {
+    pub fn new_incomplete(id: u32, tag: impl Into<String>) -> Self {
+        Self {
+            id,
+            data: Rc::new(RefCell::new(StructBody {
+                tag: tag.into(),
+                fields: None,
+                size: 0,
+                align: 1,
+                llvm_name: String::new(),
+            })),
+        }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    pub fn tag(&self) -> String {
+        self.data.borrow().tag.clone()
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.data.borrow().fields.is_some()
+    }
+
+    pub fn fields(&self) -> Option<Vec<StructField>> {
+        self.data.borrow().fields.clone()
+    }
+
+    pub fn size(&self) -> Option<u64> {
+        let body = self.data.borrow();
+        body.fields.as_ref().map(|_| body.size)
+    }
+
+    pub fn align(&self) -> u32 {
+        self.data.borrow().align
+    }
+
+    /// LLVM type name without the leading `%`, such as `struct.Node`.
+    pub fn llvm_name(&self) -> String {
+        self.data.borrow().llvm_name.clone()
+    }
+
+    pub fn field(&self, name: &str) -> Option<(usize, StructField)> {
+        let body = self.data.borrow();
+        let fields = body.fields.as_ref()?;
+        fields
+            .iter()
+            .enumerate()
+            .find(|(_, field)| field.name == name)
+            .map(|(index, field)| (index, field.clone()))
+    }
+
+    pub fn complete(&self, fields: Vec<StructField>, size: u64, align: u32, llvm_name: String) {
+        let mut body = self.data.borrow_mut();
+        body.fields = Some(fields);
+        body.size = size;
+        body.align = align.max(1);
+        body.llvm_name = llvm_name;
+    }
+}
+
+/// Round `offset` up to a multiple of `align`. `None` when the sum does not
+/// fit in `u64`.
+pub fn align_up(offset: u64, align: u64) -> Option<u64> {
+    let align = align.max(1);
+    let rem = offset % align;
+    if rem == 0 {
+        Some(offset)
+    } else {
+        offset.checked_add(align - rem)
+    }
+}
+
+/// System V AMD64 layout of a struct.
+///
+/// Each field is placed at the next offset that satisfies its alignment.
+/// The struct's alignment is the strictest field alignment, at least 1.
+/// Its size is rounded up to a multiple of that alignment, which is the
+/// trailing padding. Field alignment is [`CType::member_align`]: an array
+/// field uses the element's alignment. The ABI's extra 16-byte alignment
+/// applies to a local or global array variable, not to a field and not to
+/// `_Alignof` of an array type.
+///
+/// `fields` is `(size, alignment)` in declaration order. `None` means the
+/// size overflowed.
+pub fn layout_record(fields: &[(u64, u32)]) -> Option<(Vec<u64>, u64, u32)> {
+    let mut offsets = Vec::with_capacity(fields.len());
+    let mut offset = 0u64;
+    let mut align = 1u32;
+    for &(size, field_align) in fields {
+        let field_align = field_align.max(1);
+        align = align.max(field_align);
+        offset = align_up(offset, u64::from(field_align))?;
+        offsets.push(offset);
+        offset = offset.checked_add(size)?;
+    }
+    let size = align_up(offset, u64::from(align))?;
+    Some((offsets, size, align))
+}
+
+/// A type this milestone can name: `void`, an integer, a pointer, an array,
+/// or a struct, each of which may be `const` or `volatile`.
 ///
 /// `char` stays distinct from `signed char`. Pointers use one LLVM `ptr`
 /// (opaque pointers). An array with `len == None` is incomplete (`int a[]`).
-/// A pointer is complete even when it points at an incomplete type.
+/// A pointer is complete even when it points at an incomplete type. A struct
+/// is incomplete until its member list has been defined in the same scope.
 ///
 /// Qualifiers on an array apply to the element type, not the array type
 /// (C11 6.7.3p9), so an array is never wrapped in [`CType::Qualified`].
 /// `const int *` is a pointer to a qualified `int`. `int * const` is a
-/// qualified pointer.
+/// qualified pointer. `const struct S` is a qualified struct.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CType {
     Void,
     Int(TypeName),
     Pointer(Box<CType>),
     Array(Box<CType>, Option<u64>),
+    Struct(StructRef),
     Qualified(Quals, Box<CType>),
 }
 
@@ -322,9 +477,40 @@ impl CType {
         matches!(self.peel(), CType::Array(_, _))
     }
 
-    /// Integer or pointer. Arrays are not scalars; they decay first.
+    pub fn is_struct(&self) -> bool {
+        matches!(self.peel(), CType::Struct(_))
+    }
+
+    pub fn struct_ref(&self) -> Option<&StructRef> {
+        match self.peel() {
+            CType::Struct(handle) => Some(handle),
+            _ => None,
+        }
+    }
+
+    /// Integer or pointer. Arrays and structs are not scalars; an array
+    /// decays first, and a struct is copied or accessed by member.
     pub fn is_scalar(&self) -> bool {
         self.is_integer() || self.is_pointer()
+    }
+
+    /// `const` anywhere in this object: the type itself, an element, or a
+    /// field, recursively. A pointer is not walked, so `const int *` can
+    /// still be reseated. A struct with a const field is not a modifiable
+    /// lvalue (C11 6.3.2.1).
+    pub fn contains_const(&self) -> bool {
+        if self.is_const() {
+            return true;
+        }
+        match self.peel() {
+            CType::Array(elem, _) => elem.contains_const(),
+            CType::Struct(handle) => handle
+                .fields()
+                .unwrap_or_default()
+                .iter()
+                .any(|field| field.ty.contains_const()),
+            _ => false,
+        }
     }
 
     pub fn is_void_pointer(&self) -> bool {
@@ -373,6 +559,7 @@ impl CType {
             CType::Int(_) | CType::Pointer(_) => true,
             CType::Array(elem, Some(_)) => elem.is_complete(),
             CType::Array(_, None) => false,
+            CType::Struct(handle) => handle.is_complete(),
             CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
         }
     }
@@ -385,6 +572,7 @@ impl CType {
             CType::Pointer(_) => Some(8),
             CType::Array(elem, Some(len)) => elem.size().map(|elem| elem.saturating_mul(*len)),
             CType::Array(_, None) => None,
+            CType::Struct(handle) => handle.size(),
             CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
         }
     }
@@ -406,7 +594,20 @@ impl CType {
                     _ => elem_align,
                 }
             }
+            CType::Struct(handle) => handle.align(),
             CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
+        }
+    }
+
+    /// Alignment of this type when it is a field.
+    ///
+    /// An array field is aligned as its element is, with no 16-byte boost.
+    /// A local or global array variable still uses [`CType::align`], which
+    /// applies that boost. A struct field uses the struct's alignment.
+    pub fn member_align(&self) -> u32 {
+        match self.peel() {
+            CType::Array(elem, _) => elem.member_align(),
+            other => other.align(),
         }
     }
 
@@ -418,6 +619,14 @@ impl CType {
             CType::Array(elem, len) => {
                 let n = len.unwrap_or(0);
                 format!("[{n} x {}]", elem.ir_type())
+            }
+            CType::Struct(handle) => {
+                let name = handle.llvm_name();
+                if name.is_empty() {
+                    "%struct.incomplete".to_string()
+                } else {
+                    format!("%{name}")
+                }
             }
             CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
         }
@@ -444,9 +653,14 @@ fn render_type(ty: &CType, name: &str) -> String {
             CType::Int(scalar) => {
                 join_spec(&format!("{}{}", qual_prefix(*quals), scalar.as_str()), name)
             }
+            CType::Struct(handle) => join_spec(
+                &format!("{}struct {}", qual_prefix(*quals), handle.tag()),
+                name,
+            ),
         },
         CType::Void => join_spec("void", name),
         CType::Int(scalar) => join_spec(scalar.as_str(), name),
+        CType::Struct(handle) => join_spec(&format!("struct {}", handle.tag()), name),
         CType::Pointer(inner) => render_type(inner, &star_decl(inner, Quals::default(), name)),
         CType::Array(elem, len) => {
             let bracket = match len {
@@ -527,6 +741,7 @@ pub fn compatible(left: &CType, right: &CType) -> bool {
         (CType::Array(a, la), CType::Array(b, lb)) => {
             (la.is_none() || lb.is_none() || la == lb) && compatible(a, b)
         }
+        (CType::Struct(a), CType::Struct(b)) => a == b,
         _ => false,
     }
 }
@@ -905,6 +1120,18 @@ pub enum Expr {
         symbol: Option<String>,
         ty: Option<CType>,
     },
+    /// `base.field` or `base->field`. `arrow` selects `->`. Semantic analysis
+    /// fills `index` and `offset` from the struct's layout.
+    Member {
+        base: Box<Expr>,
+        field: String,
+        arrow: bool,
+        line: usize,
+        column: usize,
+        index: Option<usize>,
+        offset: Option<u64>,
+        ty: Option<CType>,
+    },
 }
 
 impl Expr {
@@ -1061,6 +1288,19 @@ impl Expr {
         }
     }
 
+    pub fn member(base: Expr, field: String, arrow: bool, line: usize, column: usize) -> Self {
+        Expr::Member {
+            base: Box::new(base),
+            field,
+            arrow,
+            line,
+            column,
+            index: None,
+            offset: None,
+            ty: None,
+        }
+    }
+
     pub fn str_lit(bytes: Vec<u8>, line: usize, column: usize) -> Self {
         Expr::Str {
             bytes,
@@ -1087,7 +1327,8 @@ impl Expr {
             | Expr::Cast { line, .. }
             | Expr::Index { line, .. }
             | Expr::Decay { line, .. }
-            | Expr::Str { line, .. } => *line,
+            | Expr::Str { line, .. }
+            | Expr::Member { line, .. } => *line,
         }
     }
 
@@ -1107,7 +1348,8 @@ impl Expr {
             | Expr::Cast { column, .. }
             | Expr::Index { column, .. }
             | Expr::Decay { column, .. }
-            | Expr::Str { column, .. } => *column,
+            | Expr::Str { column, .. }
+            | Expr::Member { column, .. } => *column,
         }
     }
 
@@ -1127,7 +1369,8 @@ impl Expr {
             | Expr::Cast { ty, .. }
             | Expr::Index { ty, .. }
             | Expr::Decay { ty, .. }
-            | Expr::Str { ty, .. } => ty.clone(),
+            | Expr::Str { ty, .. }
+            | Expr::Member { ty, .. } => ty.clone(),
         }
     }
 
@@ -1147,7 +1390,22 @@ impl Expr {
             | Expr::Cast { ty: slot, .. }
             | Expr::Index { ty: slot, .. }
             | Expr::Decay { ty: slot, .. }
-            | Expr::Str { ty: slot, .. } => *slot = Some(ty),
+            | Expr::Str { ty: slot, .. }
+            | Expr::Member { ty: slot, .. } => *slot = Some(ty),
+        }
+    }
+
+    /// An lvalue designates an object. `->` always does (`(*p).m` and `*p`
+    /// is an lvalue). `.` does when its left operand does. The result of an
+    /// assignment or `?:` is not an lvalue.
+    pub fn is_lvalue(&self) -> bool {
+        match self {
+            Expr::Var { .. } | Expr::Index { .. } | Expr::Str { .. } => true,
+            Expr::Unary {
+                op: UnaryOp::Deref, ..
+            } => true,
+            Expr::Member { arrow, base, .. } => *arrow || base.is_lvalue(),
+            _ => false,
         }
     }
 
@@ -1332,6 +1590,9 @@ pub struct TranslationUnit {
     pub func_decls: Vec<IrFunc>,
     /// String literals whose address is used, in order of first use.
     pub strings: Vec<StrConst>,
+    /// Completed struct types, in the order they were defined. An incomplete
+    /// struct that is never completed is not listed; a pointer to it is `ptr`.
+    pub structs: Vec<StructRef>,
 }
 
 pub fn dump(unit: &TranslationUnit) -> String {
@@ -1596,6 +1857,13 @@ fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
             dump_expr(out, expr, indent + 1);
         }
         Expr::Str { bytes, .. } => put(out, indent, &dump_string(bytes)),
+        Expr::Member {
+            base, field, arrow, ..
+        } => {
+            let kind = if *arrow { "arrow" } else { "member" };
+            put(out, indent, &format!("{kind} {field}"));
+            dump_expr(out, base, indent + 1);
+        }
         Expr::Call { callee, args, .. } => {
             match callee.as_ref() {
                 Expr::Var { name, .. } => put(out, indent, &format!("call {name}")),
@@ -1637,5 +1905,60 @@ fn dump_init(out: &mut String, init: &Init, indent: usize) {
                 dump_init(out, item, indent + 1);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_v_record_layout() {
+        // char, int: pad to 4, trailing pad to 8.
+        let (off, size, align) = layout_record(&[(1, 1), (4, 4)]).unwrap();
+        assert_eq!((off.as_slice(), size, align), (&[0, 4][..], 8, 4));
+        // int, char: trailing padding.
+        let (off, size, align) = layout_record(&[(4, 4), (1, 1)]).unwrap();
+        assert_eq!((off.as_slice(), size, align), (&[0, 4][..], 8, 4));
+        // char, long.
+        let (off, size, align) = layout_record(&[(1, 1), (8, 8)]).unwrap();
+        assert_eq!((off.as_slice(), size, align), (&[0, 8][..], 16, 8));
+        // char, short.
+        let (off, size, align) = layout_record(&[(1, 1), (2, 2)]).unwrap();
+        assert_eq!((off.as_slice(), size, align), (&[0, 2][..], 4, 2));
+        // long[2] as a field is aligned to 8, not 16, even though it is 16 bytes.
+        let (off, size, align) = layout_record(&[(1, 1), (16, 8)]).unwrap();
+        assert_eq!((off.as_slice(), size, align), (&[0, 8][..], 24, 8));
+        // char[16] as a field stays alignment 1.
+        let (off, size, align) = layout_record(&[(1, 1), (16, 1)]).unwrap();
+        assert_eq!((off.as_slice(), size, align), (&[0, 1][..], 17, 1));
+        // nested struct of align 4 after a char.
+        let (off, size, align) = layout_record(&[(1, 1), (8, 4)]).unwrap();
+        assert_eq!((off.as_slice(), size, align), (&[0, 4][..], 12, 4));
+    }
+
+    #[test]
+    fn struct_identity_is_the_declaration() {
+        let a = StructRef::new_incomplete(1, "S");
+        let b = StructRef::new_incomplete(2, "S");
+        assert_ne!(a, b);
+        assert_eq!(a.clone(), a);
+        assert!(!a.is_complete());
+        a.complete(
+            vec![StructField {
+                name: "x".to_string(),
+                ty: CType::int_type(),
+                offset: 0,
+            }],
+            4,
+            4,
+            "struct.S".to_string(),
+        );
+        assert!(a.is_complete());
+        assert_eq!(a.size(), Some(4));
+        assert_eq!(a.field("x").unwrap().0, 0);
+        assert!(a.field("y").is_none());
+        assert_eq!(CType::Struct(a.clone()).display(), "struct S");
+        assert_eq!(CType::Struct(a).ir_type(), "%struct.S");
     }
 }
