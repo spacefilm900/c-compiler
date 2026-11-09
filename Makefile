@@ -1,7 +1,7 @@
 # Build the compiler the harness expects at build/compiler.
 CARGO ?= cargo
 
-.PHONY: all test clean
+.PHONY: all test wacc clean
 
 all: build/compiler
 
@@ -13,6 +13,10 @@ build/compiler: Cargo.toml $(wildcard src/*.rs)
 test: build/compiler
 	$(CARGO) test
 	python3 harness/run_tests.py
+
+wacc: build/compiler
+	scripts/fetch_wacc_tests.sh
+	python3 harness/run_wacc.py
 
 clean:
 	$(CARGO) clean

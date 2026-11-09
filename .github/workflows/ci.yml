@@ -61,3 +61,53 @@ jobs:
           set -euo pipefail
           make
           python3 harness/run_tests.py
+
+  wacc:
+    name: writing-a-c-compiler suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # actions/cache writes the suite cache. The token still cannot push.
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+          components: rustfmt, clippy
+
+      - name: Install Clang, LLVM, make, and Python
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm make python3
+          echo "rustc $(rustc --version)"
+          echo "cargo $(cargo --version)"
+          clang --version
+          llvm-as --version
+          make --version
+          python3 --version
+          major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
+            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+            exit 1
+          fi
+
+      - name: Cache the fetched test suite
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: tests/external/wacc
+          key: wacc-ae12014d2dec14488f3f80d14df4b6d8e4634d7d-${{ runner.os }}
+
+      - name: Fetch the pinned suite and run it
+        run: |
+          set -euo pipefail
+          scripts/fetch_wacc_tests.sh
+          make
+          python3 harness/run_wacc.py

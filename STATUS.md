@@ -2,7 +2,95 @@
 
 ## Current milestone
 
-**Stage 2, step 1 — built-in preprocessor.** Done for this step.
+**External test suite from *Writing a C Compiler*.** The stage 2 preprocessor is unchanged aside from two diagnostics. The Nora Sandler suite is fetched at a pinned commit and run by `harness/run_wacc.py`. It is not vendored.
+
+## External suite
+
+Licence: **MIT**, Copyright (c) 2023 Nora Sandler. The licence allows redistribution. The tree is still fetched, not committed. Source: https://github.com/nlsandler/writing-a-c-compiler-tests. Pinned commit: `ae12014d2dec14488f3f80d14df4b6d8e4634d7d` (2026-02-17). Recorded in `tests/external/README.md`. `scripts/fetch_wacc_tests.sh` clones that commit into `tests/external/wacc/` (gitignored). CI caches that directory.
+
+`harness/run_wacc.py` does not call the suite's `test_compiler`. A valid program is compiled with `build/compiler`, linked with `clang`, and compared with `expected_results.json` (return code and stdout). If that entry is missing, `clang -std=c11` is the oracle. A `libraries/` test compiles one translation unit here and the other with clang, in both directions. Assembly helpers named in `test_properties.json` are the Linux `.s` file. Each command has a 10 second timeout. An invalid program must exit non-zero and must not crash. A compiler panic fails the run even if the test is listed in `harness/wacc_known_failures.txt`. A listed test that passes is reported so the line can be removed. An unlisted failure fails the run.
+
+Chapters run: 1–12 and 14–18 (return through structs, including `long`, unsigned, pointers, arrays, character and string tests, `void` / `sizeof`). Extra-credit bitwise, compound assignment, and increment tests are included.
+
+Skipped, and not listed as failures:
+
+| Skip | Tests | Why |
+| --- | --- | --- |
+| Chapter 13 | 69 | floating point is not started (`double`). `helper_libs/` is not a test. |
+| Chapter 19 | 167 | Part III. The runner inspects the book's own assembly for constant folding, copy propagation, dead stores, and unreachable code. It does not only run the program. |
+| Chapter 20 | 66 | Part III register allocation. Same assembly inspection, including coalescing. Helper libraries are not tests. |
+| Extra credit `goto` | 29 | not started |
+| Extra credit `goto` and `switch` | 1 | not started |
+| Extra credit `switch` | 34 | not started |
+| Extra credit `union` | 29 | not started. A `*_client.c` file uses the library file's tags. |
+| `chapter_18/valid/parameters/` and `params_and_returns/` | 31 | passing or returning a struct by value is still rejected |
+
+There is no separate function-pointer chapter in this pin. Function pointers stay a diagnostic when a test uses them.
+
+### Per-chapter results
+
+Run locally with `python3 harness/run_wacc.py` after the fetch. 1191 executed, **1064 passed**, **127 known failures**, **426 skipped**, 0 unexpected, 0 compiler panics.
+
+| Chapter | Run | Passed | Known failures | Skipped |
+| --- | --- | --- | --- | --- |
+| 1 | 24 | 24 | 0 | 0 |
+| 2 | 19 | 19 | 0 | 0 |
+| 3 | 35 | 35 | 0 | 0 |
+| 4 | 43 | 43 | 0 | 0 |
+| 5 | 82 | 82 | 0 | 0 |
+| 6 | 57 | 57 | 0 | 11 |
+| 7 | 23 | 23 | 0 | 4 |
+| 8 | 70 | 65 | 5 | 28 |
+| 9 | 75 | 71 | 4 | 3 |
+| 10 | 64 | 46 | 18 | 8 |
+| 11 | 53 | 52 | 1 | 2 |
+| 12 | 37 | 34 | 3 | 1 |
+| 13 | 0 | 0 | 0 | 69 |
+| 14 | 77 | 61 | 16 | 1 |
+| 15 | 106 | 88 | 18 | 0 |
+| 16 | 92 | 79 | 13 | 4 |
+| 17 | 88 | 72 | 16 | 0 |
+| 18 | 246 | 213 | 33 | 62 |
+| 19 | 0 | 0 | 0 | 167 |
+| 20 | 0 | 0 | 0 | 66 |
+| **Total** | **1191** | **1064** | **127** | **426** |
+
+### Known-failure categories
+
+| Category | Tests | Meaning |
+| --- | --- | --- |
+| `unsupported-double` | 71 | `double`, a floating constant, or both. Later chapters use `double` in programs whose main feature is pointers, arrays, characters, or structs. |
+| `unsupported-static-local` | 30 | `static` inside a function |
+| `unsupported-block-extern` | 14 | `extern` inside a block |
+| `unsupported-block-function` | 6 | a function declaration inside a block (rejected as a nested function) |
+| `unsupported-do-while` | 5 | `do` / `while` |
+| `unsupported-struct-by-value` | 1 | `chapter_18/valid/no_structure_parameters/semantic_analysis/incomplete_structs.c` declares a function that passes and returns an incomplete struct. That declaration is still rejected. The file also uses a static local. |
+
+### Diagnostics fixed while running the suite
+
+Both were accepted invalid programs. Neither is a new language feature.
+
+- A dereference of a pointer to an incomplete struct, used as a value (`*p;` when `struct S` has no member list), is a diagnostic. `&*p` is still the address and does not load. `tests/91_addr_incomplete.c` returns 1, matching Clang: `p` is null and `&*p == p`.
+- `extern struct S x = {1};` before `struct S` is defined is a diagnostic. The parser checks this. Semantic analysis would otherwise see a complete type, because a later definition of the same tag fills the shared struct body.
+
+No test in the run panicked, and no executed program disagreed with `expected_results.json` except the known rejections above.
+
+## Tests for the external suite
+
+| Command | Toolchain | Result |
+| --- | --- | --- |
+| `cargo fmt --all -- --check` | rustc **1.85.1** (4eb161250 2025-03-15) | clean |
+| `cargo clippy --offline --all-targets -- -D warnings` | same | clean |
+| `cargo test --offline --lib` | same | **60 passed, 0 failed** |
+| `make` | GNU make **4.3** | `build/compiler` already current. An earlier `make` in this session, after the diagnostic changes, compiled the release binary and copied it to `build/compiler`. |
+| `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **91/91 passed** |
+| `scripts/fetch_wacc_tests.sh` then `python3 harness/run_wacc.py` | same Clang and Python | **1064 passed, 127 known failures, 426 skipped, 0 unexpected** |
+
+`tests/91_addr_incomplete.c` is the new harness program. GitHub Actions for this change is not in this file.
+
+## Stage 2, step 1 — built-in preprocessor
+
+Done for that step.
 
 The compiler is a Rust binary. `make` installs it at `build/compiler`. It accepts the Milestone 2 subset (LP64 integers, prototypes, globals, pointers, arrays, string literals, `const` and `volatile`, variadic calls, and simple structs) and now runs a built-in preprocessor: line splicing, comments, `#define` / `#undef` (object-like and function-like, including `__VA_ARGS__`, `#`, and `##`), `#if` / `#ifdef` / `#ifndef` / `#elif` / `#else` / `#endif`, `#include`, `#error`, `#line`, `#pragma once`, and the null directive. `-E` prints the preprocessed text. `-I`, `-D`, and `-U` are accepted. `tests/82_hello_hdr.c` is hello world through `#include <stdio.h>`. The compiler rejects other input with a diagnostic. It is not a full C compiler.
 
@@ -25,9 +113,9 @@ The compiler is a Rust binary. `make` installs it at `build/compiler`. It accept
 
 Rust, edition 2021, standard library only. No crates.io dependencies (`Cargo.lock` has none). `rust-toolchain.toml` pins **1.85.1** plus `rustfmt` and `clippy`.
 
-## Tests for this step
+## Tests for the preprocessor step
 
-Run locally on this tree before the pull request. GitHub Actions for this step is not in this file; it is reported with the pull request after the workflow finishes.
+These are the results recorded for stage 2 step 1, before `tests/91_addr_incomplete.c`. GitHub Actions for that step is not in this file.
 
 | Command | Toolchain | Result |
 | --- | --- | --- |
@@ -177,8 +265,9 @@ A struct may be a local, a file-scope object (`extern` or `static` included), or
 
 ## CI and CodeRabbit
 
-- `.github/workflows/ci.yml` runs on `push` and `pull_request` with `contents: read`, a 20-minute job timeout, and cancel-in-progress for the same ref. The runner is `ubuntu-24.04`. It installs Rust 1.85.1 (`rustfmt`, `clippy`) and apt packages `clang`, `llvm`, `make`, and `python3`, and refuses Clang older than 15. Steps: `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo test --offline --lib`, `make`, `python3 harness/run_tests.py`.
-- Pinned actions: `actions/checkout@11d5960a326750d5838078e36cf38b85af677262` (v4.4.0), `dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8` (v1) with toolchain `1.85.1`.
+- `.github/workflows/ci.yml` runs on `push` and `pull_request` with workflow `contents: read`, cancel-in-progress for the same ref, and the runner `ubuntu-24.04`. The original job is unchanged: 20-minute timeout, Rust 1.85.1 (`rustfmt`, `clippy`), apt packages `clang`, `llvm`, `make`, and `python3`, Clang 15 or newer, then `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo test --offline --lib`, `make`, and `python3 harness/run_tests.py`.
+- A second job, `writing-a-c-compiler suite`, fetches the pinned suite and runs `python3 harness/run_wacc.py`. It has a 30-minute timeout. Its token is `contents: read` plus `actions: write`, which `actions/cache` needs to store `tests/external/wacc`. The token cannot push. The cache key is the pinned commit.
+- Pinned actions: `actions/checkout@11d5960a326750d5838078e36cf38b85af677262` (v4.4.0), `dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8` (v1) with toolchain `1.85.1`, and on the suite job `actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809` (v4.2.4).
 - `.coderabbit.yaml` follows CodeRabbit schema `https://coderabbit.ai/integrations/schema.v2.json`. The review profile is `CHILL`. The file does not install the GitHub App.
 - Milestone 1's Actions runs and the CodeRabbit review on pull request 1 are in the record below. Step 2's Actions runs and the CodeRabbit review are in the step 2 record below. Step 3's Actions runs and the CodeRabbit review are in the step 3 record below. Step 4's Actions runs and the CodeRabbit review are in the step 4 record below. Step 5's Actions runs were not copied into that step's record. This step's Actions runs are not in this file yet.
 
