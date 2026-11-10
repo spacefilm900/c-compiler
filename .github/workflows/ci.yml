@@ -151,7 +151,7 @@ jobs:
   onetrueawk:
     name: one true awk
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 75
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -188,20 +188,21 @@ jobs:
           make
           python3 harness/run_onetrueawk.py
 
-      - name: AWK Builder suites, or skip when the private clones are unavailable
+      - name: AWK Builder suites
+        env:
+          GH_TOKEN: ${{ secrets.AWK_SUITE_READ_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "SKIP: AWK Builder suites need the AWK_SUITE_READ_TOKEN secret."
+            echo "Forks, and runs before that secret exists, do not clone the private suites."
+            exit 0
+          fi
           scripts/build_onetrueawk.sh clang build/otawk-clang
-          if ! scripts/build_onetrueawk.sh ccomp build/otawk-ccomp; then
-            echo "SKIP: AWK Builder suites need an awk built by this compiler."
-            echo "The One True AWK job already failed on that compile."
-            exit 0
-          fi
-          if ! scripts/fetch_awk_posix_challenge.sh || ! scripts/fetch_awk_volume.sh; then
-            echo "SKIP: private AWK Builder suites were not fetched."
-            echo "The default GITHUB_TOKEN for spacefilm900/c-compiler often cannot clone other private repositories."
-            exit 0
-          fi
+          scripts/build_onetrueawk.sh ccomp build/otawk-ccomp
+          scripts/fetch_awk_posix_challenge.sh
+          scripts/fetch_awk_volume.sh
           AWK_CLANG="$PWD/build/otawk-clang/awk" \
             AWK_CCOMP="$PWD/build/otawk-ccomp/awk" \
             python3 harness/run_awk_extra.py

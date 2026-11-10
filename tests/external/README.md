@@ -79,7 +79,7 @@ Both builds use `-O0`. Clang also gets `-std=c11`. Both pass `-D_DEFAULT_SOURCE`
 
 These repositories are private. They are not vendored. `cases/` is not modified. Result JSON is written under `tests/external/awk-results/`.
 
-- Independent POSIX AWK Challenge: https://github.com/spacefilm900/awk-posix-challenge tag `v0.6`, commit `69b1f5895022956c5ebfc0d6d58fd45636b6dfaa`
+- Independent POSIX AWK Challenge: https://github.com/spacefilm900/awk-posix-challenge annotated tag `v0.6`. The tag object is `69b1f5895022956c5ebfc0d6d58fd45636b6dfaa`. The pin is the commit that tag points at, `b46ea063c6d25372b6a2010ac537ca19a8fd1b1e`, which is `HEAD` after checkout.
 - Shakespeare volume test: https://github.com/spacefilm900/awk-volume-tests commit `46701e477fe48a7e0592b8022c77ac29c4114582`
 
 ```sh
@@ -90,7 +90,7 @@ scripts/build_onetrueawk.sh ccomp build/otawk-ccomp
 AWK_CLANG=$PWD/build/otawk-clang/awk AWK_CCOMP=$PWD/build/otawk-ccomp/awk python3 harness/run_awk_extra.py
 ```
 
-`AWK_EXTRA_HOOK` is an optional command run after those two suites. No other suite is invented here. If the private clones are missing, set `AWK_EXTRA_ALLOW_MISSING=1` to skip. CI does that when `gh` cannot read the other repositories.
+`AWK_EXTRA_HOOK` is an optional command run after those two suites. No other suite is invented here. If the private clones are missing, set `AWK_EXTRA_ALLOW_MISSING=1` to skip. CI does not set that. It skips the suites only when the `AWK_SUITE_READ_TOKEN` secret is unset, and fails the job when that secret is set and a fetch, build, or suite fails.
 
 ## GCC torture execute tests
 
