@@ -207,21 +207,26 @@ impl Lexer<'_> {
             self.bump();
         }
         let spelling = &self.source[start..self.index];
-        // `L'...'` and `L"..."` are wide literals (C11 6.4.4.4, 6.4.5).
-        // `wchar_t` is `int` on this target. `u`, `U`, and `u8` prefixes
-        // are not implemented.
-        if spelling == "L" && self.peek() == Some(b'\'') {
-            return self.wide_char(start, line, column);
-        }
-        if spelling == "L" && self.peek() == Some(b'"') {
-            return self.wide_string(start, line, column);
-        }
-        if matches!(spelling, "u" | "U" | "u8") && matches!(self.peek(), Some(b'"' | b'\'')) {
-            return self.fail(
-                line,
-                column,
-                "unicode string and character literals are not supported",
-            );
+        // Encoding prefixes (C11 6.4.4.4, 6.4.5). The prefix is not a
+        // separate token: it is recognized only when the quote is the next
+        // byte. `u8` names a character constant only in C23, so that form
+        // is a diagnostic. `wchar_t` is `int`. `char16_t` is the unsigned
+        // 16-bit type and `char32_t` is the unsigned 32-bit type.
+        if matches!(spelling, "L" | "u" | "U" | "u8") && matches!(self.peek(), Some(b'\'' | b'"')) {
+            let quote = self.peek();
+            if spelling == "u8" && quote == Some(b'\'') {
+                return self.fail(line, column, "u8 character constants are not supported");
+            }
+            let bits: u32 = match spelling {
+                "u" => 16,
+                "u8" => 8,
+                _ => 32,
+            };
+            return if quote == Some(b'\'') {
+                self.prefixed_char(start, line, column, bits, spelling == "L")
+            } else {
+                self.prefixed_string(start, line, column, bits)
+            };
         }
         let kind = keyword(spelling).unwrap_or(TokenKind::Ident);
         self.push(kind, spelling, line, column);
@@ -620,10 +625,21 @@ impl Lexer<'_> {
         Ok(())
     }
 
-    /// `L'...'` has type `wchar_t`, which is `int` here. A source character in
-    /// the basic set keeps its code. A hex or octal escape may use the full
-    /// range of `unsigned int`; the result is that value converted to `int`.
-    fn wide_char(&mut self, start: usize, line: usize, column: usize) -> Result<(), Diagnostic> {
+    /// A prefixed character constant (C11 6.4.4.4).
+    ///
+    /// `bits` is 16 for `u` (`char16_t`, unsigned short) and 32 for `U`
+    /// (`char32_t`, unsigned int) and `L` (`wchar_t`, which is `int`).
+    /// `wchar` selects that signed `int` result. A hex or octal escape that
+    /// does not fit in the unsigned type of that width is a diagnostic.
+    /// `L` then converts the `unsigned int` value to `int`.
+    fn prefixed_char(
+        &mut self,
+        start: usize,
+        line: usize,
+        column: usize,
+        bits: u32,
+        wchar: bool,
+    ) -> Result<(), Diagnostic> {
         self.bump();
         if matches!(self.peek(), None | Some(b'\n' | b'\r')) {
             return self.fail(line, column, "unterminated character constant");
@@ -631,7 +647,7 @@ impl Lexer<'_> {
         if self.peek() == Some(b'\'') {
             return self.fail(line, column, "empty character constant");
         }
-        let value = self.read_wide_unit(line, column, false)?;
+        let value = self.read_code_unit(line, column, false, bits)?;
         if self.peek() != Some(b'\'') {
             if matches!(self.peek(), None | Some(b'\n' | b'\r')) {
                 return self.fail(line, column, "unterminated character constant");
@@ -644,13 +660,27 @@ impl Lexer<'_> {
         }
         self.bump();
         let spelling = self.source[start..self.index].to_string();
-        self.push_int(&spelling, u64::from(value), TypeName::Int, line, column);
+        let ty = if wchar {
+            TypeName::Int
+        } else if bits == 16 {
+            TypeName::UShort
+        } else {
+            TypeName::UInt
+        };
+        self.push_int(&spelling, u64::from(value), ty, line, column);
         Ok(())
     }
 
-    /// `L"..."` is `wchar_t[N]`. Each code unit is stored little-endian, and
-    /// the token does not include the terminating wide NUL.
-    fn wide_string(&mut self, start: usize, line: usize, column: usize) -> Result<(), Diagnostic> {
+    /// A prefixed string literal. `bits` is 8 for `u8` (an array of `char`),
+    /// 16 for `u`, and 32 for `U` and `L`. Each code unit is stored
+    /// little-endian. The token does not include the terminating NUL.
+    fn prefixed_string(
+        &mut self,
+        start: usize,
+        line: usize,
+        column: usize,
+        bits: u32,
+    ) -> Result<(), Diagnostic> {
         self.bump();
         let mut bytes = Vec::new();
         loop {
@@ -663,8 +693,12 @@ impl Lexer<'_> {
                     break;
                 }
                 _ => {
-                    let unit = self.read_wide_unit(line, column, true)?;
-                    bytes.extend_from_slice(&unit.to_le_bytes());
+                    let unit = self.read_code_unit(line, column, true, bits)?;
+                    match bits {
+                        8 => bytes.push(unit as u8),
+                        16 => bytes.extend_from_slice(&(unit as u16).to_le_bytes()),
+                        _ => bytes.extend_from_slice(&unit.to_le_bytes()),
+                    }
                 }
             }
         }
@@ -682,6 +716,29 @@ impl Lexer<'_> {
             bytes: Some(bytes),
         });
         Ok(())
+    }
+
+    /// One source character or escape, as a code unit that must fit in `bits`.
+    fn read_code_unit(
+        &mut self,
+        line: usize,
+        column: usize,
+        string: bool,
+        bits: u32,
+    ) -> Result<u32, Diagnostic> {
+        if bits <= 8 {
+            return Ok(u32::from(self.read_char_byte(line, column, string)?));
+        }
+        let value = self.read_wide_unit(line, column, string)?;
+        let limit = if bits >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << bits) - 1
+        };
+        if value > limit {
+            return self.fail(line, column, "hex escape sequence out of range");
+        }
+        Ok(value)
     }
 
     /// One wide character or escape, as a `wchar_t` code unit.
@@ -1280,7 +1337,23 @@ mod tests {
     fn rejects_literals_and_raw_hash() {
         assert!(err("\"hi").contains("unterminated string literal"));
         assert_eq!(tokens("L\"hi\"")[0].kind, TokenKind::String);
-        assert!(err("u8\"hi\"").contains("unicode string and character literals"));
+        assert_eq!(
+            tokens("u8\"hi\"")[0].bytes.as_deref(),
+            Some(b"hi".as_slice())
+        );
+        assert_eq!(tokens("u\"A\"")[0].bytes.as_deref(), Some(&[b'A', 0][..]));
+        assert_eq!(
+            tokens("U\"A\"")[0].bytes.as_deref(),
+            Some(&[b'A', 0, 0, 0][..])
+        );
+        assert!(err("u8'A'").contains("u8 character constants"));
+        let u16 = tokens("u'A'");
+        assert_eq!(u16[0].value, Some(u64::from(b'A')));
+        assert_eq!(u16[0].int_ty, Some(crate::ast::TypeName::UShort));
+        let u32 = tokens("U'\\xFF'");
+        assert_eq!(u32[0].value, Some(0xFF));
+        assert_eq!(u32[0].int_ty, Some(crate::ast::TypeName::UInt));
+        assert!(err("u'\\x10000'").contains("hex escape sequence out of range"));
         assert_eq!(tokens("L'a'")[0].value, Some(u64::from(b'a')));
         assert_eq!(tokens("L'\\0'")[0].value, Some(0));
         assert_eq!(

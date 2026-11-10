@@ -183,27 +183,29 @@ fn render_struct(handle: &StructRef) -> String {
 }
 
 fn render_string(literal: &StrConst) -> String {
-    if literal.wide {
-        let count = literal.bytes.len() / 4;
-        let mut parts = Vec::with_capacity(count);
-        for chunk in literal.bytes.chunks(4) {
-            let mut unit = 0u32;
-            for (index, byte) in chunk.iter().enumerate() {
-                unit |= u32::from(*byte) << (8 * index);
-            }
-            parts.push(format!("i32 {unit}"));
-        }
+    let unit = literal.enc.unit();
+    if unit == 1 {
+        let n = literal.bytes.len();
         return format!(
-            "@{} = private unnamed_addr constant [{count} x i32] [{}], align 4",
+            "@{} = private unnamed_addr constant [{n} x i8] c{}, align 1",
             literal.name,
-            parts.join(", ")
+            llvm_bytes(&literal.bytes)
         );
     }
-    let n = literal.bytes.len();
+    let ir = if unit == 2 { "i16" } else { "i32" };
+    let count = literal.bytes.len() / unit;
+    let mut parts = Vec::with_capacity(count);
+    for chunk in literal.bytes.chunks(unit) {
+        let mut acc = 0u32;
+        for (index, byte) in chunk.iter().enumerate() {
+            acc |= u32::from(*byte) << (8 * index);
+        }
+        parts.push(format!("{ir} {acc}"));
+    }
     format!(
-        "@{} = private unnamed_addr constant [{n} x i8] c{}, align 1",
+        "@{} = private unnamed_addr constant [{count} x {ir}] [{}], align {unit}",
         literal.name,
-        llvm_bytes(&literal.bytes)
+        parts.join(", ")
     )
 }
 
@@ -732,6 +734,16 @@ impl Gen {
                 let rendered = self.render_call_args(args, resolved, &sig, Some(&tmp));
                 let _ = self.emit_call(callee, resolved, &sig, &rendered);
             }
+            Some(AggAbi::X87) => {
+                let rendered = self.render_call_args(args, resolved, &sig, None);
+                let value = self
+                    .emit_call(callee, resolved, &sig, &rendered)
+                    .expect("x87 aggregate returns a value");
+                let align = ty.align().max(16);
+                self.emit(&format!(
+                    "  store x86_fp80 {value}, ptr {tmp}, align {align}"
+                ));
+            }
             Some(AggAbi::Direct(pieces)) => {
                 let rendered = self.render_call_args(args, resolved, &sig, None);
                 let value = self
@@ -819,7 +831,7 @@ impl Gen {
         let agg =
             crate::abi::classify_for(&ty, crate::abi::AggUse::Param).expect("variadic aggregate");
         let parts = match agg {
-            AggAbi::Memory => vec![memory_part(&ty)],
+            AggAbi::Memory | AggAbi::X87 => vec![memory_part(&ty)],
             AggAbi::Direct(pieces) => pieces
                 .into_iter()
                 .map(|piece| Part {
@@ -974,6 +986,15 @@ impl Gen {
                 self.copy_struct(&ty, src, "%agg.result", src_volatile);
                 self.emit("  ret void");
             }
+            AggAbi::X87 => {
+                let vol = if src_volatile { " volatile" } else { "" };
+                let align = align.max(16);
+                let tmp = self.fresh();
+                self.emit(&format!(
+                    "  {tmp} = load x86_fp80, ptr {src}, align {align}{vol}"
+                ));
+                self.emit(&format!("  ret x86_fp80 {tmp}"));
+            }
             AggAbi::Direct(pieces) => {
                 if pieces.len() == 1 {
                     let value = self.load_piece(src, align, &pieces[0]);
@@ -1007,6 +1028,7 @@ impl Gen {
         if let Some(agg) = self.ret_agg.clone() {
             match agg {
                 AggAbi::Memory => self.emit("  ret void"),
+                AggAbi::X87 => self.emit("  ret x86_fp80 0xK00000000000000000000"),
                 AggAbi::Direct(pieces) => {
                     let ty = crate::abi::pieces_type(&pieces);
                     self.emit(&format!("  ret {ty} zeroinitializer"));

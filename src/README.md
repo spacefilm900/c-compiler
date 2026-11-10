@@ -5,7 +5,7 @@ Rust sources for the clean-room frontend. `make` (or `cargo build --release`) pr
 | File | Role |
 | --- | --- |
 | `pp.rs` | Translation phases 2–4: splicing, preprocessing tokens, macros, conditionals, and `#include`. |
-| `lexer.rs` | Phase-7 tokens, integer suffixes, floating constants (including `long double`), character constants, wide `L` literals, and string literals. Rejects a stray `#`, `u`/`U`/`u8` literals, and other input this milestone does not lex. |
+| `lexer.rs` | Phase-7 tokens, integer suffixes, floating constants (including `long double`), character constants, and `L` / `u` / `U` / `u8` literals. Rejects a stray `#`, `u8` character constants, and other input this milestone does not lex. |
 | `float.rs` | Decimal and hexadecimal floating constants, and conversions between floating values and integers. |
 | `abi.rs` | System V AMD64 classification for aggregates, including SSE eightbytes. |
 | `parser.rs`, `ast.rs` | Recursive-descent parser and AST, including pointers, arrays, structs, unions, typedefs, enums, `const`/`volatile`/`restrict`, and variadic prototypes. |
