@@ -1,0 +1,46 @@
+# Csmith 2.3.0 (30dccd73b78652c4719f36572994778a5b233a4e).
+# One seed per line. CI runs this list and no others.
+# Options live in harness/run_csmith.py (CSMITH_OPTIONS).
+# A larger local batch is: python3 harness/run_csmith.py --count 500
+# The wall-clock limit is twice the CPU limit, so a CPU-bound program
+# dies from SIGXCPU on both sides instead of racing the parent's timeout.
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40

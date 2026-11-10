@@ -55,6 +55,16 @@ python3 harness/run_tests.py
 
 `cargo test` runs the lexer, parser, diagnostic, and IR unit tests, and compares every `tests/*.c` program with Clang. `harness/run_tests.py` is the project differential runner: it compiles each `tests/*.c` with this compiler and with Clang, links both, and compares exit status, stdout, and stderr.
 
+The external suites (Csmith, One True AWK, the AWK Builder suites, and `gcc.c-torture/execute`) and the performance script are described in [tests/external/README.md](tests/external/README.md) and [STATUS.md](STATUS.md).
+
+```sh
+make csmith
+make otawk
+make torture
+make perf
+make awk-extra
+```
+
 On the machine where system `cargo` is Rust 1.85.1 and has no clippy component, the clippy check that passed was:
 
 ```sh
@@ -103,7 +113,7 @@ Actions are pinned to commits, not floating tags:
 - `_Bool` (and `<stdbool.h>`'s `bool`, `true`, and `false`). A nonzero value converts to 1. `restrict` is a pointer qualifier and does not change the IR. Function pointers may be declared, assigned, compared with `==` and `!=`, stored in arrays and structs, and called as `fp(...)` or `(*fp)(...)`. A function designator decays to a pointer. `typedef` of a function type works. `qsort` takes a comparator. Relational `<` on function pointers is a diagnostic. `float` and `double` are computed, including constants, conversions, and SSE calling conventions. `long double` may appear in a declaration; an expression that produces one is a diagnostic.
 - `__attribute__((...))` and `__extension__` are ignored. `__asm__("name")` is the linker name of a function.
 
-`include/` holds headers a compiler supplies rather than the C library: `stddef.h` (`size_t`, `ptrdiff_t`, `wchar_t`, `NULL`, `offsetof`), `stdarg.h` (`va_list` and the `va_*` macros, lowered to the builtins), `stdbool.h`, and `limits.h` (the ISO limits for this LP64 target). `#include <stdio.h>` and the other library headers come from the host. Clang, when it compiles the same test, uses those same host headers.
+`include/` holds headers a compiler supplies rather than the C library: `stddef.h` (`size_t`, `ptrdiff_t`, `wchar_t`, `NULL`, `offsetof`), `stdarg.h` (`va_list` and the `va_*` macros, lowered to the builtins), `stdbool.h`, `stdnoreturn.h` (`noreturn`), `float.h` (IEEE binary32, binary64, and the `LDBL_*` macros), and `limits.h` (the ISO limits for this LP64 target). `#include <stdio.h>` and the other library headers come from the host. Clang, when it compiles the same test, uses those same host headers. An `l`/`L` floating constant is lexed so `float.h` can name `LDBL_MAX`. An expression that uses that value is still a diagnostic.
 
 Reaching the closing brace of an integer function lowers to a return of 0 of that type. That is what C requires for `main`. A `float` or `double` function that falls off the end lowers to a return of `0.0`. A `void` function that falls off the end lowers to `ret void`.
 
@@ -111,7 +121,7 @@ Reaching the closing brace of an integer function lowers to a return of 0 of tha
 
 Unsupported or invalid input is a diagnostic. It is not ignored and it is not lowered.
 
-Trigraphs are not recognized. `_Pragma` is rejected or left as an ordinary token. `__DATE__` and `__TIME__` are not predefined. Wide string and character literals (`L"hi"`, `u8"hi"`, `L'a'`) are rejected. `long double` constants, binary literals, and non-ASCII bytes are errors. An integer suffix that is not in the C11 grammar (`1Ll`, `1uu`) is a diagnostic. An integer constant that fits in no type on the C11 6.4.4.1 list is a diagnostic, including a decimal value that does not fit in signed `long long`. Multi-character character constants and hex or octal escapes outside `unsigned char` are diagnostics.
+Trigraphs are not recognized. `_Pragma` is rejected or left as an ordinary token. `__DATE__` and `__TIME__` are not predefined. Wide string and character literals (`L"hi"`, `u8"hi"`, `L'a'`) are rejected. An expression that produces a `long double`, including a use of an `l`/`L` constant, is an error. Binary literals and non-ASCII bytes are errors. An integer suffix that is not in the C11 grammar (`1Ll`, `1uu`) is a diagnostic. An integer constant that fits in no type on the C11 6.4.4.1 list is a diagnostic, including a decimal value that does not fit in signed `long long`. Multi-character character constants and hex or octal escapes outside `unsigned char` are diagnostics.
 
 The parser or checker rejects variable-length arrays, a `static` or `extern` declaration in a `for` header, a `static` function declaration at block scope, old-style declarations with an empty parameter list (`int f();`), nested functions, a variadic function with no named parameter (`int f(...);`), an incomplete struct or union passed or returned at a definition or a call, returning an x87 aggregate, flexible array members, anonymous struct or union members, empty structs and unions, a GNU range designator (`[0 ... 3]`), computed `goto`, and a label followed by a declaration (`case 1: int x;`). Arithmetic on `void *` is rejected; Clang warns and treats the size as 1. A global initializer that is not an integer or floating constant expression, an address constant, or a constant brace list of those is a diagnostic. Assignment, `++`/`--`, calls, and the comma operator are not allowed in that constant expression when they are evaluated (C11 6.6). An evaluated division by zero is a diagnostic, and so is an evaluated signed constant whose result does not fit in its type (C11 6.6p4), including `INT_MIN / -1` and `1 << 31`. `long double` expressions are diagnostics. Other C11 keywords (`_Alignas`, `_Generic`, …) are recognized so they produce a specific "not supported" diagnostic.
 

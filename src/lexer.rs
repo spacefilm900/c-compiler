@@ -324,14 +324,22 @@ impl Lexer<'_> {
         }
         let kind = self.float_suffix(line, column)?;
         let spelling = self.source[start..self.index].to_string();
-        let body_len = if kind == FloatKind::Float {
-            spelling.len() - 1
+        // A `long double` constant is recognized so `<float.h>` can define
+        // `LDBL_*`. The value is not computed; semantic analysis rejects a
+        // use. The stored bits are unused.
+        let bits = if kind == FloatKind::LongDouble {
+            0
         } else {
-            spelling.len()
-        };
-        let body = &spelling[..body_len];
-        let Some(bits) = parse_decimal(body, kind) else {
-            return self.fail(line, column, "invalid floating constant");
+            let body_len = if kind == FloatKind::Float {
+                spelling.len() - 1
+            } else {
+                spelling.len()
+            };
+            let body = &spelling[..body_len];
+            let Some(bits) = parse_decimal(body, kind) else {
+                return self.fail(line, column, "invalid floating constant");
+            };
+            bits
         };
         self.push_float(&spelling, bits, kind, line, column);
         Ok(())
@@ -405,8 +413,9 @@ impl Lexer<'_> {
         Ok(())
     }
 
-    /// `f`/`F` selects `float`. No suffix selects `double`. `l`/`L` would be
-    /// `long double`, which this target does not compute.
+    /// `f`/`F` selects `float`. No suffix selects `double`. `l`/`L` selects
+    /// `long double`. The constant is lexed so a header can name it; an
+    /// expression that produces a `long double` is still rejected later.
     fn float_suffix(&mut self, line: usize, column: usize) -> Result<FloatKind, Diagnostic> {
         match self.peek() {
             Some(b'f' | b'F') => {
@@ -418,7 +427,10 @@ impl Lexer<'_> {
             }
             Some(b'l' | b'L') => {
                 self.bump();
-                self.fail(line, column, "long double is not supported")
+                if self.float_tail() {
+                    return self.fail(line, column, "invalid floating constant");
+                }
+                Ok(FloatKind::LongDouble)
             }
             Some(_) if self.float_tail() => self.fail(line, column, "invalid floating constant"),
             _ => Ok(FloatKind::Double),
@@ -1056,8 +1068,9 @@ mod tests {
         );
         assert_eq!(tokens("0x0p1000000000")[0].value, Some(0));
         assert_eq!(tokens("08.5")[0].kind, TokenKind::Float);
-        assert!(err("1.0L").contains("long double"));
-        assert!(err("1.0l").contains("long double"));
+        assert_eq!(tokens("1.0L")[0].float_kind, Some(FloatKind::LongDouble));
+        assert_eq!(tokens("1.0l")[0].float_kind, Some(FloatKind::LongDouble));
+        assert!(err("1.0LL").contains("invalid floating constant"));
         assert!(err("1.ex").contains("invalid floating constant"));
         assert!(err("2._").contains("invalid floating constant"));
         assert!(err("1.0e10.0").contains("invalid floating constant"));
@@ -1096,7 +1109,10 @@ mod tests {
         assert!(err("L\"hi\"").contains("wide string and character literals"));
         assert!(err("u8\"hi\"").contains("wide string and character literals"));
         assert!(err("L'a'").contains("wide string and character literals"));
-        assert!(err("1.0L").contains("long double"));
+        assert_eq!(
+            tokens("1.0L")[0].float_kind,
+            Some(crate::ast::FloatKind::LongDouble)
+        );
         assert!(err("1.ex").contains("invalid floating constant"));
         assert!(err("1e").contains("invalid floating constant"));
         assert!(err("24e-").contains("invalid floating constant"));

@@ -1,6 +1,13 @@
 /target/
-/build/compiler
+/build/
 **/*.rs.bk
 __pycache__/
 *.pyc
 tests/external/wacc/
+tests/external/csmith/
+tests/external/onetrueawk/
+tests/external/gcc-torture/
+tests/external/awk-posix-challenge/
+tests/external/awk-volume-tests/
+tests/external/awk-results/
+reports/perf.json

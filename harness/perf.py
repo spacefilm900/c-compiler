@@ -1,0 +1,413 @@
+#!/usr/bin/env python3
+"""Time this compiler against clang -O0 on a fixed set.
+
+Compile time stops at LLVM IR on both sides: this compiler writes
+textual IR, and Clang is timed with `-S -emit-llvm` at `-O0 -std=c11`.
+Run time is the linked binaries, both produced with `clang -O0`.
+
+Run time is the harness programs, One True AWK's own test suite, and
+the Shakespeare volume test when that private tree is present.
+
+The script writes reports/perf.json and prints a markdown table. It
+does not fail because a number moved. It fails only when the harness
+compiler or clang is missing, or when a harness program does not build.
+
+Env: CC_UNDER_TEST, CLANG, PERF_JSON.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import platform
+import shutil
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+# Keep the environment string. Path("./compiler") stringifies to "compiler",
+# which is then looked up on PATH instead of in the current directory.
+COMPILER_COMMAND = os.environ.get("CC_UNDER_TEST", str(ROOT / "build" / "compiler"))
+COMPILER = Path(COMPILER_COMMAND)
+CLANG = os.environ.get("CLANG", "clang")
+OUT = Path(os.environ.get("PERF_JSON", ROOT / "reports" / "perf.json"))
+FLAGS = (
+    "compile: this compiler's IR vs clang -std=c11 -O0 -S -emit-llvm; "
+    "run: both binaries linked with clang -O0"
+)
+
+
+def clang_version() -> str:
+    proc = subprocess.run([CLANG, "--version"], text=True, capture_output=True, check=False)
+    return proc.stdout.splitlines()[0] if proc.stdout else "unknown"
+
+
+def time_call(
+    cmd: list[str], cwd: Path | None = None, timeout: float = 60, keep_stdout: bool = False
+) -> tuple[float, int, bytes]:
+    start = time.perf_counter()
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE if keep_stdout else subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return time.perf_counter() - start, 124, b""
+    return time.perf_counter() - start, proc.returncode, proc.stdout or b""
+
+
+def compile_harness(work: Path) -> dict:
+    sources = sorted((ROOT / "tests").glob("*.c"))
+    ours = 0.0
+    clang = 0.0
+    ours_fail = 0
+    clang_fail = 0
+    for src in sources:
+        dt, rc, _out = time_call([COMPILER_COMMAND, str(src), "-o", str(work / f"{src.stem}.ll")])
+        ours += dt
+        ours_fail += rc != 0
+        dt, rc, _out = time_call(
+            [
+                CLANG,
+                "-std=c11",
+                "-O0",
+                "-w",
+                "-S",
+                "-emit-llvm",
+                str(src),
+                "-o",
+                str(work / f"{src.stem}.clang.ll"),
+            ]
+        )
+        clang += dt
+        clang_fail += rc != 0
+    return {
+        "files": len(sources),
+        "ours_s": round(ours, 4),
+        "clang_s": round(clang, 4),
+        "ours_fail": ours_fail,
+        "clang_fail": clang_fail,
+    }
+
+
+def run_harness(work: Path) -> dict:
+    sources = sorted((ROOT / "tests").glob("*.c"))
+    ours = 0.0
+    clang = 0.0
+    ran = 0
+    mismatches = 0
+    timeouts = 0
+    for src in sources:
+        ll = work / f"{src.stem}.run.ll"
+        mine = work / f"{src.stem}.mine"
+        ref = work / f"{src.stem}.ref"
+        quiet = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "stdin": subprocess.DEVNULL,
+            "timeout": 60,
+            "check": False,
+        }
+        try:
+            if subprocess.run([COMPILER_COMMAND, str(src), "-o", str(ll)], **quiet).returncode != 0:
+                continue
+            if subprocess.run([CLANG, "-O0", "-w", str(ll), "-o", str(mine), "-lm"], **quiet).returncode != 0:
+                continue
+            if (
+                subprocess.run(
+                    [CLANG, "-std=c11", "-O0", "-w", str(src), "-o", str(ref), "-lm"],
+                    **quiet,
+                ).returncode
+                != 0
+            ):
+                continue
+        except subprocess.TimeoutExpired:
+            continue
+        dt, ours_rc, ours_out = time_call([str(mine)], timeout=30, keep_stdout=True)
+        ours += dt
+        dt, clang_rc, clang_out = time_call([str(ref)], timeout=30, keep_stdout=True)
+        clang += dt
+        ran += 1
+        # time_call reports a timeout as 124. The same exit and the same
+        # stdout, including a shared nonzero exit, is not a mismatch.
+        if ours_rc == 124 or clang_rc == 124:
+            timeouts += 1
+        elif ours_rc != clang_rc or ours_out != clang_out:
+            mismatches += 1
+    return {
+        "files": ran,
+        "ours_s": round(ours, 4),
+        "clang_s": round(clang, 4),
+        "mismatches": mismatches,
+        "timeouts": timeouts,
+    }
+
+
+def time_awk_compile() -> dict:
+    script = ROOT / "scripts" / "build_onetrueawk.sh"
+    src = ROOT / "tests" / "external" / "onetrueawk"
+    if not src.is_dir() or not script.is_file():
+        return {"status": "not-fetched"}
+    work = ROOT / "build" / "perf-awk"
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True)
+    # Generate awkgram.tab.c and proctab.c before the clock starts.
+    subprocess.run(
+        [str(script), "clang", str(work / "prep")],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        timeout=300,
+        check=False,
+    )
+    shutil.rmtree(work / "prep", ignore_errors=True)
+    start = time.perf_counter()
+    clang = subprocess.run(
+        [str(script), "clang", str(work / "clang")],
+        text=True,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        timeout=300,
+        check=False,
+    )
+    clang_s = time.perf_counter() - start
+    start = time.perf_counter()
+    ours = subprocess.run(
+        [str(script), "ccomp", str(work / "ccomp")],
+        text=True,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        timeout=300,
+        check=False,
+    )
+    ours_s = time.perf_counter() - start
+    return {
+        "status": "ok" if clang.returncode == 0 and ours.returncode == 0 else "compile-failed",
+        "clang_s": round(clang_s, 4),
+        "ours_s": round(ours_s, 4),
+        "clang_rc": clang.returncode,
+        "ours_rc": ours.returncode,
+        "clang_awk": str(work / "clang" / "awk"),
+        "ours_awk": str(work / "ccomp" / "awk"),
+        "ours_stderr": ours.stderr[-500:],
+    }
+
+
+def time_awk_suite(clang_awk: Path, our_awk: Path) -> dict:
+    src = ROOT / "tests" / "external" / "onetrueawk"
+    if not (src / "testdir" / "REGRESS").is_file():
+        return {"status": "not-fetched"}
+
+    def suite(binary: Path) -> tuple[float, int, list[str]]:
+        env = os.environ.copy()
+        env["oldawk"] = str(binary)
+        env["awk"] = str(binary)
+        start = time.perf_counter()
+        try:
+            proc = subprocess.run(
+                [str(src / "testdir" / "REGRESS")],
+                cwd=src / "testdir",
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                timeout=180,
+                check=False,
+            )
+            code = proc.returncode
+        except subprocess.TimeoutExpired:
+            return time.perf_counter() - start, 124, ["testdir/REGRESS: timed out"]
+        # bugs-fixed/REGRESS wants ../a.out. Time the same programs directly.
+        # main returns 0, or 2 after a syntax error. FATAL calls exit(2).
+        # A signal is a negative status. Other codes are not that program's result.
+        unexpected: list[str] = []
+        for awk in sorted((src / "bugs-fixed").glob("*.awk")):
+            cmd = [str(binary), "-f", str(awk)]
+            data = awk.with_suffix(".in")
+            if data.is_file():
+                cmd.append(str(data))
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    timeout=30,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                unexpected.append(f"{awk.name}: timed out")
+                return time.perf_counter() - start, 124, unexpected
+            if proc.returncode not in (0, 2):
+                unexpected.append(f"{awk.name}: exit {proc.returncode}")
+        return time.perf_counter() - start, code, unexpected
+
+    row: dict = {"status": "ok", "runner": "testdir/REGRESS and bugs-fixed/*.awk"}
+    if clang_awk.is_file():
+        clang_s, clang_rc, clang_bad = suite(clang_awk)
+        row["clang_s"] = round(clang_s, 4)
+        row["clang_testdir_rc"] = clang_rc
+        row["clang_bugs_fixed"] = clang_bad
+    else:
+        row["clang_s"] = None
+    if our_awk.is_file():
+        our_s, our_rc, our_bad = suite(our_awk)
+        row["ours_s"] = round(our_s, 4)
+        row["ours_testdir_rc"] = our_rc
+        row["ours_bugs_fixed"] = our_bad
+    else:
+        row["ours_s"] = None
+        row["status"] = "clang-only"
+    # A timeout is recorded as 124. The performance job still exits 0;
+    # the table has to say the suite did not finish.
+    if any(row.get(key, 0) not in (0, None) for key in ("clang_testdir_rc", "ours_testdir_rc")):
+        row["status"] = "failed"
+    if row.get("clang_bugs_fixed") or row.get("ours_bugs_fixed"):
+        row["status"] = "failed"
+    return row
+
+
+def time_volume(clang_awk: Path, our_awk: Path) -> dict:
+    volume = ROOT / "tests" / "external" / "awk-volume-tests"
+    if not (volume / "run.sh").is_file():
+        return {"status": "not-available"}
+    rows = {}
+    for label, binary in (("clang", clang_awk), ("ours", our_awk)):
+        if not binary.is_file():
+            rows[label] = {"status": "no-binary"}
+            continue
+        env = {**os.environ, "AWKS": "onetrue", "ONETRUE_CMD": str(binary)}
+        start = time.perf_counter()
+        try:
+            proc = subprocess.run(
+                ["./run.sh"],
+                cwd=volume,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                timeout=180,
+                check=False,
+            )
+            rows[label] = {"s": round(time.perf_counter() - start, 4), "rc": proc.returncode}
+        except subprocess.TimeoutExpired:
+            rows[label] = {"s": round(time.perf_counter() - start, 4), "rc": 124}
+    failed = any(
+        isinstance(row, dict) and row.get("rc", 0) not in (0, None) for row in rows.values()
+    )
+    rows["status"] = "failed" if failed else "ok"
+    return rows
+
+
+def cell_with_rc(value, rc, seconds: bool = False, notes: list[str] | None = None) -> str:
+    text = f"{value} s" if seconds else str(value)
+    parts: list[str] = []
+    if rc == 124:
+        parts.append("timed out")
+    elif rc:
+        parts.append(f"rc {rc}")
+    if notes:
+        shown = ", ".join(notes[:3])
+        if len(notes) > 3:
+            shown += f", +{len(notes) - 3} more"
+        parts.append(shown)
+    if not parts:
+        return text
+    return f"{text} ({'; '.join(parts)})"
+
+
+def markdown(report: dict) -> str:
+    c = report["compile"]["harness"]
+    a = report["compile"]["onetrueawk"]
+    r = report["run"]["harness"]
+    suite = report["run"]["onetrueawk_suite"]
+    vol = report["run"]["volume"]
+    lines = [
+        "| Measurement | This compiler | Clang -O0 |",
+        "| --- | --- | --- |",
+        f"| Harness compile ({c['files']} files) | {c['ours_s']} s | {c['clang_s']} s |",
+    ]
+    if a.get("status") == "ok":
+        lines.append(f"| One True AWK compile | {a['ours_s']} s | {a['clang_s']} s |")
+    else:
+        lines.append(
+            f"| One True AWK compile | {a.get('status', 'n/a')} | {a.get('clang_s', 'n/a')} s |"
+        )
+    lines.append(
+        f"| Harness run ({r['files']} programs, "
+        f"{r.get('mismatches', 0)} result mismatches, {r.get('timeouts', 0)} timeouts) "
+        f"| {r['ours_s']} s | {r['clang_s']} s |"
+    )
+    if suite.get("clang_s") is not None:
+        ours_value = suite["ours_s"] if suite.get("ours_s") is not None else "did not build"
+        lines.append(
+            "| One True AWK test suite | "
+            f"{cell_with_rc(ours_value, suite.get('ours_testdir_rc'), seconds=suite.get('ours_s') is not None, notes=suite.get('ours_bugs_fixed'))} | "
+            f"{cell_with_rc(suite['clang_s'], suite.get('clang_testdir_rc'), seconds=True, notes=suite.get('clang_bugs_fixed'))} |"
+        )
+    else:
+        lines.append("| One True AWK test suite | not run | not run |")
+    ours_vol = vol.get("ours") if isinstance(vol.get("ours"), dict) else {}
+    clang_vol = vol.get("clang") if isinstance(vol.get("clang"), dict) else {}
+    if vol.get("status") in ("ok", "failed") and ("s" in ours_vol or "s" in clang_vol):
+        lines.append(
+            "| Shakespeare volume | "
+            f"{cell_with_rc(ours_vol['s'], ours_vol.get('rc'), seconds=True) if 's' in ours_vol else ours_vol.get('status', 'not run')} | "
+            f"{cell_with_rc(clang_vol['s'], clang_vol.get('rc'), seconds=True) if 's' in clang_vol else clang_vol.get('status', 'not run')} |"
+        )
+    else:
+        lines.append("| Shakespeare volume | not available in this run | not available in this run |")
+    return "\n".join(lines)
+
+
+def main() -> int:
+    if not COMPILER.is_file():
+        print(f"compiler not found: {COMPILER}")
+        return 1
+    if shutil.which(CLANG) is None:
+        print(f"clang not found: {CLANG}")
+        return 1
+    with tempfile.TemporaryDirectory(prefix="perf-") as tmp:
+        work = Path(tmp)
+        harness_c = compile_harness(work)
+        if harness_c["ours_fail"] or harness_c["clang_fail"]:
+            print(f"harness compile failures: {harness_c}")
+            return 1
+        harness_r = run_harness(work)
+    awk_c = time_awk_compile()
+    clang_awk = Path(awk_c.get("clang_awk", ""))
+    our_awk = Path(awk_c.get("ours_awk", ""))
+    suite = time_awk_suite(clang_awk, our_awk) if clang_awk.is_file() else {"status": "not-run"}
+    volume = time_volume(clang_awk, our_awk) if clang_awk.is_file() else {"status": "not-run"}
+    report = {
+        "machine": {
+            "uname": " ".join(platform.uname()),
+            "system": platform.system(),
+            "machine": platform.machine(),
+            "python": platform.python_version(),
+            "clang": clang_version(),
+            "note": (
+                "CI runs this script on ubuntu-24.04 and uploads reports/perf.json. "
+                "A number in STATUS.md from another machine is labeled as such."
+            ),
+        },
+        "flags": FLAGS,
+        "compile": {"harness": harness_c, "onetrueawk": awk_c},
+        "run": {"harness": harness_r, "onetrueawk_suite": suite, "volume": volume},
+    }
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    OUT.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    table = markdown(report)
+    print(table)
+    print(f"\nwrote {OUT}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

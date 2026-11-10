@@ -1,0 +1,24 @@
+# Known Csmith failures. One seed, then a reason category.
+# An unlisted failure fails harness/run_csmith.py.
+# A listed seed that passes fails the run.
+# A compiler panic fails the run even when the seed is listed.
+# Options are CSMITH_OPTIONS in harness/run_csmith.py.
+# inconclusive: both binaries died from the CPU limit and printed no checksum.
+
+1 strict-pointer
+2 strict-pointer
+7 inconclusive
+8 strict-pointer
+9 strict-pointer
+11 strict-pointer
+17 strict-pointer
+19 inconclusive
+20 strict-pointer
+21 bit-field
+22 bit-field
+24 strict-pointer
+28 strict-pointer
+29 strict-pointer
+30 strict-pointer
+37 inconclusive
+38 strict-pointer
