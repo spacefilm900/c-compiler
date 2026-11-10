@@ -1,0 +1,44 @@
+# Csmith 2.3.0 (30dccd73b78652c4719f36572994778a5b233a4e).
+# One seed per line. CI runs this list and no others.
+# Options live in harness/run_csmith.py (CSMITH_OPTIONS).
+# A larger local batch is: python3 harness/run_csmith.py --count 500
+# Seeds 7, 19, and 37 are omitted. On those seeds one binary hit the
+# wall-clock timeout and the other was killed by RLIMIT_CPU, so the
+# exit status is not stable.
+1
+2
+3
+4
+5
+6
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+38
+39
+40

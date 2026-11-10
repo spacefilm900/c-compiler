@@ -107,3 +107,191 @@ jobs:
           scripts/fetch_wacc_tests.sh
           make
           python3 harness/run_wacc.py
+
+  csmith:
+    name: csmith differential
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+          components: rustfmt, clippy
+
+      - name: Install Clang, LLVM, make, Python, and a C++ compiler
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm make python3 g++
+          major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
+            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+            exit 1
+          fi
+
+      - name: Cache the pinned Csmith build
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: tests/external/csmith
+          key: csmith-30dccd73b78652c4719f36572994778a5b233a4e-${{ runner.os }}
+
+      - name: Fixed Csmith seeds
+        run: |
+          set -euo pipefail
+          scripts/fetch_csmith.sh
+          make
+          python3 harness/run_csmith.py
+
+  onetrueawk:
+    name: one true awk
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+          components: rustfmt, clippy
+
+      - name: Install Clang, LLVM, make, Python, and bison
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm make python3 bison
+          major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
+            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+            exit 1
+          fi
+
+      - name: Cache the pinned One True AWK tree
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: tests/external/onetrueawk
+          key: onetrueawk-5739fd79bcfc75ba7526773d0cf634521f8aca3c-${{ runner.os }}
+
+      - name: Build both awks and compare the upstream suite
+        run: |
+          set -euo pipefail
+          scripts/fetch_onetrueawk.sh
+          make
+          python3 harness/run_onetrueawk.py
+
+      - name: AWK Builder suites, or skip when the private clones are unavailable
+        run: |
+          set -euo pipefail
+          scripts/build_onetrueawk.sh clang build/otawk-clang
+          if ! scripts/build_onetrueawk.sh ccomp build/otawk-ccomp; then
+            echo "SKIP: AWK Builder suites need an awk built by this compiler."
+            echo "The One True AWK job already failed on that compile."
+            exit 0
+          fi
+          if ! scripts/fetch_awk_posix_challenge.sh || ! scripts/fetch_awk_volume.sh; then
+            echo "SKIP: private AWK Builder suites were not fetched."
+            echo "The default GITHUB_TOKEN for spacefilm900/c-compiler often cannot clone other private repositories."
+            exit 0
+          fi
+          AWK_CLANG="$PWD/build/otawk-clang/awk" \
+            AWK_CCOMP="$PWD/build/otawk-ccomp/awk" \
+            python3 harness/run_awk_extra.py
+
+  gcc-torture:
+    name: gcc torture execute
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+          components: rustfmt, clippy
+
+      - name: Install Clang, LLVM, make, and Python
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm make python3
+          major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
+            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+            exit 1
+          fi
+
+      - name: Cache the pinned execute tests
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: tests/external/gcc-torture
+          key: gcc-torture-5115c7e447fc07457443df874bf57840e8316d5f-${{ runner.os }}
+
+      - name: Run gcc.c-torture/execute
+        run: |
+          set -euo pipefail
+          scripts/fetch_gcc_torture.sh
+          make
+          python3 harness/run_gcc_torture.py
+
+  perf:
+    name: performance numbers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+          components: rustfmt, clippy
+
+      - name: Install Clang, LLVM, make, Python, and bison
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm make python3 bison
+          major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
+            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+            exit 1
+          fi
+
+      - name: Cache the pinned One True AWK tree
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: tests/external/onetrueawk
+          key: onetrueawk-5739fd79bcfc75ba7526773d0cf634521f8aca3c-${{ runner.os }}
+
+      - name: Time compile and run
+        run: |
+          set -euo pipefail
+          scripts/fetch_onetrueawk.sh
+          make
+          python3 harness/perf.py
+
+      - name: Upload raw performance numbers
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: perf-numbers
+          path: reports/perf.json
+          if-no-files-found: error

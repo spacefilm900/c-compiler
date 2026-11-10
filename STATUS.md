@@ -76,10 +76,10 @@ No test in the run panicked, and no executed program disagreed with `expected_re
 | `cargo clippy --offline --all-targets -- -D warnings` | same | clean |
 | `cargo test --offline --lib` | same | **81 passed, 0 failed** |
 | `make` | GNU make **4.3** | `build/compiler` produced |
-| `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **116/116 passed** |
+| `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **118/118 passed** |
 | `scripts/fetch_wacc_tests.sh` then `python3 harness/run_wacc.py` | same Clang and Python | **1384 passed, 0 known failures, 233 skipped, 0 unexpected** |
 
-`tests/100_agg.c` covers register and memory aggregates, `f().x`, and `?:`. `tests/101_fnptr.c` covers decay, `(*fp)(...)`, arrays, struct members, a function typedef, and `qsort`. `tests/102_div.c` calls the host `div` and `ldiv`. `tests/103_float.c` covers floating arithmetic, comparisons, casts, compound assignment, `++`/`--`, globals, a `static` local, a struct member, a union, and `printf("%f", ...)`. `tests/104_libm.c` calls `sin`, `cos`, `sqrt`, `fma`, and `ldexp`. The harness links with `-lm`. `tests/xabi/01_agg_def.c` and `01_agg_use.c` are linked both ways against Clang. `tests/xabi/02_fp_def.c` and `02_fp_use.c` do the same for `float` and `double` arguments, returns, and mixed INTEGER/SSE structs, including a `byval` spill when the XMM registers are full. `tests/99_switch.c` covers fallthrough, nested switches, `break` and `continue`, Duff's device, a case inside `if`, a jump over an automatic initializer, enum and character constants, casts, `sizeof`, and every integer width from `char` through `unsigned long long`, plus `_Bool`. `tests/103_goto.c`, `tests/104_desig.c`, `tests/105_bits.c`, `tests/106_volatile.c`, and `tests/107_vararg.c` cover labels, designators, bit-fields, volatile loads and stores, and `<stdarg.h>`. `tests/xabi/02_vararg_def.c` and `02_vararg_use.c` are linked both ways against Clang. GitHub Actions for this step is not in this file yet. The switch step's Actions runs are in the switch record below.
+`tests/100_agg.c` covers register and memory aggregates, `f().x`, and `?:`. `tests/101_fnptr.c` covers decay, `(*fp)(...)`, arrays, struct members, a function typedef, and `qsort`. `tests/102_div.c` calls the host `div` and `ldiv`. `tests/103_float.c` covers floating arithmetic, comparisons, casts, compound assignment, `++`/`--`, globals, a `static` local, a struct member, a union, and `printf("%f", ...)`. `tests/104_libm.c` calls `sin`, `cos`, `sqrt`, `fma`, and `ldexp`. The harness links with `-lm`. `tests/xabi/01_agg_def.c` and `01_agg_use.c` are linked both ways against Clang. `tests/xabi/02_fp_def.c` and `02_fp_use.c` do the same for `float` and `double` arguments, returns, and mixed INTEGER/SSE structs, including a `byval` spill when the XMM registers are full. `tests/99_switch.c` covers fallthrough, nested switches, `break` and `continue`, Duff's device, a case inside `if`, a jump over an automatic initializer, enum and character constants, casts, `sizeof`, and every integer width from `char` through `unsigned long long`, plus `_Bool`. `tests/103_goto.c`, `tests/104_desig.c`, `tests/105_bits.c`, `tests/106_volatile.c`, and `tests/107_vararg.c` cover labels, designators, bit-fields, volatile loads and stores, and `<stdarg.h>`. `tests/108_float_h.c` and `tests/109_noreturn.c` cover `<float.h>` and `<stdnoreturn.h>`. `tests/xabi/02_vararg_def.c` and `02_vararg_use.c` are linked both ways against Clang. GitHub Actions for this step is not in this file yet. The switch step's Actions runs are in the switch record below.
 
 ## Stage 2, step 1 — built-in preprocessor
 
@@ -265,7 +265,7 @@ A struct may be a local, a file-scope object (`extern` or `static` included), or
 
 - The preprocessor implements translation phases 2–4 for the directives listed below. Trigraphs are not recognized. `_Pragma` and `__DATE__` / `__TIME__` are not implemented. `#include_next` is. A `#` that survives expansion is a stray-token diagnostic. Digraphs (`<:`, `:>`, `<%`, `%>`, `%:`, `%:%:`) are recognized as the corresponding punctuators.
 - An integer constant that fits in no type on the C11 6.4.4.1 list for its suffix and base is a diagnostic. A decimal constant that does not fit in signed `long long` is rejected even when it fits in `unsigned long long`.
-- No flexible array members or anonymous struct/union members. Returning an x87 aggregate is rejected. `long double` may be declared (so a header can name it) but a constant with an `l`/`L` suffix, a definition that takes or returns one, and an expression that produces one are rejected. No variable-length arrays. Wide string and character literals are rejected in program text; a wide character constant in a preprocessor expression is accepted as the corresponding character value. An empty struct or union is rejected. A variadic definition with no named parameter (`int f(...)`) is rejected.
+- No flexible array members or anonymous struct/union members. Returning an x87 aggregate is rejected. `long double` may be declared, and a constant with an `l`/`L` suffix is lexed so `<float.h>` can define `LDBL_*`. A definition that takes or returns `long double`, and an expression that produces one, are rejected. The stored bits of an `l`/`L` constant are not a computed value. No variable-length arrays. Wide string and character literals are rejected in program text; a wide character constant in a preprocessor expression is accepted as the corresponding character value. An empty struct or union is rejected. A variadic definition with no named parameter (`int f(...)`) is rejected.
 - Multi-character character constants (`'ab'`) are rejected; Clang accepts them as an implementation-defined `int`. A hex or octal escape outside `unsigned char` is a diagnostic, matching Clang. Runtime shift counts outside `0 .. width`, signed left shifts of negative values, and signed left shifts that do not fit are undefined and are not diagnosed outside constant initializers. Signed overflow at runtime is undefined and is not diagnosed. Modifying a string literal is undefined and is not diagnosed. A cast may drop `const`.
 - `goto` jumps to a label in the same function. Jumping into the scope of an automatic initializer is not diagnosed, the same as `switch`. A label followed by a declaration (`label: int x;`) is still a diagnostic. `?:` accepts two operands of the same struct or union type. `switch` is implemented, as described above. A `case` range (`case 1 ... 3`) is a GNU extension and is rejected. Computed `goto *expr` is rejected.
 - An empty parameter list on a declaration that is not a definition (`int f();`) is rejected. C11 treats that as a non-prototype. This subset requires a prototype: `(void)` or a parameter type list. A definition may still use `()`.
@@ -281,13 +281,93 @@ A struct may be a local, a file-scope object (`extern` or `static` included), or
 
 - `.github/workflows/ci.yml` runs on `push` and `pull_request` with workflow `contents: read`, cancel-in-progress for the same ref, and the runner `ubuntu-24.04`. The original job is unchanged: 20-minute timeout, Rust 1.85.1 (`rustfmt`, `clippy`), apt packages `clang`, `llvm`, `make`, and `python3`, Clang 15 or newer, then `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo test --offline --lib`, `make`, and `python3 harness/run_tests.py`.
 - A second job, `writing-a-c-compiler suite`, fetches the pinned suite and runs `python3 harness/run_wacc.py`. It has a 30-minute timeout and inherits the workflow token, which is `contents: read`. Saving the suite cache does not need `actions: write`. For `push` and `pull_request`, the runner's cache mode is `write`. The cache key is the pinned commit.
-- Pinned actions: `actions/checkout@11d5960a326750d5838078e36cf38b85af677262` (v4.4.0), `dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8` (v1) with toolchain `1.85.1`, and on the suite job `actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809` (v4.2.4).
+- Stage 3 adds four jobs: `csmith differential` (20 minutes), `one true awk` (25 minutes), `gcc torture execute` (40 minutes), and `performance numbers` (25 minutes). They use the same runner and the same toolchain pin. The performance job's token is `contents: read` and `actions: write` so it can upload `reports/perf.json`. The other jobs stay at the workflow's `contents: read`. Fetched trees are cached by pin. The One True AWK job skips the private AWK Builder suites, with a log line, when `gh` cannot clone them.
+- Pinned actions: `actions/checkout@11d5960a326750d5838078e36cf38b85af677262` (v4.4.0), `dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8` (v1) with toolchain `1.85.1`, `actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809` (v4.2.4), and `actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02` (v4.6.2) on the performance job.
 - `.coderabbit.yaml` follows CodeRabbit schema `https://coderabbit.ai/integrations/schema.v2.json`. The review profile is `CHILL`. The file does not install the GitHub App.
 - Milestone 1's Actions runs and the CodeRabbit review on pull request 1 are in the record below. Step 2's Actions runs and the CodeRabbit review are in the step 2 record below. Step 3's Actions runs and the CodeRabbit review are in the step 3 record below. Step 4's Actions runs and the CodeRabbit review are in the step 4 record below. Step 5's Actions runs were not copied into that step's record. This change's Actions runs and the CodeRabbit review are in the switch record below.
 
+## Stage 3 testing
+
+Csmith, One True AWK, the AWK Builder suites, `gcc.c-torture/execute`, and a performance script. Pins and commands are in `tests/external/README.md`. Nothing here is a new platform. Compiler sources of GCC and Clang were not read. The torture checkout is only `gcc.c-torture/execute`.
+
+### Csmith
+
+Pin `30dccd73b78652c4719f36572994778a5b233a4e` (tag `csmith-2.3.0`). Every seed uses the options in `harness/run_csmith.py`: no packed structs (`#pragma pack` is ignored), `main(void)`, and size caps so a program finishes in seconds. The program is compiled with this compiler and with `clang -std=c11 -O0`, then both binaries run under an 8 second timeout, `RLIMIT_CPU`, and a 2 GiB address-space limit. Exit status and stdout are compared. The checksum line is the one Csmith's `main` prints.
+
+CI runs the 37 seeds in `harness/csmith_seeds.txt`. Seeds 7, 19, and 37 were dropped from that list: one binary was killed by the CPU limit and the other hit the wall-clock timeout, so the exit status is not stable. A local batch is `python3 harness/run_csmith.py --count 500`. It is not part of CI.
+
+Local result on this machine, Ubuntu Clang 18.1.3: **23 passed, 14 known failures, 0 unexpected**, out of 37 seeds. The known failures are stricter pointer constraints than Clang's default warnings (12 seeds) and a file-scope initializer of a nested bit-field (2 seeds). No checksum mismatch in the batch.
+
+### One True AWK
+
+Pin `5739fd79bcfc75ba7526773d0cf634521f8aca3c` (tag `20260426`). `bison -d awkgram.y` writes the parser. `maketab` is compiled with the host `cc`, not this compiler, and writes `proctab.c`. Both awk builds use `-O0`. Clang also gets `-std=c11`. Both pass `-D_DEFAULT_SOURCE`, because this compiler defines `__STRICT_ANSI__` and glibc then hides `srandom`.
+
+This compiler does not yet build awk. The first diagnostic in each failing file:
+
+| File | Diagnostic |
+| --- | --- |
+| `awkgram.tab.c` | `__builtin_memcpy` is not declared. Bison emits it because `__GNUC__` is 4. |
+| `main.c` | `<signal.h>` pulls in an anonymous struct in `sigcontext.h`. Anonymous members are rejected. |
+| `tran.c`, `lib.c` | `isinf` / `isnan` expand to a `?:` whose unused arm calls a `long double` function. An expression that produces `long double` is rejected. |
+| `run.c` | `L'\0'` is a wide character literal. |
+
+`b.c`, `lex.c`, `parse.c`, and `proctab.c` compile. The awk sources were not patched. CI fails this job until the build succeeds and the upstream `testdir` and `bugs-fixed` output match the Clang build.
+
+### AWK Builder suites
+
+Two private repositories, fetched with `gh` at the pins in `tests/external/README.md`. `harness/run_awk_extra.py` runs them against `AWK_CLANG` and `AWK_CCOMP`.
+
+- POSIX challenge `v0.6` (`69b1f589`): portable, observational, and nonportable are reported separately. A compiler defect is a per-case disagreement. One True AWK itself fails portable cases AWK-391, AWK-392, and AWK-399.
+- Shakespeare volume test (`46701e47`): one portable program, two inputs, stdout compared to the pinned expected files.
+
+`AWK_EXTRA_HOOK` is an optional command for a later suite. None is configured. This environment's GitHub token can read `spacefilm900/c-compiler` and cannot read the other private repositories, so the suites were not executed here. CI skips them with a log line when the clone fails, and does not fail the workflow for that skip. The One True AWK job still fails while awk itself does not build.
+
+### GCC torture execute
+
+Pin `5115c7e447fc07457443df874bf57840e8316d5f` (`releases/gcc-15.2.0`). Each program is compiled here, linked with `clang -O0 -lm`, and must exit 0. `builtins/lib` (28 files) is support code and is skipped.
+
+Local result: **797 passed, 1065 known failures, 0 unexpected, 1862 executed, 28 support files skipped**.
+
+| Category | Tests |
+| --- | --- |
+| compile-error | 439 |
+| builtin | 412 |
+| old-style-decl | 66 |
+| runtime | 50 |
+| vla | 24 |
+| long-double | 22 |
+| nested-function | 13 |
+| asm | 10 |
+| link | 9 |
+| complex | 7 |
+| wide-literal | 5 |
+| flexible-array | 4 |
+| anonymous-member | 3 |
+| alignas | 1 |
+
+`runtime` means the program compiled and did not exit 0. Several of those are bit-field width or promotion tests, or an `aligned` attribute this compiler ignores. They are listed, not treated as a reason to copy GCC.
+
+### Performance
+
+`harness/perf.py` writes `reports/perf.json`. CI uploads that file from `ubuntu-24.04` and does not fail on timing noise. Flags: `clang -std=c11 -O0` for Clang. This compiler has no `-O` flag. The compile column for it is the time to emit IR. Clang's compile column is `clang -c`, which includes native code generation. Run time is both binaries linked with `clang -O0`.
+
+The numbers below are from the agent VM (Linux 6.12.113+, x86_64, Ubuntu Clang 18.1.3, Python 3.12.3), not from a GitHub `ubuntu-24.04` runner. The CI artifact `perf-numbers` is that runner's measurement. The harness programs are tiny, so the run-time gap is not a stable ranking.
+
+| Measurement | This compiler | Clang -O0 |
+| --- | --- | --- |
+| Harness compile (115 files, IR vs `clang -c`) | 0.29 s | 1.53 s |
+| One True AWK compile | failed after 1.60 s | 0.45 s |
+| Harness run (115 programs) | 0.38 s | 0.26 s |
+| One True AWK test suite | did not build | 0.35 s |
+| Shakespeare volume | not run (private repo) | not run (private repo) |
+
+### Headers added for the suites
+
+`<float.h>` and `<stdnoreturn.h>` are freestanding headers this compiler now supplies. `tests/108_float_h.c` prints the IEEE macros and matches Clang. `tests/109_noreturn.c` uses `noreturn`. An `l`/`L` constant is lexed so `LDBL_*` can appear in the header. Using that value is still rejected.
+
 ## Next actions
 
-`long double` (x87, `%st0`), variable-length arrays, flexible array members, and anonymous struct or union members are the largest remaining gaps. `float`, `double`, SSE aggregates, variadic definitions, `goto`, designated initializers, bit-fields, and `volatile` are implemented.
+The testing stage is in place. One True AWK does not build yet. The blockers are `__builtin_memcpy`, anonymous struct members (needed by `<signal.h>`), `long double` in the `<math.h>` type-generic macros, and wide character literals. `long double` (x87), variable-length arrays, flexible array members, and anonymous members remain the largest language gaps. No new platform is started.
 
 ## Stage 2 step 4 record
 
