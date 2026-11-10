@@ -279,7 +279,10 @@ def time_volume(clang_awk: Path, our_awk: Path) -> dict:
             rows[label] = {"s": round(time.perf_counter() - start, 4), "rc": proc.returncode}
         except subprocess.TimeoutExpired:
             rows[label] = {"s": round(time.perf_counter() - start, 4), "rc": 124}
-    rows["status"] = "ok"
+    failed = any(
+        isinstance(row, dict) and row.get("rc", 0) not in (0, None) for row in rows.values()
+    )
+    rows["status"] = "failed" if failed else "ok"
     return rows
 
 
@@ -327,9 +330,13 @@ def markdown(report: dict) -> str:
         )
     else:
         lines.append("| One True AWK test suite | not run | not run |")
-    if vol.get("status") == "ok" and "ours" in vol and "s" in vol.get("ours", {}):
+    ours_vol = vol.get("ours") if isinstance(vol.get("ours"), dict) else {}
+    clang_vol = vol.get("clang") if isinstance(vol.get("clang"), dict) else {}
+    if vol.get("status") in ("ok", "failed") and ("s" in ours_vol or "s" in clang_vol):
         lines.append(
-            f"| Shakespeare volume | {vol['ours']['s']} s | {vol['clang']['s']} s |"
+            "| Shakespeare volume | "
+            f"{cell_with_rc(ours_vol['s'], ours_vol.get('rc'), seconds=True) if 's' in ours_vol else ours_vol.get('status', 'not run')} | "
+            f"{cell_with_rc(clang_vol['s'], clang_vol.get('rc'), seconds=True) if 's' in clang_vol else clang_vol.get('status', 'not run')} |"
         )
     else:
         lines.append("| Shakespeare volume | not available in this run | not available in this run |")
