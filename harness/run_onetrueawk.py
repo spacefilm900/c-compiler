@@ -72,6 +72,17 @@ def bugs_fixed(binary: Path) -> dict[str, tuple[int, bytes, bytes]]:
     return out
 
 
+def bad_lines(text: str) -> list[str]:
+    """Lines the upstream scripts use to report a mismatch.
+
+    Some tests print the letters BAD as part of the program output, so the
+    match is the whole line. A golden-file test uses only ``$awk`` and can
+    fail for the Clang build as well; that shared line is not a difference
+    between the two binaries.
+    """
+    return [line for line in text.splitlines() if "BAD" in line]
+
+
 def testdir_compare(clang_awk: Path, our_awk: Path) -> tuple[int, str]:
     """Use the upstream testdir driver with oldawk=clang and awk=ours."""
     env = os.environ.copy()
@@ -118,14 +129,29 @@ def main() -> int:
         clang_awk = clang_dir / "awk"
         our_awk = our_dir / "awk"
         code, text = testdir_compare(clang_awk, our_awk)
-        bad = [line for line in text.splitlines() if "BAD" in line]
-        if bad or code != 0:
+        clang_code, clang_text = testdir_compare(clang_awk, clang_awk)
+        bad = bad_lines(text)
+        clang_bad = bad_lines(clang_text)
+        if bad != clang_bad or code != clang_code:
             print("testdir disagreed with the clang-built awk:")
-            print("\n".join(bad[:40]))
-            if code != 0:
-                print(f"testdir REGRESS exited {code}")
+            only_ours = [line for line in bad if line not in clang_bad]
+            only_clang = [line for line in clang_bad if line not in bad]
+            if only_ours:
+                print("only this compiler's awk:")
+                print("\n".join(only_ours[:40]))
+            if only_clang:
+                print("only the clang-built awk:")
+                print("\n".join(only_clang[:40]))
+            if code != clang_code:
+                print(f"testdir REGRESS exited {code}, clang-built awk exited {clang_code}")
             return 1
-        print("testdir: clang-built awk and this compiler's awk agree")
+        if bad:
+            print(
+                f"testdir: both builds share {len(bad)} golden-file mismatches"
+            )
+            print("\n".join(bad))
+        else:
+            print("testdir: clang-built awk and this compiler's awk agree")
 
         try:
             clang_bugs = bugs_fixed(clang_awk)

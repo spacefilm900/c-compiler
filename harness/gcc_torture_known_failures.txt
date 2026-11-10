@@ -39,7 +39,6 @@
 20010904-2.c runtime
 20010915-1.c builtin
 20010924-1.c flexible-array
-20011121-1.c builtin
 20020107-1.c compile-error
 20020206-1.c compile-error
 20020206-2.c compile-error
@@ -52,9 +51,7 @@
 20020406-1.c builtin
 20020411-1.c compile-error
 20020412-1.c vla
-20020413-1.c long-double
 20020418-1.c builtin
-20020619-1.c builtin
 20020819-1.c compile-error
 20021011-1.c builtin
 20021113-1.c builtin
@@ -72,18 +69,14 @@
 20030401-1.c old-style-decl
 20030408-1.c compile-error
 20030501-1.c nested-function
-20030606-1.c builtin
 20030714-1.c anonymous-member
-20030717-1.c builtin
 20030718-1.c old-style-decl
 20030811-1.c compile-error
 20030909-1.c old-style-decl
 20030910-1.c compile-error
-20030914-1.c long-double
 20031003-1.c runtime
 20031012-1.c builtin
 20031211-2.c compile-error
-20040208-1.c long-double
 20040223-1.c compile-error
 20040302-1.c compile-error
 20040308-1.c vla
@@ -108,7 +101,6 @@
 20041124-1.c compile-error
 20041201-1.c compile-error
 20041214-1.c compile-error
-20041218-1.c builtin
 20041218-2.c vla
 20050106-1.c compile-error
 20050121-1.c old-style-decl
@@ -137,7 +129,6 @@
 20070919-1.c vla
 20071018-1.c compile-error
 20071029-1.c compile-error
-20071108-1.c builtin
 20071120-1.c compile-error
 20071202-1.c compile-error
 20071210-1.c compile-error
@@ -145,7 +136,6 @@
 20071220-1.c compile-error
 20071220-2.c compile-error
 20080122-1.c asm
-20080502-1.c long-double
 20080719-1.c builtin
 20081103-1.c builtin
 20081218-1.c builtin
@@ -156,7 +146,6 @@
 20101013-1.c compile-error
 20110418-1.c builtin
 20111208-1.c compile-error
-20111212-1.c builtin
 20120105-1.c compile-error
 20120427-1.c compile-error
 20120427-2.c compile-error
@@ -250,7 +239,6 @@
 930608-1.c compile-error
 930621-1.c compile-error
 930622-1.c compile-error
-930622-2.c long-double
 930630-1.c compile-error
 930702-1.c compile-error
 930713-1.c compile-error
@@ -289,11 +277,9 @@
 950621-1.c compile-error
 950906-1.c compile-error
 960209-1.c compile-error
-960215-1.c long-double
 960218-1.c compile-error
 960312-1.c compile-error
 960402-1.c compile-error
-960405-1.c long-double
 960416-1.c compile-error
 960419-1.c compile-error
 960512-1.c compile-error
@@ -303,8 +289,6 @@
 960909-1.c compile-error
 961026-1.c compile-error
 961112-1.c compile-error
-970214-1.c wide-literal
-970214-2.c wide-literal
 970217-1.c vla
 970923-1.c compile-error
 980506-1.c compile-error
@@ -319,7 +303,6 @@
 990211-1.c old-style-decl
 990413-2.c compile-error
 990525-2.c old-style-decl
-990628-1.c builtin
 991014-1.c compile-error
 991228-1.c compile-error
 alias-1.c builtin
@@ -328,11 +311,9 @@ alias-3.c builtin
 alias-4.c builtin
 alias-access-path-1.c builtin
 alias-access-path-2.c builtin
-align-2.c long-double
 align-3.c compile-error
 align-nest.c vla
 alloca-1.c compile-error
-anon-1.c anonymous-member
 bcp-1.c builtin
 bf-pack-1.c compile-error
 bf-sign-2.c runtime
@@ -383,8 +364,6 @@ fprintf-1.c compile-error
 fprintf-chk-1.c compile-error
 frame-address.c builtin
 ieee/20010114-2.c builtin
-ieee/20010226-1.c long-double
-ieee/20011123-1.c long-double
 ieee/20030331-1.c builtin
 ieee/920810-1.c compile-error
 ieee/acc2.c compile-error
@@ -423,7 +402,6 @@ ieee/pr108540-2.c builtin
 ieee/pr109008.c compile-error
 ieee/pr109386.c builtin
 ieee/pr119002.c builtin
-ieee/pr29302-1.c long-double
 ieee/pr30704.c compile-error
 ieee/pr36332.c long-double
 ieee/pr38016.c builtin
@@ -456,7 +434,6 @@ minmaxcmp-1.c builtin
 misalign.c compile-error
 mod-1.c compile-error
 mul-sext.c compile-error
-multi-ix.c builtin
 nest-align-1.c compile-error
 nest-stdar-1.c nested-function
 nestfunc-1.c nested-function
@@ -585,7 +562,6 @@ pr34176.c compile-error
 pr34415.c compile-error
 pr34971.c runtime
 pr34982.c old-style-decl
-pr35456.c builtin
 pr36038.c builtin
 pr36321.c builtin
 pr36765.c builtin
@@ -906,7 +882,6 @@ pr99751.c builtin
 printf-1.c compile-error
 printf-chk-1.c compile-error
 pushpop_macro.c old-style-decl
-regstack-1.c long-double
 restrict-1.c old-style-decl
 return-addr.c builtin
 scal-to-vec1.c compile-error
@@ -920,8 +895,6 @@ simd-4.c compile-error
 simd-5.c compile-error
 simd-6.c compile-error
 ssad-run.c old-style-decl
-stdarg-1.c long-double
-stdarg-2.c long-double
 stkalign.c compile-error
 strcpy-2.c vla
 strct-pack-3.c compile-error
@@ -937,8 +910,6 @@ tstdi-1.c compile-error
 usad-run.c old-style-decl
 va-arg-2.c old-style-decl
 va-arg-22.c compile-error
-va-arg-5.c long-double
-va-arg-6.c long-double
 va-arg-pack-1.c long-double
 vla-dealloc-1.c vla
 vrp-1.c old-style-decl
@@ -949,7 +920,6 @@ vrp-5.c old-style-decl
 vrp-6.c old-style-decl
 wchar_t-1.c compile-error
 widechar-1.c compile-error
-widechar-2.c wide-literal
 widechar-3.c wide-literal
 zero-struct-1.c compile-error
 zero-struct-2.c compile-error
