@@ -84,7 +84,15 @@ pub fn parse_decimal(body: &str) -> Option<u128> {
             if index != bytes.len() {
                 return None;
             }
-            return Some(if neg { 0 } else { INF });
+            // A zero significand is zero for either exponent sign. A nonzero
+            // significand overflows to +infinity, or underflows to +0 when
+            // the exponent is negative. The literal itself has no sign; unary
+            // minus is a separate operator.
+            let all_zero = digits.iter().all(|digit| *digit == b'0');
+            if all_zero || neg {
+                return Some(0);
+            }
+            return Some(INF);
         }
         if neg {
             exp = -exp;
@@ -1231,6 +1239,10 @@ mod tests {
         assert_eq!(dec("3.64519953188247460253e-4951"), 1);
         assert_eq!(dec("1e4932"), 0x7FFE_D72C_B2A9_5C7E_F6CD);
         assert_eq!(dec("1e-4951"), 0);
+        assert_eq!(dec("0e99999999999"), 0);
+        assert_eq!(dec("0.0e2147483648"), 0);
+        assert_eq!(dec("0e-99999999999"), 0);
+        assert!(is_inf(dec("1e99999999999")));
         assert_eq!(parse_hex("1", "8", 1), 0x4000_C000_0000_0000_0000);
         assert_eq!(parse_hex("1", "", 0), 0x3FFF_8000_0000_0000_0000);
     }

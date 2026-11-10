@@ -2996,18 +2996,30 @@ impl Parser<'_> {
             }
             TokenKind::String => {
                 self.advance();
-                let wide = token.spelling.starts_with('L');
-                let mut bytes = token.bytes.expect("string token");
-                // Translation phase 6 concatenates adjacent string literals.
-                // The encoding prefixes have to agree.
+                let mut pieces = vec![(
+                    token.spelling.starts_with('L'),
+                    token.bytes.expect("string token"),
+                )];
+                // Translation phase 6 concatenates adjacent literals. If any
+                // piece has an `L` prefix, the result is a wide string
+                // (C11 6.4.5p5). `u`, `U`, and `u8` are rejected by the lexer.
                 while self.current().kind == TokenKind::String {
                     let next = self.advance();
-                    if next.spelling.starts_with('L') != wide {
-                        return Err(
-                            self.error("cannot concatenate wide and ordinary string literals")
-                        );
+                    pieces.push((
+                        next.spelling.starts_with('L'),
+                        next.bytes.expect("string token"),
+                    ));
+                }
+                let wide = pieces.iter().any(|(is_wide, _)| *is_wide);
+                let mut bytes = Vec::new();
+                for (piece_wide, piece) in pieces {
+                    if wide && !piece_wide {
+                        for byte in piece {
+                            bytes.extend_from_slice(&u32::from(byte).to_le_bytes());
+                        }
+                    } else {
+                        bytes.extend(piece);
                     }
-                    bytes.extend(next.bytes.expect("string token"));
                 }
                 Ok(Expr::str_lit(bytes, wide, token.line, token.column))
             }

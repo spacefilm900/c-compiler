@@ -1,16 +1,14 @@
-#include <float.h>
-#include <stdio.h>
-#include <stdarg.h>
+int printf(const char *, ...);
 
 long double add(long double a, long double b) { return a + b; }
 
 long double mix(int n, long double x, int m) { return x + (long double)n + (long double)m; }
 
 long double pick(int count, ...) {
-    va_list ap;
-    va_start(ap, count);
-    long double value = va_arg(ap, long double);
-    va_end(ap);
+    __builtin_va_list ap;
+    __builtin_va_start(ap, count);
+    long double value = __builtin_va_arg(ap, long double);
+    __builtin_va_end(ap);
     return value;
 }
 
@@ -33,7 +31,7 @@ int main(void) {
     long double sum = a + b;
     long double quot = 1.0L / 3.0L;
     long double scaled = 2.5L * 4.0L - 0.5L;
-    long double huge = LDBL_MAX;
+    long double huge = 1.18973149535723176502e+4932L;
     dump(1.0L);
     dump(0.1L);
     dump(sum);

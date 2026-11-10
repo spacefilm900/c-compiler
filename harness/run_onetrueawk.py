@@ -76,11 +76,12 @@ def bad_lines(text: str) -> list[str]:
     """Lines the upstream scripts use to report a mismatch.
 
     Some tests print the letters BAD as part of the program output, so the
-    match is the whole line. A golden-file test uses only ``$awk`` and can
-    fail for the Clang build as well; that shared line is not a difference
-    between the two binaries.
+    match is the whole line. ``T.main`` reports a failed ``-F`` check as
+    ``bad: awk -F``. A golden-file test uses only ``$awk`` and can fail for
+    the Clang build as well; that shared line is not a difference between
+    the two binaries.
     """
-    return [line for line in text.splitlines() if "BAD" in line]
+    return [line for line in text.splitlines() if "BAD" in line or "bad:" in line]
 
 
 def testdir_compare(clang_awk: Path, our_awk: Path) -> tuple[int, str]:
