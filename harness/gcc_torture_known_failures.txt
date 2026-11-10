@@ -31,7 +31,6 @@
 20010122-1.c compile-error
 20010123-1.c old-style-decl
 20010209-1.c vla
-20010325-1.c wide-literal
 20010518-2.c compile-error
 20010605-1.c nested-function
 20010605-2.c old-style-decl

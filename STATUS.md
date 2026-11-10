@@ -321,7 +321,9 @@ Pin `5115c7e447fc07457443df874bf57840e8316d5f` (`releases/gcc-15.2.0`). Each pro
 
 `builtins/` is skipped (144 files). GCC's own harness links each of those with a `-lib.c` companion and `lib/main.c`, and the tests target compiler builtins. They are not standalone programs.
 
-Local result: **827 passed, 919 known failures, 0 unexpected, 1746 executed, 144 builtins files skipped**. Thirty tests that were listed now pass: `long double` arithmetic and `va_arg`, anonymous members, `L` wide literals, and programs whose only missing piece was `__builtin_memcpy` or `__builtin_signbit`. They were removed from `harness/gcc_torture_known_failures.txt`.
+The local run before `20010325-1.c` was removed was **827 passed, 919 known failures, 0 unexpected, 1746 executed, 144 builtins files skipped**. Thirty tests that were listed then passed: `long double` arithmetic and `va_arg`, anonymous members, `L` wide literals, and programs whose only missing piece was `__builtin_memcpy` or `__builtin_signbit`. They were removed from `harness/gcc_torture_known_failures.txt`.
+
+CI on `fc52cef` (job `gcc torture execute`, run [42878896739](https://github.com/spacefilm900/c-compiler/actions/runs/42878896739)) printed `NOW_PASS 20010325-1.c` and `827 passed, 918 known failures, 1 unexpected, 1746 executed, 144 builtins files skipped`. That program was still listed as `wide-literal` and exits 0, so the line was removed. With that pass counted, the summary is **828 passed, 918 known failures, 0 unexpected, 1746 executed, 144 builtins files skipped**.
 
 | Category | Tests |
 | --- | --- |
@@ -335,7 +337,7 @@ Local result: **827 passed, 919 known failures, 0 unexpected, 1746 executed, 144
 | long-double | 6 |
 | complex | 6 |
 | flexible-array | 4 |
-| wide-literal | 2 |
+| wide-literal | 1 |
 | anonymous-member | 2 |
 | alignas | 1 |
 
