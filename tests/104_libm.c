@@ -1,4 +1,9 @@
-#include <math.h>
+double sin(double);
+double cos(double);
+double sqrt(double);
+double fabs(double);
+double fma(double, double, double);
+double ldexp(double, int);
 
 int main(void) {
     if (fabs(sin(0.0)) > 1e-9) {

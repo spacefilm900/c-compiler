@@ -388,10 +388,18 @@ impl Lexer<'_> {
         let exp_digits = self.source[exp_start..self.index].to_string();
         let kind = self.float_suffix(line, column)?;
         let spelling = self.source[start..self.index].to_string();
-        let bits = match parse_exponent(&exp_digits, neg) {
-            Ok(exp) => parse_hex(&int_digits, &frac_digits, exp, kind).unwrap_or(0),
-            Err(true) => 0,
-            Err(false) => inf_bits(kind == FloatKind::Float),
+        let zero_sig = int_digits
+            .bytes()
+            .chain(frac_digits.bytes())
+            .all(|byte| byte == b'0');
+        let bits = if zero_sig {
+            0
+        } else {
+            match parse_exponent(&exp_digits, neg) {
+                Ok(exp) => parse_hex(&int_digits, &frac_digits, exp, kind).unwrap_or(0),
+                Err(true) => 0,
+                Err(false) => inf_bits(kind == FloatKind::Float),
+            }
         };
         self.push_float(&spelling, bits, kind, line, column);
         Ok(())
@@ -1042,6 +1050,11 @@ mod tests {
         assert_eq!(tokens("0x1.8p1")[0].value, Some(0x4008_0000_0000_0000));
         assert_eq!(tokens("0x.8p0")[0].value, Some(0x3fe0_0000_0000_0000));
         assert_eq!(tokens("0x1p-1f")[0].float_kind, Some(FloatKind::Float));
+        assert_eq!(
+            tokens("0x1p0000000001")[0].value,
+            Some(0x4000_0000_0000_0000)
+        );
+        assert_eq!(tokens("0x0p1000000000")[0].value, Some(0));
         assert_eq!(tokens("08.5")[0].kind, TokenKind::Float);
         assert!(err("1.0L").contains("long double"));
         assert!(err("1.0l").contains("long double"));

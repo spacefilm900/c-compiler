@@ -359,10 +359,13 @@ impl StructRef {
             return name;
         }
         let tag = self.tag();
+        // `alloc_llvm_name` uses `struct.Tag` and `struct.Tag.N`. An
+        // incomplete record needs a different prefix so the two cannot
+        // define the same LLVM type.
         if tag.is_empty() {
-            format!("struct.anon{}", self.id)
+            format!("opaque.anon.{}", self.id)
         } else {
-            format!("struct.{tag}.{}", self.id)
+            format!("opaque.{tag}.{}", self.id)
         }
     }
 

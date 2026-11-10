@@ -66,8 +66,13 @@ pub fn parse_hex(
 }
 
 /// An exponent that does not fit in a modest `i32` is an infinity or a zero.
+/// Leading zeros do not count: `0000000001` is 1, not an overflow.
 pub fn parse_exponent(digits: &str, neg: bool) -> Result<i32, bool> {
-    if digits.is_empty() || digits.len() > 9 {
+    let digits = digits.trim_start_matches('0');
+    if digits.is_empty() {
+        return Ok(0);
+    }
+    if digits.len() > 9 {
         return Err(neg);
     }
     let mut value: i32 = 0;
@@ -213,14 +218,20 @@ fn pack(exp_field: u32, frac: u64, is_f32: bool) -> u64 {
 
 /// Convert a real value to an integer, truncating toward zero.
 ///
-/// The result is `None` when the value is not finite or does not fit in
-/// `dest`. C leaves that case undefined; a constant initializer rejects it.
+/// `_Bool` is the exception (C11 6.3.1.2): the result is 0 when the value
+/// compares equal to 0, and 1 otherwise, including NaN and infinity. For
+/// every other integer the result is `None` when the value is not finite or
+/// does not fit. C leaves that case undefined; a constant initializer
+/// rejects it.
 pub fn real_to_int(bits: u64, kind: FloatKind, dest: TypeName) -> Option<u64> {
     let value = match kind {
         FloatKind::Float => f64::from(f32::from_bits(bits as u32)),
         FloatKind::Double => f64::from_bits(bits),
         FloatKind::LongDouble => return None,
     };
+    if dest == TypeName::Bool {
+        return Some(u64::from(value != 0.0));
+    }
     if !value.is_finite() {
         return None;
     }
@@ -265,15 +276,29 @@ fn convert_wide(truncated: f64, dest: TypeName) -> Option<u64> {
 }
 
 /// Integer to `float` or `double`, rounding to nearest, ties to even.
+///
+/// The cast goes straight to the destination format. Rounding through
+/// `f64` and then to `f32` can change a value that is not a tie in `f32`.
 pub fn int_to_real(bits: u64, src: TypeName, dest: FloatKind) -> u64 {
-    let value = if src.is_signed() {
-        sign_extend(bits, src.width()) as f64
-    } else {
-        (bits & src.mask()) as f64
-    };
+    let signed = sign_extend(bits, src.width());
+    let unsigned = bits & src.mask();
     match dest {
-        FloatKind::Float => u64::from((value as f32).to_bits()),
-        FloatKind::Double => value.to_bits(),
+        FloatKind::Float => {
+            let value = if src.is_signed() {
+                signed as f32
+            } else {
+                unsigned as f32
+            };
+            u64::from(value.to_bits())
+        }
+        FloatKind::Double => {
+            let value = if src.is_signed() {
+                signed as f64
+            } else {
+                unsigned as f64
+            };
+            value.to_bits()
+        }
         FloatKind::LongDouble => 0,
     }
 }
@@ -444,6 +469,13 @@ mod tests {
     }
 
     #[test]
+    fn padded_hex_exponents_keep_their_value() {
+        assert_eq!(parse_exponent("0000000001", false), Ok(1));
+        assert_eq!(parse_exponent("000", true), Ok(0));
+        assert!(parse_exponent("1000000000", false).is_err());
+    }
+
+    #[test]
     fn decimal_rounding_matches_f64() {
         let a = parse_decimal(
             "1.00000000000000033306690738754696212708950042724609375",
@@ -497,6 +529,24 @@ mod tests {
         assert_eq!(
             int_to_real(u64::MAX, TypeName::ULong, FloatKind::Double),
             (u64::MAX as f64).to_bits()
+        );
+        assert_eq!(
+            real_to_int(one_point_nine, FloatKind::Double, TypeName::Bool),
+            Some(1)
+        );
+        assert_eq!(real_to_int(0, FloatKind::Double, TypeName::Bool), Some(0));
+        assert_eq!(
+            real_to_int(f64::NAN.to_bits(), FloatKind::Double, TypeName::Bool),
+            Some(1)
+        );
+        assert_eq!(
+            real_to_int(f64::INFINITY.to_bits(), FloatKind::Double, TypeName::Bool),
+            Some(1)
+        );
+        let wide = 4_611_686_293_305_294_849u64;
+        assert_eq!(
+            int_to_real(wide, TypeName::LongLong, FloatKind::Float),
+            u64::from((wide as i64 as f32).to_bits())
         );
     }
 }

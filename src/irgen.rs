@@ -3053,6 +3053,51 @@ int main(void) {
     }
 
     #[test]
+    fn incomplete_extern_keeps_a_distinct_type_name() {
+        let source = "\
+void f(void) { struct S { int a; }; }
+extern struct S x;
+void g(void) { struct S { int b; }; }
+int main(void) { return &x == 0; }
+";
+        let ir = crate::compile_to_ir(source, "opaque.c").unwrap();
+        let mut names = std::collections::HashSet::new();
+        for line in ir.lines() {
+            let Some(rest) = line.strip_prefix('%') else {
+                continue;
+            };
+            let Some((name, _)) = rest.split_once(" = type") else {
+                continue;
+            };
+            assert!(
+                names.insert(name.to_string()),
+                "duplicate LLVM type %{name}\n{ir}"
+            );
+        }
+        assert!(ir.contains("type opaque"), "{ir}");
+        let (ll, _) = temp_paths();
+        std::fs::write(&ll, &ir).unwrap();
+        let obj = ll.with_extension("o");
+        let assembled = Command::new("clang")
+            .args([
+                "-c",
+                "-w",
+                ll.to_str().unwrap(),
+                "-o",
+                obj.to_str().unwrap(),
+            ])
+            .output()
+            .expect("clang");
+        let _ = std::fs::remove_file(&ll);
+        let _ = std::fs::remove_file(&obj);
+        assert!(
+            assembled.status.success(),
+            "clang rejected IR:\n{}\n{ir}",
+            String::from_utf8_lossy(&assembled.stderr)
+        );
+    }
+
+    #[test]
     fn smoke_files_match_clang() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
         let mut files: Vec<_> = std::fs::read_dir(&root)

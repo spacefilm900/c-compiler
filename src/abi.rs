@@ -532,7 +532,10 @@ fn sse_piece(index: usize, leaves: &[Leaf]) -> RegPiece {
             offset: start,
         };
     }
-    let kind = if overlapping.iter().filter(|leaf| leaf.size == 4).count() >= 2 {
+    // Two `float` members of a union share offset 0. A pair occupies the
+    // high half of the eightbyte; counting leaves would treat that union
+    // as `<2 x float>` and load past the object.
+    let kind = if overlapping.iter().any(|leaf| leaf.offset >= start + 4) {
         SsePiece::FloatPair
     } else {
         SsePiece::Float
@@ -911,6 +914,36 @@ mod tests {
             true,
         );
         assert_eq!(direct(&uni), vec!["double".to_string()]);
+
+        // Both members sit at offset 0. The object is one float.
+        let two_floats = record(
+            216,
+            vec![
+                field("a", CType::Float(FloatKind::Float), 0),
+                field("b", CType::Float(FloatKind::Float), 0),
+            ],
+            4,
+            4,
+            true,
+        );
+        assert_eq!(direct(&two_floats), vec!["float".to_string()]);
+
+        // The array reaches the high half, so the eightbyte is a pair.
+        let float_and_pair = record(
+            217,
+            vec![
+                field("a", CType::Float(FloatKind::Float), 0),
+                field(
+                    "b",
+                    CType::array(CType::Float(FloatKind::Float), Some(2)),
+                    0,
+                ),
+            ],
+            8,
+            4,
+            true,
+        );
+        assert_eq!(direct(&float_and_pair), vec!["<2 x float>".to_string()]);
 
         // int and float share an eightbyte, so INTEGER wins and the bits
         // travel in a general register.
