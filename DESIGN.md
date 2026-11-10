@@ -101,7 +101,7 @@ Follow the C standard. Where the standard leaves a choice, follow the gcc and cl
 
 `STATUS.md` and the git history do not record a separate approval date for this rule. The oracle in the harness and in CI is Clang. gcc is not run there. Cases those files already record:
 
-- The standard wins where Clang is more permissive. Dropping `const` on assignment, arithmetic on `void *`, a pointer compared with an integer, and an evaluated comma in a constant initializer are diagnostics.
+- The standard wins where Clang is more permissive. Dropping `const` on assignment, arithmetic on `void *`, a relational comparison of a pointer with an integer (`p < 0`), and an evaluated comma in a constant initializer are diagnostics. Equality with a null pointer constant (`p == 0`, `p != (void *)0`) is allowed.
 - A multi-character character constant such as `'ab'` has an implementation-defined value (C11 6.4.4.4). This subset rejects it. `STATUS.md` records that as a limitation. Clang accepts it as an `int`.
 - An implementation-defined choice that is recorded as matching Clang on this target: an out-of-range conversion to a signed type keeps the low bits and reads them as two's complement. An omitted `__VA_ARGS__` deletes a comma written as `, ## __VA_ARGS__`, matching Clang's `-std=c11`.
 - A completed enumeration is compatible with `int`, including when every enumerator is nonnegative. `STATUS.md` records that choice (C11 6.7.2.2). A value that does not fit in `int` is a diagnostic. gcc and clang use `unsigned int` when there is no negative enumerator, so this choice differs from that majority.
