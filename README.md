@@ -8,6 +8,10 @@ The compiler is written in Rust. That is a deliberate break from the usual pract
 
 The frontend was written from the C standard, the LLVM Language Reference, and the System V AMD64 ABI. It is not derived from Clang or GCC. Clang is used only as a black-box oracle in the test harness and as the LLVM backend that links the emitted `.ll` file. The compiler does not call into Clang's or GCC's frontend.
 
+## Design
+
+The decisions behind this compiler are in [DESIGN.md](DESIGN.md).
+
 ## Build
 
 Emitting IR does not need Clang. Running the result does. The IR uses opaque pointers, the triple `x86_64-pc-linux-gnu`, and that triple's System V data layout, so Clang/LLVM must be 15 or newer.
@@ -23,7 +27,7 @@ make
 
 `make` (GNU make 4.4.1 locally) writes `build/compiler`.
 
-Local execution used Debian Clang/LLVM **19.1.7** unpacked under `~/opt/llvm19-root` and exposed through wrappers on `~/.local/bin`. Any Clang/LLVM 15+ on `PATH` is enough for the harness.
+Local execution used Debian Clang/LLVM **19.1.7**. Put that install's `bin` directory on `PATH` (set this to your path). Any Clang/LLVM 15 or newer on `PATH` is enough for the harness.
 
 ## Contract
 
@@ -54,10 +58,10 @@ python3 harness/run_tests.py
 On the machine where system `cargo` is Rust 1.85.1 and has no clippy component, the clippy check that passed was:
 
 ```sh
-~/.cargo/bin/rustup run stable cargo clippy --offline --all-targets -- -D warnings
+rustup run stable cargo clippy --offline --all-targets -- -D warnings
 ```
 
-The numeric version of that rustup `stable` toolchain was not recorded.
+Point `rustup` at your install (set this to your path). The numeric version of that rustup `stable` toolchain was not recorded.
 
 ## CI and CodeRabbit
 
@@ -120,3 +124,9 @@ The parser or checker rejects variable-length arrays, a `static` or `extern` dec
 - `harness/run_tests.py` — Clang oracle
 - `PLAN.md` — staged plan (unchanged starter plan)
 - `STATUS.md` — what this milestone actually does
+- `DESIGN.md` — design decisions
+- `LICENSE` — MIT licence for this compiler
+
+## Licence
+
+The compiler is MIT (see [LICENSE](LICENSE)). The Writing a C Compiler test suite is third-party (MIT, Copyright (c) 2023 Nora Sandler), downloaded at a pinned commit and not stored in this repo (see [tests/external/README.md](tests/external/README.md)).
