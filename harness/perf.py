@@ -187,7 +187,7 @@ def time_awk_suite(clang_awk: Path, our_awk: Path) -> dict:
     if not (src / "testdir" / "REGRESS").is_file():
         return {"status": "not-fetched"}
 
-    def suite(binary: Path) -> tuple[float, int]:
+    def suite(binary: Path) -> tuple[float, int, list[str]]:
         env = os.environ.copy()
         env["oldawk"] = str(binary)
         env["awk"] = str(binary)
@@ -205,15 +205,18 @@ def time_awk_suite(clang_awk: Path, our_awk: Path) -> dict:
             )
             code = proc.returncode
         except subprocess.TimeoutExpired:
-            return time.perf_counter() - start, 124
+            return time.perf_counter() - start, 124, ["testdir/REGRESS: timed out"]
         # bugs-fixed/REGRESS wants ../a.out. Time the same programs directly.
+        # main returns 0, or 2 after a syntax error. FATAL calls exit(2).
+        # A signal is a negative status. Other codes are not that program's result.
+        unexpected: list[str] = []
         for awk in sorted((src / "bugs-fixed").glob("*.awk")):
             cmd = [str(binary), "-f", str(awk)]
             data = awk.with_suffix(".in")
             if data.is_file():
                 cmd.append(str(data))
             try:
-                subprocess.run(
+                proc = subprocess.run(
                     cmd,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -222,26 +225,33 @@ def time_awk_suite(clang_awk: Path, our_awk: Path) -> dict:
                     check=False,
                 )
             except subprocess.TimeoutExpired:
-                return time.perf_counter() - start, 124
-        return time.perf_counter() - start, code
+                unexpected.append(f"{awk.name}: timed out")
+                return time.perf_counter() - start, 124, unexpected
+            if proc.returncode not in (0, 2):
+                unexpected.append(f"{awk.name}: exit {proc.returncode}")
+        return time.perf_counter() - start, code, unexpected
 
     row: dict = {"status": "ok", "runner": "testdir/REGRESS and bugs-fixed/*.awk"}
     if clang_awk.is_file():
-        clang_s, clang_rc = suite(clang_awk)
+        clang_s, clang_rc, clang_bad = suite(clang_awk)
         row["clang_s"] = round(clang_s, 4)
         row["clang_testdir_rc"] = clang_rc
+        row["clang_bugs_fixed"] = clang_bad
     else:
         row["clang_s"] = None
     if our_awk.is_file():
-        our_s, our_rc = suite(our_awk)
+        our_s, our_rc, our_bad = suite(our_awk)
         row["ours_s"] = round(our_s, 4)
         row["ours_testdir_rc"] = our_rc
+        row["ours_bugs_fixed"] = our_bad
     else:
         row["ours_s"] = None
         row["status"] = "clang-only"
     # A timeout is recorded as 124. The performance job still exits 0;
     # the table has to say the suite did not finish.
     if any(row.get(key, 0) not in (0, None) for key in ("clang_testdir_rc", "ours_testdir_rc")):
+        row["status"] = "failed"
+    if row.get("clang_bugs_fixed") or row.get("ours_bugs_fixed"):
         row["status"] = "failed"
     return row
 
@@ -273,13 +283,21 @@ def time_volume(clang_awk: Path, our_awk: Path) -> dict:
     return rows
 
 
-def cell_with_rc(value, rc, seconds: bool = False) -> str:
+def cell_with_rc(value, rc, seconds: bool = False, notes: list[str] | None = None) -> str:
     text = f"{value} s" if seconds else str(value)
-    if not rc:
-        return text
+    parts: list[str] = []
     if rc == 124:
-        return f"{text} (timed out)"
-    return f"{text} (rc {rc})"
+        parts.append("timed out")
+    elif rc:
+        parts.append(f"rc {rc}")
+    if notes:
+        shown = ", ".join(notes[:3])
+        if len(notes) > 3:
+            shown += f", +{len(notes) - 3} more"
+        parts.append(shown)
+    if not parts:
+        return text
+    return f"{text} ({'; '.join(parts)})"
 
 
 def markdown(report: dict) -> str:
@@ -304,8 +322,8 @@ def markdown(report: dict) -> str:
         ours_value = suite["ours_s"] if suite.get("ours_s") is not None else "did not build"
         lines.append(
             "| One True AWK test suite | "
-            f"{cell_with_rc(ours_value, suite.get('ours_testdir_rc'), seconds=suite.get('ours_s') is not None)} | "
-            f"{cell_with_rc(suite['clang_s'], suite.get('clang_testdir_rc'), seconds=True)} |"
+            f"{cell_with_rc(ours_value, suite.get('ours_testdir_rc'), seconds=suite.get('ours_s') is not None, notes=suite.get('ours_bugs_fixed'))} | "
+            f"{cell_with_rc(suite['clang_s'], suite.get('clang_testdir_rc'), seconds=True, notes=suite.get('clang_bugs_fixed'))} |"
         )
     else:
         lines.append("| One True AWK test suite | not run | not run |")
