@@ -2112,6 +2112,11 @@ impl Parser<'_> {
     }
 
     fn parse_statement(&mut self) -> Result<Stmt, Diagnostic> {
+        // A label's statement is parsed here, including `case 1: int x;`.
+        // A declaration is not a statement in C11 (C23 allows the label).
+        if self.starts_declaration() {
+            return Err(self.error("a declaration is not allowed as a statement"));
+        }
         match self.current().kind {
             TokenKind::LBrace => Ok(Stmt::Compound(self.parse_compound()?)),
             TokenKind::KwReturn => self.parse_return(),
@@ -2119,6 +2124,9 @@ impl Parser<'_> {
             TokenKind::KwWhile => self.parse_while(),
             TokenKind::KwDo => self.parse_do(),
             TokenKind::KwFor => self.parse_for(),
+            TokenKind::KwSwitch => self.parse_switch(),
+            TokenKind::KwCase => self.parse_case(),
+            TokenKind::KwDefault => self.parse_default(),
             TokenKind::KwBreak => {
                 let token = self.advance();
                 self.expect(TokenKind::Semi, "';'")?;
@@ -2136,15 +2144,6 @@ impl Parser<'_> {
                 })
             }
             TokenKind::KwElse => Err(self.error("'else' without a matching 'if'")),
-            TokenKind::KwInt
-            | TokenKind::KwVoid
-            | TokenKind::KwChar
-            | TokenKind::KwShort
-            | TokenKind::KwLong
-            | TokenKind::KwSigned
-            | TokenKind::KwUnsigned
-            | TokenKind::KwStatic
-            | TokenKind::KwExtern => Err(self.error("a declaration is not allowed as a statement")),
             TokenKind::Semi => {
                 let token = self.advance();
                 Ok(Stmt::Expr {
@@ -2284,6 +2283,53 @@ impl Parser<'_> {
             cond,
             step,
             body,
+            line: token.line,
+            column: token.column,
+        })
+    }
+
+    /// `switch (` expression `)` statement. The controlling expression is a
+    /// full expression, so it may contain a comma.
+    fn parse_switch(&mut self) -> Result<Stmt, Diagnostic> {
+        let token = self.advance();
+        self.expect(TokenKind::LParen, "'('")?;
+        let cond = self.parse_expression()?;
+        self.expect(TokenKind::RParen, "')'")?;
+        let body = Box::new(self.parse_statement()?);
+        Ok(Stmt::Switch {
+            cond,
+            body,
+            promoted: None,
+            line: token.line,
+            column: token.column,
+        })
+    }
+
+    /// `case` constant-expression `:` statement.
+    ///
+    /// The constant is a conditional-expression, not an assignment and not a
+    /// comma expression (C11 6.6). `case 1: case 2: stmt` is one labeled
+    /// statement whose statement is another labeled statement.
+    fn parse_case(&mut self) -> Result<Stmt, Diagnostic> {
+        let token = self.advance();
+        let expr = self.parse_conditional()?;
+        self.expect(TokenKind::Colon, "':'")?;
+        let stmt = Box::new(self.parse_statement()?);
+        Ok(Stmt::Case {
+            expr,
+            value: None,
+            stmt,
+            line: token.line,
+            column: token.column,
+        })
+    }
+
+    fn parse_default(&mut self) -> Result<Stmt, Diagnostic> {
+        let token = self.advance();
+        self.expect(TokenKind::Colon, "':'")?;
+        let stmt = Box::new(self.parse_statement()?);
+        Ok(Stmt::Default {
+            stmt,
             line: token.line,
             column: token.column,
         })
@@ -3365,7 +3411,6 @@ fn found(token: &Token) -> String {
 
 fn unsupported(kind: TokenKind) -> Option<&'static str> {
     Some(match kind {
-        TokenKind::KwSwitch | TokenKind::KwCase | TokenKind::KwDefault => "switch is not supported",
         TokenKind::KwGoto => "goto is not supported",
         TokenKind::KwAlignas | TokenKind::KwAlignof => "alignment specifiers are not supported",
         TokenKind::KwAtomic => "atomic types are not supported",
@@ -3719,7 +3764,12 @@ global int [] a =
         assert!(parse_err("static extern int x;").contains("multiple storage-class"));
         assert!(parse_err("void g;").contains("void variables"));
         assert!(parse_err("int f(static int a);").contains("not supported on parameters"));
-        assert!(parse_err("int main(void) { switch (1) {} }").contains("switch is not supported"));
+        assert!(parse_err("int main(void) { switch 1; }").contains("expected '('"));
+        assert!(parse_err("int main(void) { goto end; }").contains("goto is not supported"));
+        assert!(
+            parse_err("int main(void) { switch (1) { case 1: int x = 0; return x; } }")
+                .contains("a declaration is not allowed as a statement")
+        );
         assert!(parse_err("int main(void) { else; }").contains("'else' without a matching 'if'"));
         assert!(parsed("int (*fp)(void);\n").contains("int (*)(void)"));
         assert!(
@@ -3751,6 +3801,55 @@ global int [] a =
         assert!(parse_err("const const int x;").contains("duplicate 'const' qualifier"));
         assert!(parse_err("int * const const p;").contains("duplicate 'const' qualifier"));
         assert!(parsed("int * restrict p;\n").contains("restrict"));
+    }
+
+    #[test]
+    fn switch_statement_ast() {
+        assert_eq!(
+            parsed(
+                "\
+int main(void) {
+    switch (1 + 2) {
+    case 0: return 1;
+    case 1: case 2: return 2;
+    default: return 3;
+    }
+}
+"
+            ),
+            "\
+func int main
+  block
+    switch
+      cond
+        +
+          int 1
+          int 2
+      body
+        block
+          case
+            int 0
+            return
+              int 1
+          case
+            int 1
+            case
+              int 2
+              return
+                int 2
+          default
+            return
+              int 3
+"
+        );
+        assert!(
+            parse_err("int main(void) { switch (1) { case 1, 2: return 0; } }")
+                .contains("expected ':'")
+        );
+        assert!(
+            parse_err("int main(void) { switch (1) { case : return 0; } }")
+                .contains("expected an expression")
+        );
     }
 
     #[test]

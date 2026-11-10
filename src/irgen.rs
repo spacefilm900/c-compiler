@@ -279,6 +279,9 @@ fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, CType)>) {
             }
         }
         Stmt::While { body, .. } | Stmt::Do { body, .. } => collect_slots(body, slots),
+        Stmt::Switch { body, .. }
+        | Stmt::Case { stmt: body, .. }
+        | Stmt::Default { stmt: body, .. } => collect_slots(body, slots),
         Stmt::For { init, body, .. } => {
             if let ForInit::Decl(decls) = init {
                 for decl in decls {
@@ -299,7 +302,16 @@ struct Gen {
     lab: u32,
     cur: String,
     terminated: bool,
-    loops: Vec<(String, String)>,
+    /// `break` targets. A loop and a `switch` each push the block after
+    /// themselves. `break` uses the innermost one.
+    breaks: Vec<String>,
+    /// `continue` targets. Only loops push one. A `switch` does not, so
+    /// `continue` inside a switch still belongs to the enclosing loop.
+    continues: Vec<String>,
+    /// Case and default blocks of the switch currently being emitted, in
+    /// the order those statements are visited. A nested switch saves this.
+    switch_labels: Vec<String>,
+    switch_at: usize,
     ret_ty: CType,
     /// A whole-struct copy used `llvm.memmove`, which keeps padding bytes.
     needs_memmove: bool,
@@ -313,7 +325,10 @@ impl Gen {
             lab: 0,
             cur: String::new(),
             terminated: false,
-            loops: Vec::new(),
+            breaks: Vec::new(),
+            continues: Vec::new(),
+            switch_labels: Vec::new(),
+            switch_at: 0,
             ret_ty,
             needs_memmove: false,
         }
@@ -405,6 +420,17 @@ impl Gen {
             } => self.gen_if(cond, then_stmt, else_stmt.as_deref()),
             Stmt::While { cond, body, .. } => self.gen_while(cond, body),
             Stmt::Do { body, cond, .. } => self.gen_do(body, cond),
+            Stmt::Switch {
+                cond,
+                body,
+                promoted,
+                ..
+            } => self.gen_switch(cond, body, promoted.expect("switch type")),
+            Stmt::Case { stmt, .. } | Stmt::Default { stmt, .. } => {
+                let label = self.take_switch_label();
+                self.place_label(&label);
+                self.gen_stmt(stmt);
+            }
             Stmt::FuncDecl(_) => {}
             Stmt::For {
                 init,
@@ -421,12 +447,20 @@ impl Gen {
             }
             Stmt::Break { .. } => {
                 self.ensure_block();
-                let end = self.loops.last().expect("break outside loop").1.clone();
+                let end = self
+                    .breaks
+                    .last()
+                    .expect("break outside loop or switch")
+                    .clone();
                 self.br(&end);
             }
             Stmt::Continue { .. } => {
                 self.ensure_block();
-                let cont = self.loops.last().expect("continue outside loop").0.clone();
+                let cont = self
+                    .continues
+                    .last()
+                    .expect("continue outside loop")
+                    .clone();
                 self.br(&cont);
             }
         }
@@ -644,9 +678,11 @@ impl Gen {
         let cond = self.gen_cond(cond);
         self.br_cond(&cond, &body_label, &end_label);
         self.start(body_label);
-        self.loops.push((cond_label.clone(), end_label.clone()));
+        self.continues.push(cond_label.clone());
+        self.breaks.push(end_label.clone());
         self.gen_stmt(body);
-        self.loops.pop();
+        self.breaks.pop();
+        self.continues.pop();
         if !self.terminated {
             self.br(&cond_label);
         }
@@ -662,9 +698,11 @@ impl Gen {
         let end_label = self.label();
         self.br(&body_label);
         self.start(body_label.clone());
-        self.loops.push((cond_label.clone(), end_label.clone()));
+        self.continues.push(cond_label.clone());
+        self.breaks.push(end_label.clone());
         self.gen_stmt(body);
-        self.loops.pop();
+        self.breaks.pop();
+        self.continues.pop();
         if !self.terminated {
             self.br(&cond_label);
         }
@@ -700,9 +738,11 @@ impl Gen {
             self.br(&body_label);
         }
         self.start(body_label);
-        self.loops.push((step_label.clone(), end_label.clone()));
+        self.continues.push(step_label.clone());
+        self.breaks.push(end_label.clone());
         self.gen_stmt(body);
-        self.loops.pop();
+        self.breaks.pop();
+        self.continues.pop();
         if !self.terminated {
             self.br(&step_label);
         }
@@ -712,6 +752,142 @@ impl Gen {
         }
         self.br(&cond_label);
         self.start(end_label);
+    }
+
+    /// `switch` lowers to the LLVM `switch` instruction.
+    ///
+    /// The controlling value is promoted first (C11 6.8.4.2), so a `char`
+    /// or `short` condition is an `i32` and a `long` or `long long` condition
+    /// is an `i64`. Each `case` and `default` is its own block. Falling
+    /// through branches to the next label. A label inside a loop or an `if`
+    /// is still a direct target, which is what Duff's device needs. Code
+    /// before the first label is emitted and is not a switch target, so a
+    /// jump into the body skips it, including an automatic initializer.
+    fn gen_switch(&mut self, cond: &Expr, body: &Stmt, promoted: TypeName) {
+        self.ensure_block();
+        let raw = self.gen_val(cond);
+        let src = cond.ty().expect("typed switch condition");
+        let value = self.convert(&raw, &src, &CType::from_name(promoted));
+
+        let mut cases = Vec::new();
+        let mut default_label = None;
+        let mut labels = Vec::new();
+        self.collect_switch_targets(body, &mut cases, &mut default_label, &mut labels);
+
+        let end_label = self.label();
+        let default_dest = default_label.unwrap_or_else(|| end_label.clone());
+        self.emit_switch(promoted, &value, &default_dest, &cases);
+
+        let saved_labels = std::mem::replace(&mut self.switch_labels, labels);
+        let saved_at = self.switch_at;
+        self.switch_at = 0;
+        self.breaks.push(end_label.clone());
+
+        let entry = self.label();
+        self.start(entry);
+        self.gen_stmt(body);
+        assert_eq!(
+            self.switch_at,
+            self.switch_labels.len(),
+            "internal compiler error: switch label was not emitted"
+        );
+        self.breaks.pop();
+        if !self.terminated {
+            self.br(&end_label);
+        }
+        self.switch_labels = saved_labels;
+        self.switch_at = saved_at;
+        self.start(end_label);
+    }
+
+    fn emit_switch(
+        &mut self,
+        ty: TypeName,
+        value: &str,
+        default_dest: &str,
+        cases: &[(u64, String)],
+    ) {
+        let ir = ty.ir_type();
+        self.emit(&format!("  switch {ir} {value}, label %{default_dest} ["));
+        for (bits, label) in cases {
+            self.emit(&format!(
+                "    {ir} {}, label %{label}",
+                ty.format_bits(*bits)
+            ));
+        }
+        self.emit("  ]");
+        self.terminated = true;
+    }
+
+    /// Case and default labels that belong to this switch, not to a nested one.
+    /// The visit order matches [`Self::gen_stmt`].
+    fn collect_switch_targets(
+        &mut self,
+        stmt: &Stmt,
+        cases: &mut Vec<(u64, String)>,
+        default_label: &mut Option<String>,
+        labels: &mut Vec<String>,
+    ) {
+        match stmt {
+            Stmt::Switch { .. } => {}
+            Stmt::Case { value, stmt, .. } => {
+                let label = self.label();
+                let bits = value.expect("case value");
+                cases.push((bits, label.clone()));
+                labels.push(label);
+                self.collect_switch_targets(stmt, cases, default_label, labels);
+            }
+            Stmt::Default { stmt, .. } => {
+                let label = self.label();
+                *default_label = Some(label.clone());
+                labels.push(label);
+                self.collect_switch_targets(stmt, cases, default_label, labels);
+            }
+            Stmt::Compound(compound) => {
+                for item in &compound.items {
+                    self.collect_switch_targets(item, cases, default_label, labels);
+                }
+            }
+            Stmt::If {
+                then_stmt,
+                else_stmt,
+                ..
+            } => {
+                self.collect_switch_targets(then_stmt, cases, default_label, labels);
+                if let Some(else_stmt) = else_stmt {
+                    self.collect_switch_targets(else_stmt, cases, default_label, labels);
+                }
+            }
+            Stmt::While { body, .. } | Stmt::Do { body, .. } => {
+                self.collect_switch_targets(body, cases, default_label, labels);
+            }
+            Stmt::For { body, .. } => {
+                self.collect_switch_targets(body, cases, default_label, labels);
+            }
+            Stmt::Decl(_)
+            | Stmt::FuncDecl(_)
+            | Stmt::Return { .. }
+            | Stmt::Expr { .. }
+            | Stmt::Break { .. }
+            | Stmt::Continue { .. } => {}
+        }
+    }
+
+    fn take_switch_label(&mut self) -> String {
+        let label = self
+            .switch_labels
+            .get(self.switch_at)
+            .expect("internal compiler error: case label was not collected")
+            .clone();
+        self.switch_at += 1;
+        label
+    }
+
+    fn place_label(&mut self, label: &str) {
+        if !self.terminated {
+            self.br(label);
+        }
+        self.start(label.to_string());
     }
 
     fn gen_val(&mut self, expr: &Expr) -> String {
@@ -2337,6 +2513,73 @@ int main(void) {
         assert!(ir.contains("%union.U = type"), "{ir}");
         assert!(ir.contains("getelementptr inbounds i8"), "{ir}");
         assert!(ir.contains("call i32 %"), "{ir}");
+        assert_eq!(run_binary(&ir), run_reference(source));
+    }
+
+    #[test]
+    fn switch_lowers_for_every_integer_width() {
+        let source = "\
+int on_int(int x) {
+    switch (x) {
+    case 1: return 1;
+    case 2: case 3: return 2;
+    default: return 4;
+    }
+}
+int on_char(char c) {
+    switch (c) {
+    case -1: return 1;
+    case 2: return 2;
+    default: return 3;
+    }
+}
+int on_uchar(unsigned char c) {
+    switch (c) {
+    case 255: return 1;
+    case -1: return 2;
+    default: return 3;
+    }
+}
+int on_long(long x) {
+    switch (x) {
+    case -1: return 1;
+    case 8589934592L: return 2;
+    default: return 3;
+    }
+}
+int on_ull(unsigned long long x) {
+    switch (x) {
+    case -1: return 1;
+    case 2: return 2;
+    default: return 3;
+    }
+}
+int on_uint(unsigned x) {
+    switch (x) {
+    case -1: return 1;
+    default: return 2;
+    }
+}
+int main(void) {
+    if (on_int(1) != 1 || on_int(3) != 2 || on_int(9) != 4) return 1;
+    if (on_char(-1) != 1 || on_char(2) != 2 || on_char(0) != 3) return 2;
+    if (on_uchar(255) != 1 || on_uchar(0) != 3) return 3;
+    if (on_long(-1) != 1 || on_long(8589934592L) != 2) return 4;
+    if (on_ull(-1) != 1 || on_ull(2) != 2 || on_ull(0) != 3) return 5;
+    if (on_uint(4294967295u) != 1 || on_uint(1) != 2) return 6;
+    return 0;
+}
+";
+        let ir = crate::compile_to_ir(source, "switch.c").unwrap();
+        assert!(ir.contains("switch i32"), "{ir}");
+        assert!(ir.contains("switch i64"), "{ir}");
+        assert!(ir.contains("sext i8"), "{ir}");
+        assert!(ir.contains("zext i8"), "{ir}");
+        assert!(ir.contains("i32 -1, label"), "{ir}");
+        assert!(ir.contains("i64 -1, label"), "{ir}");
+        assert!(ir.contains("i64 8589934592, label"), "{ir}");
+        assert!(ir.contains("i64 18446744073709551615, label"), "{ir}");
+        assert!(ir.contains("i32 4294967295, label"), "{ir}");
         assert_eq!(run_binary(&ir), run_reference(source));
     }
 }

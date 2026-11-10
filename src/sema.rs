@@ -51,6 +51,7 @@ pub fn analyze_tokens(
         locs,
         scopes: vec![HashMap::new()],
         loop_depth: 0,
+        switches: Vec::new(),
         current_ret: CType::int_type(),
         fn_name: String::new(),
         current_func: String::new(),
@@ -128,6 +129,14 @@ enum Symbol {
     Func(FuncSym),
 }
 
+/// The switch whose body is being checked. Case values are compared after
+/// conversion to `promoted` (C11 6.8.4.2).
+struct SwitchCtx {
+    promoted: TypeName,
+    seen: HashSet<u64>,
+    has_default: bool,
+}
+
 struct Sema {
     filename: String,
     /// Last token at each line and column. Included files override the main
@@ -136,6 +145,9 @@ struct Sema {
     locs: HashMap<(usize, usize), String>,
     scopes: Vec<HashMap<String, Symbol>>,
     loop_depth: u32,
+    /// Innermost switch first at the end. A `case` or `default` belongs to
+    /// `switches.last()`, not to a switch that encloses that one.
+    switches: Vec<SwitchCtx>,
     current_ret: CType,
     /// Name of the function whose body is being checked. Empty at file scope.
     /// `__func__` uses it. `current_func` is the same name, kept for the
@@ -1150,6 +1162,69 @@ impl Sema {
                 self.decay(cond)?;
                 self.require_scalar(cond)
             }
+            Stmt::Switch {
+                cond,
+                body,
+                promoted,
+                ..
+            } => {
+                self.check_expr(cond)?;
+                self.decay(cond)?;
+                self.require_integer(cond)?;
+                let prom = cond
+                    .ty()
+                    .expect("typed switch condition")
+                    .as_integer()
+                    .expect("integer switch condition")
+                    .promote();
+                *promoted = Some(prom);
+                self.switches.push(SwitchCtx {
+                    promoted: prom,
+                    seen: HashSet::new(),
+                    has_default: false,
+                });
+                self.check_stmt(body)?;
+                self.switches.pop();
+                Ok(())
+            }
+            Stmt::Case {
+                expr,
+                value,
+                stmt,
+                line,
+                column,
+            } => {
+                let line = *line;
+                let column = *column;
+                if self.switches.is_empty() {
+                    return self.err(line, column, "'case' label is not inside a switch");
+                }
+                self.check_expr(expr)?;
+                self.decay(expr)?;
+                let prom = self.switches.last().expect("switch").promoted;
+                let bits = self.case_value(expr, prom)?;
+                if !self.switches.last_mut().expect("switch").seen.insert(bits) {
+                    return self.err(
+                        line,
+                        column,
+                        format!("duplicate case value '{}'", prom.format_bits(bits)),
+                    );
+                }
+                *value = Some(bits);
+                self.check_stmt(stmt)
+            }
+            Stmt::Default { stmt, line, column } => {
+                let line = *line;
+                let column = *column;
+                if self.switches.is_empty() {
+                    return self.err(line, column, "'default' label is not inside a switch");
+                }
+                if self.switches.last().expect("switch").has_default {
+                    return self.err(line, column, "multiple default labels in one switch");
+                }
+                self.switches.last_mut().expect("switch").has_default = true;
+                self.check_stmt(stmt)
+            }
             Stmt::FuncDecl(func) => self.declare_block_func(func),
             Stmt::For {
                 init,
@@ -1193,8 +1268,8 @@ impl Sema {
                 Ok(())
             }
             Stmt::Break { line, column } => {
-                if self.loop_depth == 0 {
-                    return self.err(*line, *column, "'break' is not inside a loop");
+                if self.loop_depth == 0 && self.switches.is_empty() {
+                    return self.err(*line, *column, "'break' is not inside a loop or switch");
                 }
                 Ok(())
             }
@@ -2671,6 +2746,37 @@ impl Sema {
         )
     }
 
+    /// Integer constant expression of a `case` label, converted to `promoted`.
+    ///
+    /// The conversion is C11 6.3.1.3: unsigned destinations wrap, and a signed
+    /// destination that cannot represent the value keeps the low bits. Two
+    /// labels that differ before that conversion and agree after it are
+    /// duplicates.
+    fn case_value(&self, expr: &Expr, promoted: TypeName) -> Result<u64, Diagnostic> {
+        self.require_integer(expr)?;
+        match eval_const_expr(expr) {
+            Ok(value) => Ok(convert_bits(value.bits, value.ty, promoted)),
+            Err(ConstError::DivZero) => {
+                self.err(expr.line(), expr.column(), "case label divides by zero")
+            }
+            Err(ConstError::Overflow(ty)) => self.err(
+                expr.line(),
+                expr.column(),
+                format!("case label overflows '{}'", ty.as_str()),
+            ),
+            Err(ConstError::Shift) => self.err(
+                expr.line(),
+                expr.column(),
+                "case label uses an undefined shift",
+            ),
+            Err(ConstError::NotConst) => self.err(
+                expr.line(),
+                expr.column(),
+                "case label is not an integer constant expression",
+            ),
+        }
+    }
+
     fn require_integer(&self, expr: &Expr) -> Result<(), Diagnostic> {
         match expr.ty() {
             Some(ty) if ty.is_integer() => Ok(()),
@@ -3673,6 +3779,11 @@ fn number_stmt(stmt: &mut Stmt, next: &mut u32) {
             }
         }
         Stmt::While { body, .. } | Stmt::Do { body, .. } => number_stmt(body, next),
+        Stmt::Switch { body, .. }
+        | Stmt::Case { stmt: body, .. }
+        | Stmt::Default { stmt: body, .. } => {
+            number_stmt(body, next);
+        }
         Stmt::For { init, body, .. } => {
             if let ForInit::Decl(decls) = init {
                 for decl in decls {
@@ -3741,7 +3852,8 @@ mod tests {
             sema_err("int f(void) { return 1; } int main(void) { return f; }")
                 .contains("incompatible types")
         );
-        assert!(sema_err("int main(void) { break; }").contains("'break' is not inside a loop"));
+        assert!(sema_err("int main(void) { break; }")
+            .contains("'break' is not inside a loop or switch"));
         assert!(
             sema_err("int main(void) { continue; }").contains("'continue' is not inside a loop")
         );
@@ -4413,5 +4525,148 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
             .unwrap_err()
             .to_string()
             .contains("__cc_va_arg_is_not_supported"));
+    }
+
+    #[test]
+    fn switch_diagnostics() {
+        sema_ok(
+            "\
+enum E { A = 1, B = 4 };
+int main(void) {
+    int x = 1;
+    int y = 0;
+    char c = 1;
+    unsigned char uc = 1;
+    unsigned u = 1;
+    switch (x) {
+        int skipped = (y = 5);
+    case 0:
+        y = skipped;
+        break;
+    case A:
+    case 'B':
+    case sizeof(int):
+    case (short)-2:
+    case (unsigned char)3:
+        return y;
+    default:
+        break;
+    }
+    switch (c) {
+    case 256:
+        return 1;
+    case 1:
+        return 2;
+    }
+    switch (uc) {
+    case -1:
+        return 3;
+    case 255:
+        return 4;
+    }
+    switch (u) {
+    case -1:
+        return 5;
+    }
+    switch (x) {
+    case 1:
+        while (0) {
+            continue;
+            break;
+        }
+        break;
+    }
+    do { switch (x) { case 1: continue; } } while (0);
+    return 0;
+}
+",
+        );
+        assert!(sema_err("int main(void) { case 1: return 0; }")
+            .contains("'case' label is not inside a switch"));
+        assert!(sema_err("int main(void) { default: return 0; }")
+            .contains("'default' label is not inside a switch"));
+        assert!(sema_err("int main(void) { while (0) case 1: return 0; }")
+            .contains("'case' label is not inside a switch"));
+        assert!(sema_err(
+            "int main(void) { int x; switch (x) { case 1: return 0; case 1: return 1; } }"
+        )
+        .contains("duplicate case value '1'"));
+        assert!(sema_err(
+            "int main(void) { int x; switch (x) { case -1: return 0; case 4294967295u: return 1; } }"
+        )
+        .contains("duplicate case value '-1'"));
+        assert!(sema_err(
+            "int main(void) { int x; switch (x) { case 0: return 0; case 17179869184: return 1; } }"
+        )
+        .contains("duplicate case value '0'"));
+        assert!(sema_err(
+            "int main(void) { long x; switch (x) { case 100: return 0; case 100l: return 1; } }"
+        )
+        .contains("duplicate case value '100'"));
+        assert!(sema_err(
+            "int main(void) { unsigned x; switch (x) { case 4294967295u: return 0; case 1099511627775l: return 1; } }"
+        )
+        .contains("duplicate case value '4294967295'"));
+        assert!(sema_err(
+            "int main(void) { int x; switch (x) { default: return 0; default: return 1; } }"
+        )
+        .contains("multiple default labels"));
+        assert!(sema_err(
+            "int main(void) { int x; switch (x) { case 1: if (x) { case 1: return 0; } return 1; } }"
+        )
+        .contains("duplicate case value '1'"));
+        assert!(sema_err(
+            "int main(void) { int x; switch (x) { default: while (0) default: ; return 0; } }"
+        )
+        .contains("multiple default labels"));
+        assert!(
+            sema_err("int main(void) { int *p = 0; switch (p) { default: return 0; } }")
+                .contains("expected an integer")
+        );
+        assert!(sema_err(
+            "int main(void) { struct S { int x; } s; s.x = 1; switch (s) { default: return 0; } }"
+        )
+        .contains("expected an integer"));
+        assert!(sema_err(
+            "void f(void) { return; } int main(void) { switch (f()) { default: return 0; } }"
+        )
+        .contains("void value"));
+        assert!(
+            sema_err("int main(void) { int a[2]; switch (a) { default: return 0; } }")
+                .contains("expected an integer")
+        );
+        assert!(
+            sema_err("int main(void) { int x; switch (x) { case x: return 0; } }")
+                .contains("not an integer constant expression")
+        );
+        assert!(
+            sema_err("int main(void) { switch (1) { case 1 / 0: return 0; } }")
+                .contains("divides by zero")
+        );
+        assert!(
+            sema_err("int main(void) { switch (1) { case 2147483647 + 1: return 0; } }")
+                .contains("overflows 'int'")
+        );
+        assert!(
+            sema_err("int main(void) { switch (1) { case 1 << 31: return 0; } }")
+                .contains("overflows 'int'")
+        );
+        assert!(
+            sema_err("int main(void) { switch (1) { case 1 << 32: return 0; } }")
+                .contains("undefined shift")
+        );
+        assert!(
+            sema_err("int main(void) { switch (1) { case (int *)0: return 0; } }")
+                .contains("expected an integer")
+        );
+        assert!(
+            sema_err("int main(void) { switch (1) { case 1: continue; } }")
+                .contains("'continue' is not inside a loop")
+        );
+        assert!(sema_err("int main(void) { break; }").contains("not inside a loop or switch"));
+        sema_ok("int main(void) { switch (1) { case 1: break; } return 0; }");
+        sema_ok(
+            "int main(void) { int x; switch (x) { case 1: return 1; } switch (x) { case 1: return 2; } return 0; }",
+        );
     }
 }

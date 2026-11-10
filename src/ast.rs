@@ -1735,6 +1735,35 @@ pub enum Stmt {
         line: usize,
         column: usize,
     },
+    /// `switch (` expression `)` statement (C11 6.8.4.2).
+    ///
+    /// `promoted` is the type of the controlling expression after the integer
+    /// promotions. Semantic analysis fills it in. Case labels anywhere in
+    /// `body` belong to this switch, except labels in a nested switch.
+    Switch {
+        cond: Expr,
+        body: Box<Stmt>,
+        promoted: Option<TypeName>,
+        line: usize,
+        column: usize,
+    },
+    /// `case` constant-expression `:` statement.
+    ///
+    /// `value` is that constant converted to the enclosing switch's promoted
+    /// type. Semantic analysis fills it in.
+    Case {
+        expr: Expr,
+        value: Option<u64>,
+        stmt: Box<Stmt>,
+        line: usize,
+        column: usize,
+    },
+    /// `default :` statement.
+    Default {
+        stmt: Box<Stmt>,
+        line: usize,
+        column: usize,
+    },
     /// A function declaration inside a block. The body is always absent; a
     /// nested definition is rejected by the parser.
     FuncDecl(FuncDef),
@@ -2017,6 +2046,22 @@ fn dump_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
             dump_stmt(out, body, indent + 2);
             put(out, indent + 1, "cond");
             dump_expr(out, cond, indent + 2);
+        }
+        Stmt::Switch { cond, body, .. } => {
+            put(out, indent, "switch");
+            put(out, indent + 1, "cond");
+            dump_expr(out, cond, indent + 2);
+            put(out, indent + 1, "body");
+            dump_stmt(out, body, indent + 2);
+        }
+        Stmt::Case { expr, stmt, .. } => {
+            put(out, indent, "case");
+            dump_expr(out, expr, indent + 1);
+            dump_stmt(out, stmt, indent + 1);
+        }
+        Stmt::Default { stmt, .. } => {
+            put(out, indent, "default");
+            dump_stmt(out, stmt, indent + 1);
         }
         Stmt::Expr { expr, .. } => {
             put(out, indent, "expr");
