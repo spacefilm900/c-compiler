@@ -244,16 +244,21 @@ pub fn classify_for(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
     if size == 0 {
         return Ok(AggAbi::Memory);
     }
+    // More than two eightbytes is memory for every type this compiler can
+    // form. A pure SSE/SSEUP vector could stay in registers past 16 bytes;
+    // nothing in this subset has that shape, and a later float step can
+    // special-case it here without changing the integer path. The size test
+    // comes before leaf collection so a large array member does not allocate
+    // one leaf per element.
+    if size > 16 {
+        return Ok(AggAbi::Memory);
+    }
     let mut leaves = Vec::new();
     collect_leaves(&bare, 0, &mut leaves);
     let unaligned = leaves
         .iter()
         .any(|leaf| leaf.offset % u64::from(leaf.align.max(1)) != 0);
-    // More than two eightbytes is memory for every type this compiler can
-    // form. A pure SSE/SSEUP vector could stay in registers past 16 bytes;
-    // nothing in this subset has that shape, and a later float step can
-    // special-case it here without changing the integer path.
-    if unaligned || size > 16 {
+    if unaligned {
         return Ok(AggAbi::Memory);
     }
     let eightbytes = ((size + 7) / 8) as usize;
