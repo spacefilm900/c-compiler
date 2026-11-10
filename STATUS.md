@@ -373,7 +373,18 @@ Flexible array members (C11 6.7.2.1), `u`/`U`/`u8` literals (C11 6.4.4.4 and 6.4
 
 `tests/115_fam.c` checks `sizeof`, `offsetof`, a local initializer that does not touch the flexible member, indexing through a larger object, and returning the fixed part. `tests/116_uchar.c` includes `<uchar.h>` and checks `u`/`U`/`u8` literals, concatenation with an unprefixed literal, and the widths of `char16_t` and `char32_t`. `tests/117_ldret.c` returns `struct { long double }`, `union { long double }`, and the larger memory-class aggregates. `tests/118_bitnest.c` initializes a nested bit-field struct, a plain member beside the bit-field, an array of them, and a sibling pointer, all at file scope. A `volatile` aggregate returned in `%st0` is `load volatile x86_fp80`. An `__asm__` label accepts an ordinary or `u8` string and rejects a wide prefix. `tests/xabi/04_ldagg_def.c` and `04_ldagg_use.c` are linked both ways with Clang. A pure `long double` aggregate is class `X87`: the argument is `byval` and the return is `x86_fp80` in `%st0`, which is what the psABI and Clang do.
 
-GitHub Actions and CodeRabbit for this step are filled in after the pull request runs.
+### GitHub Actions
+
+Observed on commit `d25dd9935b4a7de7e6811e0f99edc630f0c82f39`. Both runs completed with conclusion **success**. Each log contains `test result: ok. 83 passed; 0 failed` and `129/129 passed`.
+
+| Event | Run | Jobs | Conclusion |
+| --- | --- | --- | --- |
+| `push` | https://github.com/spacefilm900/c-compiler/actions/runs/42912554967 | [fmt, clippy, tests, harness](https://github.com/spacefilm900/c-compiler/actions/runs/42912554967/job/130166671176), [writing-a-c-compiler suite](https://github.com/spacefilm900/c-compiler/actions/runs/42912554967/job/130166671667), [csmith differential](https://github.com/spacefilm900/c-compiler/actions/runs/42912554967/job/130166671626), [one true awk](https://github.com/spacefilm900/c-compiler/actions/runs/42912554967/job/130166671651), [gcc torture execute](https://github.com/spacefilm900/c-compiler/actions/runs/42912554967/job/130166671641), [performance numbers](https://github.com/spacefilm900/c-compiler/actions/runs/42912554967/job/130166671610) | success |
+| `pull_request` | https://github.com/spacefilm900/c-compiler/actions/runs/42912568180 | [fmt, clippy, tests, harness](https://github.com/spacefilm900/c-compiler/actions/runs/42912568180/job/130166714196), [writing-a-c-compiler suite](https://github.com/spacefilm900/c-compiler/actions/runs/42912568180/job/130166714396), [csmith differential](https://github.com/spacefilm900/c-compiler/actions/runs/42912568180/job/130166714330), [one true awk](https://github.com/spacefilm900/c-compiler/actions/runs/42912568180/job/130166714233), [gcc torture execute](https://github.com/spacefilm900/c-compiler/actions/runs/42912568180/job/130166714201), [performance numbers](https://github.com/spacefilm900/c-compiler/actions/runs/42912568180/job/130166713890) | success |
+
+### CodeRabbit
+
+CodeRabbit reviewed pull request 19. Review `5850137303` on `dd2ed48`, submitted 2026-11-10, and review `5850301426` on `0737613`, submitted 2026-11-10. The volatile `x87` return spelling, the plain member of a nested bit-field struct, the `__asm__` wide label, the stale README sentences, and the test headers other than `<uchar.h>` were fixed on this branch. `<uchar.h>` stays in `tests/116_uchar.c` because that header is what this step makes usable. The docstring-coverage note (38.10% against an 80% threshold) was left as on pull requests 3, 4, 5, and 12. The sources document modules and the language rules, not every function.
 
 ## Stage 2 step 4 record
 
