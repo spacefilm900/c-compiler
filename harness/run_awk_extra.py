@@ -249,6 +249,8 @@ def main() -> int:
     status |= run_volume(clang, ours)
     hook = os.environ.get("AWK_EXTRA_HOOK", "").strip()
     if hook:
+        # Trusted operator input. The person who starts the harness sets
+        # AWK_EXTRA_HOOK; it is not read from a fetched suite.
         print(f"extra hook: {hook}")
         try:
             proc = subprocess.run(

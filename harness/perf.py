@@ -239,6 +239,10 @@ def time_awk_suite(clang_awk: Path, our_awk: Path) -> dict:
     else:
         row["ours_s"] = None
         row["status"] = "clang-only"
+    # A timeout is recorded as 124. The performance job still exits 0;
+    # the table has to say the suite did not finish.
+    if any(row.get(key, 0) not in (0, None) for key in ("clang_testdir_rc", "ours_testdir_rc")):
+        row["status"] = "failed"
     return row
 
 
@@ -269,6 +273,15 @@ def time_volume(clang_awk: Path, our_awk: Path) -> dict:
     return rows
 
 
+def cell_with_rc(value, rc, seconds: bool = False) -> str:
+    text = f"{value} s" if seconds else str(value)
+    if not rc:
+        return text
+    if rc == 124:
+        return f"{text} (timed out)"
+    return f"{text} (rc {rc})"
+
+
 def markdown(report: dict) -> str:
     c = report["compile"]["harness"]
     a = report["compile"]["onetrueawk"]
@@ -288,8 +301,12 @@ def markdown(report: dict) -> str:
         )
     lines.append(f"| Harness run ({r['files']} programs) | {r['ours_s']} s | {r['clang_s']} s |")
     if suite.get("clang_s") is not None:
-        ours_cell = suite["ours_s"] if suite.get("ours_s") is not None else "did not build"
-        lines.append(f"| One True AWK test suite | {ours_cell} | {suite['clang_s']} s |")
+        ours_value = suite["ours_s"] if suite.get("ours_s") is not None else "did not build"
+        lines.append(
+            "| One True AWK test suite | "
+            f"{cell_with_rc(ours_value, suite.get('ours_testdir_rc'), seconds=suite.get('ours_s') is not None)} | "
+            f"{cell_with_rc(suite['clang_s'], suite.get('clang_testdir_rc'), seconds=True)} |"
+        )
     else:
         lines.append("| One True AWK test suite | not run | not run |")
     if vol.get("status") == "ok" and "ours" in vol and "s" in vol.get("ours", {}):
