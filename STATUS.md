@@ -2,11 +2,11 @@
 
 ## Current milestone
 
-**`switch` statements (C11 6.8.4.2 and 6.8.1), on top of the host-header subset.** The controlling expression is an integer. Integer promotions are applied, and each `case` constant is converted to that promoted type. `case` and `default` may be nested inside other statements in the switch body. `break` leaves the switch. `continue` still belongs to the enclosing loop. The IR is an LLVM `switch`. Programs can `#include` the host glibc headers for `stdio.h`, `stdlib.h`, `string.h`, `stdint.h`, `ctype.h`, and `assert.h`. The compiler supplies `stddef.h`, `stdarg.h`, `stdbool.h`, and `limits.h`. The Nora Sandler suite is fetched at a pinned commit and run by `harness/run_wacc.py`. It is not vendored.
+**Structs and unions passed and returned by value, System V AMD64, on top of `switch` and the host-header subset.** An aggregate of at most 16 bytes whose eightbytes are all INTEGER is coerced to register pieces (`i8` through `i64`, or `ptr` when an eightbyte is exactly one pointer). A larger aggregate, or one with an unaligned field, is `byval` on the way in and `sret` on the way out. An eightbyte that needs an SSE register is rejected until floating-point lowering. An x87 aggregate is passed in memory, which is what the psABI does for arguments, and returning one is rejected because the value belongs in `%st0`. INTEGER wins over SSE in the same eightbyte. A multi-eightbyte aggregate that does not fit in the remaining general registers is passed entirely in memory, and those registers stay available. A call result can be assigned, used in `?:`, or have a member read (`f().x`). Function pointers are usable end to end: decay, `fp(...)` and `(*fp)(...)`, arrays, members, typedefs of function types, and `qsort`. Programs can `#include` the host glibc headers for `stdio.h`, `stdlib.h`, `string.h`, `stdint.h`, `ctype.h`, and `assert.h`. The compiler supplies `stddef.h`, `stdarg.h`, `stdbool.h`, and `limits.h`. The Nora Sandler suite is fetched at a pinned commit and run by `harness/run_wacc.py`. It is not vendored.
 
 ## External suite
 
-`main` at `09d01aa` had **65** unit tests, **102/102** harness programs, and a suite run of **1220 executed, 1143 passed, 77 known failures, 397 skipped**. After `switch`: **68** unit tests, **103/103** harness programs, and **1254 executed, 1176 passed, 78 known failures, 363 skipped**, 0 unexpected, 0 panics. The 34 extra-credit `switch` tests are executed. Thirty-three pass. `struct_decl_in_switch_statement.c` still fails because the inner struct contains `double`. The one test tagged with both `goto` and `switch` stays skipped; it uses `goto`.
+`main` at `70e489f` had **68** unit tests, **103/103** harness programs, and a suite run of **1254 executed, 1176 passed, 78 known failures, 363 skipped**. After aggregate calls: **74** unit tests, **107/107** harness programs (including one cross-ABI pair), and **1285 executed, 1194 passed, 91 known failures, 332 skipped**, 0 unexpected, 0 panics. The 31 struct-by-value tests are no longer skipped. Sixteen of them pass. Fifteen still fail because of `double` or an SSE-register aggregate. `incomplete_structs.c` and `incomplete_union_types.c` pass: a prototype may name an incomplete aggregate, and the type is complete before the call. The one test tagged with both `goto` and `switch` stays skipped; it uses `goto`.
 
 Licence: **MIT**, Copyright (c) 2023 Nora Sandler. The licence allows redistribution. The tree is still fetched, not committed. Source: https://github.com/nlsandler/writing-a-c-compiler-tests. Pinned commit: `ae12014d2dec14488f3f80d14df4b6d8e4634d7d` (2026-02-17). Recorded in `tests/external/README.md`. `scripts/fetch_wacc_tests.sh` clones that commit into `tests/external/wacc/` (gitignored). CI caches that directory.
 
@@ -22,13 +22,12 @@ Skipped, and not listed as failures:
 | Chapter 19 | 167 | Part III. The runner inspects the book's own assembly for constant folding, copy propagation, dead stores, and unreachable code. It does not only run the program. |
 | Chapter 20 | 66 | Part III register allocation. Same assembly inspection, including coalescing. Helper libraries are not tests. |
 | Extra credit `goto` | 30 | not started. One of these is also tagged `switch` (`switch_goto_mid_case.c`). It jumps with `goto`, so it stays skipped. |
-| `chapter_18/valid/parameters/` and `params_and_returns/` | 31 | passing or returning a struct by value is still rejected |
 
-There is no separate function-pointer chapter in this pin. A function pointer is accepted; a test that uses one is compiled, not skipped.
+There is no separate function-pointer chapter in this pin. A function pointer is accepted; a test that uses one is compiled, not skipped. `chapter_18/valid/parameters/` and `params_and_returns/` are run. Integer aggregates there pass, including the library tests that link this compiler against Clang.
 
 ### Per-chapter results
 
-Run locally with `python3 harness/run_wacc.py` after the fetch. 1254 executed, **1176 passed**, **78 known failures**, **363 skipped**, 0 unexpected, 0 compiler panics.
+Run locally with `python3 harness/run_wacc.py` after the fetch. 1285 executed, **1194 passed**, **91 known failures**, **332 skipped**, 0 unexpected, 0 compiler panics.
 
 | Chapter | Run | Passed | Known failures | Skipped |
 | --- | --- | --- | --- | --- |
@@ -49,17 +48,16 @@ Run locally with `python3 harness/run_wacc.py` after the fetch. 1254 executed, *
 | 15 | 106 | 94 | 12 | 0 |
 | 16 | 96 | 88 | 8 | 0 |
 | 17 | 88 | 81 | 7 | 0 |
-| 18 | 276 | 235 | 41 | 32 |
+| 18 | 307 | 253 | 54 | 1 |
 | 19 | 0 | 0 | 0 | 167 |
 | 20 | 0 | 0 | 0 | 66 |
-| **Total** | **1254** | **1176** | **78** | **363** |
+| **Total** | **1285** | **1194** | **91** | **332** |
 
 ### Known-failure categories
 
 | Category | Tests | Meaning |
 | --- | --- | --- |
-| `unsupported-double` | 76 | `double`, a floating constant, or both. Later chapters, including fifteen union extra-credit tests and `struct_decl_in_switch_statement.c`, use a floating constant in a program whose main feature is something else. `float` and `double` may appear in a declaration. An expression that computes one is still rejected. |
-| `unsupported-struct-by-value` | 2 | Passing or returning a struct or union by value is rejected. One file declares a function that passes and returns an incomplete struct. `incomplete_union_types.c` passes a union by value. |
+| `unsupported-double` | 91 | `double`, a floating constant, or an aggregate whose ABI class needs an SSE or x87 register. Later chapters, including fifteen union extra-credit tests, fifteen struct-by-value tests, and `struct_decl_in_switch_statement.c`, use a floating constant or a `double` member in a program whose main feature is something else. `float` and `double` may appear in a declaration. An expression that computes one is still rejected. Integer aggregates are passed and returned by value. |
 
 ### Diagnostics fixed while running the suite
 
@@ -76,12 +74,12 @@ No test in the run panicked, and no executed program disagreed with `expected_re
 | --- | --- | --- |
 | `cargo fmt --all -- --check` | rustc **1.85.1** (4eb161250 2025-03-15) | clean |
 | `cargo clippy --offline --all-targets -- -D warnings` | same | clean |
-| `cargo test --offline --lib` | same | **68 passed, 0 failed** |
+| `cargo test --offline --lib` | same | **74 passed, 0 failed** |
 | `make` | GNU make **4.3** | `build/compiler` produced |
-| `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **103/103 passed** |
-| `scripts/fetch_wacc_tests.sh` then `python3 harness/run_wacc.py` | same Clang and Python | **1176 passed, 78 known failures, 363 skipped, 0 unexpected** |
+| `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **107/107 passed** |
+| `scripts/fetch_wacc_tests.sh` then `python3 harness/run_wacc.py` | same Clang and Python | **1194 passed, 91 known failures, 332 skipped, 0 unexpected** |
 
-`tests/99_switch.c` covers fallthrough, nested switches, `break` and `continue`, Duff's device, a case inside `if`, a jump over an automatic initializer, enum and character constants, casts, `sizeof`, and every integer width from `char` through `unsigned long long`, plus `_Bool`. GitHub Actions for commit `98b1b93` is in the switch record below.
+`tests/100_agg.c` covers register and memory aggregates, `f().x`, and `?:`. `tests/101_fnptr.c` covers decay, `(*fp)(...)`, arrays, struct members, a function typedef, and `qsort`. `tests/102_div.c` calls the host `div` and `ldiv`. `tests/xabi/01_agg_def.c` and `01_agg_use.c` are linked both ways against Clang. `tests/99_switch.c` covers fallthrough, nested switches, `break` and `continue`, Duff's device, a case inside `if`, a jump over an automatic initializer, enum and character constants, casts, `sizeof`, and every integer width from `char` through `unsigned long long`, plus `_Bool`. GitHub Actions for this step is not in this file yet. The switch step's Actions runs are in the switch record below.
 
 ## Stage 2, step 1 — built-in preprocessor
 
@@ -102,7 +100,7 @@ The compiler is a Rust binary. `make` installs it at `build/compiler`. It accept
 3. **Done.** `char` / `short` / `long` / unsigned, integer promotions, conversions, and casts.
 4. **Done.** Pointers and arrays.
 5. **Done.** String literals and external calls such as `printf` / `puts` (hello world).
-6. **Done.** Simple structs: tags, layout, member access, assignment, and brace initializers. Passing or returning a struct by value stays rejected.
+6. **Done.** Simple structs: tags, layout, member access, assignment, and brace initializers. Passing and returning an integer aggregate by value is Stage 2 step 4.
 
 ## Language
 
@@ -154,6 +152,8 @@ GitHub Actions for this step is not copied here.
 - [x] CLI `build/compiler INPUT.c -o OUTPUT.ll`, plus `-E`, `-I`, `-D`, and `-U`
 - [x] Differential tests against Clang
 - [x] Block-scope `static` objects, block-scope `extern`, block-scope function declarations, and `do` / `while`
+- [x] Passing and returning structs and unions by value (System V AMD64 INTEGER and MEMORY classes)
+- [x] Function pointers: decay, calls, arrays, members, typedefs, and `qsort`
 - [x] `switch`, `case`, and `default`, including nested labels, fallthrough, and an LLVM `switch`
 
 ## Supported syntax
@@ -255,13 +255,13 @@ Layout is the System V AMD64 rule. Each member starts at the next offset that sa
 
 `.` requires a struct. `->` requires a pointer to a struct. The member must be named. Qualifiers on the struct object apply to the member, so `const struct S *p; p->x` has a const type when `x` is `int`, and assigning to it is a diagnostic. A struct with a const member is not a modifiable lvalue. `++` and compound assignment still require a scalar. Unknown members are diagnosed.
 
-A struct may be a local, a file-scope object (`extern` or `static` included), or an element of an array. A pointer to a complete struct supports the same arithmetic as any other object pointer, scaled by `sizeof` the struct. Brace initializers work for locals and globals. Missing members are zero. Nested braces initialize one member; a flat list fills inner structs and arrays in order. One expression of that struct type initializes a member as a whole, as in `struct Line line = {p, q}`. A global initializer must still be constant: integer constant expressions, address constants, and brace lists of those. Copying another global struct into a file-scope initializer is rejected, because that object is not a constant. Designated initializers are rejected. Passing a struct by value, or returning one, is rejected. A pointer parameter or a pointer return is accepted.
+A struct may be a local, a file-scope object (`extern` or `static` included), or an element of an array. A pointer to a complete struct supports the same arithmetic as any other object pointer, scaled by `sizeof` the struct. Brace initializers work for locals and globals. Missing members are zero. Nested braces initialize one member; a flat list fills inner structs and arrays in order. One expression of that struct type initializes a member as a whole, as in `struct Line line = {p, q}`. A global initializer must still be constant: integer constant expressions, address constants, and brace lists of those. Copying another global struct into a file-scope initializer is rejected, because that object is not a constant. Designated initializers are rejected. A complete struct or union may be passed or returned by value. The System V AMD64 classification is in `src/abi.rs`: at most two INTEGER eightbytes travel in registers, coerced to the integer (or `ptr`) width of the bytes those fields occupy; anything larger, or a field that is not naturally aligned, is memory (`byval` / `sret`). A call result is a temporary, so `s = f()`, `f().x`, and `c ? a : b` for the same struct type all copy those bytes with `llvm.memmove`. A prototype may name an incomplete struct or union; a definition and a call require a complete type. An aggregate that would use an SSE or x87 register is a diagnostic. A pointer parameter or a pointer return is unchanged.
 
 ## Limitations
 
 - The preprocessor implements translation phases 2–4 for the directives listed below. Trigraphs are not recognized. `_Pragma` and `__DATE__` / `__TIME__` are not implemented. `#include_next` is. A `#` that survives expansion is a stray-token diagnostic. Digraphs (`<:`, `:>`, `<%`, `%>`, `%:`, `%:%:`) are recognized as the corresponding punctuators.
 - An integer constant that fits in no type on the C11 6.4.4.1 list for its suffix and base is a diagnostic. A decimal constant that does not fit in signed `long long` is rejected even when it fits in `unsigned long long`.
-- No bit-fields, flexible array members, or anonymous struct/union members. No passing or returning a struct or union by value, and no designated initializers. `float`, `double`, and `long double` may be declared (so the system headers parse) but an expression that computes one is rejected, and a floating constant is a lexical error. No variable-length arrays. Wide string and character literals are rejected in program text; a wide character constant in a preprocessor expression is accepted as the corresponding character value. An empty struct or union is rejected. Defining a variadic function is not implemented. `va_start`, `va_arg`, and `va_copy` expand to undeclared names, so a use is a diagnostic.
+- No bit-fields, flexible array members, or anonymous struct/union members. No designated initializers. An aggregate passed in an SSE or x87 register is rejected. `float`, `double`, and `long double` may be declared (so the system headers parse) but an expression that computes one is rejected, and a floating constant is a lexical error. No variable-length arrays. Wide string and character literals are rejected in program text; a wide character constant in a preprocessor expression is accepted as the corresponding character value. An empty struct or union is rejected. Defining a variadic function is not implemented. `va_start`, `va_arg`, and `va_copy` expand to undeclared names, so a use is a diagnostic.
 - Multi-character character constants (`'ab'`) are rejected; Clang accepts them as an implementation-defined `int`. A hex or octal escape outside `unsigned char` is a diagnostic, matching Clang. Runtime shift counts outside `0 .. width`, signed left shifts of negative values, and signed left shifts that do not fit are undefined and are not diagnosed outside constant initializers. Signed overflow at runtime is undefined and is not diagnosed. Modifying a string literal is undefined and is not diagnosed. `volatile` does not emit volatile loads or stores. A cast may drop `const`.
 - No `goto`. A label (`name:`) is a diagnostic. `?:` accepts two operands of the same struct or union type. `switch` is implemented, as described above. A `case` range (`case 1 ... 3`) is a GNU extension and is rejected.
 - An empty parameter list on a declaration that is not a definition (`int f();`) is rejected. C11 treats that as a non-prototype. This subset requires a prototype: `(void)` or a parameter type list. A definition may still use `()`.
@@ -283,11 +283,17 @@ A struct may be a local, a file-scope object (`extern` or `static` included), or
 
 ## Next actions
 
-Floating expressions and passing or returning a struct or union by value are the largest remaining buckets. `goto` is not started. `switch` is implemented.
+Floating expressions are the largest remaining bucket. An aggregate that needs an SSE or x87 register waits on that. `goto` is not started. `switch`, integer aggregate calls, and function pointers are implemented.
+
+## Stage 2 step 4 record
+
+Aggregate calls and function pointers. Local results: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **74 passed**, `make` produced `build/compiler`, `python3 harness/run_tests.py` **107/107 passed**, and `python3 harness/run_wacc.py` **1194 passed, 91 known failures, 332 skipped, 0 unexpected**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. `main` at `70e489f` was **1254 executed, 1176 passed, 78 known failures, 363 skipped**. GitHub Actions for this step is not in this file yet.
+
+Classification follows the System V AMD64 psABI. Each eightbyte is INTEGER, SSE, x87, or MEMORY. INTEGER wins when it shares an eightbyte with SSE, so `struct { int i; float f; }` is one `i64` even though float lowering is not implemented. A pure SSE or x87 eightbyte is a diagnostic. More than 16 bytes, or an unaligned field, is memory. Register pieces use the field span in that eightbyte, rounded up to the strictest field alignment there: three bytes are `i24`, `struct { long a; char b; }` is `i64` plus `i8`, and a lone pointer eightbyte is `ptr`. `byval` is aligned to at least 8. `sret` uses the aggregate's alignment. The hidden `sret` pointer is a normal LLVM `sret` argument, so the x86-64 backend returns it in `%rax`. A variadic argument uses the same classification and the same register budget. A multi-eightbyte aggregate that does not fit in the registers still free is passed entirely in memory.
 
 ## Switch record
 
-Local results are in the table above: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **68 passed**, `make` produced `build/compiler`, `python3 harness/run_tests.py` **103/103 passed**, and `python3 harness/run_wacc.py` **1176 passed, 78 known failures, 363 skipped, 0 unexpected**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. `main` before this change was **1220 executed, 1143 passed, 77 known failures, 397 skipped**.
+Local results for that step: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **68 passed**, `make` produced `build/compiler`, `python3 harness/run_tests.py` **103/103 passed**, and `python3 harness/run_wacc.py` **1176 passed, 78 known failures, 363 skipped, 0 unexpected**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. `main` before that change was **1220 executed, 1143 passed, 77 known failures, 397 skipped**.
 
 ### GitHub Actions
 
@@ -312,7 +318,7 @@ A `case` label is a statement, so it can appear inside the statement that is the
 
 An enumeration constant has type `int`, and a completed enum type is compatible with `int`. That is the implementation-defined choice in C11 6.7.2.2: every value has to be representable as `int`, and a value that is not is a diagnostic. The constants are integer constant expressions. An enumerator list starts at 0. A trailing comma is allowed. `enum E` before `E` is defined is a diagnostic.
 
-A union is laid out like a struct except every member starts at offset 0. The size is the largest member, rounded up to the strictest alignment. A brace initializer, and an unbraced initializer, initializes the first member only; further initializers belong to the enclosing object. The address of an object inside a union initializer is a diagnostic, because the LLVM constant is raw bytes and cannot hold a relocation. A null pointer, and an integer converted to a pointer, are ordinary bytes. Assignment copies the whole object with `llvm.memmove`, as for a struct. The LLVM type is a one-element array whose element has the union's alignment, so a union member inside a struct is aligned the way the ABI requires. Member access uses a byte `getelementptr`. Passing or returning a union by value is rejected, same as a struct. A prototype may still return a struct or union, so `<stdlib.h>` can declare `div`. A call that would return one is a diagnostic.
+A union is laid out like a struct except every member starts at offset 0. The size is the largest member, rounded up to the strictest alignment. A brace initializer, and an unbraced initializer, initializes the first member only; further initializers belong to the enclosing object. The address of an object inside a union initializer is a diagnostic, because the LLVM constant is raw bytes and cannot hold a relocation. A null pointer, and an integer converted to a pointer, are ordinary bytes. Assignment copies the whole object with `llvm.memmove`, as for a struct. The LLVM type is a one-element array whose element has the union's alignment, so a union member inside a struct is aligned the way the ABI requires. Member access uses a byte `getelementptr`. A union is passed and returned by value with the same classification as a struct. `<stdlib.h>`'s `div` and `ldiv` return `div_t` and `ldiv_t` in registers; `tests/102_div.c` calls the host libc.
 
 `struct tag` and `union tag` share one tag namespace with enums. `struct tag; { union tag; }` hides the outer struct. `union tag *p` while `struct tag` is visible, with no inner `union tag;`, is a diagnostic. Untagged `struct { ... }` and `union { ... }` are ordinary types; a typedef may name them. Anonymous members (a member with no name) are still rejected. Bit-fields are still rejected.
 

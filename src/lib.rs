@@ -4,6 +4,7 @@
 //! Language Reference, and the System V ABI. It is not derived from Clang
 //! or GCC.
 
+pub mod abi;
 pub mod ast;
 pub mod diag;
 pub mod driver;
