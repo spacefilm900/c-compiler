@@ -48,6 +48,10 @@ INCLUDE = Path(
 SEEDS_PATH = ROOT / "harness" / "csmith_seeds.txt"
 KNOWN_PATH = ROOT / "harness" / "csmith_known_failures.txt"
 RUN_TIMEOUT = float(os.environ.get("CSMITH_RUN_TIMEOUT", "8"))
+# Wall time is longer than the CPU limit so a CPU-bound program dies from
+# SIGXCPU in both binaries, instead of one side winning the race between
+# the parent's timeout and the kernel signal.
+WALL_TIMEOUT = RUN_TIMEOUT * 2
 COMPILE_TIMEOUT = 60.0
 
 # Same options for every seed. Packed structs are off (see the docstring).
@@ -191,8 +195,8 @@ def one_seed(seed: str, work: Path) -> tuple[str, str]:
     )
     if rc != 0:
         return "fail", f"oracle compile failed ({rc}): {clip(err)}"
-    got = run([str(mine)], RUN_TIMEOUT, limit=True, cwd=work)
-    exp = run([str(ref)], RUN_TIMEOUT, limit=True, cwd=work)
+    got = run([str(mine)], WALL_TIMEOUT, limit=True, cwd=work)
+    exp = run([str(ref)], WALL_TIMEOUT, limit=True, cwd=work)
     if got[0] == "timeout" and exp[0] == "timeout":
         return "pass", "both timed out"
     if got[0] == "timeout" or exp[0] == "timeout":

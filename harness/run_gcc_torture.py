@@ -7,10 +7,15 @@ clang -O0 -lm, and checks that the program's own self-test exits 0.
 It does not compare with GCC or Clang, and it does not read the GCC
 compiler sources.
 
-builtins/lib is support code for other tests, not a program, so it is
-skipped. Everything else under execute/ is attempted, including ieee/
-and builtins/. A .x file next to a test is DejaGnu metadata for other
-targets; on x86_64 Linux those files return 0, so they are not skips.
+The whole `builtins/` directory is skipped. GCC's harness links each
+of those tests with a `-lib.c` companion and `lib/main.c`; they are
+not standalone programs, and they exist to exercise compiler builtins.
+`ieee/` is included. A `.x` file is DejaGnu metadata for other targets;
+on x86_64 Linux those files return 0, so they are not skips.
+
+`RUN_TIMEOUT` is the CPU limit. The wall-clock limit is five times
+that, so a short test queued behind other jobs is not reported as a
+hang.
 
 harness/gcc_torture_known_failures.txt lists failures with a reason
 category. An unlisted failure fails the run. A listed test that passes
@@ -42,6 +47,7 @@ SUITE = Path(
 EXECUTE = SUITE / "gcc" / "testsuite" / "gcc.c-torture" / "execute"
 KNOWN_PATH = ROOT / "harness" / "gcc_torture_known_failures.txt"
 RUN_TIMEOUT = float(os.environ.get("TORTURE_RUN_TIMEOUT", "2"))
+WALL_TIMEOUT = RUN_TIMEOUT * 5
 COMPILE_TIMEOUT = 30.0
 
 
@@ -131,7 +137,7 @@ def tests() -> list[Path]:
     found: list[Path] = []
     for path in sorted(EXECUTE.rglob("*.c")):
         rel = path.relative_to(EXECUTE).as_posix()
-        if rel.startswith("builtins/lib/"):
+        if rel.startswith("builtins/"):
             continue
         found.append(path)
     return found
@@ -160,7 +166,7 @@ def one_test(src: str) -> tuple[str, str, str]:
             if "undefined reference" in text or "undefined symbol" in text:
                 return rel, "fail", f"link failed ({rc}): {text}"
             return rel, "fail", f"clang rejected IR ({rc}): {text}"
-        rc, _, err = run([str(exe)], RUN_TIMEOUT, limit=True, cwd=work)
+        rc, _, err = run([str(exe)], WALL_TIMEOUT, limit=True, cwd=work)
         if rc == "timeout":
             return rel, "fail", "timeout"
         if rc != 0:
@@ -194,7 +200,11 @@ def main() -> int:
 
     passed = 0
     known_fail = 0
-    skipped_lib = sum(1 for _ in (EXECUTE / "builtins" / "lib").glob("*.c")) if (EXECUTE / "builtins" / "lib").is_dir() else 0
+    skipped_builtins = (
+        sum(1 for _ in (EXECUTE / "builtins").rglob("*.c"))
+        if (EXECUTE / "builtins").is_dir()
+        else 0
+    )
     problems: list[str] = []
     recorded: list[tuple[str, str]] = []
     for rel, status, detail in results:
@@ -222,7 +232,8 @@ def main() -> int:
             "# An unlisted failure fails harness/run_gcc_torture.py.",
             "# A listed test that passes fails the run.",
             "# A compiler panic fails the run even when the test is listed.",
-            "# builtins/lib is support code and is not listed.",
+            "# builtins/ is skipped: those tests are linked with a companion",
+            "# and lib/main.c, and they target compiler builtins.",
             "",
         ]
         for rel, reason in recorded:
@@ -237,7 +248,7 @@ def main() -> int:
     print(
         f"\n{passed} passed, {known_fail if not args.record else len(recorded)} known failures, "
         f"{len(problems)} unexpected, {len(sources)} executed, "
-        f"{skipped_lib} support files skipped"
+        f"{skipped_builtins} builtins files skipped"
     )
     if problems and not args.record:
         return 1

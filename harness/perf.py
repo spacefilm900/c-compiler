@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Time this compiler against clang -O0 on a fixed set.
 
-Compile time is the wall time to compile the harness programs and the
-One True AWK sources. Clang is `clang -std=c11 -O0`. This compiler emits
-IR and does not take an -O flag; the link step that produces a binary
-uses `clang -O0` for both, so the run-time comparison is at -O0.
+Compile time stops at LLVM IR on both sides: this compiler writes
+textual IR, and Clang is timed with `-S -emit-llvm` at `-O0 -std=c11`.
+Run time is the linked binaries, both produced with `clang -O0`.
 
 Run time is the harness programs, One True AWK's own test suite, and
 the Shakespeare volume test when that private tree is present.
@@ -31,7 +30,10 @@ ROOT = Path(__file__).resolve().parent.parent
 COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
 CLANG = os.environ.get("CLANG", "clang")
 OUT = Path(os.environ.get("PERF_JSON", ROOT / "reports" / "perf.json"))
-FLAGS = "clang -std=c11 -O0; this compiler emits unoptimized IR, linked with clang -O0"
+FLAGS = (
+    "compile: this compiler's IR vs clang -std=c11 -O0 -S -emit-llvm; "
+    "run: both binaries linked with clang -O0"
+)
 
 
 def clang_version() -> str:
@@ -39,9 +41,20 @@ def clang_version() -> str:
     return proc.stdout.splitlines()[0] if proc.stdout else "unknown"
 
 
-def time_call(cmd: list[str], cwd: Path | None = None) -> tuple[float, int]:
+def time_call(cmd: list[str], cwd: Path | None = None, timeout: float = 60) -> tuple[float, int]:
     start = time.perf_counter()
-    proc = subprocess.run(cmd, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return time.perf_counter() - start, 124
     return time.perf_counter() - start, proc.returncode
 
 
@@ -56,7 +69,17 @@ def compile_harness(work: Path) -> dict:
         ours += dt
         ours_fail += rc != 0
         dt, rc = time_call(
-            [CLANG, "-std=c11", "-O0", "-w", "-c", str(src), "-o", str(work / f"{src.stem}.o")]
+            [
+                CLANG,
+                "-std=c11",
+                "-O0",
+                "-w",
+                "-S",
+                "-emit-llvm",
+                str(src),
+                "-o",
+                str(work / f"{src.stem}.clang.ll"),
+            ]
         )
         clang += dt
         clang_fail += rc != 0
@@ -78,22 +101,31 @@ def run_harness(work: Path) -> dict:
         ll = work / f"{src.stem}.run.ll"
         mine = work / f"{src.stem}.mine"
         ref = work / f"{src.stem}.ref"
-        quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-        if subprocess.run([str(COMPILER), str(src), "-o", str(ll)], **quiet).returncode != 0:
+        quiet = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "stdin": subprocess.DEVNULL,
+            "timeout": 60,
+            "check": False,
+        }
+        try:
+            if subprocess.run([str(COMPILER), str(src), "-o", str(ll)], **quiet).returncode != 0:
+                continue
+            if subprocess.run([CLANG, "-O0", "-w", str(ll), "-o", str(mine), "-lm"], **quiet).returncode != 0:
+                continue
+            if (
+                subprocess.run(
+                    [CLANG, "-std=c11", "-O0", "-w", str(src), "-o", str(ref), "-lm"],
+                    **quiet,
+                ).returncode
+                != 0
+            ):
+                continue
+        except subprocess.TimeoutExpired:
             continue
-        if subprocess.run([CLANG, "-O0", "-w", str(ll), "-o", str(mine), "-lm"], **quiet).returncode != 0:
-            continue
-        if (
-            subprocess.run(
-                [CLANG, "-std=c11", "-O0", "-w", str(src), "-o", str(ref), "-lm"],
-                **quiet,
-            ).returncode
-            != 0
-        ):
-            continue
-        dt, _rc = time_call([str(mine)])
+        dt, _rc = time_call([str(mine)], timeout=30)
         ours += dt
-        dt, _rc = time_call([str(ref)])
+        dt, _rc = time_call([str(ref)], timeout=30)
         clang += dt
         ran += 1
     return {"files": ran, "ours_s": round(ours, 4), "clang_s": round(clang, 4)}
@@ -109,13 +141,34 @@ def time_awk_compile() -> dict:
         shutil.rmtree(work)
     work.mkdir(parents=True)
     # Generate awkgram.tab.c and proctab.c before the clock starts.
-    subprocess.run([str(script), "clang", str(work / "prep")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        [str(script), "clang", str(work / "prep")],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        timeout=300,
+        check=False,
+    )
     shutil.rmtree(work / "prep", ignore_errors=True)
     start = time.perf_counter()
-    clang = subprocess.run([str(script), "clang", str(work / "clang")], text=True, capture_output=True)
+    clang = subprocess.run(
+        [str(script), "clang", str(work / "clang")],
+        text=True,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        timeout=300,
+        check=False,
+    )
     clang_s = time.perf_counter() - start
     start = time.perf_counter()
-    ours = subprocess.run([str(script), "ccomp", str(work / "ccomp")], text=True, capture_output=True)
+    ours = subprocess.run(
+        [str(script), "ccomp", str(work / "ccomp")],
+        text=True,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        timeout=300,
+        check=False,
+    )
     ours_s = time.perf_counter() - start
     return {
         "status": "ok" if clang.returncode == 0 and ours.returncode == 0 else "compile-failed",
@@ -139,21 +192,38 @@ def time_awk_suite(clang_awk: Path, our_awk: Path) -> dict:
         env["oldawk"] = str(binary)
         env["awk"] = str(binary)
         start = time.perf_counter()
-        proc = subprocess.run(
-            [str(src / "testdir" / "REGRESS")],
-            cwd=src / "testdir",
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        try:
+            proc = subprocess.run(
+                [str(src / "testdir" / "REGRESS")],
+                cwd=src / "testdir",
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                timeout=180,
+                check=False,
+            )
+            code = proc.returncode
+        except subprocess.TimeoutExpired:
+            return time.perf_counter() - start, 124
         # bugs-fixed/REGRESS wants ../a.out. Time the same programs directly.
         for awk in sorted((src / "bugs-fixed").glob("*.awk")):
             cmd = [str(binary), "-f", str(awk)]
             data = awk.with_suffix(".in")
             if data.is_file():
                 cmd.append(str(data))
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return time.perf_counter() - start, proc.returncode
+            try:
+                subprocess.run(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    timeout=30,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                return time.perf_counter() - start, 124
+        return time.perf_counter() - start, code
 
     row: dict = {"status": "ok", "runner": "testdir/REGRESS and bugs-fixed/*.awk"}
     if clang_awk.is_file():
@@ -183,8 +253,18 @@ def time_volume(clang_awk: Path, our_awk: Path) -> dict:
             continue
         env = {**os.environ, "AWKS": "onetrue", "ONETRUE_CMD": str(binary)}
         start = time.perf_counter()
-        proc = subprocess.run(["./run.sh"], cwd=volume, env=env)
-        rows[label] = {"s": round(time.perf_counter() - start, 4), "rc": proc.returncode}
+        try:
+            proc = subprocess.run(
+                ["./run.sh"],
+                cwd=volume,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                timeout=180,
+                check=False,
+            )
+            rows[label] = {"s": round(time.perf_counter() - start, 4), "rc": proc.returncode}
+        except subprocess.TimeoutExpired:
+            rows[label] = {"s": round(time.perf_counter() - start, 4), "rc": 124}
     rows["status"] = "ok"
     return rows
 

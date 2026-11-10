@@ -105,4 +105,4 @@ scripts/fetch_gcc_torture.sh
 python3 harness/run_gcc_torture.py
 ```
 
-Failures that remain are listed in `harness/gcc_torture_known_failures.txt`. `builtins/lib` is support code and is skipped.
+Failures that remain are listed in `harness/gcc_torture_known_failures.txt`. `builtins/` is skipped: GCC's harness links each of those tests with a companion file and `lib/main.c`, and they target compiler builtins.

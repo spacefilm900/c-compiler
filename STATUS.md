@@ -294,9 +294,9 @@ Csmith, One True AWK, the AWK Builder suites, `gcc.c-torture/execute`, and a per
 
 Pin `30dccd73b78652c4719f36572994778a5b233a4e` (tag `csmith-2.3.0`). Every seed uses the options in `harness/run_csmith.py`: no packed structs (`#pragma pack` is ignored), `main(void)`, and size caps so a program finishes in seconds. The program is compiled with this compiler and with `clang -std=c11 -O0`, then both binaries run under an 8 second timeout, `RLIMIT_CPU`, and a 2 GiB address-space limit. Exit status and stdout are compared. The checksum line is the one Csmith's `main` prints.
 
-CI runs the 37 seeds in `harness/csmith_seeds.txt`. Seeds 7, 19, and 37 were dropped from that list: one binary was killed by the CPU limit and the other hit the wall-clock timeout, so the exit status is not stable. A local batch is `python3 harness/run_csmith.py --count 500`. It is not part of CI.
+CI runs the 40 seeds in `harness/csmith_seeds.txt`. The wall-clock limit is twice the CPU limit, so a program that burns CPU dies from `SIGXCPU` on both sides instead of one side winning a race with the parent's timeout. A local batch is `python3 harness/run_csmith.py --count 500`. It is not part of CI.
 
-Local result on this machine, Ubuntu Clang 18.1.3: **23 passed, 14 known failures, 0 unexpected**, out of 37 seeds. The known failures are stricter pointer constraints than Clang's default warnings (12 seeds) and a file-scope initializer of a nested bit-field (2 seeds). No checksum mismatch in the batch.
+Local result on this machine, Ubuntu Clang 18.1.3: **26 passed, 14 known failures, 0 unexpected**, out of 40 seeds. The known failures are stricter pointer constraints than Clang's warnings (12 seeds) and a file-scope initializer of a nested bit-field (2 seeds). No checksum mismatch in the batch.
 
 ### One True AWK
 
@@ -326,20 +326,21 @@ Two private repositories, fetched with `gh` at the pins in `tests/external/READM
 
 Pin `5115c7e447fc07457443df874bf57840e8316d5f` (`releases/gcc-15.2.0`). Each program is compiled here, linked with `clang -O0 -lm`, and must exit 0. `builtins/lib` (28 files) is support code and is skipped.
 
-Local result: **797 passed, 1065 known failures, 0 unexpected, 1862 executed, 28 support files skipped**.
+`builtins/` is skipped (144 files). GCC's own harness links each of those with a `-lib.c` companion and `lib/main.c`, and the tests target compiler builtins. They are not standalone programs.
+
+Local result: **797 passed, 949 known failures, 0 unexpected, 1746 executed, 144 builtins files skipped**.
 
 | Category | Tests |
 | --- | --- |
-| compile-error | 439 |
-| builtin | 412 |
-| old-style-decl | 66 |
-| runtime | 50 |
-| vla | 24 |
+| compile-error | 419 |
+| builtin | 370 |
+| old-style-decl | 65 |
+| vla | 23 |
 | long-double | 22 |
 | nested-function | 13 |
-| asm | 10 |
-| link | 9 |
-| complex | 7 |
+| runtime | 10 |
+| asm | 8 |
+| complex | 6 |
 | wide-literal | 5 |
 | flexible-array | 4 |
 | anonymous-member | 3 |
@@ -349,16 +350,16 @@ Local result: **797 passed, 1065 known failures, 0 unexpected, 1862 executed, 28
 
 ### Performance
 
-`harness/perf.py` writes `reports/perf.json`. CI uploads that file from `ubuntu-24.04` and does not fail on timing noise. Flags: `clang -std=c11 -O0` for Clang. This compiler has no `-O` flag. The compile column for it is the time to emit IR. Clang's compile column is `clang -c`, which includes native code generation. Run time is both binaries linked with `clang -O0`.
+`harness/perf.py` writes `reports/perf.json`. CI uploads that file from `ubuntu-24.04` and does not fail on timing noise. Compile time stops at LLVM IR on both sides: this compiler writes textual IR, and Clang is timed with `-std=c11 -O0 -S -emit-llvm`. Run time is both binaries linked with `clang -O0`.
 
 The numbers below are from the agent VM (Linux 6.12.113+, x86_64, Ubuntu Clang 18.1.3, Python 3.12.3), not from a GitHub `ubuntu-24.04` runner. The CI artifact `perf-numbers` is that runner's measurement. The harness programs are tiny, so the run-time gap is not a stable ranking.
 
 | Measurement | This compiler | Clang -O0 |
 | --- | --- | --- |
-| Harness compile (115 files, IR vs `clang -c`) | 0.29 s | 1.53 s |
-| One True AWK compile | failed after 1.60 s | 0.45 s |
-| Harness run (115 programs) | 0.38 s | 0.26 s |
-| One True AWK test suite | did not build | 0.35 s |
+| Harness compile (115 files, both to LLVM IR) | 0.39 s | 1.86 s |
+| One True AWK compile | failed after 1.44 s | 0.37 s |
+| Harness run (115 programs) | 0.44 s | 0.33 s |
+| One True AWK test suite | did not build | 0.40 s |
 | Shakespeare volume | not run (private repo) | not run (private repo) |
 
 ### Headers added for the suites

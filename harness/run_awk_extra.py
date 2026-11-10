@@ -89,19 +89,26 @@ def run_posix(clang: Path, ours: Path) -> int:
         (clang, "clang-onetrue", clang_json),
         (ours, "ccomp-onetrue", our_json),
     ):
-        proc = subprocess.run(
-            [
-                "python3",
-                "tools/runner.py",
-                "--cmd",
-                str(binary),
-                "--label",
-                label,
-                "--output",
-                str(dest),
-            ],
-            cwd=POSIX,
-        )
+        try:
+            proc = subprocess.run(
+                [
+                    "python3",
+                    "tools/runner.py",
+                    "--cmd",
+                    str(binary),
+                    "--label",
+                    label,
+                    "--output",
+                    str(dest),
+                ],
+                cwd=POSIX,
+                stdin=subprocess.DEVNULL,
+                timeout=1200,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"posix runner timed out for {label}")
+            return 1
         if proc.returncode != 0:
             print(f"posix runner exited {proc.returncode} for {label}")
             # The portable gate is nonzero for the known onetrue FILENAME
@@ -111,6 +118,9 @@ def run_posix(clang: Path, ours: Path) -> int:
         cwd=POSIX,
         text=True,
         capture_output=True,
+        stdin=subprocess.DEVNULL,
+        timeout=60,
+        check=False,
     )
     sys.stdout.write(summarize.stdout)
     sys.stderr.write(summarize.stderr)
@@ -159,8 +169,8 @@ def compare_posix(clang_json: Path, our_json: Path) -> int:
     clang_rows = {case_key(row): row for row in rows_of(clang)}
     our_rows = {case_key(row): row for row in rows_of(ours)}
     if not clang_rows or not our_rows:
-        print("could not read per-case rows; the summarize output above is the record")
-        return 0
+        print("could not read per-case rows from the runner JSON")
+        return 1
     disagree = []
     for key in sorted(set(clang_rows) | set(our_rows)):
         left = clang_rows.get(key)
@@ -193,18 +203,36 @@ def run_volume(clang: Path, ours: Path) -> int:
         print(f"awk-volume-tests HEAD {got} is not pin {PIN_VOLUME}")
         return 1
     if not (VOLUME / ".fetched").is_file():
-        proc = subprocess.run(["./fetch.sh"], cwd=VOLUME)
+        try:
+            proc = subprocess.run(
+                ["./fetch.sh"],
+                cwd=VOLUME,
+                stdin=subprocess.DEVNULL,
+                timeout=180,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            print("volume fetch.sh timed out")
+            return 1
         if proc.returncode != 0:
             print("volume fetch.sh failed")
             return 1
     failed = 0
     for label, binary in (("clang", clang), ("ccomp", ours)):
         print(f"volume {label}")
-        proc = subprocess.run(
-            ["./run.sh"],
-            cwd=VOLUME,
-            env={**os.environ, "AWKS": "onetrue", "ONETRUE_CMD": str(binary)},
-        )
+        try:
+            proc = subprocess.run(
+                ["./run.sh"],
+                cwd=VOLUME,
+                env={**os.environ, "AWKS": "onetrue", "ONETRUE_CMD": str(binary)},
+                stdin=subprocess.DEVNULL,
+                timeout=180,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"volume {label} timed out")
+            failed = 1
+            continue
         if proc.returncode != 0:
             print(f"volume {label} exited {proc.returncode}")
             failed = 1
@@ -222,11 +250,18 @@ def main() -> int:
     hook = os.environ.get("AWK_EXTRA_HOOK", "").strip()
     if hook:
         print(f"extra hook: {hook}")
-        proc = subprocess.run(
-            hook,
-            shell=True,
-            env={**os.environ, "AWK_CLANG": str(clang), "AWK_CCOMP": str(ours)},
-        )
+        try:
+            proc = subprocess.run(
+                hook,
+                shell=True,
+                env={**os.environ, "AWK_CLANG": str(clang), "AWK_CCOMP": str(ours)},
+                stdin=subprocess.DEVNULL,
+                timeout=600,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            print("AWK_EXTRA_HOOK timed out")
+            return 1
         if proc.returncode != 0:
             print(f"AWK_EXTRA_HOOK exited {proc.returncode}")
             status = 1

@@ -28,7 +28,19 @@ def build(mode: str, dest: Path) -> subprocess.CompletedProcess[str]:
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
-    return subprocess.run([str(BUILD), mode, str(dest)], text=True, capture_output=True)
+    try:
+        return subprocess.run(
+            [str(BUILD), mode, str(dest)],
+            text=True,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=300,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            [str(BUILD), mode, str(dest)], 124, "", f"{mode} build timed out\n"
+        )
 
 
 def bugs_fixed(binary: Path) -> dict[str, tuple[int, bytes, bytes]]:
@@ -42,8 +54,21 @@ def bugs_fixed(binary: Path) -> dict[str, tuple[int, bytes, bytes]]:
         cmd = [str(binary), "-f", str(src)]
         if data.is_file():
             cmd.append(str(data))
-        proc = subprocess.run(cmd, capture_output=True, timeout=30)
-        out[src.name] = (proc.returncode, proc.stdout, proc.stderr)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+        # Diagnostics start with argv[0]. The two binaries live at
+        # different paths, so strip that prefix before comparing.
+        prefix = os.fsencode(binary) + b": "
+        stderr = b"".join(
+            b"awk: " + line[len(prefix) :] if line.startswith(prefix) else line
+            for line in proc.stderr.splitlines(keepends=True)
+        )
+        out[src.name] = (proc.returncode, proc.stdout, stderr)
     return out
 
 
@@ -58,8 +83,10 @@ def testdir_compare(clang_awk: Path, our_awk: Path) -> tuple[int, str]:
         cwd=SRC / "testdir",
         text=True,
         capture_output=True,
+        stdin=subprocess.DEVNULL,
         env=env,
         timeout=180,
+        check=False,
     )
     text = proc.stdout + proc.stderr
     return proc.returncode, text
