@@ -60,6 +60,9 @@ pub fn analyze_tokens(
         strings: Vec::new(),
         static_locals: Vec::new(),
         static_seq: 0,
+        labels: HashMap::new(),
+        variadic_fn: false,
+        last_param: None,
     };
     for decl in &mut unit.decls {
         match decl {
@@ -164,6 +167,12 @@ struct Sema {
     /// the file-scope symbol table. The name is an LLVM symbol, not the C name.
     static_locals: Vec<IrGlobal>,
     static_seq: u32,
+    /// Labels defined in the function being checked. A `goto` names one of them.
+    labels: HashMap<String, (usize, usize)>,
+    /// The function being checked is variadic. `va_start` requires that.
+    variadic_fn: bool,
+    /// Name of the last named parameter, which `va_start` must name.
+    last_param: Option<String>,
 }
 
 impl Sema {
@@ -250,8 +259,7 @@ impl Sema {
 
     fn declare_func(&mut self, func: &mut FuncDef) -> Result<(), Diagnostic> {
         // A prototype may name an incomplete struct or union. A definition
-        // needs a complete type, and an aggregate that would travel in an
-        // SSE or x87 register is rejected until floating-point lowering exists.
+        // needs a complete type. Returning an x87 aggregate is rejected.
         if func.body.is_some() {
             self.require_passed_aggregate(&func.ret_type, func.line, func.column, true)?;
             for param in &func.params {
@@ -370,10 +378,17 @@ impl Sema {
             }));
         }
         let body = func.body.as_mut().expect("defined function");
+        self.labels.clear();
+        self.collect_labels(body)?;
+        self.variadic_fn = func.variadic;
+        self.last_param = func.params.last().and_then(|param| param.name.clone());
         self.check_compound(body, false)?;
         self.pop();
         self.fn_name.clear();
         self.current_func.clear();
+        self.variadic_fn = false;
+        self.last_param = None;
+        self.labels.clear();
         Ok(())
     }
 
@@ -583,22 +598,56 @@ impl Sema {
             return self.err(line, column, "empty initializer list");
         }
         let mut pos = 0usize;
+        let mut index = 0u64;
         let mut count = 0u64;
         let mut scratch = Vec::new();
         while pos < items.len() {
-            let start = pos;
-            if self.opens_subobject(elem, &items[pos]) {
-                if !elem.is_scalar() {
-                    self.fill_object(elem, &items[pos], 0, &mut scratch, line, column)?;
+            if let Init::Designated {
+                designators,
+                line: dline,
+                column: dcol,
+                ..
+            } = &items[pos]
+            {
+                let Some(Designator::Index { expr, line, column }) = designators.first() else {
+                    return self.err(*dline, *dcol, "array designator is required");
+                };
+                let value = match eval_const_expr(expr) {
+                    Ok(value) if value.ty.is_integer() => value,
+                    _ => {
+                        return self.err(*line, *column, "designator is not an integer constant");
+                    }
+                };
+                let at = if value.ty.is_signed() {
+                    let signed = sign_extend(value.bits, value.ty.width());
+                    if signed < 0 {
+                        return self.err(*line, *column, "array designator is negative");
+                    }
+                    signed as u64
+                } else {
+                    value.bits
+                };
+                if at > 1_000_000 {
+                    return self.err(*line, *column, "array designator is too large");
                 }
+                index = at;
                 pos += 1;
             } else {
-                self.fill_unbraced(elem, items, &mut pos, 0, &mut scratch, (line, column))?;
+                let start = pos;
+                if self.opens_subobject(elem, &items[pos]) {
+                    if !elem.is_scalar() {
+                        self.fill_object(elem, &items[pos], 0, &mut scratch, line, column)?;
+                    }
+                    pos += 1;
+                } else {
+                    self.fill_unbraced(elem, items, &mut pos, 0, &mut scratch, (line, column))?;
+                }
+                if pos == start {
+                    return self.err(line, column, "empty initializer list");
+                }
             }
-            if pos == start {
-                return self.err(line, column, "empty initializer list");
-            }
-            count += 1;
+            index += 1;
+            count = count.max(index);
         }
         Ok(count)
     }
@@ -612,12 +661,21 @@ impl Sema {
         line: usize,
         column: usize,
     ) -> Result<(), Diagnostic> {
+        if let Init::List { items, .. } = init {
+            if items
+                .iter()
+                .any(|item| matches!(item, Init::Designated { .. }))
+            {
+                return self.fill_mixed(ty, items, base, stores);
+            }
+        }
         if ty.is_scalar() {
             let expr = self.scalar_expr(init)?;
             stores.push(ElemStore {
                 offset: base,
                 ty: ty.clone(),
                 expr,
+                bits: None,
             });
             return Ok(());
         }
@@ -630,6 +688,7 @@ impl Sema {
                     offset: base,
                     ty: ty.clone(),
                     expr: expr.clone(),
+                    bits: None,
                 });
                 return Ok(());
             }
@@ -719,20 +778,16 @@ impl Sema {
             // Every member is at offset 0, so walking all of them would store
             // later items on top of the same bytes and steal them from the
             // enclosing initializer.
-            let fields: Vec<_> = if ty.is_union() {
-                fields.into_iter().take(1).collect()
-            } else {
-                fields
-            };
+            let fields = initializable_fields(fields, ty.is_union());
             for field in &fields {
                 if *pos >= items.len() {
                     break;
                 }
-                let off = base + field.offset;
-                if self.opens_subobject(&field.ty, &items[*pos]) {
-                    self.fill_object(&field.ty, &items[*pos], off, stores, line, column)?;
+                if field.bit_width.is_some() || self.opens_subobject(&field.ty, &items[*pos]) {
+                    self.init_field(field, base, &items[*pos], stores)?;
                     *pos += 1;
                 } else {
+                    let off = base + field.offset;
                     self.fill_unbraced(&field.ty, items, pos, off, stores, (line, column))?;
                 }
             }
@@ -773,12 +828,9 @@ impl Sema {
                 format!("variable has incomplete type '{}'", ty.display()),
             );
         };
-        // A brace list for a union initializes the first member only.
-        let fields: Vec<_> = if ty.is_union() {
-            fields.into_iter().take(1).collect()
-        } else {
-            fields
-        };
+        // A brace list for a union initializes the first named member only.
+        // Unnamed and zero-width bit-fields are padding, not initializers.
+        let fields = initializable_fields(fields, ty.is_union());
         let Init::List {
             items,
             line,
@@ -793,11 +845,11 @@ impl Sema {
             if pos >= items.len() {
                 break;
             }
-            let off = base + field.offset;
-            if self.opens_subobject(&field.ty, &items[pos]) {
-                self.fill_object(&field.ty, &items[pos], off, stores, *line, *column)?;
+            if field.bit_width.is_some() || self.opens_subobject(&field.ty, &items[pos]) {
+                self.init_field(field, base, &items[pos], stores)?;
                 pos += 1;
             } else {
+                let off = base + field.offset;
                 self.fill_unbraced(&field.ty, items, &mut pos, off, stores, (*line, *column))?;
             }
         }
@@ -840,6 +892,9 @@ impl Sema {
     fn scalar_expr(&self, init: &Init) -> Result<Expr, Diagnostic> {
         match init {
             Init::Expr(expr) => Ok(expr.clone()),
+            Init::Designated { line, column, .. } => {
+                self.err(*line, *column, "designator in a scalar initializer")
+            }
             Init::List {
                 items,
                 line,
@@ -855,11 +910,229 @@ impl Sema {
                 }
                 match &items[0] {
                     Init::Expr(expr) => Ok(expr.clone()),
+                    Init::Designated { line, column, .. } => {
+                        self.err(*line, *column, "designator in a scalar initializer")
+                    }
                     Init::List { line, column, .. } => {
                         self.err(*line, *column, "excess braces around scalar initializer")
                     }
                 }
             }
+        }
+    }
+
+    fn init_field(
+        &mut self,
+        field: &StructField,
+        base: u64,
+        init: &Init,
+        stores: &mut Vec<ElemStore>,
+    ) -> Result<(), Diagnostic> {
+        if let Some(width) = field.bit_width.filter(|width| *width > 0) {
+            let expr = self.scalar_expr(init)?;
+            let declared = field.ty.as_integer().expect("bit-field type is an integer");
+            stores.push(ElemStore {
+                offset: base + field.offset,
+                ty: CType::from_name(bitfield_value_type(declared, width)),
+                expr,
+                bits: Some(BitStore {
+                    abs_bit: (base as u32)
+                        .saturating_mul(8)
+                        .saturating_add(field.bit_offset),
+                    width,
+                    container_bits: (field.ty.size().unwrap_or(1) * 8) as u32,
+                    signed_field: declared.is_signed(),
+                }),
+            });
+            return Ok(());
+        }
+        let (line, column) = init_pos(init);
+        self.fill_object(&field.ty, init, base + field.offset, stores, line, column)
+    }
+
+    /// A brace list that contains at least one designator.
+    ///
+    /// Designators are relative to this brace's object. After one, the next
+    /// positional initializer continues at the following subobject, including
+    /// through the elements of an array that a designator stepped into.
+    fn fill_mixed(
+        &mut self,
+        ty: &CType,
+        items: &[Init],
+        base: u64,
+        stores: &mut Vec<ElemStore>,
+    ) -> Result<(), Diagnostic> {
+        let mut frames = vec![InitFrame {
+            children: init_children(ty, false),
+            index: 0,
+            base,
+        }];
+        for item in items {
+            if let Init::Designated {
+                designators,
+                init,
+                line,
+                column,
+            } = item
+            {
+                let (child, frames_at) =
+                    self.seek_designator(ty, base, designators, *line, *column)?;
+                self.init_child(&child, &frames_at, init, stores)?;
+                frames = frames_at;
+                if !advance_frames(&mut frames) {
+                    // The designated object was the last subobject. A later
+                    // positional initializer is excess; a later designator
+                    // starts over from this brace.
+                }
+                continue;
+            }
+            self.positional_one(item, &mut frames, stores, ty)?;
+        }
+        Ok(())
+    }
+
+    fn seek_designator(
+        &mut self,
+        ty: &CType,
+        base: u64,
+        designators: &[Designator],
+        line: usize,
+        column: usize,
+    ) -> Result<(InitChild, Vec<InitFrame>), Diagnostic> {
+        let mut current = ty.clone();
+        let mut current_base = base;
+        let mut frames = Vec::new();
+        if designators.is_empty() {
+            return self.err(line, column, "designator does not match this type");
+        }
+        for (nth, designator) in designators.iter().enumerate() {
+            let children = init_children(&current, true);
+            if children.is_empty() {
+                return self.err(line, column, "designator does not match this type");
+            }
+            let index = match designator {
+                Designator::Field { name, line, column } => {
+                    if current.unqualified().is_array() {
+                        return self.err(*line, *column, "field designator on an array");
+                    }
+                    let Some(index) = children.iter().position(|child| {
+                        child
+                            .field
+                            .as_ref()
+                            .is_some_and(|field| field.name == *name)
+                    }) else {
+                        return self.err(*line, *column, format!("no member named '{name}'"));
+                    };
+                    index
+                }
+                Designator::Index { expr, line, column } => {
+                    if !current.unqualified().is_array() {
+                        return self.err(*line, *column, "array designator on a non-array");
+                    }
+                    let value = match eval_const_expr(expr) {
+                        Ok(value) if value.ty.is_integer() => value,
+                        _ => {
+                            return self.err(
+                                *line,
+                                *column,
+                                "designator is not an integer constant",
+                            );
+                        }
+                    };
+                    let index = if value.ty.is_signed() {
+                        let signed = sign_extend(value.bits, value.ty.width());
+                        if signed < 0 {
+                            return self.err(*line, *column, "array designator is negative");
+                        }
+                        signed as u64
+                    } else {
+                        value.bits
+                    };
+                    if index as usize >= children.len() {
+                        return self.err(*line, *column, "array designator is out of range");
+                    }
+                    index as usize
+                }
+            };
+            let child = children[index].clone();
+            frames.push(InitFrame {
+                children,
+                index,
+                base: current_base,
+            });
+            if nth + 1 == designators.len() {
+                return Ok((child, frames));
+            }
+            current_base += child.offset;
+            current = child.ty;
+        }
+        self.err(line, column, "designator does not match this type")
+    }
+
+    fn init_child(
+        &mut self,
+        child: &InitChild,
+        frames: &[InitFrame],
+        init: &Init,
+        stores: &mut Vec<ElemStore>,
+    ) -> Result<(), Diagnostic> {
+        let base = frames.last().map(|frame| frame.base).unwrap_or(0);
+        if let Some(field) = &child.field {
+            self.init_field(field, base, init, stores)
+        } else {
+            let (line, column) = init_pos(init);
+            self.fill_object(&child.ty, init, base + child.offset, stores, line, column)
+        }
+    }
+
+    fn positional_one(
+        &mut self,
+        item: &Init,
+        frames: &mut Vec<InitFrame>,
+        stores: &mut Vec<ElemStore>,
+        root: &CType,
+    ) -> Result<(), Diagnostic> {
+        loop {
+            let Some(frame) = frames.last() else {
+                let (line, column) = init_pos(item);
+                return self.err(line, column, "excess elements in initializer");
+            };
+            if frame.index >= frame.children.len() {
+                let (line, column) = init_pos(item);
+                return self.err(line, column, "excess elements in initializer");
+            }
+            let child = frame.children[frame.index].clone();
+            let child_base = frame.base + child.offset;
+            let scalar =
+                child.ty.is_scalar() || child.field.as_ref().is_some_and(|f| f.is_bitfield());
+            if scalar || self.opens_subobject(&child.ty, item) {
+                if let Some(field) = &child.field {
+                    if field.is_bitfield() || scalar {
+                        self.init_field(field, frame.base, item, stores)?;
+                    } else {
+                        let (line, column) = init_pos(item);
+                        self.fill_object(&child.ty, item, child_base, stores, line, column)?;
+                    }
+                } else {
+                    let (line, column) = init_pos(item);
+                    self.fill_object(&child.ty, item, child_base, stores, line, column)?;
+                }
+                if !advance_frames(frames) {
+                    frames.clear();
+                }
+                return Ok(());
+            }
+            let nested = init_children(&child.ty, false);
+            if nested.is_empty() {
+                let (line, column) = init_pos(item);
+                return self.err(line, column, "excess elements in initializer");
+            }
+            frames.push(InitFrame {
+                children: nested,
+                index: 0,
+                base: child_base,
+            });
+            let _ = root;
         }
     }
 
@@ -896,6 +1169,7 @@ impl Sema {
                 offset: base + index as u64 * elem_size,
                 ty: elem.clone(),
                 expr: Expr::int(u64::from(*byte), TypeName::Int, line, column),
+                bits: None,
             });
         }
         Ok(())
@@ -916,6 +1190,9 @@ impl Sema {
         ty: &CType,
         stores: &[ElemStore],
     ) -> Result<ConstInit, Diagnostic> {
+        if ty.record_has_bitfield() {
+            return self.fold_bit_object(name, ty, stores);
+        }
         let mut folded = Vec::new();
         for store in stores {
             folded.push((store.offset, self.fold_one(name, &store.expr, &store.ty)?));
@@ -929,6 +1206,45 @@ impl Sema {
             );
         }
         Ok(value)
+    }
+
+    fn fold_bit_object(
+        &self,
+        name: &str,
+        ty: &CType,
+        stores: &[ElemStore],
+    ) -> Result<ConstInit, Diagnostic> {
+        let size = ty.size().unwrap_or(0) as usize;
+        let mut bytes = vec![0u8; size];
+        for store in stores {
+            if let Some(bits) = &store.bits {
+                let value = self.fold_one(name, &store.expr, &store.ty)?;
+                let ConstInit::Int(raw) = value else {
+                    return self.err(
+                        store.expr.line(),
+                        store.expr.column(),
+                        format!("initializer of '{name}' is not a constant expression"),
+                    );
+                };
+                pack_bits(&mut bytes, bits.abs_bit, bits.width, raw);
+            } else if store.ty.is_integer() || store.ty.is_pointer() {
+                let value = self.fold_one(name, &store.expr, &store.ty)?;
+                if !write_folded_bytes(&store.ty, &value, &mut bytes, store.offset as usize) {
+                    return self.err(
+                        store.expr.line(),
+                        store.expr.column(),
+                        format!("initializer of '{name}' uses an address in a bit-field struct"),
+                    );
+                }
+            } else {
+                return self.err(
+                    store.expr.line(),
+                    store.expr.column(),
+                    format!("initializer of '{name}' is not a constant expression"),
+                );
+            }
+        }
+        Ok(ConstInit::Bytes(bytes))
     }
 
     fn fold_one(&self, name: &str, expr: &Expr, dest: &CType) -> Result<ConstInit, Diagnostic> {
@@ -1311,6 +1627,72 @@ impl Sema {
                 }
                 Ok(())
             }
+            Stmt::Label { stmt, .. } => self.check_stmt(stmt),
+            Stmt::Goto { name, line, column } => {
+                if !self.labels.contains_key(name) {
+                    return self.err(*line, *column, format!("use of undeclared label '{name}'"));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Labels have function scope (C11 6.2.1). A name may be used before it
+    /// is defined, and two labels with the same name are a constraint violation.
+    fn collect_labels(&mut self, compound: &Compound) -> Result<(), Diagnostic> {
+        for item in &compound.items {
+            self.collect_labels_stmt(item)?;
+        }
+        Ok(())
+    }
+
+    fn collect_labels_stmt(&mut self, stmt: &Stmt) -> Result<(), Diagnostic> {
+        match stmt {
+            Stmt::Label {
+                name,
+                stmt,
+                line,
+                column,
+            } => {
+                if self.labels.contains_key(name) {
+                    return self.err(*line, *column, format!("redefinition of label '{name}'"));
+                }
+                self.labels.insert(name.clone(), (*line, *column));
+                self.collect_labels_stmt(stmt)
+            }
+            Stmt::Compound(compound) => self.collect_labels(compound),
+            Stmt::If {
+                then_stmt,
+                else_stmt,
+                ..
+            } => {
+                self.collect_labels_stmt(then_stmt)?;
+                if let Some(else_stmt) = else_stmt {
+                    self.collect_labels_stmt(else_stmt)?;
+                }
+                Ok(())
+            }
+            Stmt::While { body, .. } | Stmt::Do { body, .. } => self.collect_labels_stmt(body),
+            Stmt::For { init, body, .. } => {
+                if let ForInit::Decl(decls) = init {
+                    for decl in decls {
+                        if let Some(init) = &decl.init {
+                            let _ = init;
+                        }
+                    }
+                }
+                self.collect_labels_stmt(body)
+            }
+            Stmt::Switch { body, .. }
+            | Stmt::Case { stmt: body, .. }
+            | Stmt::Default { stmt: body, .. } => self.collect_labels_stmt(body),
+            Stmt::Decl(_)
+            | Stmt::FuncDecl(_)
+            | Stmt::Return { .. }
+            | Stmt::Expr { .. }
+            | Stmt::Break { .. }
+            | Stmt::Continue { .. }
+            | Stmt::Goto { .. } => Ok(()),
         }
     }
 
@@ -1793,6 +2175,8 @@ impl Sema {
             Expr::Decay { .. } => Ok(()),
             Expr::Str { .. } => self.check_str(expr),
             Expr::Member { .. } => self.check_member(expr),
+            Expr::VaArg { .. } => self.check_va_arg(expr),
+            Expr::VaOp { .. } => self.check_va_op(expr),
         }
     }
 
@@ -2194,6 +2578,8 @@ impl Sema {
                             column,
                             "cannot take the address of this expression",
                         );
+                    } else if is_bitfield(expr) {
+                        return self.err(line, column, "cannot take the address of a bit-field");
                     } else {
                         CType::pointer(inner_ty)
                     }
@@ -2430,6 +2816,9 @@ impl Sema {
                 SizeofOperand::Type(ty) => ty.clone(),
                 SizeofOperand::Expr(inner) => {
                     self.check_expr(inner)?;
+                    if is_bitfield(inner) {
+                        return self.err(line, column, "sizeof applied to a bit-field");
+                    }
                     inner.ty().expect("sizeof operand is typed")
                 }
             };
@@ -2736,6 +3125,9 @@ impl Sema {
                 format!("cannot assign to const-qualified type '{}'", ty.display()),
             );
         }
+        if ty.is_long_double() {
+            return self.err(expr.line(), expr.column(), "long double is not supported");
+        }
         if ty.is_record() {
             if ty.contains_const() {
                 return self.err(
@@ -2752,6 +3144,104 @@ impl Sema {
         Ok(())
     }
 
+    fn check_va_list_arg(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        self.check_expr(expr)?;
+        self.decay(expr)?;
+        let ty = expr.ty().expect("typed");
+        if va_list_pointee(&ty) {
+            return Ok(());
+        }
+        self.err(
+            expr.line(),
+            expr.column(),
+            format!("expected a va_list, found '{}'", ty.display()),
+        )
+    }
+
+    fn check_va_arg(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        let (line, column, type_arg) = match expr {
+            Expr::VaArg {
+                ap,
+                type_arg,
+                line,
+                column,
+                ..
+            } => {
+                let line = *line;
+                let column = *column;
+                let type_arg = type_arg.clone();
+                self.check_va_list_arg(ap)?;
+                (line, column, type_arg)
+            }
+            _ => unreachable!("va_arg"),
+        };
+        if type_arg.is_long_double() {
+            return self.err(line, column, "long double is not supported");
+        }
+        if !type_arg.is_complete() || type_arg.is_array() || type_arg.is_func() {
+            return self.err(
+                line,
+                column,
+                format!("va_arg of type '{}' is not supported", type_arg.display()),
+            );
+        }
+        self.require_passed_aggregate(&type_arg, line, column, false)?;
+        expr.set_ty(type_arg);
+        Ok(())
+    }
+
+    fn check_va_op(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        let (op, line, column) = match expr {
+            Expr::VaOp {
+                op, line, column, ..
+            } => (*op, *line, *column),
+            _ => unreachable!("va op"),
+        };
+        let Expr::VaOp { args, .. } = expr else {
+            unreachable!("va op");
+        };
+        match op {
+            VaOp::Start => {
+                if !self.variadic_fn {
+                    return self.err(
+                        line,
+                        column,
+                        "va_start used in a function that is not variadic",
+                    );
+                }
+                if args.len() != 2 {
+                    return self.err(line, column, "va_start expects a va_list and a parameter");
+                }
+                self.check_va_list_arg(&mut args[0])?;
+                self.check_expr(&mut args[1])?;
+                let last = self.last_param.clone().unwrap_or_default();
+                let names_last = matches!(&args[1], Expr::Var { name, .. } if name == &last);
+                if !names_last {
+                    return self.err(
+                        line,
+                        column,
+                        "the second argument of va_start must be the last named parameter",
+                    );
+                }
+            }
+            VaOp::End => {
+                if args.len() != 1 {
+                    return self.err(line, column, "va_end expects a va_list");
+                }
+                self.check_va_list_arg(&mut args[0])?;
+            }
+            VaOp::Copy => {
+                if args.len() != 2 {
+                    return self.err(line, column, "va_copy expects two va_list arguments");
+                }
+                self.check_va_list_arg(&mut args[0])?;
+                self.check_va_list_arg(&mut args[1])?;
+            }
+        }
+        expr.set_ty(CType::Void);
+        Ok(())
+    }
+
     fn check_member(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
         let ty = if let Expr::Member {
             base,
@@ -2762,6 +3252,10 @@ impl Sema {
             index,
             offset,
             bytewise,
+            bit_width,
+            bit_signed,
+            container_bits,
+            abs_bit,
             ..
         } = expr
         {
@@ -2813,9 +3307,21 @@ impl Sema {
             };
             *index = Some(found_index);
             *offset = Some(found.offset);
-            *bytewise = handle.is_union();
+            *bytewise = handle.is_union() || handle.has_bitfield();
             // The struct object's qualifiers apply to the member (C11 6.5.2.3).
-            found.ty.with_quals(base_ty.quals())
+            let field_ty = found.ty.clone();
+            let declared_int = field_ty.as_integer();
+            let mut member_ty = field_ty.with_quals(base_ty.quals());
+            if let Some(width) = found.bit_width {
+                let declared = declared_int.expect("a bit-field has an integer type");
+                *bit_width = Some(width);
+                *bit_signed = declared.is_signed();
+                *container_bits = (found.ty.size().unwrap_or(1) * 8) as u32;
+                *abs_bit = found.bit_offset;
+                member_ty = CType::from_name(bitfield_value_type(declared, width))
+                    .with_quals(member_ty.quals());
+            }
+            member_ty
         } else {
             unreachable!("member expression");
         };
@@ -2842,10 +3348,9 @@ impl Sema {
         }
     }
 
-    /// A struct or union passed or returned by value must be complete. An
-    /// eightbyte that would use an SSE or x87 register is rejected until
-    /// floating-point lowering exists. Memory aggregates are allowed even
-    /// when they contain a floating member, because that is a byte copy.
+    /// A struct or union passed or returned by value must be complete.
+    /// Returning an x87 aggregate is rejected. SSE eightbytes are passed
+    /// in XMM registers. Memory aggregates are a byte copy.
     fn require_passed_aggregate(
         &self,
         ty: &CType,
@@ -2881,17 +3386,9 @@ impl Sema {
             }
             Err(crate::abi::AbiFail::FloatReg) => {
                 if is_return {
-                    self.err(
-                        line,
-                        column,
-                        "returning an aggregate in an SSE or x87 register is not supported",
-                    )
+                    self.err(line, column, "returning an x87 aggregate is not supported")
                 } else {
-                    self.err(
-                        line,
-                        column,
-                        "passing an aggregate in an SSE register is not supported",
-                    )
+                    self.err(line, column, "passing an x87 aggregate is not supported")
                 }
             }
         }
@@ -3126,6 +3623,174 @@ impl Sema {
     }
 }
 
+fn is_bitfield(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Member {
+            bit_width: Some(_),
+            ..
+        }
+    )
+}
+
+/// The type of a bit-field after the integer promotions (C11 6.3.1.1).
+///
+/// Only types whose rank is at most `int` are promoted. A signed field, and
+/// an unsigned field narrower than 32 bits, become `int`. An unsigned field
+/// of 32 bits becomes `unsigned int`. `long` and wider stay as declared.
+fn bitfield_value_type(declared: TypeName, width: u32) -> TypeName {
+    if declared.rank() > TypeName::Int.rank() {
+        return declared;
+    }
+    let fits_in_int = if declared.is_signed() {
+        width <= 32
+    } else {
+        width < 32
+    };
+    if fits_in_int {
+        TypeName::Int
+    } else {
+        TypeName::UInt
+    }
+}
+
+struct InitChild {
+    ty: CType,
+    offset: u64,
+    field: Option<StructField>,
+}
+
+impl Clone for InitChild {
+    fn clone(&self) -> Self {
+        Self {
+            ty: self.ty.clone(),
+            offset: self.offset,
+            field: self.field.clone(),
+        }
+    }
+}
+
+struct InitFrame {
+    children: Vec<InitChild>,
+    index: usize,
+    base: u64,
+}
+
+fn init_children(ty: &CType, union_all: bool) -> Vec<InitChild> {
+    if let Some(handle) = ty.struct_ref() {
+        let Some(fields) = handle.fields() else {
+            return Vec::new();
+        };
+        let fields = if ty.is_union() && !union_all {
+            initializable_fields(fields, true)
+        } else {
+            initializable_fields(fields, false)
+        };
+        return fields
+            .into_iter()
+            .map(|field| InitChild {
+                offset: field.offset,
+                ty: field.ty.clone(),
+                field: Some(field),
+            })
+            .collect();
+    }
+    if let CType::Array(elem, Some(len)) = ty.unqualified() {
+        let step = elem.size().unwrap_or(0);
+        return (0..len)
+            .map(|index| InitChild {
+                ty: (*elem).clone(),
+                offset: index * step,
+                field: None,
+            })
+            .collect();
+    }
+    Vec::new()
+}
+
+fn advance_frames(frames: &mut Vec<InitFrame>) -> bool {
+    loop {
+        let Some(frame) = frames.last_mut() else {
+            return false;
+        };
+        frame.index += 1;
+        if frame.index < frame.children.len() {
+            return true;
+        }
+        frames.pop();
+    }
+}
+
+fn initializable_fields(fields: Vec<StructField>, union_ty: bool) -> Vec<StructField> {
+    let fields: Vec<_> = fields
+        .into_iter()
+        .filter(|field| !field.name.is_empty() && field.bit_width != Some(0))
+        .collect();
+    if union_ty {
+        fields.into_iter().take(1).collect()
+    } else {
+        fields
+    }
+}
+
+fn pack_bits(bytes: &mut [u8], bit: u32, width: u32, value: u64) {
+    let mask = if width >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << width) - 1
+    };
+    let value = value & mask;
+    for i in 0..width {
+        let pos = bit + i;
+        let index = (pos / 8) as usize;
+        if index >= bytes.len() {
+            break;
+        }
+        let shift = pos % 8;
+        if (value >> i) & 1 == 1 {
+            bytes[index] |= 1 << shift;
+        } else {
+            bytes[index] &= !(1 << shift);
+        }
+    }
+}
+
+fn write_folded_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: usize) -> bool {
+    match value {
+        ConstInit::Zero => true,
+        ConstInit::Int(bits) => {
+            let width = ty.as_integer().map(TypeName::width).unwrap_or(0) as usize / 8;
+            for index in 0..width {
+                let at = offset + index;
+                if at < bytes.len() {
+                    bytes[at] = (*bits >> (8 * index)) as u8;
+                }
+            }
+            true
+        }
+        ConstInit::Ptr(PtrConst::Null) | ConstInit::Ptr(PtrConst::IntToPtr(_)) => {
+            let bits = match value {
+                ConstInit::Ptr(PtrConst::IntToPtr(bits)) => *bits,
+                _ => 0,
+            };
+            for index in 0..8 {
+                let at = offset + index;
+                if at < bytes.len() {
+                    bytes[at] = (bits >> (8 * index)) as u8;
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn va_list_pointee(ty: &CType) -> bool {
+    ty.pointee()
+        .and_then(CType::struct_ref)
+        .is_some_and(|handle| handle.tag() == "__va_list_tag")
+}
+
 fn integer_ty(expr: &Expr) -> TypeName {
     expr.ty()
         .and_then(|ty| ty.as_integer())
@@ -3135,7 +3800,7 @@ fn integer_ty(expr: &Expr) -> TypeName {
 fn init_pos(init: &Init) -> (usize, usize) {
     match init {
         Init::Expr(expr) => (expr.line(), expr.column()),
-        Init::List { line, column, .. } => (*line, *column),
+        Init::List { line, column, .. } | Init::Designated { line, column, .. } => (*line, *column),
     }
 }
 
@@ -3211,6 +3876,7 @@ fn is_char_array(ty: &CType) -> bool {
 fn string_payload(init: &Init) -> Option<&[u8]> {
     match init {
         Init::Expr(Expr::Str { bytes, .. }) => Some(bytes),
+        Init::Designated { .. } => None,
         Init::List { items, .. } => match items.as_slice() {
             [Init::Expr(Expr::Str { bytes, .. })] => Some(bytes),
             _ => None,
@@ -3269,6 +3935,7 @@ fn union_bytes_ok(ty: &CType, value: &ConstInit) -> bool {
         // The address of an object needs a relocation.
         ConstInit::Ptr(PtrConst::Null | PtrConst::IntToPtr(_)) => true,
         ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => !ty.is_union(),
+        ConstInit::Bytes(_) => !ty.is_union(),
         ConstInit::Aggregate(items) => {
             if ty.is_union() {
                 return items.first().is_none_or(const_has_no_address);
@@ -3292,6 +3959,7 @@ fn const_has_no_address(value: &ConstInit) -> bool {
         ConstInit::Zero | ConstInit::Int(_) | ConstInit::Float(_) => true,
         ConstInit::Ptr(PtrConst::Null | PtrConst::IntToPtr(_)) => true,
         ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => false,
+        ConstInit::Bytes(_) => true,
         ConstInit::Aggregate(items) => items.iter().all(const_has_no_address),
     }
 }
@@ -3960,7 +4628,9 @@ fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
         | Expr::Index { .. }
         | Expr::Decay { .. }
         | Expr::Str { .. }
-        | Expr::Member { .. } => Err(ConstError::NotConst),
+        | Expr::Member { .. }
+        | Expr::VaArg { .. }
+        | Expr::VaOp { .. } => Err(ConstError::NotConst),
     }
 }
 
@@ -4256,11 +4926,13 @@ fn number_stmt(stmt: &mut Stmt, next: &mut u32) {
             }
             number_stmt(body, next);
         }
+        Stmt::Label { stmt, .. } => number_stmt(stmt, next),
         Stmt::FuncDecl(_)
         | Stmt::Return { .. }
         | Stmt::Expr { .. }
         | Stmt::Break { .. }
-        | Stmt::Continue { .. } => {}
+        | Stmt::Continue { .. }
+        | Stmt::Goto { .. } => {}
     }
 }
 
@@ -4913,12 +5585,15 @@ struct Node n = {4, 0};
             .contains("redefinition of struct 'S'"));
         assert!(sema_err("struct S { int x; int x; };").contains("duplicate member"));
         assert!(sema_err("struct S { int n; int a[]; };").contains("flexible array"));
-        assert!(sema_err("struct S { int x : 3; };").contains("bit-fields"));
+        assert!(sema_err(
+            "struct S { int x:3; }; int main(void) { struct S s; int *p = &s.x; return *p; }"
+        )
+        .contains("address of a bit-field"));
         sema_ok("struct { int x; } s; int main(void) { s.x = 1; return s.x; }");
         assert!(sema_err("struct S {};").contains("no members"));
         assert!(
-            sema_err("struct S { int x; int y; }; struct S s = { .y = 1 };")
-                .contains("designated initializers")
+            sema_err("struct S { int x; int y; }; struct S s = { .z = 1 };")
+                .contains("no member named 'z'")
         );
         assert!(sema_err(
             "struct S { const int x; int y; }; void f(struct S *a, struct S *b) { *a = *b; }"
@@ -5014,14 +5689,12 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
         assert!(sema_err("struct T { int a; }; void g(union T *p);").contains("different tag type"));
         assert!(sema_err("struct T { int a; union T *p; };").contains("different tag type"));
         sema_ok("int main(void) { int *p = 0; _Bool b = p; return b; }");
-        let err = crate::compile_to_ir(
+        let ir = crate::compile_to_ir(
             "#include <stdarg.h>\nint f(va_list ap) { return va_arg(ap, int); }\n",
             "va.c",
-        );
-        assert!(err
-            .unwrap_err()
-            .to_string()
-            .contains("__cc_va_arg_is_not_supported"));
+        )
+        .unwrap();
+        assert!(ir.contains("phi ptr"), "{ir}");
     }
 
     #[test]

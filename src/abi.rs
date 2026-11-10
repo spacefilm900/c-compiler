@@ -462,7 +462,39 @@ fn collect_leaves(ty: &CType, base: u64, inherited: bool, out: &mut Vec<Leaf>) {
             }
         }
         CType::Struct(handle) => {
-            for field in handle.fields().unwrap_or_default() {
+            // A bit-field whose declared type is wider than a byte occupies
+            // its whole eightbyte. Clang passes `struct { int a:3; char *p; }`
+            // as `i64, ptr`, while `struct { char a:3; char *p; }` is `i8, ptr`.
+            // A one-byte bit-field is just that byte.
+            let fields = handle.fields().unwrap_or_default();
+            for field in &fields {
+                if field.bit_width.is_some() {
+                    let ty_size = field.ty.size().unwrap_or(1);
+                    let byte = u64::from(field.bit_offset / 8);
+                    if ty_size <= 1 && field.bit_width != Some(0) {
+                        let offset = base + byte;
+                        out.push(Leaf {
+                            offset,
+                            size: 1,
+                            align: 1,
+                            class: Class::Integer,
+                            is_ptr: false,
+                            spans: inherited || crosses(offset, 1),
+                        });
+                    } else if ty_size > 1 {
+                        let eight = (byte / 8) * 8;
+                        let offset = base + eight;
+                        out.push(Leaf {
+                            offset,
+                            size: 8,
+                            align: 1,
+                            class: Class::Integer,
+                            is_ptr: false,
+                            spans: inherited || crosses(offset, 8),
+                        });
+                    }
+                    continue;
+                }
                 collect_leaves(&field.ty, base + field.offset, inherited, out);
             }
         }
@@ -664,11 +696,7 @@ mod tests {
     use crate::ast::{RecordKind, StructField, StructRef, TypeName};
 
     fn field(name: &str, ty: CType, offset: u64) -> StructField {
-        StructField {
-            name: name.to_string(),
-            ty,
-            offset,
-        }
+        StructField::plain(name, ty, offset)
     }
 
     fn record(id: u32, fields: Vec<StructField>, size: u64, align: u32, union_ty: bool) -> CType {

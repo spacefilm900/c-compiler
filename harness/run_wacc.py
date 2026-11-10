@@ -10,11 +10,9 @@ no entry, clang -std=c11 is the oracle. A library test compiles one
 translation unit here and the other files with clang. An invalid program
 must be rejected with a non-zero exit and must not crash or panic.
 
-Chapters 19 and 20 are skipped, as are valid tests for extra-credit
-features this compiler has not started (goto). Chapter 13 (floating
-point) is run, including its NaN tests. Structs passed or returned by
-value are run. Union tests and switch tests are run. A test tagged
-with both goto and switch stays skipped.
+Chapters 19 and 20 are skipped. Chapter 13 (floating point) is run,
+including its NaN tests. Goto, unions, and switch are run. Structs
+passed or returned by value are run.
 harness/wacc_known_failures.txt lists the remaining failures. A test that is
 not listed must pass. A listed test that passes is reported, not failed.
 A compiler crash or panic fails the run even when the test is listed.
@@ -50,10 +48,9 @@ CHAPTER_SKIP = {
     20: "chapter skipped: part III register allocation inspects the book's assembly",
 }
 # Extra-credit features with no frontend support. Bitwise, compound
-# assignment, increment, floating point, and NaN are implemented, so
-# those tests are run. Unions and switch are implemented. `goto` is not.
-# A test tagged with both `goto` and `switch` stays skipped.
-UNSUPPORTED_EXTRA = {"goto"}
+# assignment, increment, floating point, NaN, unions, switch, and goto
+# are implemented, so those tests are run.
+UNSUPPORTED_EXTRA = set()
 INVALID_MARKERS = (
     "invalid_lex",
     "invalid_parse",

@@ -23,6 +23,7 @@ pub fn parse(tokens: &[Token], filename: &str) -> Result<TranslationUnit, Diagno
         next_struct: 0,
         defining: HashSet::new(),
         shadow_decl: None,
+        va_list: None,
     }
     .parse_translation_unit()
 }
@@ -45,6 +46,9 @@ struct Parser<'a> {
     /// Records whose member lists are being parsed. A nested definition of
     /// one of these tags is a redefinition, not a completion.
     defining: HashSet<u32>,
+    /// The `[1 x struct __va_list_tag]` type, created the first time
+    /// `__builtin_va_list` is named.
+    va_list: Option<CType>,
     /// `union tag` seen while an outer `struct tag` (or the reverse) is
     /// visible. A lone `union tag;` hides the outer tag. Using it as a type
     /// in the same declaration is an error.
@@ -141,13 +145,6 @@ impl Parser<'_> {
                 "expected a function definition",
             ));
         };
-        if variadic {
-            return Err(self.error_at(
-                declarator.line,
-                declarator.column,
-                "defining a variadic function is not supported",
-            ));
-        }
         for param in &params {
             if param.name.is_none() {
                 return Err(self.error_at(
@@ -177,7 +174,7 @@ impl Parser<'_> {
             ret_type: ret,
             name: declarator.name,
             params,
-            variadic: false,
+            variadic,
             body: Some(body),
             storage: specs.storage,
             linkage: Linkage::External,
@@ -325,6 +322,20 @@ impl Parser<'_> {
                 }
                 TokenKind::KwEnum => {
                     self.note_enum(&mut flags)?;
+                }
+                TokenKind::Ident if token.spelling == "__builtin_va_list" => {
+                    if flags.struct_ty.is_some()
+                        || flags.bool_ty
+                        || flags.float_ty.is_some()
+                        || flags.has_scalar()
+                    {
+                        break;
+                    }
+                    self.advance();
+                    flags.any = true;
+                    flags.struct_ty = Some(self.builtin_va_list());
+                    flags.line = token.line;
+                    flags.column = token.column;
                 }
                 TokenKind::Ident if self.is_typedef(&token.spelling) => {
                     // A typedef name is a type specifier only when the list
@@ -872,25 +883,25 @@ impl Parser<'_> {
         if fields.is_empty() {
             return Err(self.error_at(line, column, format!("{word} '{label}' has no members")));
         }
-        let spec: Vec<(u64, u32)> = fields
+        let spec: Vec<LayoutMember> = fields
             .iter()
-            .map(|field| {
-                (
-                    field.ty.size().expect("complete field"),
-                    field.ty.member_align(),
-                )
+            .map(|field| LayoutMember {
+                size: field.ty.size().unwrap_or(0),
+                align: field.ty.member_align(),
+                bit_width: field.bit_width,
+                named: !field.name.is_empty(),
             })
             .collect();
-        let laid_out = if kind == RecordKind::Union {
-            layout_union(&spec)
-        } else {
-            layout_record(&spec)
-        };
-        let Some((offsets, size, align)) = laid_out else {
+        let Some((places, size, align)) = layout_members(&spec, kind == RecordKind::Union) else {
             return Err(self.error_at(line, column, format!("{word} '{label}' is too large")));
         };
-        for (field, offset) in fields.iter_mut().zip(offsets) {
-            field.offset = offset;
+        if size == 0 {
+            return Err(self.error_at(line, column, format!("{word} '{label}' has size 0")));
+        }
+        for (field, place) in fields.iter_mut().zip(places) {
+            field.offset = place.offset;
+            field.bit_offset = place.bit_offset;
+            field.bit_width = place.bit_width;
         }
         let llvm_name = self.alloc_llvm_name(kind, tag.unwrap_or("anon"));
         handle.complete(fields, size, align, llvm_name);
@@ -1144,7 +1155,8 @@ impl Parser<'_> {
                     | TokenKind::KwFloat
                     | TokenKind::KwDouble
             )
-            || (token.kind == TokenKind::Ident && self.is_typedef(&token.spelling))
+            || (token.kind == TokenKind::Ident
+                && (self.is_typedef(&token.spelling) || token.spelling == "__builtin_va_list"))
             || matches!(token.spelling.as_str(), "__restrict" | "__restrict__")
                 && token.kind == TokenKind::Ident
     }
@@ -1243,57 +1255,69 @@ impl Parser<'_> {
         }
         while !matches!(self.current().kind, TokenKind::RBrace | TokenKind::Eof) {
             if self.current().kind == TokenKind::Colon {
-                return Err(self.error("bit-fields are not supported"));
+                return Err(self.error("expected a type before ':'"));
             }
             let specs = self.parse_specs(SpecPlace::Member)?;
-            if self.current().kind == TokenKind::Colon {
-                return Err(self.error("bit-fields are not supported"));
-            }
             if self.current().kind == TokenKind::Semi {
                 return Err(self.error("anonymous struct members are not supported"));
             }
             loop {
-                let named = self.parse_named_decl(specs.ty.clone())?;
                 if self.current().kind == TokenKind::Colon {
-                    return Err(self.error("bit-fields are not supported"));
+                    let width = self.parse_bit_width(&specs.ty, false)?;
+                    fields.push(StructField {
+                        name: String::new(),
+                        ty: specs.ty.clone(),
+                        offset: 0,
+                        bit_offset: 0,
+                        bit_width: Some(width),
+                    });
+                } else {
+                    let named = self.parse_named_decl(specs.ty.clone())?;
+                    let width = if self.current().kind == TokenKind::Colon {
+                        Some(self.parse_bit_width(&specs.ty, true)?)
+                    } else {
+                        None
+                    };
+                    let DeclKind::Object(ty) = named.kind else {
+                        return Err(self.error_at(
+                            named.line,
+                            named.column,
+                            "function members are not supported",
+                        ));
+                    };
+                    if width.is_none() && ty.is_array() && ty.array_len().is_none() {
+                        return Err(self.error_at(
+                            named.line,
+                            named.column,
+                            "flexible array members are not supported",
+                        ));
+                    }
+                    if width.is_none() && !ty.is_complete() {
+                        return Err(self.error_at(
+                            named.line,
+                            named.column,
+                            format!(
+                                "member '{}' has incomplete type '{}'",
+                                named.name,
+                                ty.display()
+                            ),
+                        ));
+                    }
+                    if !names.insert(named.name.clone()) {
+                        return Err(self.error_at(
+                            named.line,
+                            named.column,
+                            format!("duplicate member '{}'", named.name),
+                        ));
+                    }
+                    fields.push(StructField {
+                        name: named.name,
+                        ty,
+                        offset: 0,
+                        bit_offset: 0,
+                        bit_width: width,
+                    });
                 }
-                let DeclKind::Object(ty) = named.kind else {
-                    return Err(self.error_at(
-                        named.line,
-                        named.column,
-                        "function members are not supported",
-                    ));
-                };
-                if ty.is_array() && ty.array_len().is_none() {
-                    return Err(self.error_at(
-                        named.line,
-                        named.column,
-                        "flexible array members are not supported",
-                    ));
-                }
-                if !ty.is_complete() {
-                    return Err(self.error_at(
-                        named.line,
-                        named.column,
-                        format!(
-                            "member '{}' has incomplete type '{}'",
-                            named.name,
-                            ty.display()
-                        ),
-                    ));
-                }
-                if !names.insert(named.name.clone()) {
-                    return Err(self.error_at(
-                        named.line,
-                        named.column,
-                        format!("duplicate member '{}'", named.name),
-                    ));
-                }
-                fields.push(StructField {
-                    name: named.name,
-                    ty,
-                    offset: 0,
-                });
                 if self.match_kind(TokenKind::Comma) {
                     if matches!(
                         self.current().kind,
@@ -1308,6 +1332,61 @@ impl Parser<'_> {
             self.expect(TokenKind::Semi, "';'")?;
         }
         Ok(fields)
+    }
+
+    /// `: constant-expression` on a struct or union member.
+    ///
+    /// The width is an integer constant expression. Zero is allowed only on
+    /// an unnamed field, where it forces alignment. The width cannot exceed
+    /// the width of the declared type. `_Bool` is one bit wide.
+    fn parse_bit_width(&mut self, ty: &CType, named: bool) -> Result<u32, Diagnostic> {
+        let colon = self.advance();
+        let Some(integer) = ty.unqualified().as_integer() else {
+            return Err(self.error_at(
+                colon.line,
+                colon.column,
+                format!("bit-field has non-integral type '{}'", ty.display()),
+            ));
+        };
+        let expr = self.parse_conditional()?;
+        let value = eval_ice(&expr)
+            .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
+        let signed = if value.ty.is_signed() {
+            sign_extend(value.bits, value.ty.width())
+        } else if value.bits > i64::MAX as u64 {
+            return Err(self.error_at(expr.line(), expr.column(), "bit-field width is too large"));
+        } else {
+            value.bits as i64
+        };
+        if signed < 0 {
+            return Err(self.error_at(
+                expr.line(),
+                expr.column(),
+                format!("bit-field has negative width ({signed})"),
+            ));
+        }
+        if signed == 0 && named {
+            return Err(self.error_at(
+                expr.line(),
+                expr.column(),
+                "named bit-field has zero width",
+            ));
+        }
+        let max = if integer == TypeName::Bool {
+            1
+        } else {
+            integer.width()
+        };
+        if signed as u32 > max {
+            return Err(self.error_at(
+                expr.line(),
+                expr.column(),
+                format!(
+                    "width of bit-field ({signed} bits) exceeds the width of its type ({max} bits)"
+                ),
+            ));
+        }
+        Ok(signed as u32)
     }
 
     /// A lone `union tag;` hides an outer `struct tag`. Using that specifier
@@ -1374,6 +1453,28 @@ impl Parser<'_> {
             Some(TagEntry::Record(handle)) => Some(handle),
             _ => None,
         }
+    }
+
+    /// `__builtin_va_list` is `[1 x struct __va_list_tag]`, the SysV register
+    /// save descriptor. As a parameter the array decays to a pointer, which
+    /// is what `vprintf` takes.
+    fn builtin_va_list(&mut self) -> CType {
+        if let Some(ty) = &self.va_list {
+            return ty.clone();
+        }
+        let handle = self.declare_fresh_tag("__va_list_tag", RecordKind::Struct);
+        let fields = vec![
+            StructField::plain("gp_offset", CType::from_name(TypeName::UInt), 0),
+            StructField::plain("fp_offset", CType::from_name(TypeName::UInt), 4),
+            StructField::plain("overflow_arg_area", CType::pointer(CType::Void), 8),
+            StructField::plain("reg_save_area", CType::pointer(CType::Void), 16),
+        ];
+        let llvm_name = self.alloc_llvm_name(RecordKind::Struct, "__va_list_tag");
+        handle.complete(fields, 24, 8, llvm_name);
+        self.structs.push(handle.clone());
+        let ty = CType::array(CType::Struct(handle), Some(1));
+        self.va_list = Some(ty.clone());
+        ty
     }
 
     fn alloc_llvm_name(&mut self, kind: RecordKind, tag: &str) -> String {
@@ -2106,6 +2207,11 @@ impl Parser<'_> {
     }
 
     fn parse_statement(&mut self) -> Result<Stmt, Diagnostic> {
+        // `name:` is a label even when `name` is a typedef. The check comes
+        // before the declaration test so `typedef int T; T: ;` is a label.
+        if self.current().kind == TokenKind::Ident && self.lookahead() == TokenKind::Colon {
+            return self.parse_label();
+        }
         // A label's statement is parsed here, including `case 1: int x;`.
         // A declaration is not a statement in C11 (C23 allows the label).
         if self.starts_declaration() {
@@ -2121,6 +2227,7 @@ impl Parser<'_> {
             TokenKind::KwSwitch => self.parse_switch(),
             TokenKind::KwCase => self.parse_case(),
             TokenKind::KwDefault => self.parse_default(),
+            TokenKind::KwGoto => self.parse_goto(),
             TokenKind::KwBreak => {
                 let token = self.advance();
                 self.expect(TokenKind::Semi, "';'")?;
@@ -2161,6 +2268,35 @@ impl Parser<'_> {
                 })
             }
         }
+    }
+
+    fn parse_label(&mut self) -> Result<Stmt, Diagnostic> {
+        let name = self.advance();
+        self.expect(TokenKind::Colon, "':'")?;
+        let stmt = Box::new(self.parse_statement()?);
+        Ok(Stmt::Label {
+            name: name.spelling,
+            stmt,
+            line: name.line,
+            column: name.column,
+        })
+    }
+
+    fn parse_goto(&mut self) -> Result<Stmt, Diagnostic> {
+        let token = self.advance();
+        if self.current().kind == TokenKind::Star {
+            return Err(self.error("computed goto is not supported"));
+        }
+        if self.current().kind != TokenKind::Ident {
+            return Err(self.error("expected a label name"));
+        }
+        let name = self.advance();
+        self.expect(TokenKind::Semi, "';'")?;
+        Ok(Stmt::Goto {
+            name: name.spelling,
+            line: token.line,
+            column: token.column,
+        })
     }
 
     fn parse_return(&mut self) -> Result<Stmt, Diagnostic> {
@@ -2548,11 +2684,9 @@ impl Parser<'_> {
     }
 
     /// `=` initializer: an assignment expression, or a brace list. A trailing
-    /// comma is allowed. An empty list is not (C11).
+    /// comma is allowed. An empty list is not (C11). Designators (`.name` and
+    /// `[index]`) are only valid inside a brace list.
     fn parse_initializer(&mut self) -> Result<Init, Diagnostic> {
-        if matches!(self.current().kind, TokenKind::Dot | TokenKind::LBrack) {
-            return Err(self.error("designated initializers are not supported"));
-        }
         if self.current().kind != TokenKind::LBrace {
             return Ok(Init::Expr(self.parse_assignment()?));
         }
@@ -2562,7 +2696,7 @@ impl Parser<'_> {
         }
         let mut items = Vec::new();
         loop {
-            items.push(self.parse_initializer()?);
+            items.push(self.parse_init_item()?);
             if self.match_kind(TokenKind::Comma) {
                 if self.current().kind == TokenKind::RBrace {
                     break;
@@ -2576,6 +2710,51 @@ impl Parser<'_> {
             items,
             line: brace.line,
             column: brace.column,
+        })
+    }
+
+    fn parse_init_item(&mut self) -> Result<Init, Diagnostic> {
+        if !matches!(self.current().kind, TokenKind::Dot | TokenKind::LBrack) {
+            return self.parse_initializer();
+        }
+        let line = self.current().line;
+        let column = self.current().column;
+        let mut designators = Vec::new();
+        while matches!(self.current().kind, TokenKind::Dot | TokenKind::LBrack) {
+            designators.push(self.parse_designator()?);
+        }
+        self.expect(TokenKind::Assign, "'='")?;
+        let init = self.parse_initializer()?;
+        Ok(Init::Designated {
+            designators,
+            init: Box::new(init),
+            line,
+            column,
+        })
+    }
+
+    fn parse_designator(&mut self) -> Result<Designator, Diagnostic> {
+        if self.match_kind(TokenKind::Dot) {
+            if self.current().kind != TokenKind::Ident {
+                return Err(self.error("expected a member name"));
+            }
+            let name = self.advance();
+            return Ok(Designator::Field {
+                name: name.spelling,
+                line: name.line,
+                column: name.column,
+            });
+        }
+        let bracket = self.advance();
+        let expr = self.parse_conditional()?;
+        if self.current().kind == TokenKind::Ellipsis {
+            return Err(self.error("range designators are not supported"));
+        }
+        self.expect(TokenKind::RBrack, "']'")?;
+        Ok(Designator::Index {
+            expr,
+            line: bracket.line,
+            column: bracket.column,
         })
     }
 
@@ -2638,13 +2817,42 @@ impl Parser<'_> {
             || matches!(token.kind, TokenKind::KwConst | TokenKind::KwVolatile)
     }
 
+    fn parse_builtin_va_arg(&mut self, line: usize, column: usize) -> Result<Expr, Diagnostic> {
+        self.advance();
+        let ap = self.parse_assignment()?;
+        self.expect(TokenKind::Comma, "','")?;
+        let type_arg = self.parse_type_name()?;
+        self.expect(TokenKind::RParen, "')'")?;
+        Ok(Expr::va_arg(ap, type_arg, line, column))
+    }
+
     fn parse_postfix(&mut self) -> Result<Expr, Diagnostic> {
         let mut expr = self.parse_primary()?;
         loop {
             match self.current().kind {
                 TokenKind::LParen => {
+                    if let Expr::Var {
+                        name, line, column, ..
+                    } = &expr
+                    {
+                        if name == "__builtin_va_arg" {
+                            let line = *line;
+                            let column = *column;
+                            expr = self.parse_builtin_va_arg(line, column)?;
+                            continue;
+                        }
+                    }
                     let line = expr.line();
                     let column = expr.column();
+                    let builtin = match &expr {
+                        Expr::Var { name, .. } => match name.as_str() {
+                            "__builtin_va_start" => Some(VaOp::Start),
+                            "__builtin_va_end" => Some(VaOp::End),
+                            "__builtin_va_copy" => Some(VaOp::Copy),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
                     self.advance();
                     let mut args = Vec::new();
                     if self.current().kind != TokenKind::RParen {
@@ -2660,7 +2868,11 @@ impl Parser<'_> {
                         }
                     }
                     self.expect(TokenKind::RParen, "')'")?;
-                    expr = Expr::call(expr, args, line, column);
+                    expr = if let Some(op) = builtin {
+                        Expr::va_op(op, args, line, column)
+                    } else {
+                        Expr::call(expr, args, line, column)
+                    };
                 }
                 TokenKind::LBrack => {
                     let bracket = self.advance();
@@ -2698,20 +2910,20 @@ impl Parser<'_> {
     fn parse_primary(&mut self) -> Result<Expr, Diagnostic> {
         let token = self.current().clone();
         match token.kind {
+            TokenKind::Float => {
+                self.advance();
+                Ok(Expr::float_lit(
+                    token.value.expect("float bits"),
+                    token.float_kind.expect("float kind"),
+                    token.line,
+                    token.column,
+                ))
+            }
             TokenKind::Int => {
                 self.advance();
                 Ok(Expr::int(
                     token.value.expect("int token"),
                     token.int_ty.expect("int token type"),
-                    token.line,
-                    token.column,
-                ))
-            }
-            TokenKind::Float => {
-                self.advance();
-                Ok(Expr::float_lit(
-                    token.value.expect("float token"),
-                    token.float_kind.expect("float token type"),
                     token.line,
                     token.column,
                 ))
@@ -3084,7 +3296,9 @@ fn eval_ice(expr: &Expr) -> Result<BVal, BoundErr> {
         | Expr::Comma { .. }
         | Expr::Index { .. }
         | Expr::Decay { .. }
-        | Expr::Member { .. } => Err(BoundErr::Vla),
+        | Expr::Member { .. }
+        | Expr::VaArg { .. }
+        | Expr::VaOp { .. } => Err(BoundErr::Vla),
     }
 }
 
@@ -3424,7 +3638,6 @@ fn found(token: &Token) -> String {
 
 fn unsupported(kind: TokenKind) -> Option<&'static str> {
     Some(match kind {
-        TokenKind::KwGoto => "goto is not supported",
         TokenKind::KwAlignas | TokenKind::KwAlignof => "alignment specifiers are not supported",
         TokenKind::KwAtomic => "atomic types are not supported",
         TokenKind::KwComplex | TokenKind::KwImaginary => "complex types are not supported",
@@ -3762,7 +3975,7 @@ global int [] a =
     fn syntax_errors_name_the_problem() {
         assert!(parse_err("int main(void) { return 1 }").contains("expected ';'"));
         assert!(parse_err("int main(void { return 0; }").contains("expected ')'"));
-        assert!(parse_err("struct S { int x: 3; };").contains("bit-fields are not supported"));
+        assert!(parse_err("struct S { int x: 0; };").contains("zero width"));
         assert!(parse_err("int a[n];").contains("variable-length arrays are not supported"));
         assert!(parse_err("int a[0];").contains("array size must be positive"));
         assert!(parse_err("\"hi\";").contains("expected a type"));
@@ -3778,7 +3991,7 @@ global int [] a =
         assert!(parse_err("void g;").contains("void variables"));
         assert!(parse_err("int f(static int a);").contains("not supported on parameters"));
         assert!(parse_err("int main(void) { switch 1; }").contains("expected '('"));
-        assert!(parse_err("int main(void) { goto end; }").contains("goto is not supported"));
+        assert!(parse_err("int main(void) { goto *p; }").contains("computed goto"));
         assert!(
             parse_err("int main(void) { switch (1) { case 1: int x = 0; return x; } }")
                 .contains("a declaration is not allowed as a statement")
@@ -3809,7 +4022,7 @@ global int [] a =
         assert!(parse_err("long long long x;").contains("invalid combination of type specifiers"));
         assert!(parse_err("int int x;").contains("invalid combination of type specifiers"));
         assert!(parse_err("char int x;").contains("invalid combination of type specifiers"));
-        assert!(parse_err("int f(int a, ...) { return a; }").contains("variadic"));
+        assert!(parse_err("int f(...);").contains("named parameter"));
         assert!(parse_err("int f(...);").contains("named parameter is required"));
         assert!(parse_err("const const int x;").contains("duplicate 'const' qualifier"));
         assert!(parse_err("int * const const p;").contains("duplicate 'const' qualifier"));
