@@ -7,7 +7,7 @@
 # unsupported-struct-by-value: passing or returning a struct or union by value is rejected (2)
 chapter_18/valid/no_structure_parameters/semantic_analysis/incomplete_structs.c unsupported-struct-by-value
 
-# unsupported-double: double, a floating constant, or both (75)
+# unsupported-double: double, a floating constant, or both (76)
 chapter_14/valid/comparisons/pointers_as_conditions.c unsupported-double
 chapter_14/valid/declarators/declarators.c unsupported-double
 chapter_14/valid/dereference/multilevel_indirection.c unsupported-double
@@ -84,6 +84,7 @@ chapter_18/valid/extra_credit/member_access/union_init_and_member_access.c unsup
 chapter_18/valid/extra_credit/semantic_analysis/union_namespace.c unsupported-double
 chapter_18/valid/extra_credit/union_copy/assign_to_union.c unsupported-double
 chapter_18/valid/extra_credit/union_copy/copy_thru_pointer.c unsupported-double
+chapter_18/valid/extra_credit/other_features/struct_decl_in_switch_statement.c unsupported-double
 
 # unsupported-struct-by-value also covers a union passed by value (2 total)
 chapter_18/valid/extra_credit/semantic_analysis/incomplete_union_types.c unsupported-struct-by-value

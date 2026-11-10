@@ -2,11 +2,11 @@
 
 ## Current milestone
 
-**Stage 2, step 2, on top of block-scope `static`, block-scope `extern`, block-scope function declarations, and `do` / `while`.** Programs can `#include` the host glibc headers for `stdio.h`, `stdlib.h`, `string.h`, `stdint.h`, `ctype.h`, and `assert.h`. The compiler supplies `stddef.h`, `stdarg.h`, `stdbool.h`, and `limits.h`. `static` inside a function has no linkage and static storage duration. A block-scope `extern` follows C11 6.2.2. `do` statement `while (` expression `);` runs the body first. The Nora Sandler suite is fetched at a pinned commit and run by `harness/run_wacc.py`. It is not vendored.
+**`switch` statements (C11 6.8.4.2 and 6.8.1), on top of the host-header subset.** The controlling expression is an integer. Integer promotions are applied, and each `case` constant is converted to that promoted type. `case` and `default` may be nested inside other statements in the switch body. `break` leaves the switch. `continue` still belongs to the enclosing loop. The IR is an LLVM `switch`. Programs can `#include` the host glibc headers for `stdio.h`, `stdlib.h`, `string.h`, `stdint.h`, `ctype.h`, and `assert.h`. The compiler supplies `stddef.h`, `stdarg.h`, `stdbool.h`, and `limits.h`. The Nora Sandler suite is fetched at a pinned commit and run by `harness/run_wacc.py`. It is not vendored.
 
 ## External suite
 
-`main` at `fdee7d5` had **63** unit tests, **95/95** harness programs, and a suite run of **1191 executed, 1115 passed, 76 known failures, 426 skipped**. After merging that commit into this branch: **65** unit tests, **102/102** harness programs, and **1220 executed, 1143 passed, 77 known failures, 397 skipped**, 0 unexpected, 0 panics. The 29 union extra-credit tests are executed. Fifteen tests that `main` still listed now pass, including the two `?:` copies of a struct. Sixteen union tests still fail: fifteen use a floating constant, and one passes a union by value.
+`main` at `09d01aa` had **65** unit tests, **102/102** harness programs, and a suite run of **1220 executed, 1143 passed, 77 known failures, 397 skipped**. After `switch`: **68** unit tests, **103/103** harness programs, and **1254 executed, 1176 passed, 78 known failures, 363 skipped**, 0 unexpected, 0 panics. The 34 extra-credit `switch` tests are executed. Thirty-three pass. `struct_decl_in_switch_statement.c` still fails because the inner struct contains `double`. The one test tagged with both `goto` and `switch` stays skipped; it uses `goto`.
 
 Licence: **MIT**, Copyright (c) 2023 Nora Sandler. The licence allows redistribution. The tree is still fetched, not committed. Source: https://github.com/nlsandler/writing-a-c-compiler-tests. Pinned commit: `ae12014d2dec14488f3f80d14df4b6d8e4634d7d` (2026-02-17). Recorded in `tests/external/README.md`. `scripts/fetch_wacc_tests.sh` clones that commit into `tests/external/wacc/` (gitignored). CI caches that directory.
 
@@ -21,16 +21,14 @@ Skipped, and not listed as failures:
 | Chapter 13 | 69 | floating point is not started (`double`). `helper_libs/` is not a test. |
 | Chapter 19 | 167 | Part III. The runner inspects the book's own assembly for constant folding, copy propagation, dead stores, and unreachable code. It does not only run the program. |
 | Chapter 20 | 66 | Part III register allocation. Same assembly inspection, including coalescing. Helper libraries are not tests. |
-| Extra credit `goto` | 29 | not started |
-| Extra credit `goto` and `switch` | 1 | not started |
-| Extra credit `switch` | 34 | not started |
+| Extra credit `goto` | 30 | not started. One of these is also tagged `switch` (`switch_goto_mid_case.c`). It jumps with `goto`, so it stays skipped. |
 | `chapter_18/valid/parameters/` and `params_and_returns/` | 31 | passing or returning a struct by value is still rejected |
 
 There is no separate function-pointer chapter in this pin. A function pointer is accepted; a test that uses one is compiled, not skipped.
 
 ### Per-chapter results
 
-Run locally with `python3 harness/run_wacc.py` after the fetch. 1220 executed, **1143 passed**, **77 known failures**, **397 skipped**, 0 unexpected, 0 compiler panics.
+Run locally with `python3 harness/run_wacc.py` after the fetch. 1254 executed, **1176 passed**, **78 known failures**, **363 skipped**, 0 unexpected, 0 compiler panics.
 
 | Chapter | Run | Passed | Known failures | Skipped |
 | --- | --- | --- | --- | --- |
@@ -41,26 +39,26 @@ Run locally with `python3 harness/run_wacc.py` after the fetch. 1220 executed, *
 | 5 | 82 | 82 | 0 | 0 |
 | 6 | 57 | 57 | 0 | 11 |
 | 7 | 23 | 23 | 0 | 4 |
-| 8 | 70 | 70 | 0 | 28 |
+| 8 | 92 | 92 | 0 | 6 |
 | 9 | 75 | 75 | 0 | 3 |
-| 10 | 64 | 64 | 0 | 8 |
-| 11 | 53 | 53 | 0 | 2 |
-| 12 | 37 | 37 | 0 | 1 |
+| 10 | 67 | 67 | 0 | 5 |
+| 11 | 55 | 55 | 0 | 0 |
+| 12 | 38 | 38 | 0 | 0 |
 | 13 | 0 | 0 | 0 | 69 |
-| 14 | 77 | 67 | 10 | 1 |
+| 14 | 78 | 68 | 10 | 0 |
 | 15 | 106 | 94 | 12 | 0 |
-| 16 | 92 | 84 | 8 | 4 |
+| 16 | 96 | 88 | 8 | 0 |
 | 17 | 88 | 81 | 7 | 0 |
-| 18 | 275 | 235 | 40 | 33 |
+| 18 | 276 | 235 | 41 | 32 |
 | 19 | 0 | 0 | 0 | 167 |
 | 20 | 0 | 0 | 0 | 66 |
-| **Total** | **1220** | **1143** | **77** | **397** |
+| **Total** | **1254** | **1176** | **78** | **363** |
 
 ### Known-failure categories
 
 | Category | Tests | Meaning |
 | --- | --- | --- |
-| `unsupported-double` | 75 | `double`, a floating constant, or both. Later chapters, including fifteen union extra-credit tests, use a floating constant in a program whose main feature is something else. `float` and `double` may appear in a declaration. An expression that computes one is still rejected. |
+| `unsupported-double` | 76 | `double`, a floating constant, or both. Later chapters, including fifteen union extra-credit tests and `struct_decl_in_switch_statement.c`, use a floating constant in a program whose main feature is something else. `float` and `double` may appear in a declaration. An expression that computes one is still rejected. |
 | `unsupported-struct-by-value` | 2 | Passing or returning a struct or union by value is rejected. One file declares a function that passes and returns an incomplete struct. `incomplete_union_types.c` passes a union by value. |
 
 ### Diagnostics fixed while running the suite
@@ -78,12 +76,12 @@ No test in the run panicked, and no executed program disagreed with `expected_re
 | --- | --- | --- |
 | `cargo fmt --all -- --check` | rustc **1.85.1** (4eb161250 2025-03-15) | clean |
 | `cargo clippy --offline --all-targets -- -D warnings` | same | clean |
-| `cargo test --offline --lib` | same | **65 passed, 0 failed** |
+| `cargo test --offline --lib` | same | **68 passed, 0 failed** |
 | `make` | GNU make **4.3** | `build/compiler` produced |
-| `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **102/102 passed** |
-| `scripts/fetch_wacc_tests.sh` then `python3 harness/run_wacc.py` | same Clang and Python | **1143 passed, 77 known failures, 397 skipped, 0 unexpected** |
+| `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **103/103 passed** |
+| `scripts/fetch_wacc_tests.sh` then `python3 harness/run_wacc.py` | same Clang and Python | **1176 passed, 78 known failures, 363 skipped, 0 unexpected** |
 
-`tests/91_addr_incomplete.c` was already in the tree. Block-scope `static`, `extern`, function declarations, and `do` / `while` are covered by `tests/92_static_local.c`, `tests/93_block_extern.c`, `tests/94_block_func.c`, and `tests/95_do_while.c`. Typedefs, enums, unions, host headers, `_Bool`, and function pointers are covered by `tests/92_typedef.c`, `tests/93_enum.c`, `tests/94_union.c`, `tests/95_headers.c`, `tests/96_bool.c`, `tests/97_fnptr.c`, and `tests/98_bool_union.c`. GitHub Actions for this merge is not in this file yet.
+`tests/99_switch.c` covers fallthrough, nested switches, `break` and `continue`, Duff's device, a case inside `if`, a jump over an automatic initializer, enum and character constants, casts, `sizeof`, and every integer width from `char` through `unsigned long long`, plus `_Bool`. GitHub Actions for this change is not in this file yet.
 
 ## Stage 2, step 1 — built-in preprocessor
 
@@ -156,6 +154,7 @@ GitHub Actions for this step is not copied here.
 - [x] CLI `build/compiler INPUT.c -o OUTPUT.ll`, plus `-E`, `-I`, `-D`, and `-U`
 - [x] Differential tests against Clang
 - [x] Block-scope `static` objects, block-scope `extern`, block-scope function declarations, and `do` / `while`
+- [x] `switch`, `case`, and `default`, including nested labels, fallthrough, and an LLVM `switch`
 
 ## Supported syntax
 
@@ -198,6 +197,8 @@ A block-scope `static` object has no linkage (C11 6.2.2p6) and static storage du
 A block-scope `extern` object, and a block-scope function declaration with no storage class or with `extern`, follow C11 6.2.2p4 and p5. The visible prior declaration supplies the linkage when that prior has internal or external linkage. A prior with no linkage, or no prior, means external linkage, and that object is not the no-linkage one it hides. `int a = 3; { extern int a; }` reads the file-scope `a` when that file-scope object has external linkage. The declaration is in scope only until the end of the block; a use after the block is undeclared unless a file-scope declaration is visible. The same scope cannot declare the name both with and without linkage (`static int x; extern int x;` and `extern int x; int x;` are diagnostics). An initializer on a block-scope declaration that has linkage is a diagnostic (C11 6.7.9p5). `static int f(void);` in a block is a diagnostic (C11 6.7.1p7). A nested function body is still rejected. A block declaration that is the only declaration of an external object or function is emitted as `external global` or `declare`, under the C name, so another translation unit can define it. When a no-linkage declaration hides a file-scope `static` and an inner `extern` would therefore have external linkage, that is both linkages in one translation unit (C11 6.2.2p7) and is a diagnostic. Clang accepts that program and binds the `extern` to the hidden `static`.
 
 `do` statement `while (` expression `);` executes the statement, then the expression, and repeats while the expression is non-zero. The expression is not in the scope of a compound statement that is the body. `break` leaves the loop without evaluating the condition. `continue` jumps to the condition. A scalar condition is required, including a pointer. `do int x = 1; while (0);` is rejected because a declaration is not a statement.
+
+`switch (` expression `)` statement follows C11 6.8.4.2. The controlling expression has integer type. The integer promotions are applied, and each `case` constant is an integer constant expression converted to that promoted type (C11 6.8.4.2, 6.6). Enumeration constants, character constants, casts, and `sizeof` are accepted there. A value that matches another case after that conversion, a second `default`, a `case` or `default` outside a switch, a non-integer controlling expression, and a case expression that is not an integer constant are diagnostics. `break` leaves the innermost switch or loop. `continue` does not see the switch: it jumps to the enclosing loop, and it is a diagnostic when there is no loop. A `case` or `default` may sit inside another statement in the switch body (`if`, `while`, `do`, `for`, or a nested block). A nested switch owns the labels inside it. Execution jumps to the matching label, so an automatic initializer that occurs earlier in the block does not run. That jump is not diagnosed. A label followed by a declaration (`case 1: int x = 0;`) is a diagnostic, because C11 requires a statement after the colon. The IR is an LLVM `switch` on the promoted width: `i32` when the promoted type is `int` or `unsigned int`, and `i64` for `long` and `long long`, signed or unsigned. A `char` or `short` condition is extended to `i32` before the instruction.
 
 `int main(void)` and `int main()` are both no-parameter definitions. Reaching the closing brace of an integer function lowers to `ret` of 0 of that type. That is what C requires for `main`. A pointer-returning function that falls off the end lowers to `ret ptr null`. A `void` function that falls off the end lowers to `ret void`. The OS truncates `main`'s return value to 8 bits, so the tests keep exit codes in 0..255 and print nothing.
 
@@ -262,7 +263,7 @@ A struct may be a local, a file-scope object (`extern` or `static` included), or
 - An integer constant that fits in no type on the C11 6.4.4.1 list for its suffix and base is a diagnostic. A decimal constant that does not fit in signed `long long` is rejected even when it fits in `unsigned long long`.
 - No bit-fields, flexible array members, or anonymous struct/union members. No passing or returning a struct or union by value, and no designated initializers. `float`, `double`, and `long double` may be declared (so the system headers parse) but an expression that computes one is rejected, and a floating constant is a lexical error. No variable-length arrays. Wide string and character literals are rejected in program text; a wide character constant in a preprocessor expression is accepted as the corresponding character value. An empty struct or union is rejected. Defining a variadic function is not implemented. `va_start`, `va_arg`, and `va_copy` expand to undeclared names, so a use is a diagnostic.
 - Multi-character character constants (`'ab'`) are rejected; Clang accepts them as an implementation-defined `int`. A hex or octal escape outside `unsigned char` is a diagnostic, matching Clang. Runtime shift counts outside `0 .. width`, signed left shifts of negative values, and signed left shifts that do not fit are undefined and are not diagnosed outside constant initializers. Signed overflow at runtime is undefined and is not diagnosed. Modifying a string literal is undefined and is not diagnosed. `volatile` does not emit volatile loads or stores. A cast may drop `const`.
-- No `switch` or `goto`. `?:` accepts two operands of the same struct or union type.
+- No `goto`. A label (`name:`) is a diagnostic. `?:` accepts two operands of the same struct or union type. `switch` is implemented, as described above. A `case` range (`case 1 ... 3`) is a GNU extension and is rejected.
 - An empty parameter list on a declaration that is not a definition (`int f();`) is rejected. C11 treats that as a non-prototype. This subset requires a prototype: `(void)` or a parameter type list. A definition may still use `()`.
 - A `for` header cannot declare a function or use `static` or `extern`. A block-scope function cannot be `static`, and a nested function definition is rejected. An initializer is rejected on a block-scope declaration that has linkage.
 - A `static` function that is called but never defined is a diagnostic. An external function or object that is declared and not defined is emitted as `declare` or `external global`, so another translation unit can provide it.
@@ -282,7 +283,13 @@ A struct may be a local, a file-scope object (`extern` or `static` included), or
 
 ## Next actions
 
-Stage 2 step 3, from the plan: whatever the next headers or programs still reject. Floating expressions and passing or returning a struct or union by value are the largest remaining buckets. Block-scope `static`, block-scope `extern`, and `do` / `while` are implemented.
+Floating expressions and passing or returning a struct or union by value are the largest remaining buckets. `goto` is not started. `switch` is implemented.
+
+## Switch record
+
+Local results are in the table above: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **68 passed**, `make` produced `build/compiler`, `python3 harness/run_tests.py` **103/103 passed**, and `python3 harness/run_wacc.py` **1176 passed, 78 known failures, 363 skipped, 0 unexpected**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. `main` before this change was **1220 executed, 1143 passed, 77 known failures, 397 skipped**. GitHub Actions for this change is not in this file yet.
+
+A `case` label is a statement, so it can appear inside the statement that is the switch body, including inside `if` and loops. Semantic analysis keeps a stack of switches. The innermost switch owns the label. The case expression is folded with the same integer-constant rules as a file-scope initializer, then converted to the promoted type of the controlling expression. Duplicate detection uses that converted value. Code generation assigns one LLVM block to each label, emits `switch` to those blocks, and branches from the preceding block when control falls through. `break` and `continue` use separate stacks, so a `break` inside a loop that is inside a switch leaves the loop.
 
 ## Stage 2 step 2 record
 

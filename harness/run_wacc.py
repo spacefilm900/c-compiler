@@ -11,8 +11,9 @@ translation unit here and the other files with clang. An invalid program
 must be rejected with a non-zero exit and must not crash or panic.
 
 Chapters 13, 19, and 20 are skipped, as are valid tests for extra-credit
-features this compiler has not started (goto, switch, nan) and the
-struct-by-value directories. Union tests are run.
+features this compiler has not started (goto, nan) and the
+struct-by-value directories. Union tests and switch tests are run. A
+test tagged with both goto and switch stays skipped.
 harness/wacc_known_failures.txt lists the remaining failures. A test that is
 not listed must pass. A listed test that passes is reported, not failed.
 A compiler crash or panic fails the run even when the test is listed.
@@ -55,8 +56,9 @@ STRUCT_BY_VALUE = (
 )
 # Extra-credit features with no frontend support. Bitwise, compound
 # assignment, and increment are implemented, so those tests are run.
-# Unions are implemented. `goto`, `switch`, and `nan` are not.
-UNSUPPORTED_EXTRA = {"goto", "switch", "nan"}
+# Unions and switch are implemented. `goto` and `nan` are not.
+# A test tagged with both `goto` and `switch` stays skipped.
+UNSUPPORTED_EXTRA = {"goto", "nan"}
 INVALID_MARKERS = (
     "invalid_lex",
     "invalid_parse",
