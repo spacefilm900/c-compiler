@@ -121,5 +121,15 @@ int main(void) {
     if (CAST_N != 3 || sizeof(bound) != 2 * sizeof(int)) {
         return 24;
     }
+    switch (1) {
+    case (int)1.5:
+        break;
+    default:
+        return 25;
+    }
+    int *np = (int)0.0;
+    if (np != 0) {
+        return 26;
+    }
     return 0;
 }

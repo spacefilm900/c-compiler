@@ -2347,6 +2347,9 @@ impl Sema {
             let column = *column;
             self.check_modifiable(target)?;
             let dest = target.ty().expect("lvalue type");
+            if dest.is_long_double() {
+                return self.err(line, column, "long double is not supported");
+            }
             if !dest.is_scalar() {
                 return self.err(
                     line,
@@ -3934,6 +3937,14 @@ fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
             let Some(dest) = ty_name.as_integer() else {
                 return Err(ConstError::NotConst);
             };
+            // C11 6.6: a floating constant may appear in an integer constant
+            // expression only as the immediate operand of a cast. `(int)1.5`
+            // is folded; a bare `1.5` stays non-constant.
+            if let Expr::Float { bits, kind, .. } = expr.as_ref() {
+                let bits = crate::float::real_to_int(*bits, *kind, dest)
+                    .ok_or(ConstError::Overflow(dest))?;
+                return Ok(CVal { bits, ty: dest });
+            }
             let value = eval_const_expr(expr)?;
             Ok(CVal {
                 bits: convert_bits(value.bits, value.ty, dest),
@@ -4952,6 +4963,11 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
         );
         assert!(sema_err("enum { N = 1.5 };").contains("not an integer constant"));
         assert!(sema_err("enum { N = (int)-1.5 };").contains("not an integer constant"));
+        assert!(
+            sema_err("extern long double x; void f(void) { for (;; x++) {} }")
+                .contains("long double is not supported")
+        );
+        sema_ok("int main(void) { int *p = (int)0.0; switch (1) { case (int)1.5: return p == 0; } return 1; }");
         assert!(
             sema_err("int main(void) { long double x; x = 1.0; return 0; }")
                 .contains("long double is not supported")
