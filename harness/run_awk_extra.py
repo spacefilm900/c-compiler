@@ -89,6 +89,7 @@ def run_posix(clang: Path, ours: Path) -> int:
         (clang, "clang-onetrue", clang_json),
         (ours, "ccomp-onetrue", our_json),
     ):
+        dest.unlink(missing_ok=True)
         try:
             proc = subprocess.run(
                 [

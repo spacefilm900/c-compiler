@@ -117,6 +117,7 @@ def category(detail: str) -> str:
         ("invalid operands", "strict-pointer"),
         ("incompatible types", "strict-pointer"),
         ("incompatible pointer", "strict-pointer"),
+        ("inconclusive", "inconclusive"),
         ("timeout", "timeout"),
         ("mismatch", "checksum"),
         ("clang rejected ir", "bad-ir"),
@@ -197,16 +198,23 @@ def one_seed(seed: str, work: Path) -> tuple[str, str]:
         return "fail", f"oracle compile failed ({rc}): {clip(err)}"
     got = run([str(mine)], WALL_TIMEOUT, limit=True, cwd=work)
     exp = run([str(ref)], WALL_TIMEOUT, limit=True, cwd=work)
-    if got[0] == "timeout" and exp[0] == "timeout":
-        return "pass", "both timed out"
     if got[0] == "timeout" or exp[0] == "timeout":
-        return "fail", f"timeout: ours={got[0]} clang={exp[0]}"
-    if got[0] != exp[0] or got[1] != exp[1]:
+        return "fail", f"inconclusive timeout: ours={got[0]} clang={exp[0]}"
+    # A checksum comparison needs both programs to finish with exit 0.
+    # The same signal or the same nonzero status is not a passing result.
+    if got[0] != 0 or exp[0] != 0:
+        return (
+            "fail",
+            f"inconclusive exit ours={got[0]} clang={exp[0]} out={got[1][:60]!r}",
+        )
+    if got[1] != exp[1]:
         return (
             "fail",
             f"mismatch ours exit={got[0]} out={got[1][:80]!r} "
             f"clang exit={exp[0]} out={exp[1][:80]!r}",
         )
+    if b"checksum = " not in got[1]:
+        return "fail", "inconclusive: both exited 0 without a checksum"
     return "pass", ""
 
 

@@ -27,7 +27,10 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
+# Keep the environment string. Path("./compiler") stringifies to "compiler",
+# which is then looked up on PATH instead of in the current directory.
+COMPILER_COMMAND = os.environ.get("CC_UNDER_TEST", str(ROOT / "build" / "compiler"))
+COMPILER = Path(COMPILER_COMMAND)
 CLANG = os.environ.get("CLANG", "clang")
 OUT = Path(os.environ.get("PERF_JSON", ROOT / "reports" / "perf.json"))
 FLAGS = (
@@ -65,7 +68,7 @@ def compile_harness(work: Path) -> dict:
     ours_fail = 0
     clang_fail = 0
     for src in sources:
-        dt, rc = time_call([str(COMPILER), str(src), "-o", str(work / f"{src.stem}.ll")])
+        dt, rc = time_call([COMPILER_COMMAND, str(src), "-o", str(work / f"{src.stem}.ll")])
         ours += dt
         ours_fail += rc != 0
         dt, rc = time_call(
@@ -97,6 +100,8 @@ def run_harness(work: Path) -> dict:
     ours = 0.0
     clang = 0.0
     ran = 0
+    mismatches = 0
+    timeouts = 0
     for src in sources:
         ll = work / f"{src.stem}.run.ll"
         mine = work / f"{src.stem}.mine"
@@ -109,7 +114,7 @@ def run_harness(work: Path) -> dict:
             "check": False,
         }
         try:
-            if subprocess.run([str(COMPILER), str(src), "-o", str(ll)], **quiet).returncode != 0:
+            if subprocess.run([COMPILER_COMMAND, str(src), "-o", str(ll)], **quiet).returncode != 0:
                 continue
             if subprocess.run([CLANG, "-O0", "-w", str(ll), "-o", str(mine), "-lm"], **quiet).returncode != 0:
                 continue
@@ -123,12 +128,24 @@ def run_harness(work: Path) -> dict:
                 continue
         except subprocess.TimeoutExpired:
             continue
-        dt, _rc = time_call([str(mine)], timeout=30)
+        dt, ours_rc = time_call([str(mine)], timeout=30)
         ours += dt
-        dt, _rc = time_call([str(ref)], timeout=30)
+        dt, clang_rc = time_call([str(ref)], timeout=30)
         clang += dt
         ran += 1
-    return {"files": ran, "ours_s": round(ours, 4), "clang_s": round(clang, 4)}
+        # time_call reports a timeout as 124. The same nonzero exit on both
+        # sides is not a mismatch: the programs agreed.
+        if ours_rc == 124 or clang_rc == 124:
+            timeouts += 1
+        elif ours_rc != clang_rc:
+            mismatches += 1
+    return {
+        "files": ran,
+        "ours_s": round(ours, 4),
+        "clang_s": round(clang, 4),
+        "mismatches": mismatches,
+        "timeouts": timeouts,
+    }
 
 
 def time_awk_compile() -> dict:
@@ -320,7 +337,11 @@ def markdown(report: dict) -> str:
         lines.append(
             f"| One True AWK compile | {a.get('status', 'n/a')} | {a.get('clang_s', 'n/a')} s |"
         )
-    lines.append(f"| Harness run ({r['files']} programs) | {r['ours_s']} s | {r['clang_s']} s |")
+    lines.append(
+        f"| Harness run ({r['files']} programs, "
+        f"{r.get('mismatches', 0)} exit mismatches, {r.get('timeouts', 0)} timeouts) "
+        f"| {r['ours_s']} s | {r['clang_s']} s |"
+    )
     if suite.get("clang_s") is not None:
         ours_value = suite["ours_s"] if suite.get("ours_s") is not None else "did not build"
         lines.append(

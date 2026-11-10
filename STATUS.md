@@ -296,7 +296,7 @@ Pin `30dccd73b78652c4719f36572994778a5b233a4e` (tag `csmith-2.3.0`). Every seed 
 
 CI runs the 40 seeds in `harness/csmith_seeds.txt`. The wall-clock limit is twice the CPU limit, so a program that burns CPU dies from `SIGXCPU` on both sides instead of one side winning a race with the parent's timeout. A local batch is `python3 harness/run_csmith.py --count 500`. It is not part of CI.
 
-Local result on this machine, Ubuntu Clang 18.1.3: **26 passed, 14 known failures, 0 unexpected**, out of 40 seeds. The known failures are stricter pointer constraints than Clang's warnings (12 seeds) and a file-scope initializer of a nested bit-field (2 seeds). No checksum mismatch in the batch.
+Local result on this machine, Ubuntu Clang 18.1.3: **23 passed, 17 known failures, 0 unexpected**, out of 40 seeds. Twelve failures are stricter pointer constraints than Clang's warnings. Two are a file-scope initializer of a nested bit-field. Seeds 7, 19, and 37 are inconclusive: both binaries are killed by the CPU limit and print no checksum, so they are not counted as a pass. No checksum mismatch in the batch.
 
 ### One True AWK
 
