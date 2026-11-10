@@ -13,6 +13,10 @@ directory and then the host C library, the same search the compiler uses.
 Clang still uses the host headers. The declarations agree, so printf,
 strlen, malloc, and the macros in limits.h can be compared.
 
+tests/xabi/*_def.c is linked with the matching *_use.c in both directions:
+this compiler's IR with a Clang object, and the reverse. Both must match
+Clang compiling the two files together.
+
 Env: CC_UNDER_TEST, CLANG (default "clang"), TIMEOUT (seconds, default 10).
 Exit status 0 only if all tests pass.
 """
@@ -50,26 +54,84 @@ def test(src, tmp):
         return f"mismatch: got exit={got[0]} out={got[1][:100]!r}, expected exit={exp[0]} out={exp[1][:100]!r}"
     return None
 
+def test_cross(def_src, use_src, tmp):
+    """Link one translation unit from this compiler with one from Clang.
+
+    `*_def.c` is the callee and `*_use.c` is main. Both directions must match
+    a binary Clang built from both files.
+    """
+    name = def_src.name[: -len("_def.c")]
+    ref = tmp / f"{name}.ref"
+
+    def compile_ours(src, ll):
+        return run([str(COMPILER), str(src), "-o", str(ll)])
+
+    def clang_obj(src, obj):
+        return run([CLANG, "-w", "-std=c11", "-c", str(src), "-o", str(obj)])
+
+    rc, _, err = run([CLANG, "-w", "-std=c11", str(def_src), str(use_src), "-o", str(ref)])
+    if rc != 0:
+        return f"oracle compile failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
+    expected = run([str(ref)])
+
+    def mixed(our_src, clang_src, label):
+        ll = tmp / f"{name}.{label}.ll"
+        obj = tmp / f"{name}.{label}.o"
+        binary = tmp / f"{name}.{label}"
+        rc, _, err = compile_ours(our_src, ll)
+        if rc != 0:
+            return f"{label}: compiler failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
+        rc, _, err = clang_obj(clang_src, obj)
+        if rc != 0:
+            return f"{label}: clang failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
+        rc, _, err = run([CLANG, "-w", str(ll), str(obj), "-o", str(binary)])
+        if rc != 0:
+            return f"{label}: link failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
+        got = run([str(binary)])
+        if got != expected:
+            return (
+                f"{label}: mismatch got exit={got[0]} out={got[1][:80]!r}, "
+                f"expected exit={expected[0]} out={expected[1][:80]!r}"
+            )
+        return None
+
+    return mixed(def_src, use_src, "our-def") or mixed(use_src, def_src, "our-use")
+
+
 def main():
     tests = sorted((ROOT / "tests").glob("*.c"))
+    crosses = sorted((ROOT / "tests" / "xabi").glob("*_def.c"))
     problems = []
     if not (COMPILER.is_file() and os.access(COMPILER, os.X_OK)):
         problems.append(f"compiler not found/executable: {COMPILER}")
     if shutil.which(CLANG) is None:
         problems.append(f"clang not found: {CLANG}")
+    total = len(tests) + len(crosses)
     if problems:
         for t in tests:
             print(f"FAIL {t.name}: " + "; ".join(problems))
-        print(f"\n0/{len(tests)} passed")
+        for t in crosses:
+            print(f"FAIL {t.parent.name}/{t.name}: " + "; ".join(problems))
+        print(f"\n0/{total} passed")
         return 1
     passed = 0
     with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
         for t in tests:
-            r = test(t, Path(d))
+            r = test(t, tmp)
             print(f"{'PASS' if r is None else 'FAIL'} {t.name}" + ("" if r is None else f": {r}"))
             passed += r is None
-    print(f"\n{passed}/{len(tests)} passed")
-    return 0 if passed == len(tests) else 1
+        for t in crosses:
+            use = t.with_name(t.name[: -len("_def.c")] + "_use.c")
+            label = f"{t.parent.name}/{t.name[: -len('_def.c')]}"
+            if not use.is_file():
+                r = f"missing {use.name}"
+            else:
+                r = test_cross(t, use, tmp)
+            print(f"{'PASS' if r is None else 'FAIL'} {label}" + ("" if r is None else f": {r}"))
+            passed += r is None
+    print(f"\n{passed}/{total} passed")
+    return 0 if passed == total else 1
 
 if __name__ == "__main__":
     sys.exit(main())

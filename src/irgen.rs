@@ -29,6 +29,7 @@
 //! no-op in the IR. `sizeof` is an `unsigned long` constant and its operand
 //! is not emitted.
 
+use crate::abi::{arg_names, format_part, function_sig, AggAbi, FnSig, Part, PartKind, RegPiece};
 use crate::ast::*;
 
 /// System V AMD64 layout for `x86_64-pc-linux-gnu`.
@@ -157,24 +158,41 @@ fn render_string(literal: &StrConst) -> String {
 }
 
 fn render_declare(decl: &IrFunc) -> String {
-    let mut parts: Vec<String> = decl.params.iter().map(|ty| param_ir(ty, None)).collect();
-    if decl.variadic {
-        parts.push("...".to_string());
-    }
-    let params = parts.join(", ");
+    // An unused prototype whose aggregate is still incomplete, or that would
+    // need an SSE register, has no callable signature yet. The symbol still
+    // has to exist when its address is taken.
+    let Ok(sig) = function_sig(&decl.ret, &decl.params) else {
+        return format!("declare void {}()", llvm_global(&decl.name));
+    };
+    let params = sig_params(&sig, decl.variadic, None);
     format!(
         "declare {}{} {}({params})",
-        ret_prefix(&decl.ret),
-        decl.ret.ir_type(),
+        sig.ret_prefix,
+        sig.ret_type,
         llvm_global(&decl.name)
     )
 }
 
-fn ret_prefix(ty: &CType) -> String {
-    match ty.abi_attr() {
-        Some(attr) => format!("{attr} "),
-        None => String::new(),
+/// Parameter list of a lowered signature. `names` supplies one LLVM name per
+/// C parameter; declarations pass `None`.
+fn sig_params(sig: &FnSig, variadic: bool, names: Option<&[Vec<String>]>) -> String {
+    let mut parts = Vec::new();
+    if let Some(attrs) = &sig.sret_attrs {
+        let name = names.map(|_| "%agg.result");
+        parts.push(format_part("ptr", attrs, name));
     }
+    for (index, group) in sig.params.iter().enumerate() {
+        for (piece, part) in group.iter().enumerate() {
+            let name = names
+                .and_then(|names| names.get(index))
+                .and_then(|group| group.get(piece).map(String::as_str));
+            parts.push(format_part(&part.ir_type, &part.attrs, name));
+        }
+    }
+    if variadic {
+        parts.push("...".to_string());
+    }
+    parts.join(", ")
 }
 
 fn param_ir(ty: &CType, name: Option<&str>) -> String {
@@ -189,21 +207,27 @@ fn param_ir(ty: &CType, name: Option<&str>) -> String {
 
 fn render_function(func: &FuncDef) -> (String, bool) {
     let body = func.body.as_ref().expect("defined function");
-    let mut gen = Gen::new(func.ret_type.clone());
+    let param_tys: Vec<CType> = func.params.iter().map(|param| param.ty.clone()).collect();
+    // Semantic analysis rejects a definition whose aggregate needs an SSE
+    // register or is still incomplete, so the signature is known here.
+    let sig = function_sig(&func.ret_type, &param_tys)
+        .expect("defined function has a System V signature");
+    let names: Vec<Vec<String>> = sig
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, group)| arg_names(index, group.len()))
+        .collect();
+    let mut gen = Gen::new(func.ret_type.clone(), sig.ret_agg.clone());
     let linkage = match func.linkage {
         Linkage::Internal => "internal ",
         Linkage::External => "",
     };
-    let params = func
-        .params
-        .iter()
-        .map(|param| param_ir(&param.ty, Some(&param.arg_reg)))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let params = sig_params(&sig, false, Some(&names));
     gen.emit(&format!(
         "define {linkage}{}{} {}({params}) {{",
-        ret_prefix(&func.ret_type),
-        func.ret_type.ir_type(),
+        sig.ret_prefix,
+        sig.ret_type,
         llvm_global(&func.symbol)
     ));
     gen.emit("entry:");
@@ -225,25 +249,16 @@ fn render_function(func: &FuncDef) -> (String, bool) {
             ty.align()
         ));
     }
-    for param in &func.params {
-        gen.emit(&format!(
-            "  store {} {}, ptr {}, align {}",
-            param.ty.ir_type(),
-            param.arg_reg,
-            param.slot,
-            param.ty.align()
-        ));
+    // Temps allocated while the body is emitted are inserted here, still in
+    // the entry block, so a call inside a loop does not grow the stack.
+    gen.alloca_at = gen.lines.len();
+    for ((param, names), parts) in func.params.iter().zip(names.iter()).zip(sig.params.iter()) {
+        gen.store_param(param, names, parts);
     }
 
     gen.gen_compound(body);
     if !gen.terminated {
-        if func.ret_type.is_void() {
-            gen.emit("  ret void");
-        } else if func.ret_type.is_pointer() {
-            gen.emit("  ret ptr null");
-        } else {
-            gen.emit(&format!("  ret {} 0", func.ret_type.ir_type()));
-        }
+        gen.emit_implicit_return();
     }
     gen.emit("}");
     (gen.lines.join("\n"), gen.needs_memmove)
@@ -315,10 +330,14 @@ struct Gen {
     ret_ty: CType,
     /// A whole-struct copy used `llvm.memmove`, which keeps padding bytes.
     needs_memmove: bool,
+    /// Index in `lines` where the next entry-block alloca is inserted.
+    alloca_at: usize,
+    /// Set when the C return type is a struct or union.
+    ret_agg: Option<AggAbi>,
 }
 
 impl Gen {
-    fn new(ret_ty: CType) -> Self {
+    fn new(ret_ty: CType, ret_agg: Option<AggAbi>) -> Self {
         Self {
             lines: Vec::new(),
             tmp: 0,
@@ -331,6 +350,8 @@ impl Gen {
             switch_at: 0,
             ret_ty,
             needs_memmove: false,
+            alloca_at: 0,
+            ret_agg,
         }
     }
 }
@@ -403,10 +424,15 @@ impl Gen {
             Stmt::Return { expr, .. } => {
                 self.ensure_block();
                 if let Some(expr) = expr {
-                    let value = self.gen_val(expr);
-                    let value =
-                        self.convert(&value, &expr.ty().expect("typed"), &self.ret_ty.clone());
-                    self.emit(&format!("  ret {} {value}", self.ret_ty.ir_type()));
+                    if self.ret_ty.unqualified().is_record() {
+                        let src = self.record_ptr(expr);
+                        self.emit_record_return(&src);
+                    } else {
+                        let value = self.gen_val(expr);
+                        let value =
+                            self.convert(&value, &expr.ty().expect("typed"), &self.ret_ty.clone());
+                        self.emit(&format!("  ret {} {value}", self.ret_ty.ir_type()));
+                    }
                 } else {
                     self.emit("  ret void");
                 }
@@ -473,10 +499,9 @@ impl Gen {
         match checked {
             CheckedInit::Scalar(init) => {
                 if decl.ty.is_record() {
-                    if let Some(src) = self.struct_bytes(init) {
-                        self.copy_struct(&decl.ty, &src, &decl.slot);
-                        return;
-                    }
+                    let src = self.record_ptr(init);
+                    self.copy_struct(&decl.ty, &src, &decl.slot);
+                    return;
                 }
                 let value = self.gen_val(init);
                 let value = self.convert(&value, &init.ty().expect("typed"), &decl.ty);
@@ -484,7 +509,13 @@ impl Gen {
             }
             CheckedInit::Aggregate(stores) => {
                 let mut ready = Vec::new();
+                let mut records = Vec::new();
                 for store in stores {
+                    if store.ty.is_record() {
+                        let src = self.record_ptr(&store.expr);
+                        records.push((store.offset, store.ty.clone(), src));
+                        continue;
+                    }
                     let value = self.gen_val(&store.expr);
                     let value = self.convert(&value, &store.expr.ty().expect("typed"), &store.ty);
                     ready.push((store.offset, store.ty.clone(), value));
@@ -496,17 +527,12 @@ impl Gen {
                     decl.ty.align()
                 ));
                 for (offset, ty, value) in ready {
-                    let addr = if offset == 0 {
-                        decl.slot.clone()
-                    } else {
-                        let tmp = self.fresh();
-                        self.emit(&format!(
-                            "  {tmp} = getelementptr inbounds i8, ptr {}, i64 {offset}",
-                            decl.slot
-                        ));
-                        tmp
-                    };
+                    let addr = self.offset_ptr(&decl.slot, offset);
                     self.store(&ty, &value, &addr);
+                }
+                for (offset, ty, src) in records {
+                    let addr = self.offset_ptr(&decl.slot, offset);
+                    self.copy_struct(&ty, &src, &addr);
                 }
             }
         }
@@ -522,19 +548,348 @@ impl Gen {
         ));
     }
 
-    /// Address of a struct object whose bytes should be copied. An assignment
-    /// result is the object just stored, so `u = (s = t)` copies from `s`.
-    fn struct_bytes(&mut self, expr: &Expr) -> Option<String> {
-        if expr.ty().is_some_and(|ty| ty.is_record()) && expr.is_lvalue() {
-            return Some(self.gen_addr(expr));
+    /// Pointer to the object representation of a struct or union expression.
+    ///
+    /// Lvalues are their address. A call, a conditional, or an assignment is
+    /// materialized first, so `f().x` and `s = f()` see the returned bytes.
+    fn record_ptr(&mut self, expr: &Expr) -> String {
+        match expr {
+            Expr::Var { .. }
+            | Expr::Index { .. }
+            | Expr::Str { .. }
+            | Expr::Unary {
+                op: UnaryOp::Deref, ..
+            }
+            | Expr::Member { .. } => self.gen_addr(expr),
+            Expr::Assign { target, value, .. } => {
+                // The right-hand side is evaluated before the destination is
+                // stored, matching scalar assignment.
+                let src = self.record_ptr(value);
+                let dest = self.gen_addr(target);
+                let ty = target.ty().expect("struct assignment");
+                self.copy_struct(&ty, &src, &dest);
+                dest
+            }
+            Expr::Call { .. } => self.materialize_call(expr),
+            Expr::Cond {
+                cond,
+                then_expr,
+                else_expr,
+                ty,
+                ..
+            } => {
+                let ty = ty.clone().expect("typed conditional");
+                let tmp = self.entry_alloca(&ty);
+                let cond = self.gen_cond(cond);
+                let then_label = self.label();
+                let else_label = self.label();
+                let end_label = self.label();
+                self.br_cond(&cond, &then_label, &else_label);
+                self.start(then_label);
+                let then_src = self.record_ptr(then_expr);
+                self.copy_struct(&ty, &then_src, &tmp);
+                self.br(&end_label);
+                self.start(else_label);
+                let else_src = self.record_ptr(else_expr);
+                self.copy_struct(&ty, &else_src, &tmp);
+                self.br(&end_label);
+                self.start(end_label);
+                tmp
+            }
+            Expr::Comma { left, right, .. } => {
+                let _ = self.gen_expr(left);
+                self.record_ptr(right)
+            }
+            _ => panic!("internal compiler error: aggregate expression has no address"),
         }
-        if let Expr::Assign { target, .. } = expr {
-            if target.ty().is_some_and(|ty| ty.is_record()) {
-                let _ = self.gen_expr(expr);
-                return Some(self.gen_addr(target));
+    }
+
+    fn materialize_call(&mut self, expr: &Expr) -> String {
+        let Expr::Call {
+            callee,
+            args,
+            resolved,
+            ty,
+            ..
+        } = expr
+        else {
+            unreachable!("call");
+        };
+        let ty = ty.clone().expect("typed call");
+        let resolved = resolved.as_ref().expect("resolved call");
+        let sig =
+            function_sig(&resolved.ret, &resolved.params).expect("call has a System V signature");
+        let tmp = self.entry_alloca(&ty);
+        match sig.ret_agg.clone() {
+            Some(AggAbi::Memory) => {
+                let rendered = self.render_call_args(args, resolved, &sig, Some(&tmp));
+                let _ = self.emit_call(callee, resolved, &sig, &rendered);
+            }
+            Some(AggAbi::Direct(pieces)) => {
+                let rendered = self.render_call_args(args, resolved, &sig, None);
+                let value = self
+                    .emit_call(callee, resolved, &sig, &rendered)
+                    .expect("register aggregate returns a value");
+                self.store_pieces(&tmp, ty.align(), &pieces, &value);
+            }
+            None => unreachable!("aggregate call"),
+        }
+        tmp
+    }
+
+    /// `sret_slot` is the temporary the callee writes when the return is in memory.
+    fn render_call_args(
+        &mut self,
+        args: &[Expr],
+        resolved: &CallRes,
+        sig: &FnSig,
+        sret_slot: Option<&str>,
+    ) -> Vec<String> {
+        let mut rendered = Vec::new();
+        if let Some(slot) = sret_slot {
+            let attrs = sig.sret_attrs.as_deref().expect("sret attribute");
+            rendered.push(format_part("ptr", attrs, Some(slot)));
+        }
+        for (index, arg) in args.iter().enumerate() {
+            if index < resolved.params.len() {
+                let parts = &sig.params[index];
+                if parts.len() == 1 && matches!(parts[0].kind, PartKind::Byval) {
+                    let src = self.record_ptr(arg);
+                    rendered.push(format_part("ptr", &parts[0].attrs, Some(&src)));
+                    continue;
+                }
+                if parts
+                    .iter()
+                    .any(|part| matches!(part.kind, PartKind::Piece(_)))
+                {
+                    let src = self.record_ptr(arg);
+                    let align = arg.ty().expect("typed").align();
+                    for part in parts {
+                        let PartKind::Piece(piece) = &part.kind else {
+                            continue;
+                        };
+                        let loaded = self.load_piece(&src, align, piece);
+                        rendered.push(format_part(&part.ir_type, &part.attrs, Some(&loaded)));
+                    }
+                    continue;
+                }
+                let value = self.gen_val(arg);
+                let src = arg.ty().expect("typed");
+                let param_ty = &resolved.params[index];
+                let value = self.convert(&value, &src, param_ty);
+                rendered.push(param_ir(param_ty, Some(&value)));
+            } else if arg.ty().is_some_and(|ty| ty.is_record()) {
+                rendered.extend(self.variadic_record(arg));
+            } else {
+                // Default argument promotions (C11 6.5.2.2): integer types
+                // narrower than `int` become `int`.
+                let value = self.gen_val(arg);
+                let src = arg.ty().expect("typed");
+                let promoted = default_promote(&src);
+                let value = self.convert(&value, &src, &promoted);
+                rendered.push(format!("{} {value}", promoted.ir_type()));
             }
         }
-        None
+        rendered
+    }
+
+    fn variadic_record(&mut self, arg: &Expr) -> Vec<String> {
+        let ty = arg.ty().expect("typed");
+        let src = self.record_ptr(arg);
+        match crate::abi::classify_aggregate(&ty).expect("variadic aggregate") {
+            AggAbi::Memory => {
+                let align = ty.align().max(8);
+                let attrs = format!("byval({}) align {align}", ty.ir_type());
+                vec![format_part("ptr", &attrs, Some(&src))]
+            }
+            AggAbi::Direct(pieces) => pieces
+                .iter()
+                .map(|piece| {
+                    let loaded = self.load_piece(&src, ty.align(), piece);
+                    format_part(&piece.ir_type(), "", Some(&loaded))
+                })
+                .collect(),
+        }
+    }
+
+    fn emit_call(
+        &mut self,
+        callee: &Expr,
+        resolved: &CallRes,
+        sig: &FnSig,
+        rendered: &[String],
+    ) -> Option<String> {
+        let arglist = rendered.join(", ");
+        let callee = if resolved.indirect {
+            self.gen_val(callee)
+        } else {
+            llvm_global(&resolved.name)
+        };
+        // A variadic call names the function type, including `...`
+        // (`call i32 (ptr, ...) @printf(...)`). Other calls name only the
+        // return type, which is what the existing tests match.
+        let ty = if resolved.variadic {
+            variadic_sig(sig)
+        } else {
+            sig.ret_type.clone()
+        };
+        if sig.ret_type == "void" {
+            self.emit(&format!("  call {ty} {callee}({arglist})"));
+            None
+        } else {
+            let tmp = self.fresh();
+            self.emit(&format!(
+                "  {tmp} = call {}{ty} {callee}({arglist})",
+                sig.ret_prefix
+            ));
+            Some(tmp)
+        }
+    }
+
+    fn store_param(&mut self, param: &Param, names: &[String], parts: &[Part]) {
+        if parts.len() == 1 && matches!(parts[0].kind, PartKind::Byval) {
+            self.copy_struct(&param.ty, &names[0], &param.slot);
+            return;
+        }
+        if parts
+            .iter()
+            .any(|part| matches!(part.kind, PartKind::Piece(_)))
+        {
+            // Pieces cover the bytes the ABI passes. Tail padding that stays
+            // in memory is zero, which is a defined object representation.
+            self.emit(&format!(
+                "  store {} zeroinitializer, ptr {}, align {}",
+                param.ty.ir_type(),
+                param.slot,
+                param.ty.align()
+            ));
+            for (part, name) in parts.iter().zip(names.iter()) {
+                let PartKind::Piece(piece) = &part.kind else {
+                    continue;
+                };
+                self.store_piece(&param.slot, param.ty.align(), piece, name);
+            }
+            return;
+        }
+        self.emit(&format!(
+            "  store {} {}, ptr {}, align {}",
+            param.ty.ir_type(),
+            names[0],
+            param.slot,
+            param.ty.align()
+        ));
+    }
+
+    fn entry_alloca(&mut self, ty: &CType) -> String {
+        let name = self.fresh();
+        let line = format!("  {name} = alloca {}, align {}", ty.ir_type(), ty.align());
+        self.lines.insert(self.alloca_at, line);
+        self.alloca_at += 1;
+        name
+    }
+
+    fn offset_ptr(&mut self, slot: &str, offset: u64) -> String {
+        if offset == 0 {
+            return slot.to_string();
+        }
+        let tmp = self.fresh();
+        self.emit(&format!(
+            "  {tmp} = getelementptr inbounds i8, ptr {slot}, i64 {offset}"
+        ));
+        tmp
+    }
+
+    fn load_piece(&mut self, slot: &str, base_align: u32, piece: &RegPiece) -> String {
+        let addr = self.offset_ptr(slot, piece.offset());
+        let tmp = self.fresh();
+        let align = piece_align(base_align, piece.offset());
+        self.emit(&format!(
+            "  {tmp} = load {}, ptr {addr}, align {align}",
+            piece.ir_type()
+        ));
+        tmp
+    }
+
+    fn store_piece(&mut self, slot: &str, base_align: u32, piece: &RegPiece, value: &str) {
+        let addr = self.offset_ptr(slot, piece.offset());
+        let align = piece_align(base_align, piece.offset());
+        self.emit(&format!(
+            "  store {} {value}, ptr {addr}, align {align}",
+            piece.ir_type()
+        ));
+    }
+
+    /// Write a register return into an alloca. One piece is the call result;
+    /// two pieces are `extractvalue`d from it.
+    fn store_pieces(&mut self, slot: &str, align: u32, pieces: &[RegPiece], value: &str) {
+        if pieces.len() == 1 {
+            self.store_piece(slot, align, &pieces[0], value);
+            return;
+        }
+        let agg = crate::abi::pieces_type(pieces);
+        for (index, piece) in pieces.iter().enumerate() {
+            let tmp = self.fresh();
+            self.emit(&format!("  {tmp} = extractvalue {agg} {value}, {index}"));
+            self.store_piece(slot, align, piece, &tmp);
+        }
+    }
+
+    fn emit_record_return(&mut self, src: &str) {
+        let agg = self.ret_agg.clone().expect("record return");
+        let align = self.ret_ty.align();
+        match agg {
+            AggAbi::Memory => {
+                let ty = self.ret_ty.clone();
+                self.copy_struct(&ty, src, "%agg.result");
+                self.emit("  ret void");
+            }
+            AggAbi::Direct(pieces) => {
+                if pieces.len() == 1 {
+                    let value = self.load_piece(src, align, &pieces[0]);
+                    self.emit(&format!("  ret {} {value}", pieces[0].ir_type()));
+                    return;
+                }
+                let agg_ty = crate::abi::pieces_type(&pieces);
+                let mut current = String::new();
+                for (index, piece) in pieces.iter().enumerate() {
+                    let loaded = self.load_piece(src, align, piece);
+                    let tmp = self.fresh();
+                    if index == 0 {
+                        self.emit(&format!(
+                            "  {tmp} = insertvalue {agg_ty} poison, {} {loaded}, 0",
+                            piece.ir_type()
+                        ));
+                    } else {
+                        self.emit(&format!(
+                            "  {tmp} = insertvalue {agg_ty} {current}, {} {loaded}, {index}",
+                            piece.ir_type()
+                        ));
+                    }
+                    current = tmp;
+                }
+                self.emit(&format!("  ret {agg_ty} {current}"));
+            }
+        }
+    }
+
+    fn emit_implicit_return(&mut self) {
+        if let Some(agg) = self.ret_agg.clone() {
+            match agg {
+                AggAbi::Memory => self.emit("  ret void"),
+                AggAbi::Direct(pieces) => {
+                    let ty = crate::abi::pieces_type(&pieces);
+                    self.emit(&format!("  ret {ty} zeroinitializer"));
+                }
+            }
+            return;
+        }
+        if self.ret_ty.is_void() {
+            self.emit("  ret void");
+        } else if self.ret_ty.is_pointer() {
+            self.emit("  ret ptr null");
+        } else {
+            self.emit(&format!("  ret {} 0", self.ret_ty.ir_type()));
+        }
     }
 
     fn store(&mut self, ty: &CType, value: &str, slot: &str) {
@@ -896,6 +1251,11 @@ impl Gen {
     }
 
     fn gen_expr(&mut self, expr: &Expr) -> Option<String> {
+        // A struct or union value is the address of its object representation.
+        // Copies use `llvm.memmove`, so padding bytes are kept.
+        if expr.ty().is_some_and(|ty| ty.is_record()) {
+            return Some(self.record_ptr(expr));
+        }
         match expr {
             Expr::Int { bits, value_ty, .. } => Some(value_ty.format_bits(*bits)),
             Expr::Var { resolved, ty, .. } => {
@@ -979,20 +1339,10 @@ impl Gen {
             Expr::Assign { target, value, .. } => {
                 let addr = self.gen_addr(target);
                 let dest = target.ty().expect("lvalue type");
-                if dest.is_record() {
-                    if let Some(src) = self.struct_bytes(value) {
-                        self.copy_struct(&dest, &src, &addr);
-                    } else {
-                        let raw = self.gen_val(value);
-                        self.store(&dest, &raw, &addr);
-                    }
-                    Some(self.load(&dest, &addr))
-                } else {
-                    let raw = self.gen_val(value);
-                    let stored = self.convert(&raw, &value.ty().expect("typed"), &dest);
-                    self.store(&dest, &stored, &addr);
-                    Some(stored)
-                }
+                let raw = self.gen_val(value);
+                let stored = self.convert(&raw, &value.ty().expect("typed"), &dest);
+                self.store(&dest, &stored, &addr);
+                Some(stored)
             }
             Expr::CompoundAssign {
                 op, target, value, ..
@@ -1082,6 +1432,8 @@ impl Gen {
                     self.gen_val(base)
                 } else if base.is_lvalue() {
                     self.gen_addr(base)
+                } else if base.ty().is_some_and(|ty| ty.is_record()) {
+                    self.record_ptr(base)
                 } else {
                     self.spill(base)
                 };
@@ -1306,47 +1658,10 @@ impl Gen {
     }
 
     fn gen_call(&mut self, callee: &Expr, args: &[Expr], resolved: &CallRes) -> Option<String> {
-        let mut rendered = Vec::new();
-        for (index, arg) in args.iter().enumerate() {
-            let value = self.gen_val(arg);
-            let src = arg.ty().expect("typed");
-            if index < resolved.params.len() {
-                let param_ty = &resolved.params[index];
-                let value = self.convert(&value, &src, param_ty);
-                rendered.push(param_ir(param_ty, Some(&value)));
-            } else {
-                // Default argument promotions (C11 6.5.2.2): integer types
-                // narrower than `int` become `int`. There are no floats yet.
-                let promoted = default_promote(&src);
-                let value = self.convert(&value, &src, &promoted);
-                rendered.push(format!("{} {value}", promoted.ir_type()));
-            }
-        }
-        let arglist = rendered.join(", ");
-        let callee = if resolved.indirect {
-            self.gen_val(callee)
-        } else {
-            llvm_global(&resolved.name)
-        };
-        // A variadic call names the function type, including `...`
-        // (`call i32 (ptr, ...) @printf(...)`). Other calls name only the
-        // return type, which is what the existing tests match.
-        let ty = if resolved.variadic {
-            variadic_fn_type(&resolved.ret, &resolved.params)
-        } else {
-            resolved.ret.ir_type()
-        };
-        if resolved.ret.is_void() {
-            self.emit(&format!("  call {ty} {callee}({arglist})"));
-            None
-        } else {
-            let tmp = self.fresh();
-            self.emit(&format!(
-                "  {tmp} = call {}{ty} {callee}({arglist})",
-                ret_prefix(&resolved.ret)
-            ));
-            Some(tmp)
-        }
+        let sig =
+            function_sig(&resolved.ret, &resolved.params).expect("call has a System V signature");
+        let rendered = self.render_call_args(args, resolved, &sig, None);
+        self.emit_call(callee, resolved, &sig, &rendered)
     }
 
     fn zext_cond(&mut self, expr: &Expr) -> String {
@@ -1536,10 +1851,38 @@ fn llvm_bytes(bytes: &[u8]) -> String {
 }
 
 /// `i32 (ptr, ...)` — the function type written on a variadic call.
-fn variadic_fn_type(ret: &CType, params: &[CType]) -> String {
-    let mut parts: Vec<String> = params.iter().map(|ty| ty.ir_type()).collect();
+///
+/// Fixed parameters are the lowered types (`i64`, `ptr`, …). `byval` and
+/// `sret` stay on the call arguments; they are not part of this type.
+fn variadic_sig(sig: &FnSig) -> String {
+    let mut parts = Vec::new();
+    if sig.sret_attrs.is_some() {
+        parts.push("ptr".to_string());
+    }
+    for group in &sig.params {
+        for part in group {
+            parts.push(part.ir_type.clone());
+        }
+    }
     parts.push("...".to_string());
-    format!("{} ({})", ret.ir_type(), parts.join(", "))
+    format!("{} ({})", sig.ret_type, parts.join(", "))
+}
+
+/// Alignment of an address `offset` bytes into an object of alignment `base`.
+fn piece_align(base_align: u32, offset: u64) -> u32 {
+    if offset == 0 {
+        return base_align.clamp(1, 8);
+    }
+    let mut align = 1u32;
+    let base = base_align.max(1);
+    while align < 8 {
+        let next = align * 2;
+        if next > base || offset % u64::from(next) != 0 {
+            break;
+        }
+        align = next;
+    }
+    align
 }
 
 /// Default argument promotions. Narrow integers become `int`. Pointers are
@@ -2581,5 +2924,208 @@ int main(void) {
         assert!(ir.contains("i64 18446744073709551615, label"), "{ir}");
         assert!(ir.contains("i32 4294967295, label"), "{ir}");
         assert_eq!(run_binary(&ir), run_reference(source));
+    }
+
+    #[test]
+    fn struct_abi_links_with_clang() {
+        let defs = r#"
+struct s1 { unsigned char a; };
+struct s3 { unsigned char a, b, c; };
+struct s8 { long a; };
+struct s12 { int a, b, c; };
+struct s16 { long a; char b; };
+struct big { long a, b, c; };
+struct nest { char c; int i; };
+struct outer { struct nest n; char z; };
+struct ptrs { char c; int *p; };
+union u9 { long a; unsigned char b[9]; };
+struct s1 id1(struct s1 s) { return s; }
+struct s3 id3(struct s3 s) { return s; }
+struct s8 id8(struct s8 s) { return s; }
+struct s12 id12(struct s12 s) { return s; }
+struct s16 id16(struct s16 s) { return s; }
+struct big idbig(struct big s) { s.b += 1; return s; }
+struct outer idouter(struct outer s) { return s; }
+int via_ptr(struct ptrs s) { return s.c + *s.p; }
+int via_union(union u9 u) { return u.b[8]; }
+int apply(int (*f)(int), int x) { return f(x + 1); }
+int mix(int a, struct s12 s, int b, struct big g, int c) {
+    return a + s.a + s.c + b + (int)g.a + c;
+}
+"#;
+        let caller = r#"
+struct s1 { unsigned char a; };
+struct s3 { unsigned char a, b, c; };
+struct s8 { long a; };
+struct s12 { int a, b, c; };
+struct s16 { long a; char b; };
+struct big { long a, b, c; };
+struct nest { char c; int i; };
+struct outer { struct nest n; char z; };
+struct ptrs { char c; int *p; };
+union u9 { long a; unsigned char b[9]; };
+struct s1 id1(struct s1 s);
+struct s3 id3(struct s3 s);
+struct s8 id8(struct s8 s);
+struct s12 id12(struct s12 s);
+struct s16 id16(struct s16 s);
+struct big idbig(struct big s);
+struct outer idouter(struct outer s);
+int via_ptr(struct ptrs s);
+int via_union(union u9 u);
+int apply(int (*f)(int), int x);
+int mix(int a, struct s12 s, int b, struct big g, int c);
+int inc(int x) { return x + 1; }
+int main(void) {
+    struct s1 a = {9};
+    if (id1(a).a != 9) return 1;
+    struct s3 b = {1, 2, 3};
+    if (id3(b).a != 1 || id3(b).c != 3) return 2;
+    struct s8 c = {99};
+    if (id8(c).a != 99) return 3;
+    struct s12 d = {4, 5, 6};
+    if (id12(d).a != 4 || id12(d).b != 5 || id12(d).c != 6) return 4;
+    struct s16 e = {7, 8};
+    if (id16(e).a != 7 || id16(e).b != 8) return 5;
+    struct big f = {10, 20, 30};
+    struct big g = idbig(f);
+    if (f.b != 20 || g.a != 10 || g.b != 21 || g.c != 30) return 6;
+    struct outer h = {{1, 2}, 3};
+    struct outer i = idouter(h);
+    if (i.n.c != 1 || i.n.i != 2 || i.z != 3) return 7;
+    int n = 40;
+    struct ptrs p = {2, &n};
+    if (via_ptr(p) != 42) return 8;
+    union u9 u;
+    u.a = 0;
+    u.b[8] = 5;
+    if (via_union(u) != 5) return 9;
+    if (apply(inc, 40) != 42) return 10;
+    if (mix(1, d, 2, f, 3) != 1 + 4 + 6 + 2 + 10 + 3) return 11;
+    return 0;
+}
+"#;
+        let defs_ir = crate::compile_to_ir(defs, "defs.c").unwrap();
+        assert!(defs_ir.contains("define i8 @id1(i8 %p0)"), "{defs_ir}");
+        assert!(defs_ir.contains("define i24 @id3(i24 %p0)"), "{defs_ir}");
+        assert!(
+            defs_ir.contains("define { i64, i32 } @id12(i64 %p0, i32 %p0.1)"),
+            "{defs_ir}"
+        );
+        assert!(
+            defs_ir.contains("define { i64, i8 } @id16(i64 %p0, i8 %p0.1)"),
+            "{defs_ir}"
+        );
+        assert!(
+            defs_ir.contains("ptr sret(%struct.big) align 8 %agg.result"),
+            "{defs_ir}"
+        );
+        assert!(
+            defs_ir.contains("ptr byval(%struct.big) align 8 %p0"),
+            "{defs_ir}"
+        );
+        link_both_ways(defs, caller, &defs_ir);
+    }
+
+    fn link_both_ways(defs: &str, caller: &str, defs_ir: &str) {
+        let (ll, bin) = temp_paths();
+        let obj = ll.with_extension("o");
+        let cfile = ll.with_extension("clang.c");
+        // Our caller, clang definitions.
+        let caller_ir = crate::compile_to_ir(caller, "caller.c").unwrap();
+        std::fs::write(&ll, &caller_ir).unwrap();
+        std::fs::write(&cfile, defs).unwrap();
+        let clang_obj = Command::new("clang")
+            .args([
+                "-w",
+                "-std=c11",
+                "-c",
+                cfile.to_str().unwrap(),
+                "-o",
+                obj.to_str().unwrap(),
+            ])
+            .output()
+            .expect("clang");
+        assert!(
+            clang_obj.status.success(),
+            "{}",
+            String::from_utf8_lossy(&clang_obj.stderr)
+        );
+        let linked = Command::new("clang")
+            .args([
+                "-w",
+                ll.to_str().unwrap(),
+                obj.to_str().unwrap(),
+                "-o",
+                bin.to_str().unwrap(),
+            ])
+            .output()
+            .expect("clang link");
+        assert!(
+            linked.status.success(),
+            "link our caller:\n{}",
+            String::from_utf8_lossy(&linked.stderr)
+        );
+        let ran = Command::new(&bin).output().expect("run");
+        assert_eq!(
+            ran.status.code(),
+            Some(0),
+            "our caller: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+
+        // Our definitions, clang caller.
+        let our_ll = ll.with_extension("our.ll");
+        let clang_main = ll.with_extension("main.c");
+        let clang_obj_path = ll.with_extension("main.o");
+        std::fs::write(&our_ll, defs_ir).unwrap();
+        std::fs::write(&clang_main, caller).unwrap();
+        let compiled = Command::new("clang")
+            .args([
+                "-w",
+                "-std=c11",
+                "-c",
+                clang_main.to_str().unwrap(),
+                "-o",
+                clang_obj_path.to_str().unwrap(),
+            ])
+            .output()
+            .expect("clang");
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let bin2 = ll.with_extension("bin2");
+        let linked = Command::new("clang")
+            .args([
+                "-w",
+                our_ll.to_str().unwrap(),
+                clang_obj_path.to_str().unwrap(),
+                "-o",
+                bin2.to_str().unwrap(),
+            ])
+            .output()
+            .expect("clang link");
+        assert!(
+            linked.status.success(),
+            "link our defs:\n{}\n{defs_ir}",
+            String::from_utf8_lossy(&linked.stderr)
+        );
+        let ran = Command::new(&bin2).output().expect("run");
+        assert_eq!(
+            ran.status.code(),
+            Some(0),
+            "our defs exit {}",
+            ran.status.code().unwrap_or(-1)
+        );
+        let _ = std::fs::remove_file(&ll);
+        let _ = std::fs::remove_file(&obj);
+        let _ = std::fs::remove_file(&cfile);
+        let _ = std::fs::remove_file(&bin);
+        let _ = std::fs::remove_file(&our_ll);
+        let _ = std::fs::remove_file(&clang_main);
+        let _ = std::fs::remove_file(&clang_obj_path);
+        let _ = std::fs::remove_file(&bin2);
     }
 }

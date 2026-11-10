@@ -1604,17 +1604,11 @@ impl Parser<'_> {
         self.reject_bad_restrict(&ty, line, column)?;
         match ty {
             CType::Void => Err(self.error_at(line, column, "parameter has incomplete type 'void'")),
-            ref other if other.unqualified().is_record() => {
-                let word = other
-                    .struct_ref()
-                    .map(|handle| handle.kind().word())
-                    .unwrap_or("struct");
-                Err(self.error_at(
-                    line,
-                    column,
-                    format!("passing a {word} by value is not supported"),
-                ))
-            }
+            // A prototype may name an incomplete struct or union (C11 6.7.6.3).
+            // The type has to be complete at a definition and at a call.
+            // Other incomplete types, such as `void` or an incomplete array
+            // that was not adjusted to a pointer, are still rejected.
+            ref other if other.unqualified().is_record() => Ok(ty),
             ref other if !other.is_complete() => Err(self.error_at(
                 line,
                 column,

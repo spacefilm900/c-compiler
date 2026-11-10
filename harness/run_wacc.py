@@ -11,8 +11,8 @@ translation unit here and the other files with clang. An invalid program
 must be rejected with a non-zero exit and must not crash or panic.
 
 Chapters 13, 19, and 20 are skipped, as are valid tests for extra-credit
-features this compiler has not started (goto, nan) and the
-struct-by-value directories. Union tests and switch tests are run. A
+features this compiler has not started (goto, nan). Structs passed or
+returned by value are run. Union tests and switch tests are run. A
 test tagged with both goto and switch stays skipped.
 harness/wacc_known_failures.txt lists the remaining failures. A test that is
 not listed must pass. A listed test that passes is reported, not failed.
@@ -49,11 +49,6 @@ CHAPTER_SKIP = {
     19: "chapter skipped: part III optimizations inspect the book's assembly",
     20: "chapter skipped: part III register allocation inspects the book's assembly",
 }
-# Valid programs that pass or return a struct. That is still rejected here.
-STRUCT_BY_VALUE = (
-    "chapter_18/valid/parameters/",
-    "chapter_18/valid/params_and_returns/",
-)
 # Extra-credit features with no frontend support. Bitwise, compound
 # assignment, and increment are implemented, so those tests are run.
 # Unions and switch are implemented. `goto` and `nan` are not.
@@ -98,8 +93,6 @@ def skip_reason(rel: str, tags: set[str]) -> str | None:
     missing = sorted(UNSUPPORTED_EXTRA.intersection(tags))
     if missing:
         return "extra-credit not started: " + ", ".join(missing)
-    if rel.startswith(STRUCT_BY_VALUE):
-        return "skipped: passing or returning a struct by value is not implemented"
     return None
 
 

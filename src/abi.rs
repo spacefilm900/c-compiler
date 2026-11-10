@@ -1,0 +1,632 @@
+//! System V AMD64 classification for aggregates passed or returned by value.
+//!
+//! The rules are the ones in the psABI (section 3.2.3). Each aggregate is
+//! split into eightbyte chunks. Integer and pointer chunks travel in general
+//! registers; a chunk that needs an SSE or x87 register is rejected until
+//! floating-point code generation exists, but the class merge already treats
+//! INTEGER as winning over SSE in the same eightbyte, which is what the psABI
+//! specifies. An aggregate larger than two eightbytes, or one with an
+//! unaligned field, is passed in memory.
+//!
+//! LLVM IR for this ABI does not pass the struct type itself. A register
+//! aggregate is coerced to integer pieces (or `ptr` when an eightbyte is
+//! exactly one pointer). A memory aggregate is a `byval` parameter or an
+//! `sret` return slot.
+
+use crate::ast::{align_up, CType, FloatKind};
+
+/// Why an aggregate cannot be lowered yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiFail {
+    /// The struct or union has not been completed, so it has no size.
+    Incomplete,
+    /// An eightbyte would occupy an SSE or x87 register.
+    FloatReg,
+}
+
+/// One register-sized piece of an aggregate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegPiece {
+    /// Little-endian integer of `bits` bits (8, 16, 24, 32, 40, 48, 56, or 64)
+    /// covering `offset` bytes into the object.
+    Int { bits: u32, offset: u64 },
+    /// A pointer that occupies the whole eightbyte at `offset`.
+    Ptr { offset: u64 },
+}
+
+impl RegPiece {
+    pub fn offset(&self) -> u64 {
+        match self {
+            RegPiece::Int { offset, .. } | RegPiece::Ptr { offset } => *offset,
+        }
+    }
+
+    pub fn ir_type(&self) -> String {
+        match self {
+            RegPiece::Ptr { .. } => "ptr".to_string(),
+            RegPiece::Int { bits, .. } => format!("i{bits}"),
+        }
+    }
+}
+
+/// How an aggregate is passed or returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AggAbi {
+    /// One or two register pieces, in eightbyte order.
+    Direct(Vec<RegPiece>),
+    /// The caller allocates memory. Parameters use `byval`; returns use `sret`.
+    Memory,
+}
+
+impl AggAbi {
+    /// LLVM type of a register return: one piece, or an anonymous struct of them.
+    pub fn direct_type(&self) -> Option<String> {
+        let AggAbi::Direct(pieces) = self else {
+            return None;
+        };
+        Some(pieces_type(pieces))
+    }
+}
+
+pub fn pieces_type(pieces: &[RegPiece]) -> String {
+    if pieces.len() == 1 {
+        pieces[0].ir_type()
+    } else {
+        let body = pieces
+            .iter()
+            .map(RegPiece::ir_type)
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{{ {body} }}")
+    }
+}
+
+/// One LLVM parameter that corresponds to part of a C parameter, or to `sret`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Part {
+    pub ir_type: String,
+    pub attrs: String,
+    pub kind: PartKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PartKind {
+    Scalar,
+    Piece(RegPiece),
+    Byval,
+}
+
+/// Lowered signature of a C function. `params[i]` is the LLVM expansion of
+/// C parameter `i`. `sret_attrs` is set when the return value is in memory;
+/// that pointer is a hidden first argument and the LLVM return type is `void`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FnSig {
+    pub ret_type: String,
+    pub ret_prefix: String,
+    pub ret_agg: Option<AggAbi>,
+    pub sret_attrs: Option<String>,
+    pub params: Vec<Vec<Part>>,
+}
+
+pub fn function_sig(ret: &CType, params: &[CType]) -> Result<FnSig, AbiFail> {
+    let (ret_type, ret_prefix, ret_agg, sret_attrs) = lower_return(ret)?;
+    let mut lowered = Vec::with_capacity(params.len());
+    for param in params {
+        lowered.push(lower_param(param)?);
+    }
+    Ok(FnSig {
+        ret_type,
+        ret_prefix,
+        ret_agg,
+        sret_attrs,
+        params: lowered,
+    })
+}
+
+fn lower_return(ty: &CType) -> Result<(String, String, Option<AggAbi>, Option<String>), AbiFail> {
+    if ty.is_void() {
+        return Ok(("void".to_string(), String::new(), None, None));
+    }
+    if ty.unqualified().is_record() {
+        let agg = classify_aggregate(ty)?;
+        return match &agg {
+            AggAbi::Memory => Ok((
+                "void".to_string(),
+                String::new(),
+                Some(agg),
+                Some(format!("sret({}) align {}", ty.ir_type(), ty.align())),
+            )),
+            AggAbi::Direct(pieces) => Ok((pieces_type(pieces), String::new(), Some(agg), None)),
+        };
+    }
+    let prefix = match ty.abi_attr() {
+        Some(attr) => format!("{attr} "),
+        None => String::new(),
+    };
+    Ok((ty.ir_type(), prefix, None, None))
+}
+
+fn lower_param(ty: &CType) -> Result<Vec<Part>, AbiFail> {
+    if ty.unqualified().is_record() {
+        let agg = classify_aggregate(ty)?;
+        return Ok(match agg {
+            AggAbi::Memory => {
+                let align = ty.align().max(8);
+                vec![Part {
+                    ir_type: "ptr".to_string(),
+                    attrs: format!("byval({}) align {align}", ty.ir_type()),
+                    kind: PartKind::Byval,
+                }]
+            }
+            AggAbi::Direct(pieces) => pieces
+                .into_iter()
+                .map(|piece| Part {
+                    ir_type: piece.ir_type(),
+                    attrs: String::new(),
+                    kind: PartKind::Piece(piece),
+                })
+                .collect(),
+        });
+    }
+    Ok(vec![Part {
+        ir_type: ty.ir_type(),
+        attrs: ty.abi_attr().unwrap_or("").to_string(),
+        kind: PartKind::Scalar,
+    }])
+}
+
+/// Classify a complete struct or union. Incomplete types and register
+/// aggregates that need SSE or x87 fail; memory aggregates succeed even when
+/// they contain a floating-point member, because those are a byte copy.
+pub fn classify_aggregate(ty: &CType) -> Result<AggAbi, AbiFail> {
+    let bare = ty.unqualified();
+    if !bare.is_record() {
+        return Ok(AggAbi::Memory);
+    }
+    if !bare.is_complete() {
+        return Err(AbiFail::Incomplete);
+    }
+    let size = bare.size().expect("complete aggregate");
+    if size == 0 {
+        return Ok(AggAbi::Memory);
+    }
+    let mut leaves = Vec::new();
+    collect_leaves(&bare, 0, &mut leaves);
+    let unaligned = leaves
+        .iter()
+        .any(|leaf| leaf.offset % u64::from(leaf.align.max(1)) != 0);
+    // More than two eightbytes is memory for every type this compiler can
+    // form. A pure SSE/SSEUP vector could stay in registers past 16 bytes;
+    // nothing in this subset has that shape, and a later float step can
+    // special-case it here without changing the integer path.
+    if unaligned || size > 16 {
+        return Ok(AggAbi::Memory);
+    }
+    let eightbytes = ((size + 7) / 8) as usize;
+    let mut classes = vec![Class::Vacant; eightbytes];
+    for leaf in &leaves {
+        apply_leaf(leaf, &mut classes);
+    }
+    if classes.iter().any(|class| *class == Class::Memory) {
+        return Ok(AggAbi::Memory);
+    }
+    if classes
+        .iter()
+        .any(|class| !matches!(class, Class::Vacant | Class::Integer))
+    {
+        return Err(AbiFail::FloatReg);
+    }
+    let mut pieces = Vec::new();
+    for (index, class) in classes.iter().enumerate() {
+        if *class != Class::Integer {
+            continue;
+        }
+        if let Some(piece) = piece_at(index, &leaves, size) {
+            pieces.push(piece);
+        }
+    }
+    if pieces.is_empty() {
+        return Ok(AggAbi::Memory);
+    }
+    Ok(AggAbi::Direct(pieces))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Class {
+    Vacant,
+    Integer,
+    Sse,
+    X87,
+    X87Up,
+    Memory,
+}
+
+struct Leaf {
+    offset: u64,
+    size: u64,
+    align: u32,
+    class: Class,
+    is_ptr: bool,
+}
+
+fn collect_leaves(ty: &CType, base: u64, out: &mut Vec<Leaf>) {
+    match ty.peel() {
+        CType::Int(name) => out.push(Leaf {
+            offset: base,
+            size: name.size().max(1),
+            align: name.align().max(1),
+            class: Class::Integer,
+            is_ptr: false,
+        }),
+        CType::Pointer(_) => out.push(Leaf {
+            offset: base,
+            size: 8,
+            align: 8,
+            class: Class::Integer,
+            is_ptr: true,
+        }),
+        CType::Float(FloatKind::Float) => out.push(Leaf {
+            offset: base,
+            size: 4,
+            align: 4,
+            class: Class::Sse,
+            is_ptr: false,
+        }),
+        CType::Float(FloatKind::Double) => out.push(Leaf {
+            offset: base,
+            size: 8,
+            align: 8,
+            class: Class::Sse,
+            is_ptr: false,
+        }),
+        CType::Float(FloatKind::LongDouble) => {
+            out.push(Leaf {
+                offset: base,
+                size: 8,
+                align: 16,
+                class: Class::X87,
+                is_ptr: false,
+            });
+            out.push(Leaf {
+                offset: base + 8,
+                size: 8,
+                align: 16,
+                class: Class::X87Up,
+                is_ptr: false,
+            });
+        }
+        CType::Array(elem, Some(len)) => {
+            let Some(elem_size) = elem.size() else {
+                return;
+            };
+            for index in 0..*len {
+                collect_leaves(elem, base + index * elem_size, out);
+            }
+        }
+        CType::Struct(handle) => {
+            for field in handle.fields().unwrap_or_default() {
+                collect_leaves(&field.ty, base + field.offset, out);
+            }
+        }
+        CType::Void | CType::Func(_) | CType::Array(_, None) | CType::Qualified(_, _) => {}
+    }
+}
+
+fn apply_leaf(leaf: &Leaf, classes: &mut [Class]) {
+    if leaf.size == 0 {
+        return;
+    }
+    let first = (leaf.offset / 8) as usize;
+    let last = ((leaf.offset + leaf.size - 1) / 8) as usize;
+    if first != last {
+        for class in classes.iter_mut().take(last + 1).skip(first) {
+            *class = Class::Memory;
+        }
+        return;
+    }
+    if let Some(slot) = classes.get_mut(first) {
+        *slot = merge(*slot, leaf.class);
+    }
+}
+
+fn merge(left: Class, right: Class) -> Class {
+    if left == right || right == Class::Vacant {
+        return left;
+    }
+    if left == Class::Vacant {
+        return right;
+    }
+    if left == Class::Memory || right == Class::Memory {
+        return Class::Memory;
+    }
+    if left == Class::Integer || right == Class::Integer {
+        return Class::Integer;
+    }
+    if matches!(left, Class::X87 | Class::X87Up) || matches!(right, Class::X87 | Class::X87Up) {
+        return Class::Memory;
+    }
+    Class::Sse
+}
+
+/// Width of the integer that covers one eightbyte.
+///
+/// The width runs from the start of the eightbyte through the last byte of
+/// any field that overlaps it, then rounds up to the strictest alignment of
+/// those fields (and never past 8). That reproduces the coerced widths used
+/// for this ABI: a `struct { int a; char b; }` is an `i64`, while
+/// `struct { long a; char b; }` is `i64` plus `i8`, and a 3-byte array is `i24`.
+fn piece_at(index: usize, leaves: &[Leaf], size: u64) -> Option<RegPiece> {
+    let start = index as u64 * 8;
+    let limit = (start + 8).min(size);
+    let mut overlapping = Vec::new();
+    for leaf in leaves {
+        let leaf_end = leaf.offset + leaf.size;
+        if leaf.offset < limit && leaf_end > start {
+            overlapping.push(leaf);
+        }
+    }
+    if overlapping.is_empty() {
+        return None;
+    }
+    if overlapping.len() == 1
+        && overlapping[0].is_ptr
+        && overlapping[0].offset == start
+        && overlapping[0].size == 8
+    {
+        return Some(RegPiece::Ptr { offset: start });
+    }
+    let mut last = start;
+    let mut max_align = 1u32;
+    for leaf in &overlapping {
+        let covered = (leaf.offset + leaf.size).min(limit);
+        if covered > last {
+            last = covered;
+        }
+        max_align = max_align.max(leaf.align);
+    }
+    let raw = last - start;
+    if raw == 0 {
+        return None;
+    }
+    let rounded = align_up(raw, u64::from(max_align.max(1)))
+        .unwrap_or(raw)
+        .min(8)
+        .min(size - start);
+    if rounded == 0 {
+        return None;
+    }
+    Some(RegPiece::Int {
+        bits: (rounded as u32) * 8,
+        offset: start,
+    })
+}
+
+/// `name` is omitted on a declaration.
+pub fn format_part(ir_type: &str, attrs: &str, name: Option<&str>) -> String {
+    match (attrs.is_empty(), name) {
+        (true, None) => ir_type.to_string(),
+        (true, Some(name)) => format!("{ir_type} {name}"),
+        (false, None) => format!("{ir_type} {attrs}"),
+        (false, Some(name)) => format!("{ir_type} {attrs} {name}"),
+    }
+}
+
+/// LLVM names for the expansion of C parameter `index`.
+pub fn arg_names(index: usize, count: usize) -> Vec<String> {
+    (0..count)
+        .map(|piece| {
+            if piece == 0 {
+                format!("%p{index}")
+            } else {
+                format!("%p{index}.{piece}")
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{RecordKind, StructField, StructRef, TypeName};
+
+    fn field(name: &str, ty: CType, offset: u64) -> StructField {
+        StructField {
+            name: name.to_string(),
+            ty,
+            offset,
+        }
+    }
+
+    fn record(id: u32, fields: Vec<StructField>, size: u64, align: u32, union_ty: bool) -> CType {
+        let kind = if union_ty {
+            RecordKind::Union
+        } else {
+            RecordKind::Struct
+        };
+        let handle = StructRef::new_incomplete(id, "S", kind);
+        handle.complete(fields, size, align, format!("struct.S{id}"));
+        CType::Struct(handle)
+    }
+
+    fn ints(name: TypeName) -> CType {
+        CType::Int(name)
+    }
+
+    fn bytes(n: u64) -> CType {
+        let arr = CType::array(ints(TypeName::UChar), Some(n));
+        record(n as u32, vec![field("a", arr, 0)], n, 1, false)
+    }
+
+    fn direct(ty: &CType) -> Vec<String> {
+        match classify_aggregate(ty).unwrap() {
+            AggAbi::Direct(pieces) => pieces.into_iter().map(|piece| piece.ir_type()).collect(),
+            AggAbi::Memory => panic!("expected registers"),
+        }
+    }
+
+    #[test]
+    fn char_arrays_match_eightbyte_widths() {
+        for n in 1..=8 {
+            let ty = bytes(n);
+            assert_eq!(direct(&ty), vec![format!("i{}", n * 8)], "size {n}");
+        }
+        for n in 9..=16 {
+            let ty = bytes(n);
+            assert_eq!(
+                direct(&ty),
+                vec!["i64".to_string(), format!("i{}", (n - 8) * 8)],
+                "size {n}"
+            );
+        }
+        assert!(matches!(
+            classify_aggregate(&bytes(17)).unwrap(),
+            AggAbi::Memory
+        ));
+        assert!(matches!(
+            classify_aggregate(&bytes(24)).unwrap(),
+            AggAbi::Memory
+        ));
+    }
+
+    #[test]
+    fn mixed_layouts_match_the_abi() {
+        // struct { int a; char b; } is 8 bytes, one i64.
+        let padded = record(
+            100,
+            vec![
+                field("a", ints(TypeName::Int), 0),
+                field("b", ints(TypeName::Char), 4),
+            ],
+            8,
+            4,
+            false,
+        );
+        assert_eq!(direct(&padded), vec!["i64".to_string()]);
+
+        // struct { long a; char b; } is i64, i8.
+        let long_char = record(
+            101,
+            vec![
+                field("a", ints(TypeName::Long), 0),
+                field("b", ints(TypeName::Char), 8),
+            ],
+            16,
+            8,
+            false,
+        );
+        assert_eq!(
+            direct(&long_char),
+            vec!["i64".to_string(), "i8".to_string()]
+        );
+
+        // struct { int a; long b; } is i32, i64.
+        let int_long = record(
+            102,
+            vec![
+                field("a", ints(TypeName::Int), 0),
+                field("b", ints(TypeName::Long), 8),
+            ],
+            16,
+            8,
+            false,
+        );
+        assert_eq!(
+            direct(&int_long),
+            vec!["i32".to_string(), "i64".to_string()]
+        );
+
+        // struct { short a; char b; } is 4 bytes, i32.
+        let short_char = record(
+            103,
+            vec![
+                field("a", ints(TypeName::Short), 0),
+                field("b", ints(TypeName::Char), 2),
+            ],
+            4,
+            2,
+            false,
+        );
+        assert_eq!(direct(&short_char), vec!["i32".to_string()]);
+
+        // struct { char c; int *p; } is i8, ptr.
+        let ptrs = record(
+            104,
+            vec![
+                field("c", ints(TypeName::Char), 0),
+                field("p", CType::pointer(ints(TypeName::Int)), 8),
+            ],
+            16,
+            8,
+            false,
+        );
+        assert_eq!(direct(&ptrs), vec!["i8".to_string(), "ptr".to_string()]);
+
+        // union { long a; char c[9]; } is 16 bytes, i64 plus i8.
+        let uni = record(
+            105,
+            vec![
+                field("a", ints(TypeName::Long), 0),
+                field("c", CType::array(ints(TypeName::Char), Some(9)), 0),
+            ],
+            16,
+            8,
+            true,
+        );
+        assert_eq!(direct(&uni), vec!["i64".to_string(), "i8".to_string()]);
+
+        let three_longs = record(
+            106,
+            vec![
+                field("a", ints(TypeName::Long), 0),
+                field("b", ints(TypeName::Long), 8),
+                field("c", ints(TypeName::Long), 16),
+            ],
+            24,
+            8,
+            false,
+        );
+        assert!(matches!(
+            classify_aggregate(&three_longs).unwrap(),
+            AggAbi::Memory
+        ));
+    }
+
+    #[test]
+    fn float_in_its_own_eightbyte_is_rejected_until_sse_exists() {
+        let only = record(
+            200,
+            vec![field("d", CType::Float(FloatKind::Double), 0)],
+            8,
+            8,
+            false,
+        );
+        assert_eq!(classify_aggregate(&only), Err(AbiFail::FloatReg));
+
+        // int and float share an eightbyte, so INTEGER wins and the bits
+        // travel in a general register.
+        let mixed = record(
+            201,
+            vec![
+                field("i", ints(TypeName::Int), 0),
+                field("f", CType::Float(FloatKind::Float), 4),
+            ],
+            8,
+            4,
+            false,
+        );
+        assert_eq!(direct(&mixed), vec!["i64".to_string()]);
+
+        // A large aggregate is a memory copy even if it contains a double.
+        let big = record(
+            202,
+            vec![
+                field("d", CType::Float(FloatKind::Double), 0),
+                field("a", CType::array(ints(TypeName::Char), Some(16)), 8),
+            ],
+            24,
+            8,
+            false,
+        );
+        assert!(matches!(classify_aggregate(&big).unwrap(), AggAbi::Memory));
+    }
+}

@@ -245,20 +245,14 @@ impl Sema {
     }
 
     fn declare_func(&mut self, func: &mut FuncDef) -> Result<(), Diagnostic> {
-        // A prototype may return a struct or union so the system headers can
-        // declare div, ldiv, and lldiv. A definition, and any call, still
-        // cannot: the System V class-ification for aggregates is not done.
-        if func.body.is_some() && func.ret_type.unqualified().is_record() {
-            let word = func
-                .ret_type
-                .struct_ref()
-                .map(|handle| handle.kind().word())
-                .unwrap_or("struct");
-            return self.err(
-                func.line,
-                func.column,
-                format!("returning a {word} by value is not supported"),
-            );
+        // A prototype may name an incomplete struct or union. A definition
+        // needs a complete type, and an aggregate that would travel in an
+        // SSE or x87 register is rejected until floating-point lowering exists.
+        if func.body.is_some() {
+            self.require_passed_aggregate(&func.ret_type, func.line, func.column, true)?;
+            for param in &func.params {
+                self.require_passed_aggregate(&param.ty, param.line, param.column, false)?;
+            }
         }
         let mut seen = HashSet::new();
         for param in &func.params {
@@ -1948,6 +1942,15 @@ impl Sema {
             return Ok(CType::int_type());
         }
         let equality = matches!(op, BinOp::Eq | BinOp::Ne);
+        let function_pointer = left_ty.pointee().is_some_and(|ty| ty.is_func())
+            || right_ty.pointee().is_some_and(|ty| ty.is_func());
+        if function_pointer && !equality {
+            return self.err(
+                line,
+                column,
+                "relational comparison of function pointers is not allowed",
+            );
+        }
         let pointers_ok = if equality {
             loose_pointers(&left_ty, &right_ty)
                 || void_ptr_mix(&left_ty, &right_ty)
@@ -2375,13 +2378,7 @@ impl Sema {
             Symbol::Func(func) => (func.symbol, func.ret, func.params, func.variadic),
             Symbol::Var(_) => unreachable!("direct call is a function"),
         };
-        if ret.unqualified().is_record() {
-            return self.err(
-                line,
-                column,
-                "returning a struct or union by value is not supported",
-            );
-        }
+        self.require_passed_aggregate(&ret, line, column, true)?;
         let arity = params.len();
         if variadic {
             if argc < arity {
@@ -2412,6 +2409,10 @@ impl Sema {
                 self.decay(arg)?;
                 if index < params.len() {
                     self.can_assign(&params[index], arg)?;
+                    self.require_passed_aggregate(&params[index], arg.line(), arg.column(), false)?;
+                } else if arg.ty().is_some_and(|ty| ty.unqualified().is_record()) {
+                    let ty = arg.ty().expect("typed");
+                    self.require_passed_aggregate(&ty, arg.line(), arg.column(), false)?;
                 } else {
                     // Default argument promotions apply in the IR. There is no
                     // parameter type to convert to; the argument must be a scalar.
@@ -2448,13 +2449,7 @@ impl Sema {
                 format!("called object of type '{}' is not a function", ty.display()),
             );
         };
-        if func.ret.unqualified().is_record() {
-            return self.err(
-                line,
-                column,
-                "returning a struct or union by value is not supported",
-            );
-        }
+        self.require_passed_aggregate(&func.ret, line, column, true)?;
         let argc = args.len();
         let arity = func.params.len();
         if func.variadic {
@@ -2487,6 +2482,10 @@ impl Sema {
                 self.decay(arg)?;
                 if index < params.len() {
                     self.can_assign(&params[index], arg)?;
+                    self.require_passed_aggregate(&params[index], arg.line(), arg.column(), false)?;
+                } else if arg.ty().is_some_and(|ty| ty.unqualified().is_record()) {
+                    let ty = arg.ty().expect("typed");
+                    self.require_passed_aggregate(&ty, arg.line(), arg.column(), false)?;
                 } else {
                     self.require_scalar(arg)?;
                 }
@@ -2685,6 +2684,56 @@ impl Sema {
                 Ok(())
             }
             _ => self.err(expr.line(), expr.column(), "expression is not assignable"),
+        }
+    }
+
+    /// A struct or union passed or returned by value must be complete. An
+    /// eightbyte that would use an SSE or x87 register is rejected until
+    /// floating-point lowering exists. Memory aggregates are allowed even
+    /// when they contain a floating member, because that is a byte copy.
+    fn require_passed_aggregate(
+        &self,
+        ty: &CType,
+        line: usize,
+        column: usize,
+        is_return: bool,
+    ) -> Result<(), Diagnostic> {
+        let bare = ty.unqualified();
+        if !bare.is_record() {
+            return Ok(());
+        }
+        match crate::abi::classify_aggregate(&bare) {
+            Ok(_) => Ok(()),
+            Err(crate::abi::AbiFail::Incomplete) => {
+                if is_return {
+                    self.err(
+                        line,
+                        column,
+                        format!("function returns incomplete type '{}'", bare.display()),
+                    )
+                } else {
+                    self.err(
+                        line,
+                        column,
+                        format!("parameter has incomplete type '{}'", bare.display()),
+                    )
+                }
+            }
+            Err(crate::abi::AbiFail::FloatReg) => {
+                if is_return {
+                    self.err(
+                        line,
+                        column,
+                        "returning an aggregate in an SSE register is not supported",
+                    )
+                } else {
+                    self.err(
+                        line,
+                        column,
+                        "passing an aggregate in an SSE register is not supported",
+                    )
+                }
+            }
         }
     }
 
@@ -4404,22 +4453,21 @@ struct Node n = {4, 0};
             other => panic!("expected aggregate, got {other:?}"),
         }
 
+        sema_ok("struct S { int x; }; void f(struct S s) { (void)s; }");
+        sema_ok("struct S { int x; }; int f(struct S);");
+        assert!(sema_err("struct S; void f(struct S s) { (void)s; }")
+            .contains("parameter has incomplete type 'struct S'"));
         assert!(
-            sema_err("struct S { int x; }; void f(struct S s) { (void)s; }")
-                .contains("passing a struct by value is not supported")
+            sema_err("struct S; struct S f(void) { struct S s; return s; }")
+                .contains("incomplete type")
         );
-        assert!(sema_err("struct S { int x; }; int f(struct S);")
-            .contains("passing a struct by value is not supported"));
         assert!(sema_err("struct S { struct S { int x; } in; int y; };")
             .contains("redefinition of struct 'S'"));
         assert!(sema_err(
             "struct S { int x; }; int main(void) { struct S s; struct S t; (s = t).x = 1; return 0; }"
         )
         .contains("expression is not assignable"));
-        assert!(
-            sema_err("struct S { int x; }; struct S f(void) { struct S s; return s; }")
-                .contains("returning a struct by value is not supported")
-        );
+        sema_ok("struct S { int x; }; struct S f(void) { struct S s; return s; }");
         assert!(sema_err("struct S; struct S s;").contains("incomplete type 'struct S'"));
         assert!(
             sema_err("struct S; struct S *p; int main(void) { *p; return 0; }")
@@ -4499,10 +4547,27 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
         assert!(
             sema_err("union U { int x; char c; }; union U u = {1, 2};").contains("excess elements")
         );
+        assert!(
+            sema_err("struct S; struct S f(void); int main(void) { return f().x; }")
+                .contains("incomplete type")
+        );
+        sema_ok("struct S { int x; }; struct S f(void); int main(void) { return f().x; }");
+        assert!(
+            sema_err("struct S { double d; }; void f(struct S s) { (void)s; }")
+                .contains("SSE register")
+        );
+        assert!(
+            sema_err("int f(int); int main(void) { int (*p)(char); p = f; return 0; }")
+                .contains("incompatible types")
+        );
         assert!(sema_err(
-            "struct S { int x; }; struct S f(void); int main(void) { return f().x; }"
+            "int f(int); int main(void) { int (*p)(int) = f; int (*q)(int) = f; return p < q; }"
         )
-        .contains("returning a struct or union by value"));
+        .contains("relational comparison of function pointers"));
+        sema_ok(
+            "int f(int); int main(void) { int (*p)(int) = f; int (*q)(int) = f; return p == q; }",
+        );
+        assert!(sema_err("int main(void) { int x; return x(1); }").contains("not a function"));
         assert!(sema_err("enum E { A = 1, A = 2 };").contains("redefinition of 'A'"));
         assert!(
             sema_err("static int f(void); int main(void) { int (*p)(void) = f; return 0; }")
