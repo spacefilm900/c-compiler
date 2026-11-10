@@ -81,7 +81,7 @@ No test in the run panicked, and no executed program disagreed with `expected_re
 | `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **103/103 passed** |
 | `scripts/fetch_wacc_tests.sh` then `python3 harness/run_wacc.py` | same Clang and Python | **1176 passed, 78 known failures, 363 skipped, 0 unexpected** |
 
-`tests/99_switch.c` covers fallthrough, nested switches, `break` and `continue`, Duff's device, a case inside `if`, a jump over an automatic initializer, enum and character constants, casts, `sizeof`, and every integer width from `char` through `unsigned long long`, plus `_Bool`. GitHub Actions for this change is not in this file yet.
+`tests/99_switch.c` covers fallthrough, nested switches, `break` and `continue`, Duff's device, a case inside `if`, a jump over an automatic initializer, enum and character constants, casts, `sizeof`, and every integer width from `char` through `unsigned long long`, plus `_Bool`. GitHub Actions for commit `98b1b93` is in the switch record below.
 
 ## Stage 2, step 1 — built-in preprocessor
 
@@ -279,7 +279,7 @@ A struct may be a local, a file-scope object (`extern` or `static` included), or
 - A second job, `writing-a-c-compiler suite`, fetches the pinned suite and runs `python3 harness/run_wacc.py`. It has a 30-minute timeout and inherits the workflow token, which is `contents: read`. Saving the suite cache does not need `actions: write`. For `push` and `pull_request`, the runner's cache mode is `write`. The cache key is the pinned commit.
 - Pinned actions: `actions/checkout@11d5960a326750d5838078e36cf38b85af677262` (v4.4.0), `dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8` (v1) with toolchain `1.85.1`, and on the suite job `actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809` (v4.2.4).
 - `.coderabbit.yaml` follows CodeRabbit schema `https://coderabbit.ai/integrations/schema.v2.json`. The review profile is `CHILL`. The file does not install the GitHub App.
-- Milestone 1's Actions runs and the CodeRabbit review on pull request 1 are in the record below. Step 2's Actions runs and the CodeRabbit review are in the step 2 record below. Step 3's Actions runs and the CodeRabbit review are in the step 3 record below. Step 4's Actions runs and the CodeRabbit review are in the step 4 record below. Step 5's Actions runs were not copied into that step's record. This step's Actions runs are not in this file yet.
+- Milestone 1's Actions runs and the CodeRabbit review on pull request 1 are in the record below. Step 2's Actions runs and the CodeRabbit review are in the step 2 record below. Step 3's Actions runs and the CodeRabbit review are in the step 3 record below. Step 4's Actions runs and the CodeRabbit review are in the step 4 record below. Step 5's Actions runs were not copied into that step's record. This change's Actions runs and the CodeRabbit review are in the switch record below.
 
 ## Next actions
 
@@ -287,7 +287,22 @@ Floating expressions and passing or returning a struct or union by value are the
 
 ## Switch record
 
-Local results are in the table above: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **68 passed**, `make` produced `build/compiler`, `python3 harness/run_tests.py` **103/103 passed**, and `python3 harness/run_wacc.py` **1176 passed, 78 known failures, 363 skipped, 0 unexpected**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. `main` before this change was **1220 executed, 1143 passed, 77 known failures, 397 skipped**. GitHub Actions for this change is not in this file yet.
+Local results are in the table above: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **68 passed**, `make` produced `build/compiler`, `python3 harness/run_tests.py` **103/103 passed**, and `python3 harness/run_wacc.py` **1176 passed, 78 known failures, 363 skipped, 0 unexpected**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. `main` before this change was **1220 executed, 1143 passed, 77 known failures, 397 skipped**.
+
+### GitHub Actions
+
+Observed on commit `98b1b931256ef5fe4d1104b32b00f6523681fb85`. Both runs completed with conclusion **success**. Each log contains `test result: ok. 68 passed; 0 failed`, `103/103 passed`, and `1176 passed, 78 known failures, 0 now passing, 363 skipped`.
+
+| Event | Run | Jobs | Conclusion |
+| --- | --- | --- | --- |
+| `push` | https://github.com/spacefilm900/c-compiler/actions/runs/42766873794 | [fmt, clippy, tests, harness](https://github.com/spacefilm900/c-compiler/actions/runs/42766873794/job/129665318455), [writing-a-c-compiler suite](https://github.com/spacefilm900/c-compiler/actions/runs/42766873794/job/129665318338) | success (2026-11-10 06:11:46Z–06:12:54Z) |
+| `pull_request` | https://github.com/spacefilm900/c-compiler/actions/runs/42766891103 | [fmt, clippy, tests, harness](https://github.com/spacefilm900/c-compiler/actions/runs/42766891103/job/129665369570), [writing-a-c-compiler suite](https://github.com/spacefilm900/c-compiler/actions/runs/42766891103/job/129665369177) | success (2026-11-10 06:11:55Z–06:13:09Z) |
+
+### CodeRabbit
+
+CodeRabbit reviewed pull request 12 on `98b1b93`. Review `5837600509`, submitted 2026-11-10, state `COMMENTED`. No inline comments. Details URL: https://app.coderabbit.ai/change-stack/spacefilm900/c-compiler/pull/12.
+
+The review summary repeated the docstring-coverage pre-merge note (17.07% against an 80% threshold). No function docstrings were added. The sources document modules and the language rules, not every function. The same note on pull requests 3, 4, and 5 was left that way. The CodeRabbit check run on `98b1b93` (https://github.com/spacefilm900/c-compiler/runs/129665449014) was still `in_progress` with no conclusion when this record was written.
 
 A `case` label is a statement, so it can appear inside the statement that is the switch body, including inside `if` and loops. Semantic analysis keeps a stack of switches. The innermost switch owns the label. The case expression is folded with the same integer-constant rules as a file-scope initializer, then converted to the promoted type of the controlling expression. Duplicate detection uses that converted value. Code generation assigns one LLVM block to each label, emits `switch` to those blocks, and branches from the preceding block when control falls through. `break` and `continue` use separate stacks, so a `break` inside a loop that is inside a switch leaves the loop.
 
