@@ -99,6 +99,8 @@ pub enum PartKind {
 /// Lowered signature of a C function. `params[i]` is the LLVM expansion of
 /// C parameter `i`. `sret_attrs` is set when the return value is in memory;
 /// that pointer is a hidden first argument and the LLVM return type is `void`.
+/// `free_int` is how many of the six general registers remain after the fixed
+/// parameters, so a variadic argument can continue the same budget.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnSig {
     pub ret_type: String,
@@ -106,13 +108,27 @@ pub struct FnSig {
     pub ret_agg: Option<AggAbi>,
     pub sret_attrs: Option<String>,
     pub params: Vec<Vec<Part>>,
+    pub free_int: usize,
+}
+
+/// Whether the aggregate is a parameter or a return value.
+///
+/// The psABI passes an `X87` / `X87UP` argument in memory, and returns it on
+/// the x87 stack. This compiler can copy the memory argument. It cannot yet
+/// return that value in `%st0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggUse {
+    Param,
+    Return,
 }
 
 pub fn function_sig(ret: &CType, params: &[CType]) -> Result<FnSig, AbiFail> {
     let (ret_type, ret_prefix, ret_agg, sret_attrs) = lower_return(ret)?;
+    // Six general registers. The hidden sret pointer takes the first.
+    let mut free_int = if sret_attrs.is_some() { 5 } else { 6 };
     let mut lowered = Vec::with_capacity(params.len());
     for param in params {
-        lowered.push(lower_param(param)?);
+        lowered.push(assign_regs(lower_param(param)?, param, &mut free_int));
     }
     Ok(FnSig {
         ret_type,
@@ -120,7 +136,45 @@ pub fn function_sig(ret: &CType, params: &[CType]) -> Result<FnSig, AbiFail> {
         ret_agg,
         sret_attrs,
         params: lowered,
+        free_int,
     })
+}
+
+/// Place `parts` in the remaining general registers.
+///
+/// A scalar or a single eightbyte uses one register, or goes on the stack as
+/// that same integer once the registers are full. A multi-eightbyte aggregate
+/// needs a register for every eightbyte. If even one is missing, the psABI
+/// passes the whole argument in memory and does not consume the registers
+/// that were still free.
+pub fn assign_regs(parts: Vec<Part>, ty: &CType, free_int: &mut usize) -> Vec<Part> {
+    let pieces = parts
+        .iter()
+        .filter(|part| matches!(part.kind, PartKind::Piece(_)))
+        .count();
+    if pieces > 1 && pieces > *free_int {
+        return vec![memory_part(ty)];
+    }
+    if pieces > 0 {
+        *free_int = free_int.saturating_sub(pieces);
+        return parts;
+    }
+    if parts
+        .first()
+        .is_some_and(|part| matches!(part.kind, PartKind::Scalar))
+    {
+        *free_int = free_int.saturating_sub(1);
+    }
+    parts
+}
+
+pub fn memory_part(ty: &CType) -> Part {
+    let align = ty.align().max(8);
+    Part {
+        ir_type: "ptr".to_string(),
+        attrs: format!("byval({}) align {align}", ty.ir_type()),
+        kind: PartKind::Byval,
+    }
 }
 
 fn lower_return(ty: &CType) -> Result<(String, String, Option<AggAbi>, Option<String>), AbiFail> {
@@ -128,7 +182,7 @@ fn lower_return(ty: &CType) -> Result<(String, String, Option<AggAbi>, Option<St
         return Ok(("void".to_string(), String::new(), None, None));
     }
     if ty.unqualified().is_record() {
-        let agg = classify_aggregate(ty)?;
+        let agg = classify_for(ty, AggUse::Return)?;
         return match &agg {
             AggAbi::Memory => Ok((
                 "void".to_string(),
@@ -148,16 +202,9 @@ fn lower_return(ty: &CType) -> Result<(String, String, Option<AggAbi>, Option<St
 
 fn lower_param(ty: &CType) -> Result<Vec<Part>, AbiFail> {
     if ty.unqualified().is_record() {
-        let agg = classify_aggregate(ty)?;
+        let agg = classify_for(ty, AggUse::Param)?;
         return Ok(match agg {
-            AggAbi::Memory => {
-                let align = ty.align().max(8);
-                vec![Part {
-                    ir_type: "ptr".to_string(),
-                    attrs: format!("byval({}) align {align}", ty.ir_type()),
-                    kind: PartKind::Byval,
-                }]
-            }
+            AggAbi::Memory => vec![memory_part(ty)],
             AggAbi::Direct(pieces) => pieces
                 .into_iter()
                 .map(|piece| Part {
@@ -175,10 +222,17 @@ fn lower_param(ty: &CType) -> Result<Vec<Part>, AbiFail> {
     }])
 }
 
-/// Classify a complete struct or union. Incomplete types and register
-/// aggregates that need SSE or x87 fail; memory aggregates succeed even when
-/// they contain a floating-point member, because those are a byte copy.
+/// Classify a complete struct or union used as a parameter.
+///
+/// Incomplete types fail. An eightbyte that needs an SSE register fails.
+/// An x87 aggregate is memory: the psABI passes that class on the stack.
+/// Memory aggregates succeed even when they contain a floating-point member,
+/// because those are a byte copy.
 pub fn classify_aggregate(ty: &CType) -> Result<AggAbi, AbiFail> {
+    classify_for(ty, AggUse::Param)
+}
+
+pub fn classify_for(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
     let bare = ty.unqualified();
     if !bare.is_record() {
         return Ok(AggAbi::Memory);
@@ -207,14 +261,24 @@ pub fn classify_aggregate(ty: &CType) -> Result<AggAbi, AbiFail> {
     for leaf in &leaves {
         apply_leaf(leaf, &mut classes);
     }
-    if classes.iter().any(|class| *class == Class::Memory) {
+    // X87UP belongs with a preceding X87 eightbyte. Anywhere else the
+    // aggregate is passed in memory.
+    let x87up_orphan = classes.iter().enumerate().any(|(index, class)| {
+        *class == Class::X87Up && (index == 0 || classes[index - 1] != Class::X87)
+    });
+    if classes.iter().any(|class| *class == Class::Memory) || x87up_orphan {
         return Ok(AggAbi::Memory);
     }
-    if classes
+    let x87 = classes
         .iter()
-        .any(|class| !matches!(class, Class::Vacant | Class::Integer))
-    {
+        .any(|class| matches!(class, Class::X87 | Class::X87Up));
+    let sse = classes.iter().any(|class| *class == Class::Sse);
+    if sse || (x87 && use_as == AggUse::Return) {
         return Err(AbiFail::FloatReg);
+    }
+    if x87 {
+        // The psABI passes X87 and X87UP arguments in memory.
+        return Ok(AggAbi::Memory);
     }
     let mut pieces = Vec::new();
     for (index, class) in classes.iter().enumerate() {
@@ -280,6 +344,9 @@ fn collect_leaves(ty: &CType, base: u64, out: &mut Vec<Leaf>) {
             is_ptr: false,
         }),
         CType::Float(FloatKind::LongDouble) => {
+            // The field's alignment is 16 and applies at `base`. The second
+            // eightbyte is the padding half of the same field, not a second
+            // member aligned to 16, so offset 8 is not an unaligned field.
             out.push(Leaf {
                 offset: base,
                 size: 8,
@@ -290,7 +357,7 @@ fn collect_leaves(ty: &CType, base: u64, out: &mut Vec<Leaf>) {
             out.push(Leaf {
                 offset: base + 8,
                 size: 8,
-                align: 16,
+                align: 1,
                 class: Class::X87Up,
                 is_ptr: false,
             });
@@ -628,5 +695,75 @@ mod tests {
             false,
         );
         assert!(matches!(classify_aggregate(&big).unwrap(), AggAbi::Memory));
+    }
+
+    #[test]
+    fn multi_eightbyte_struct_uses_memory_when_registers_run_out() {
+        let s16 = record(
+            300,
+            vec![
+                field("a", ints(TypeName::Long), 0),
+                field("b", ints(TypeName::Char), 8),
+            ],
+            16,
+            8,
+            false,
+        );
+        let mut params = vec![CType::int_type(); 5];
+        params.push(s16.clone());
+        params.push(CType::int_type());
+        let sig = function_sig(&CType::int_type(), &params).unwrap();
+        assert!(matches!(sig.params[5][0].kind, PartKind::Byval));
+        assert!(matches!(sig.params[6][0].kind, PartKind::Scalar));
+        // The spilled aggregate does not take the last general register,
+        // so the following int still has it.
+        assert_eq!(sig.free_int, 0);
+
+        let mut fitted = vec![CType::int_type(); 4];
+        fitted.push(s16);
+        let sig = function_sig(&CType::int_type(), &fitted).unwrap();
+        match &sig.params[4][0].kind {
+            PartKind::Piece(piece) => assert_eq!(piece.ir_type(), "i64"),
+            other => panic!("expected the first eightbyte in a register, got {other:?}"),
+        }
+        assert!(matches!(sig.params[4][1].kind, PartKind::Piece(_)));
+        assert_eq!(sig.free_int, 0);
+    }
+
+    #[test]
+    fn long_double_aggregate_is_memory_in_and_rejected_out() {
+        let ld = record(
+            301,
+            vec![field("x", CType::Float(FloatKind::LongDouble), 0)],
+            16,
+            16,
+            false,
+        );
+        assert!(matches!(
+            classify_for(&ld, AggUse::Param).unwrap(),
+            AggAbi::Memory
+        ));
+        assert_eq!(classify_for(&ld, AggUse::Return), Err(AbiFail::FloatReg));
+
+        // X87UP not preceded by X87, because the long shares the first
+        // eightbyte and INTEGER wins there. Both directions are memory.
+        let mixed = record(
+            302,
+            vec![
+                field("x", CType::Float(FloatKind::LongDouble), 0),
+                field("y", ints(TypeName::Long), 0),
+            ],
+            16,
+            16,
+            true,
+        );
+        assert!(matches!(
+            classify_for(&mixed, AggUse::Param).unwrap(),
+            AggAbi::Memory
+        ));
+        assert!(matches!(
+            classify_for(&mixed, AggUse::Return).unwrap(),
+            AggAbi::Memory
+        ));
     }
 }

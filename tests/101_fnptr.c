@@ -1,4 +1,4 @@
-#include <stdlib.h>
+void qsort(void *, unsigned long, unsigned long, int (*)(const void *, const void *));
 
 typedef int bin(int, int);
 typedef bin *binptr;

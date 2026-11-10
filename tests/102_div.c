@@ -1,4 +1,14 @@
-#include <stdlib.h>
+typedef struct {
+    int quot;
+    int rem;
+} div_t;
+typedef struct {
+    long quot;
+    long rem;
+} ldiv_t;
+
+div_t div(int, int);
+ldiv_t ldiv(long, long);
 
 int main(void) {
     div_t d = div(7, 3);

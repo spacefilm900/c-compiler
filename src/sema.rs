@@ -2702,7 +2702,12 @@ impl Sema {
         if !bare.is_record() {
             return Ok(());
         }
-        match crate::abi::classify_aggregate(&bare) {
+        let use_as = if is_return {
+            crate::abi::AggUse::Return
+        } else {
+            crate::abi::AggUse::Param
+        };
+        match crate::abi::classify_for(&bare, use_as) {
             Ok(_) => Ok(()),
             Err(crate::abi::AbiFail::Incomplete) => {
                 if is_return {
@@ -2724,7 +2729,7 @@ impl Sema {
                     self.err(
                         line,
                         column,
-                        "returning an aggregate in an SSE register is not supported",
+                        "returning an aggregate in an SSE or x87 register is not supported",
                     )
                 } else {
                     self.err(
@@ -4556,6 +4561,11 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
             sema_err("struct S { double d; }; void f(struct S s) { (void)s; }")
                 .contains("SSE register")
         );
+        sema_ok("struct S { long double x; }; void f(struct S s) { (void)s; }");
+        assert!(sema_err(
+            "struct S { long double x; }; struct S f(void) { struct S s; return s; }"
+        )
+        .contains("x87"));
         assert!(
             sema_err("int f(int); int main(void) { int (*p)(char); p = f; return 0; }")
                 .contains("incompatible types")

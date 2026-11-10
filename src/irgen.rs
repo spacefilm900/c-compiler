@@ -29,7 +29,9 @@
 //! no-op in the IR. `sizeof` is an `unsigned long` constant and its operand
 //! is not emitted.
 
-use crate::abi::{arg_names, format_part, function_sig, AggAbi, FnSig, Part, PartKind, RegPiece};
+use crate::abi::{
+    arg_names, format_part, function_sig, memory_part, AggAbi, FnSig, Part, PartKind, RegPiece,
+};
 use crate::ast::*;
 
 /// System V AMD64 layout for `x86_64-pc-linux-gnu`.
@@ -646,6 +648,7 @@ impl Gen {
         sret_slot: Option<&str>,
     ) -> Vec<String> {
         let mut rendered = Vec::new();
+        let mut free_int = sig.free_int;
         if let Some(slot) = sret_slot {
             let attrs = sig.sret_attrs.as_deref().expect("sret attribute");
             rendered.push(format_part("ptr", attrs, Some(slot)));
@@ -679,10 +682,11 @@ impl Gen {
                 let value = self.convert(&value, &src, param_ty);
                 rendered.push(param_ir(param_ty, Some(&value)));
             } else if arg.ty().is_some_and(|ty| ty.is_record()) {
-                rendered.extend(self.variadic_record(arg));
+                rendered.extend(self.variadic_record(arg, &mut free_int));
             } else {
                 // Default argument promotions (C11 6.5.2.2): integer types
-                // narrower than `int` become `int`.
+                // narrower than `int` become `int`. One register when any remain.
+                free_int = free_int.saturating_sub(1);
                 let value = self.gen_val(arg);
                 let src = arg.ty().expect("typed");
                 let promoted = default_promote(&src);
@@ -693,23 +697,30 @@ impl Gen {
         rendered
     }
 
-    fn variadic_record(&mut self, arg: &Expr) -> Vec<String> {
+    fn variadic_record(&mut self, arg: &Expr, free_int: &mut usize) -> Vec<String> {
         let ty = arg.ty().expect("typed");
         let src = self.record_ptr(arg);
-        match crate::abi::classify_aggregate(&ty).expect("variadic aggregate") {
-            AggAbi::Memory => {
-                let align = ty.align().max(8);
-                let attrs = format!("byval({}) align {align}", ty.ir_type());
-                vec![format_part("ptr", &attrs, Some(&src))]
+        let agg =
+            crate::abi::classify_for(&ty, crate::abi::AggUse::Param).expect("variadic aggregate");
+        let direct = match agg {
+            AggAbi::Memory => None,
+            AggAbi::Direct(pieces) if pieces.len() > 1 && pieces.len() > *free_int => None,
+            AggAbi::Direct(pieces) => {
+                *free_int = free_int.saturating_sub(pieces.len());
+                Some(pieces)
             }
-            AggAbi::Direct(pieces) => pieces
-                .iter()
-                .map(|piece| {
-                    let loaded = self.load_piece(&src, ty.align(), piece);
-                    format_part(&piece.ir_type(), "", Some(&loaded))
-                })
-                .collect(),
-        }
+        };
+        let Some(pieces) = direct else {
+            let part = memory_part(&ty);
+            return vec![format_part("ptr", &part.attrs, Some(&src))];
+        };
+        pieces
+            .iter()
+            .map(|piece| {
+                let loaded = self.load_piece(&src, ty.align(), piece);
+                format_part(&piece.ir_type(), "", Some(&loaded))
+            })
+            .collect()
     }
 
     fn emit_call(
@@ -2952,6 +2963,9 @@ int apply(int (*f)(int), int x) { return f(x + 1); }
 int mix(int a, struct s12 s, int b, struct big g, int c) {
     return a + s.a + s.c + b + (int)g.a + c;
 }
+int spill(int a, int b, int c, int d, int e, struct s16 s, int z) {
+    return a + b + c + d + e + z + (int)s.a + s.b;
+}
 "#;
         let caller = r#"
 struct s1 { unsigned char a; };
@@ -2975,6 +2989,7 @@ int via_ptr(struct ptrs s);
 int via_union(union u9 u);
 int apply(int (*f)(int), int x);
 int mix(int a, struct s12 s, int b, struct big g, int c);
+int spill(int a, int b, int c, int d, int e, struct s16 s, int z);
 int inc(int x) { return x + 1; }
 int main(void) {
     struct s1 a = {9};
@@ -3002,6 +3017,8 @@ int main(void) {
     if (via_union(u) != 5) return 9;
     if (apply(inc, 40) != 42) return 10;
     if (mix(1, d, 2, f, 3) != 1 + 4 + 6 + 2 + 10 + 3) return 11;
+    struct s16 sp = {100, 7};
+    if (spill(1, 2, 3, 4, 5, sp, 6) != 128) return 12;
     return 0;
 }
 "#;
@@ -3022,6 +3039,10 @@ int main(void) {
         );
         assert!(
             defs_ir.contains("ptr byval(%struct.big) align 8 %p0"),
+            "{defs_ir}"
+        );
+        assert!(
+            defs_ir.contains("ptr byval(%struct.s16) align 8 %p5"),
             "{defs_ir}"
         );
         link_both_ways(defs, caller, &defs_ir);
