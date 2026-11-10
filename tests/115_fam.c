@@ -1,6 +1,3 @@
-#include <stddef.h>
-#include <stdio.h>
-
 struct S {
     int n;
     int a[];
@@ -21,13 +18,16 @@ struct S id(struct S s) {
 }
 
 int main(void) {
-    if (sizeof(struct S) != 4 || offsetof(struct S, a) != 4) {
+    struct S probe_s;
+    struct T probe_t;
+    struct D probe_d;
+    if (sizeof(struct S) != 4 || (char *)&probe_s.a - (char *)&probe_s != 4) {
         return 1;
     }
-    if (sizeof(struct T) != 4 || offsetof(struct T, a) != 4) {
+    if (sizeof(struct T) != 4 || (char *)&probe_t.a - (char *)&probe_t != 4) {
         return 2;
     }
-    if (sizeof(struct D) != 8 || offsetof(struct D, d) != 8) {
+    if (sizeof(struct D) != 8 || (char *)&probe_d.d - (char *)&probe_d != 8) {
         return 3;
     }
     struct S local = {7};
@@ -53,6 +53,5 @@ int main(void) {
     if (copy.n != 7) {
         return 7;
     }
-    printf("%d %zu\n", p->a[0], sizeof(struct S));
     return 0;
 }

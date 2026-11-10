@@ -1337,6 +1337,8 @@ impl Sema {
     ) -> Result<ConstInit, Diagnostic> {
         let size = ty.size().unwrap_or(0) as usize;
         let mut image = vec![0u8; size];
+        let mut ranges = Vec::new();
+        bit_record_ranges(ty, 0, &mut ranges);
         let mut folded = Vec::new();
         for store in stores {
             if let Some(bits) = &store.bits {
@@ -1356,7 +1358,24 @@ impl Sema {
                 pack_bits(&mut image, bits.abs_bit, bits.width, raw);
             } else {
                 let value = self.fold_one(name, &store.expr, &store.ty)?;
-                folded.push((store.offset, value));
+                let inside = ranges
+                    .iter()
+                    .any(|(start, end)| store.offset >= *start && store.offset < *end);
+                if inside {
+                    // The nested record is a byte image. A plain member shares
+                    // that image; a relocation cannot.
+                    if !write_folded_bytes(&store.ty, &value, &mut image, store.offset as usize) {
+                        return self.err(
+                            store.expr.line(),
+                            store.expr.column(),
+                            format!(
+                                "initializer of '{name}' uses an address in a bit-field struct"
+                            ),
+                        );
+                    }
+                } else {
+                    folded.push((store.offset, value));
+                }
             }
         }
         splice_bit_blobs(ty, 0, &image, &mut folded);
@@ -4284,6 +4303,34 @@ fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
     ConstInit::Aggregate(items)
 }
 
+/// Byte ranges of nested records whose LLVM type is a byte image.
+fn bit_record_ranges(ty: &CType, base: u64, out: &mut Vec<(u64, u64)>) {
+    if ty.record_has_bitfield() {
+        out.push((base, base + ty.size().unwrap_or(0)));
+        return;
+    }
+    if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
+        let fields: Vec<_> = if ty.is_union() {
+            fields.into_iter().take(1).collect()
+        } else {
+            fields
+        };
+        for field in fields {
+            if field.bit_width.is_some() {
+                continue;
+            }
+            bit_record_ranges(&field.ty, base + field.offset, out);
+        }
+        return;
+    }
+    if let (Some(elem), Some(len)) = (ty.array_elem(), ty.array_len()) {
+        let step = elem.size().unwrap_or(0);
+        for index in 0..len {
+            bit_record_ranges(elem, base + index * step, out);
+        }
+    }
+}
+
 /// Replace each nested bit-field struct (or union that has a bit-field)
 /// with the bytes already packed into `image`.
 fn splice_bit_blobs(ty: &CType, base: u64, image: &[u8], out: &mut Vec<(u64, ConstInit)>) {
@@ -5982,6 +6029,15 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
         sema_ok("struct S { float a; float b; }; struct S f(struct S s) { return s; }");
         sema_ok("struct S { long double x; }; void f(struct S s) { (void)s; }");
         sema_ok("struct S { long double x; }; struct S f(void) { struct S s; return s; }");
+        sema_ok("int f(void) __asm__(\"g\"); int f(void) { return 1; }");
+        sema_ok("int f(void) __asm__(u8\"g\"); int f(void) { return 1; }");
+        assert!(sema_err("int f(void) __asm__(u\"g\");").contains("byte string"));
+        let ir = crate::compile_to_ir(
+            "struct LD { long double x; }; volatile struct LD v; struct LD f(void) { return v; }\n",
+            "volld.c",
+        )
+        .unwrap();
+        assert!(ir.contains("load volatile x86_fp80"), "{ir}");
         assert!(
             sema_err("int f(int); int main(void) { int (*p)(char); p = f; return 0; }")
                 .contains("incompatible types")

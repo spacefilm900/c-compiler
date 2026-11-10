@@ -991,7 +991,7 @@ impl Gen {
                 let align = align.max(16);
                 let tmp = self.fresh();
                 self.emit(&format!(
-                    "  {tmp} = load x86_fp80, ptr {src}, align {align}{vol}"
+                    "  {tmp} = load{vol} x86_fp80, ptr {src}, align {align}"
                 ));
                 self.emit(&format!("  ret x86_fp80 {tmp}"));
             }

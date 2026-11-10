@@ -21,6 +21,25 @@ int glob = 5;
 
 struct W w = {{1, 2}, &glob};
 
+struct B {
+    int a : 3;
+    char c;
+};
+
+struct P {
+    struct B in;
+    int n;
+};
+
+struct P plain = {{1, 'x'}, 9};
+
+struct Q {
+    struct B in;
+    int *p;
+};
+
+struct Q qplain = {{2, 'y'}, &glob};
+
 int main(void) {
     if (g.in.a != 1 || g.in.b != 2 || g.n != 9) {
         return 1;
@@ -37,6 +56,12 @@ int main(void) {
     struct O local = {{3, -1}, 4};
     if (local.in.a != 3 || local.in.b != -1 || local.n != 4) {
         return 5;
+    }
+    if (plain.in.a != 1 || plain.in.c != 'x' || plain.n != 9) {
+        return 6;
+    }
+    if (qplain.in.a != 2 || qplain.in.c != 'y' || *qplain.p != 5) {
+        return 7;
     }
     return 0;
 }

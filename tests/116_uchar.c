@@ -1,4 +1,3 @@
-#include <stdio.h>
 #include <uchar.h>
 
 int main(void) {
@@ -37,6 +36,5 @@ int main(void) {
     if (sizeof(u"") != 2 || sizeof(U"") != 4 || sizeof(u8"") != 1) {
         return 9;
     }
-    printf("%d %d %s %d\n", (int)c, (int)d, bytes, (int)us[1]);
     return 0;
 }

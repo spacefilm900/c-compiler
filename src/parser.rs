@@ -1246,9 +1246,17 @@ impl Parser<'_> {
         if self.current().kind != TokenKind::String {
             return Err(self.error("expected a string after __asm__"));
         }
-        let mut bytes = self.advance().bytes.expect("string token");
+        let mut bytes = Vec::new();
         while self.current().kind == TokenKind::String {
-            bytes.extend(self.advance().bytes.expect("string token"));
+            let tok = self.advance();
+            if !matches!(lit_prefix(&tok.spelling), LitPrefix::None | LitPrefix::U8) {
+                return Err(self.error_at(
+                    tok.line,
+                    tok.column,
+                    "an __asm__ label must use a byte string literal",
+                ));
+            }
+            bytes.extend(tok.bytes.expect("string token"));
         }
         self.expect(TokenKind::RParen, "')'")?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())

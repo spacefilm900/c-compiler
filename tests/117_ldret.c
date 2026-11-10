@@ -38,6 +38,12 @@ struct Mix idm(struct Mix s) {
     return s;
 }
 
+volatile struct LD vol;
+
+struct LD readvol(void) {
+    return vol;
+}
+
 int main(void) {
     struct LD s = make(1.5L);
     if (s.x != 1.5L) {
@@ -66,6 +72,10 @@ int main(void) {
     struct Mix n = idm(m);
     if (n.i != 7 || n.x != 4.0L) {
         return 5;
+    }
+    vol.x = 8.5L;
+    if (readvol().x != 8.5L) {
+        return 6;
     }
     return 0;
 }
