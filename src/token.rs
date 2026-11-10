@@ -3,13 +3,16 @@
 //! Keywords from ISO C11 are recognized so unsupported ones can be rejected
 //! with a specific diagnostic instead of being treated as identifiers.
 
-use crate::ast::TypeName;
+use crate::ast::{FloatKind, TypeName};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
     Eof,
     Ident,
     Int,
+    /// A `float` or `double` constant. The bits are on [`Token::value`] and
+    /// the type is [`Token::float_kind`]. `long double` is not a token.
+    Float,
     /// A decoded string literal. The bytes live on [`Token::bytes`] and do
     /// not include the implicit terminating NUL.
     String,
@@ -122,6 +125,10 @@ pub struct Token {
     /// Type chosen for an integer constant (C11 6.4.4.1) or `int` for a
     /// character constant (C11 6.4.4.4).
     pub int_ty: Option<TypeName>,
+    /// `float` or `double` for a [`TokenKind::Float`]. The bits in
+    /// [`Token::value`] are `f32` bits in the low 32 for `float`, and `f64`
+    /// bits for `double`.
+    pub float_kind: Option<FloatKind>,
     /// Decoded bytes of a [`TokenKind::String`], without the implicit NUL.
     pub bytes: Option<Vec<u8>>,
 }

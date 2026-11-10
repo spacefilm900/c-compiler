@@ -30,7 +30,8 @@
 //! is not emitted.
 
 use crate::abi::{
-    arg_names, format_part, function_sig, memory_part, AggAbi, FnSig, Part, PartKind, RegPiece,
+    arg_names, assign_regs, format_part, function_sig, memory_part, AggAbi, FnSig, Part, PartKind,
+    RegPiece,
 };
 use crate::ast::*;
 
@@ -56,6 +57,17 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
             out.push('\n');
             wrote_prelude = true;
         }
+    }
+    let mut opaque_ids = std::collections::HashSet::new();
+    for global in &unit.globals {
+        let Some(handle) = global.ty.struct_ref() else {
+            continue;
+        };
+        if handle.is_complete() || !opaque_ids.insert(handle.id()) {
+            continue;
+        }
+        out.push_str(&format!("%{} = type opaque\n", handle.ir_name()));
+        wrote_prelude = true;
     }
     for literal in &unit.strings {
         out.push_str(&render_string(literal));
@@ -649,6 +661,7 @@ impl Gen {
     ) -> Vec<String> {
         let mut rendered = Vec::new();
         let mut free_int = sig.free_int;
+        let mut free_sse = sig.free_sse;
         if let Some(slot) = sret_slot {
             let attrs = sig.sret_attrs.as_deref().expect("sret attribute");
             rendered.push(format_part("ptr", attrs, Some(slot)));
@@ -682,14 +695,19 @@ impl Gen {
                 let value = self.convert(&value, &src, param_ty);
                 rendered.push(param_ir(param_ty, Some(&value)));
             } else if arg.ty().is_some_and(|ty| ty.is_record()) {
-                rendered.extend(self.variadic_record(arg, &mut free_int));
+                rendered.extend(self.variadic_record(arg, &mut free_int, &mut free_sse));
             } else {
                 // Default argument promotions (C11 6.5.2.2): integer types
-                // narrower than `int` become `int`. One register when any remain.
-                free_int = free_int.saturating_sub(1);
+                // narrower than `int` become `int`, and `float` becomes
+                // `double`. A floating argument uses an XMM register.
                 let value = self.gen_val(arg);
                 let src = arg.ty().expect("typed");
                 let promoted = default_promote(&src);
+                if promoted.is_sse_float() {
+                    free_sse = free_sse.saturating_sub(1);
+                } else if !promoted.is_long_double() {
+                    free_int = free_int.saturating_sub(1);
+                }
                 let value = self.convert(&value, &src, &promoted);
                 rendered.push(format!("{} {value}", promoted.ir_type()));
             }
@@ -697,28 +715,37 @@ impl Gen {
         rendered
     }
 
-    fn variadic_record(&mut self, arg: &Expr, free_int: &mut usize) -> Vec<String> {
+    fn variadic_record(
+        &mut self,
+        arg: &Expr,
+        free_int: &mut usize,
+        free_sse: &mut usize,
+    ) -> Vec<String> {
         let ty = arg.ty().expect("typed");
         let src = self.record_ptr(arg);
         let agg =
             crate::abi::classify_for(&ty, crate::abi::AggUse::Param).expect("variadic aggregate");
-        let direct = match agg {
-            AggAbi::Memory => None,
-            AggAbi::Direct(pieces) if pieces.len() > 1 && pieces.len() > *free_int => None,
-            AggAbi::Direct(pieces) => {
-                *free_int = free_int.saturating_sub(pieces.len());
-                Some(pieces)
-            }
+        let parts = match agg {
+            AggAbi::Memory => vec![memory_part(&ty)],
+            AggAbi::Direct(pieces) => pieces
+                .into_iter()
+                .map(|piece| Part {
+                    ir_type: piece.ir_type(),
+                    attrs: String::new(),
+                    kind: PartKind::Piece(piece),
+                })
+                .collect(),
         };
-        let Some(pieces) = direct else {
-            let part = memory_part(&ty);
-            return vec![format_part("ptr", &part.attrs, Some(&src))];
-        };
-        pieces
+        let parts = assign_regs(parts, &ty, free_int, free_sse);
+        parts
             .iter()
-            .map(|piece| {
-                let loaded = self.load_piece(&src, ty.align(), piece);
-                format_part(&piece.ir_type(), "", Some(&loaded))
+            .map(|part| match &part.kind {
+                PartKind::Byval => format_part("ptr", &part.attrs, Some(&src)),
+                PartKind::Piece(piece) => {
+                    let loaded = self.load_piece(&src, ty.align(), piece);
+                    format_part(&piece.ir_type(), "", Some(&loaded))
+                }
+                PartKind::Scalar => unreachable!("aggregate piece"),
             })
             .collect()
     }
@@ -898,6 +925,12 @@ impl Gen {
             self.emit("  ret void");
         } else if self.ret_ty.is_pointer() {
             self.emit("  ret ptr null");
+        } else if let Some(kind) = self.ret_ty.float_kind() {
+            self.emit(&format!(
+                "  ret {} {}",
+                self.ret_ty.ir_type(),
+                crate::float::llvm_const(kind, 0)
+            ));
         } else {
             self.emit(&format!("  ret {} 0", self.ret_ty.ir_type()));
         }
@@ -986,6 +1019,62 @@ impl Gen {
             let tmp = self.fresh();
             self.emit(&format!(
                 "  {tmp} = ptrtoint ptr {value} to {}",
+                to.ir_type()
+            ));
+            return tmp;
+        }
+        if let (Some(from_f), Some(to_f)) = (from.float_kind(), to.float_kind()) {
+            if from_f == to_f {
+                return value.to_string();
+            }
+            let op = match (from_f, to_f) {
+                (FloatKind::Float, FloatKind::Double) => "fpext",
+                (FloatKind::Double, FloatKind::Float) => "fptrunc",
+                _ => return value.to_string(),
+            };
+            let tmp = self.fresh();
+            self.emit(&format!(
+                "  {tmp} = {op} {} {value} to {}",
+                from.ir_type(),
+                to.ir_type()
+            ));
+            return tmp;
+        }
+        if from.is_float() && to.as_integer() == Some(TypeName::Bool) {
+            let cmp = self.fresh();
+            let tmp = self.fresh();
+            let zero = crate::float::llvm_const(from.float_kind().expect("float"), 0);
+            self.emit(&format!(
+                "  {cmp} = fcmp une {} {value}, {zero}",
+                from.ir_type()
+            ));
+            self.emit(&format!("  {tmp} = zext i1 {cmp} to i8"));
+            return tmp;
+        }
+        if from.is_float() && to.is_integer() {
+            let op = if to.as_integer().is_some_and(TypeName::is_signed) {
+                "fptosi"
+            } else {
+                "fptoui"
+            };
+            let tmp = self.fresh();
+            self.emit(&format!(
+                "  {tmp} = {op} {} {value} to {}",
+                from.ir_type(),
+                to.ir_type()
+            ));
+            return tmp;
+        }
+        if from.is_integer() && to.is_float() {
+            let op = if from.as_integer().is_some_and(TypeName::is_signed) {
+                "sitofp"
+            } else {
+                "uitofp"
+            };
+            let tmp = self.fresh();
+            self.emit(&format!(
+                "  {tmp} = {op} {} {value} to {}",
+                from.ir_type(),
                 to.ir_type()
             ));
             return tmp;
@@ -1269,6 +1358,7 @@ impl Gen {
         }
         match expr {
             Expr::Int { bits, value_ty, .. } => Some(value_ty.format_bits(*bits)),
+            Expr::Float { bits, kind, .. } => Some(crate::float::llvm_const(*kind, *bits)),
             Expr::Var { resolved, ty, .. } => {
                 let slot = &resolved.as_ref().expect("resolved variable").slot;
                 let ty = ty.clone().expect("typed variable");
@@ -1288,8 +1378,12 @@ impl Gen {
             } => {
                 let value = self.gen_val(expr);
                 let src = expr.ty().expect("typed");
-                let promoted = CType::from_name(src.as_integer().expect("integer").promote());
-                Some(self.convert(&value, &src, &promoted))
+                if src.is_float() {
+                    Some(value)
+                } else {
+                    let promoted = CType::from_name(src.as_integer().expect("integer").promote());
+                    Some(self.convert(&value, &src, &promoted))
+                }
             }
             Expr::Unary {
                 op: UnaryOp::Minus,
@@ -1555,6 +1649,12 @@ impl Gen {
 
     fn gen_neg_or_not(&mut self, expr: &Expr, kind: &str) -> String {
         let src = expr.ty().expect("typed");
+        if src.is_float() && kind == "sub" {
+            let value = self.gen_val(expr);
+            let tmp = self.fresh();
+            self.emit(&format!("  {tmp} = fneg {} {value}", src.ir_type()));
+            return tmp;
+        }
         let dest = CType::from_name(src.as_integer().expect("integer").promote());
         let value = self.gen_val(expr);
         let value = self.convert(&value, &src, &dest);
@@ -1570,6 +1670,9 @@ impl Gen {
     fn gen_arith(&mut self, op: BinOp, left: &Expr, right: &Expr) -> String {
         let left_ty = left.ty().expect("typed");
         let right_ty = right.ty().expect("typed");
+        if left_ty.is_float() || right_ty.is_float() {
+            return self.gen_float_arith(op, left, right);
+        }
         let left_i = left_ty.as_integer().expect("integer");
         let right_i = right_ty.as_integer().expect("integer");
         let common = if matches!(op, BinOp::Shl | BinOp::Shr) {
@@ -1586,6 +1689,23 @@ impl Gen {
         self.emit(&format!(
             "  {tmp} = {} {} {left_val}, {right_val}",
             value_inst(op, common.is_signed()),
+            common.ir_type()
+        ));
+        tmp
+    }
+
+    fn gen_float_arith(&mut self, op: BinOp, left: &Expr, right: &Expr) -> String {
+        let left_ty = left.ty().expect("typed");
+        let right_ty = right.ty().expect("typed");
+        let common = common_real(&left_ty, &right_ty);
+        let left_val = self.gen_val(left);
+        let left_val = self.convert(&left_val, &left_ty, &common);
+        let right_val = self.gen_val(right);
+        let right_val = self.convert(&right_val, &right_ty, &common);
+        let tmp = self.fresh();
+        self.emit(&format!(
+            "  {tmp} = {} {} {left_val}, {right_val}",
+            float_inst(op),
             common.ir_type()
         ));
         tmp
@@ -1614,6 +1734,20 @@ impl Gen {
             self.store(&dest, &updated, &addr);
             return updated;
         }
+        if dest.is_float() || rhs_ty.is_float() {
+            let common = common_real(&dest, &rhs_ty);
+            let old_c = self.convert(&old, &dest, &common);
+            let rhs_c = self.convert(&rhs, &rhs_ty, &common);
+            let updated = self.fresh();
+            self.emit(&format!(
+                "  {updated} = {} {} {old_c}, {rhs_c}",
+                float_inst(op),
+                common.ir_type()
+            ));
+            let stored = self.convert(&updated, &common, &dest);
+            self.store(&dest, &stored, &addr);
+            return stored;
+        }
         let dest_i = dest.as_integer().expect("integer");
         let rhs_i = rhs_ty.as_integer().expect("integer");
         let common = if matches!(op, BinOp::Shl | BinOp::Shr) {
@@ -1639,6 +1773,23 @@ impl Gen {
         let dest = target.ty().expect("lvalue type");
         let addr = self.gen_addr(target);
         let old = self.load(&dest, &addr);
+        if dest.is_float() {
+            let kind = dest.float_kind().expect("float");
+            let one_bits = if kind == FloatKind::Float {
+                0x3f80_0000
+            } else {
+                0x3ff0_0000_0000_0000
+            };
+            let one = crate::float::llvm_const(kind, one_bits);
+            let updated = self.fresh();
+            let inst = if op.is_increment() { "fadd" } else { "fsub" };
+            self.emit(&format!(
+                "  {updated} = {inst} {} {old}, {one}",
+                dest.ir_type()
+            ));
+            self.store(&dest, &updated, &addr);
+            return if op.is_prefix() { updated } else { old };
+        }
         if dest.is_pointer() {
             let elem = dest.pointee().expect("pointer").ir_type();
             let step = if op.is_increment() { "1" } else { "-1" };
@@ -1689,6 +1840,20 @@ impl Gen {
             } if op.is_cmp() => {
                 let left_ty = left.ty().expect("typed");
                 let right_ty = right.ty().expect("typed");
+                if left_ty.is_float() || right_ty.is_float() {
+                    let common = common_real(&left_ty, &right_ty);
+                    let left_val = self.gen_val(left);
+                    let left_val = self.convert(&left_val, &left_ty, &common);
+                    let right_val = self.gen_val(right);
+                    let right_val = self.convert(&right_val, &right_ty, &common);
+                    let tmp = self.fresh();
+                    self.emit(&format!(
+                        "  {tmp} = fcmp {} {} {left_val}, {right_val}",
+                        fcmp_pred(*op),
+                        common.ir_type()
+                    ));
+                    return tmp;
+                }
                 if left_ty.is_pointer() || right_ty.is_pointer() {
                     let left_val = self.as_ptr(left);
                     let right_val = self.as_ptr(right);
@@ -1743,6 +1908,12 @@ impl Gen {
                 let tmp = self.fresh();
                 if ty.is_pointer() {
                     self.emit(&format!("  {tmp} = icmp ne ptr {value}, null"));
+                } else if ty.is_float() {
+                    let zero = crate::float::llvm_const(ty.float_kind().expect("float"), 0);
+                    self.emit(&format!(
+                        "  {tmp} = fcmp une {} {value}, {zero}",
+                        ty.ir_type()
+                    ));
                 } else {
                     self.emit(&format!("  {tmp} = icmp ne {} {value}, 0", ty.ir_type()));
                 }
@@ -1896,12 +2067,44 @@ fn piece_align(base_align: u32, offset: u64) -> u32 {
     align
 }
 
-/// Default argument promotions. Narrow integers become `int`. Pointers are
-/// unchanged. Floats are not in this subset.
+/// Default argument promotions. Narrow integers become `int`. `float`
+/// becomes `double` (C11 6.5.2.2). Pointers and `double` are unchanged.
 fn default_promote(ty: &CType) -> CType {
+    if ty.float_kind() == Some(FloatKind::Float) {
+        return CType::Float(FloatKind::Double);
+    }
     match ty.as_integer() {
         Some(int) => CType::from_name(int.promote()),
         None => ty.clone(),
+    }
+}
+
+fn common_real(left: &CType, right: &CType) -> CType {
+    CType::Float(crate::float::usual_real(
+        left.float_kind(),
+        right.float_kind(),
+    ))
+}
+
+fn float_inst(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "fadd",
+        BinOp::Sub => "fsub",
+        BinOp::Mul => "fmul",
+        BinOp::Div => "fdiv",
+        _ => unreachable!("floating operator"),
+    }
+}
+
+fn fcmp_pred(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Eq => "oeq",
+        BinOp::Ne => "une",
+        BinOp::Lt => "olt",
+        BinOp::Gt => "ogt",
+        BinOp::Le => "ole",
+        BinOp::Ge => "oge",
+        _ => unreachable!("floating comparison"),
     }
 }
 
@@ -2016,6 +2219,16 @@ fn render_union_const(ty: &CType, value: &ConstInit) -> String {
 fn write_const_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: usize) -> bool {
     match value {
         ConstInit::Zero => true,
+        ConstInit::Float(bits) => {
+            let width = ty.size().unwrap_or(0) as usize;
+            for index in 0..width {
+                let at = offset + index;
+                if at < bytes.len() {
+                    bytes[at] = (*bits >> (8 * index)) as u8;
+                }
+            }
+            true
+        }
         ConstInit::Int(bits) => {
             let Some(int) = ty.as_integer() else {
                 return false;
@@ -2088,6 +2301,9 @@ fn render_const(ty: &CType, value: &ConstInit) -> String {
             .as_integer()
             .expect("integer constant")
             .format_bits(*bits),
+        ConstInit::Float(bits) => {
+            crate::float::llvm_const(ty.float_kind().expect("float constant"), *bits)
+        }
         ConstInit::Ptr(ptr) => render_ptr(ptr),
         ConstInit::PtrToInt { ptr, width } => {
             let ir = match width {
@@ -2259,7 +2475,13 @@ mod tests {
         let (ll, bin) = temp_paths();
         std::fs::write(&ll, ir).unwrap();
         let assembled = Command::new("clang")
-            .args(["-w", ll.to_str().unwrap(), "-o", bin.to_str().unwrap()])
+            .args([
+                "-w",
+                ll.to_str().unwrap(),
+                "-o",
+                bin.to_str().unwrap(),
+                "-lm",
+            ])
             .output()
             .expect("clang");
         assert!(
@@ -2290,6 +2512,7 @@ mod tests {
                 path.to_str().unwrap(),
                 "-o",
                 bin.to_str().unwrap(),
+                "-lm",
             ])
             .output()
             .expect("clang");

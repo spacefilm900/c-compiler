@@ -8,6 +8,7 @@ pub mod abi;
 pub mod ast;
 pub mod diag;
 pub mod driver;
+pub mod float;
 pub mod irgen;
 pub mod lexer;
 pub mod parser;

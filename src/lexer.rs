@@ -6,8 +6,9 @@
 //! rejects a `#` or a backslash-newline that reaches it. String literals are
 //! decoded here; adjacent literals are concatenated by the parser.
 
-use crate::ast::TypeName;
+use crate::ast::{FloatKind, TypeName};
 use crate::diag::Diagnostic;
+use crate::float::{inf_bits, parse_decimal, parse_exponent, parse_hex};
 use crate::token::{keyword, Token, TokenKind};
 
 pub fn lex(source: &str, filename: &str) -> Result<Vec<Token>, Diagnostic> {
@@ -103,6 +104,7 @@ impl Lexer<'_> {
             filename: self.filename.to_string(),
             value: None,
             int_ty: None,
+            float_kind: None,
             bytes: None,
         });
         Ok(self.tokens)
@@ -143,6 +145,7 @@ impl Lexer<'_> {
             filename: self.filename.to_string(),
             value: None,
             int_ty: None,
+            float_kind: None,
             bytes: None,
         });
     }
@@ -219,45 +222,225 @@ impl Lexer<'_> {
 
     fn number(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
         let start = self.index;
-        let (digit_start, radix, hex_or_octal) =
-            if self.peek() == Some(b'0') && matches!(self.peek_at(1), Some(b'x' | b'X')) {
-                self.bump();
-                self.bump();
-                let digit_start = self.index;
-                while self.peek().is_some_and(|b| b.is_ascii_hexdigit()) {
-                    self.bump();
-                }
-                if self.index == digit_start {
-                    return self.fail(line, column, "invalid hexadecimal constant");
-                }
-                (digit_start, 16, true)
-            } else if self.peek() == Some(b'0') && matches!(self.peek_at(1), Some(b'b' | b'B')) {
-                return self.fail(line, column, "binary constants are not supported");
-            } else if self.peek() == Some(b'0') {
-                let digit_start = self.index;
-                while self.peek().is_some_and(|b| b.is_ascii_digit()) {
-                    if matches!(self.peek(), Some(b'8' | b'9')) {
-                        return self.fail(line, column, "invalid octal constant");
-                    }
-                    self.bump();
-                }
-                (digit_start, 8, true)
-            } else {
-                let digit_start = self.index;
-                while self.peek().is_some_and(|b| b.is_ascii_digit()) {
-                    self.bump();
-                }
-                (digit_start, 10, false)
-            };
+        if self.peek() == Some(b'0') && matches!(self.peek_at(1), Some(b'x' | b'X')) {
+            return self.hex_constant(start, line, column);
+        }
+        if self.peek() == Some(b'0') && matches!(self.peek_at(1), Some(b'b' | b'B')) {
+            return self.fail(line, column, "binary constants are not supported");
+        }
+        let digit_start = self.index;
+        while self.peek().is_some_and(|b| b.is_ascii_digit()) {
+            self.bump();
+        }
+        // `1.5`, `1.`, and `1e2` are floating constants. The exponent marker
+        // is part of the constant, so `1e` is not an integer followed by an
+        // identifier. A leading zero does not make this octal.
+        if matches!(self.peek(), Some(b'.' | b'e' | b'E')) {
+            return self.finish_decimal_float(start, line, column);
+        }
         let digit_end = self.index;
+        if self.source.as_bytes()[digit_start] == b'0' {
+            let digits = &self.source[digit_start..digit_end];
+            if digits.bytes().any(|byte| byte == b'8' || byte == b'9') {
+                return self.fail(line, column, "invalid octal constant");
+            }
+        }
+        let radix = if self.source.as_bytes()[digit_start] == b'0' {
+            8
+        } else {
+            10
+        };
         let suffix = self.integer_suffix(line, column)?;
         self.reject_number_tail(line, column)?;
         let spelling = self.source[start..self.index].to_string();
         let digits = self.source[digit_start..digit_end].to_string();
         let value = self.int_value(&digits, radix, line, column)?;
-        let ty = self.literal_type(value, suffix, hex_or_octal, line, column)?;
+        let ty = self.literal_type(value, suffix, radix != 10, line, column)?;
         self.push_int(&spelling, value as u64, ty, line, column);
         Ok(())
+    }
+
+    fn hex_constant(&mut self, start: usize, line: usize, column: usize) -> Result<(), Diagnostic> {
+        self.bump();
+        self.bump();
+        let digit_start = self.index;
+        while self.peek().is_some_and(|b| b.is_ascii_hexdigit()) {
+            self.bump();
+        }
+        let digit_end = self.index;
+        // `p`/`P` is the binary exponent. A `.` starts the fraction. Neither
+        // is part of a hexadecimal integer (`0x1p4` is the double 16).
+        if matches!(self.peek(), Some(b'.' | b'p' | b'P')) {
+            return self.finish_hex_float(start, digit_start, digit_end, line, column);
+        }
+        if digit_start == digit_end {
+            return self.fail(line, column, "invalid hexadecimal constant");
+        }
+        let suffix = self.integer_suffix(line, column)?;
+        self.reject_number_tail(line, column)?;
+        let spelling = self.source[start..self.index].to_string();
+        let digits = self.source[digit_start..digit_end].to_string();
+        let value = self.int_value(&digits, 16, line, column)?;
+        let ty = self.literal_type(value, suffix, true, line, column)?;
+        self.push_int(&spelling, value as u64, ty, line, column);
+        Ok(())
+    }
+
+    /// C11 6.4.4.2. The significand digits are already consumed. A `.` and an
+    /// exponent may still follow.
+    fn finish_decimal_float(
+        &mut self,
+        start: usize,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        if self.peek() == Some(b'.') {
+            self.bump();
+            while self.peek().is_some_and(|b| b.is_ascii_digit()) {
+                self.bump();
+            }
+        }
+        self.finish_float_exponent(start, line, column)
+    }
+
+    fn finish_float_exponent(
+        &mut self,
+        start: usize,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            self.bump();
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.bump();
+            }
+            let exp_start = self.index;
+            while self.peek().is_some_and(|b| b.is_ascii_digit()) {
+                self.bump();
+            }
+            if self.index == exp_start {
+                return self.fail(line, column, "invalid floating constant");
+            }
+        }
+        let kind = self.float_suffix(line, column)?;
+        let spelling = self.source[start..self.index].to_string();
+        let body_len = if kind == FloatKind::Float {
+            spelling.len() - 1
+        } else {
+            spelling.len()
+        };
+        let body = &spelling[..body_len];
+        let Some(bits) = parse_decimal(body, kind) else {
+            return self.fail(line, column, "invalid floating constant");
+        };
+        self.push_float(&spelling, bits, kind, line, column);
+        Ok(())
+    }
+
+    fn finish_hex_float(
+        &mut self,
+        start: usize,
+        int_start: usize,
+        int_end: usize,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        let int_digits = self.source[int_start..int_end].to_string();
+        let frac_digits = if self.peek() == Some(b'.') {
+            self.bump();
+            let frac_start = self.index;
+            while self.peek().is_some_and(|b| b.is_ascii_hexdigit()) {
+                self.bump();
+            }
+            self.source[frac_start..self.index].to_string()
+        } else {
+            String::new()
+        };
+        if int_digits.is_empty() && frac_digits.is_empty() {
+            return self.fail(line, column, "invalid hexadecimal floating constant");
+        }
+        if !matches!(self.peek(), Some(b'p' | b'P')) {
+            return self.fail(
+                line,
+                column,
+                "hexadecimal floating constant requires an exponent",
+            );
+        }
+        self.bump();
+        let neg = match self.peek() {
+            Some(b'+') => {
+                self.bump();
+                false
+            }
+            Some(b'-') => {
+                self.bump();
+                true
+            }
+            _ => false,
+        };
+        let exp_start = self.index;
+        while self.peek().is_some_and(|b| b.is_ascii_digit()) {
+            self.bump();
+        }
+        if self.index == exp_start {
+            return self.fail(line, column, "invalid hexadecimal floating constant");
+        }
+        let exp_digits = self.source[exp_start..self.index].to_string();
+        let kind = self.float_suffix(line, column)?;
+        let spelling = self.source[start..self.index].to_string();
+        let bits = match parse_exponent(&exp_digits, neg) {
+            Ok(exp) => parse_hex(&int_digits, &frac_digits, exp, kind).unwrap_or(0),
+            Err(true) => 0,
+            Err(false) => inf_bits(kind == FloatKind::Float),
+        };
+        self.push_float(&spelling, bits, kind, line, column);
+        Ok(())
+    }
+
+    /// `f`/`F` selects `float`. No suffix selects `double`. `l`/`L` would be
+    /// `long double`, which this target does not compute.
+    fn float_suffix(&mut self, line: usize, column: usize) -> Result<FloatKind, Diagnostic> {
+        match self.peek() {
+            Some(b'f' | b'F') => {
+                self.bump();
+                if self.float_tail() {
+                    return self.fail(line, column, "invalid floating constant");
+                }
+                Ok(FloatKind::Float)
+            }
+            Some(b'l' | b'L') => {
+                self.bump();
+                self.fail(line, column, "long double is not supported")
+            }
+            Some(_) if self.float_tail() => self.fail(line, column, "invalid floating constant"),
+            _ => Ok(FloatKind::Double),
+        }
+    }
+
+    fn float_tail(&self) -> bool {
+        self.peek()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.')
+    }
+
+    fn push_float(
+        &mut self,
+        spelling: &str,
+        bits: u64,
+        kind: FloatKind,
+        line: usize,
+        column: usize,
+    ) {
+        self.tokens.push(Token {
+            kind: TokenKind::Float,
+            spelling: spelling.to_string(),
+            line,
+            column,
+            filename: self.filename.to_string(),
+            value: Some(bits),
+            int_ty: None,
+            float_kind: Some(kind),
+            bytes: None,
+        });
     }
 
     /// C11 6.4.4.1. The type is the first in the list for this suffix and
@@ -361,16 +544,14 @@ impl Lexer<'_> {
             filename: self.filename.to_string(),
             value: Some(bits),
             int_ty: Some(ty),
+            float_kind: None,
             bytes: None,
         });
     }
 
     fn reject_number_tail(&self, line: usize, column: usize) -> Result<(), Diagnostic> {
         match self.peek() {
-            Some(b'.' | b'e' | b'E' | b'p' | b'P') => {
-                self.fail(line, column, "floating constants are not supported")
-            }
-            Some(b) if b.is_ascii_alphabetic() || b == b'_' => {
+            Some(b) if b.is_ascii_alphabetic() || b == b'_' || b == b'.' => {
                 self.fail(line, column, "invalid numeric literal")
             }
             _ => Ok(()),
@@ -405,6 +586,7 @@ impl Lexer<'_> {
             filename: self.filename.to_string(),
             value: None,
             int_ty: None,
+            float_kind: None,
             bytes: Some(bytes),
         });
         Ok(())
@@ -560,7 +742,12 @@ impl Lexer<'_> {
             return Ok(());
         }
         if self.peek_at(1).is_some_and(|b| b.is_ascii_digit()) {
-            return self.fail(line, column, "floating constants are not supported");
+            let start = self.index;
+            self.bump();
+            while self.peek().is_some_and(|b| b.is_ascii_digit()) {
+                self.bump();
+            }
+            return self.finish_float_exponent(start, line, column);
         }
         self.bump();
         self.push(TokenKind::Dot, ".", line, column);
@@ -840,6 +1027,35 @@ mod tests {
     }
 
     #[test]
+    fn floating_constants() {
+        use crate::ast::FloatKind;
+        let one = tokens("1.5");
+        assert_eq!(one[0].kind, TokenKind::Float);
+        assert_eq!(one[0].float_kind, Some(FloatKind::Double));
+        assert_eq!(one[0].value, Some(0x3ff8_0000_0000_0000));
+        assert_eq!(tokens(".5")[0].value, Some(0x3fe0_0000_0000_0000));
+        assert_eq!(tokens("1.")[0].value, Some(0x3ff0_0000_0000_0000));
+        assert_eq!(tokens("1e2")[0].value, Some(0x4059_0000_0000_0000));
+        assert_eq!(tokens("1.5f")[0].float_kind, Some(FloatKind::Float));
+        assert_eq!(tokens("1.5f")[0].value, Some(0x3fc0_0000));
+        assert_eq!(tokens("1.5F")[0].float_kind, Some(FloatKind::Float));
+        assert_eq!(tokens("0x1.8p1")[0].value, Some(0x4008_0000_0000_0000));
+        assert_eq!(tokens("0x.8p0")[0].value, Some(0x3fe0_0000_0000_0000));
+        assert_eq!(tokens("0x1p-1f")[0].float_kind, Some(FloatKind::Float));
+        assert_eq!(tokens("08.5")[0].kind, TokenKind::Float);
+        assert!(err("1.0L").contains("long double"));
+        assert!(err("1.0l").contains("long double"));
+        assert!(err("1.ex").contains("invalid floating constant"));
+        assert!(err("2._").contains("invalid floating constant"));
+        assert!(err("1.0e10.0").contains("invalid floating constant"));
+        assert!(err("30.e").contains("invalid floating constant"));
+        assert!(err("24e-").contains("invalid floating constant"));
+        assert!(err("1.e-10x").contains("invalid floating constant"));
+        assert!(err("0x1.0").contains("requires an exponent"));
+        assert!(err("0xp1").contains("invalid hexadecimal floating constant"));
+    }
+
+    #[test]
     fn character_constants() {
         let one = tokens("'a'");
         assert_eq!(one[0].value, Some(u64::from(b'a')));
@@ -867,9 +1083,11 @@ mod tests {
         assert!(err("L\"hi\"").contains("wide string and character literals"));
         assert!(err("u8\"hi\"").contains("wide string and character literals"));
         assert!(err("L'a'").contains("wide string and character literals"));
-        assert!(err("1.5").contains("floating constants"));
-        assert!(err(".5").contains("floating constants"));
-        assert!(err("1e2").contains("floating constants"));
+        assert!(err("1.0L").contains("long double"));
+        assert!(err("1.ex").contains("invalid floating constant"));
+        assert!(err("1e").contains("invalid floating constant"));
+        assert!(err("24e-").contains("invalid floating constant"));
+        assert!(err("0x1.0").contains("requires an exponent"));
         assert!(err("/* unterminated").contains("unterminated block comment"));
         assert!(err("#include <stdio.h>").contains("preprocessor directives"));
         assert!(err("int café").contains("non-ASCII"));

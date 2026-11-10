@@ -348,6 +348,24 @@ impl StructRef {
         self.data.borrow().llvm_name.clone()
     }
 
+    /// Name used in IR, including an incomplete struct that has no body yet.
+    ///
+    /// A completed struct uses the name chosen when it was defined. An
+    /// incomplete one is an opaque type. The id keeps two tags in different
+    /// scopes from sharing a name.
+    pub fn ir_name(&self) -> String {
+        let name = self.llvm_name();
+        if !name.is_empty() {
+            return name;
+        }
+        let tag = self.tag();
+        if tag.is_empty() {
+            format!("struct.anon{}", self.id)
+        } else {
+            format!("struct.{tag}.{}", self.id)
+        }
+    }
+
     pub fn field(&self, name: &str) -> Option<(usize, StructField)> {
         let body = self.data.borrow();
         let fields = body.fields.as_ref()?;
@@ -440,9 +458,9 @@ pub struct FuncTy {
 /// `float`, `double`, and `long double` on this target.
 ///
 /// Sizes follow the System V AMD64 ABI: 4, 8, and 16. `long double` is the
-/// 80-bit extended format (`x86_fp80`), stored in 16 bytes. Declarations of
-/// these types are accepted so the system headers can be parsed. Arithmetic
-/// on them is rejected; there is no floating literal yet.
+/// 80-bit extended format (`x86_fp80`), stored in 16 bytes. `float` and
+/// `double` are computed. `long double` may be named so a header can declare
+/// it, but a constant or an expression that produces one is rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FloatKind {
     Float,
@@ -646,10 +664,35 @@ impl CType {
         }
     }
 
-    /// Integer or pointer. Arrays and structs are not scalars; an array
-    /// decays first, and a struct is copied or accessed by member.
+    /// Integer, floating type, or pointer. Arrays and structs are not
+    /// scalars; an array decays first, and a struct is copied or accessed
+    /// by member.
     pub fn is_scalar(&self) -> bool {
-        self.is_integer() || self.is_pointer()
+        self.is_integer() || self.is_float() || self.is_pointer()
+    }
+
+    /// Integer or floating type. Pointers are scalars but not arithmetic.
+    pub fn is_arithmetic(&self) -> bool {
+        self.is_integer() || self.is_float()
+    }
+
+    pub fn float_kind(&self) -> Option<FloatKind> {
+        match self.peel() {
+            CType::Float(kind) => Some(*kind),
+            _ => None,
+        }
+    }
+
+    pub fn is_long_double(&self) -> bool {
+        self.float_kind() == Some(FloatKind::LongDouble)
+    }
+
+    /// `float` or `double`. `long double` uses the x87 registers instead.
+    pub fn is_sse_float(&self) -> bool {
+        matches!(
+            self.float_kind(),
+            Some(FloatKind::Float | FloatKind::Double)
+        )
     }
 
     /// `const` anywhere in this object: the type itself, an element, or a
@@ -783,14 +826,7 @@ impl CType {
                 let n = len.unwrap_or(0);
                 format!("[{n} x {}]", elem.ir_type())
             }
-            CType::Struct(handle) => {
-                let name = handle.llvm_name();
-                if name.is_empty() {
-                    "%struct.incomplete".to_string()
-                } else {
-                    format!("%{name}")
-                }
-            }
+            CType::Struct(handle) => format!("%{}", handle.ir_name()),
             CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
         }
     }
@@ -1208,6 +1244,9 @@ pub enum PtrConst {
 pub enum ConstInit {
     Zero,
     Int(u64),
+    /// IEEE bits of a `float` (low 32) or `double`. The destination type
+    /// selects the width.
+    Float(u64),
     Ptr(PtrConst),
     /// `ptrtoint` of a pointer constant, then truncated to `width` bits.
     PtrToInt {
@@ -1242,6 +1281,15 @@ pub enum Expr {
         bits: u64,
         /// Type of the literal or character constant (C11 6.4.4.1, 6.4.4.4).
         value_ty: TypeName,
+        line: usize,
+        column: usize,
+        ty: Option<CType>,
+    },
+    /// A `float` or `double` constant (C11 6.4.4.2). `bits` are `f32` bits in
+    /// the low 32 for [`FloatKind::Float`], and `f64` bits for `double`.
+    Float {
+        bits: u64,
+        kind: FloatKind,
         line: usize,
         column: usize,
         ty: Option<CType>,
@@ -1377,6 +1425,16 @@ impl Expr {
         Expr::Int {
             bits,
             value_ty,
+            line,
+            column,
+            ty: None,
+        }
+    }
+
+    pub fn float_lit(bits: u64, kind: FloatKind, line: usize, column: usize) -> Self {
+        Expr::Float {
+            bits,
+            kind,
             line,
             column,
             ty: None,
@@ -1553,6 +1611,7 @@ impl Expr {
     pub fn line(&self) -> usize {
         match self {
             Expr::Int { line, .. }
+            | Expr::Float { line, .. }
             | Expr::Var { line, .. }
             | Expr::Bin { line, .. }
             | Expr::Unary { line, .. }
@@ -1574,6 +1633,7 @@ impl Expr {
     pub fn column(&self) -> usize {
         match self {
             Expr::Int { column, .. }
+            | Expr::Float { column, .. }
             | Expr::Var { column, .. }
             | Expr::Bin { column, .. }
             | Expr::Unary { column, .. }
@@ -1595,6 +1655,7 @@ impl Expr {
     pub fn ty(&self) -> Option<CType> {
         match self {
             Expr::Int { ty, .. }
+            | Expr::Float { ty, .. }
             | Expr::Var { ty, .. }
             | Expr::Bin { ty, .. }
             | Expr::Unary { ty, .. }
@@ -1616,6 +1677,7 @@ impl Expr {
     pub fn set_ty(&mut self, ty: CType) {
         match self {
             Expr::Int { ty: slot, .. }
+            | Expr::Float { ty: slot, .. }
             | Expr::Var { ty: slot, .. }
             | Expr::Bin { ty: slot, .. }
             | Expr::Unary { ty: slot, .. }
@@ -2080,6 +2142,15 @@ fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
             out,
             indent,
             &format!("{} {}", value_ty.as_str(), value_ty.format_bits(*bits)),
+        ),
+        Expr::Float { bits, kind, .. } => put(
+            out,
+            indent,
+            &format!(
+                "{} {}",
+                kind.as_str(),
+                crate::float::llvm_const(*kind, *bits)
+            ),
         ),
         Expr::Var { name, .. } => put(out, indent, &format!("var {name}")),
         Expr::Bin {

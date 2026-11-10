@@ -43,10 +43,10 @@ def test(src, tmp):
     rc, _, err = run([str(COMPILER), str(src), "-o", str(ll)])
     if rc != 0:
         return f"compiler failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
-    rc, _, err = run([CLANG, "-w", str(ll), "-o", str(a)])
+    rc, _, err = run([CLANG, "-w", str(ll), "-o", str(a), "-lm"])
     if rc != 0:
         return f"clang rejected IR ({rc}): {err.decode(errors='replace').strip()[:300]}"
-    rc, _, err = run([CLANG, "-w", "-std=c11", str(src), "-o", str(b)])
+    rc, _, err = run([CLANG, "-w", "-std=c11", str(src), "-o", str(b), "-lm"])
     if rc != 0:
         return f"oracle compile failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
     got, exp = run([str(a)]), run([str(b)])
@@ -69,7 +69,7 @@ def test_cross(def_src, use_src, tmp):
     def clang_obj(src, obj):
         return run([CLANG, "-w", "-std=c11", "-c", str(src), "-o", str(obj)])
 
-    rc, _, err = run([CLANG, "-w", "-std=c11", str(def_src), str(use_src), "-o", str(ref)])
+    rc, _, err = run([CLANG, "-w", "-std=c11", str(def_src), str(use_src), "-o", str(ref), "-lm"])
     if rc != 0:
         return f"oracle compile failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
     expected = run([str(ref)])
@@ -84,7 +84,7 @@ def test_cross(def_src, use_src, tmp):
         rc, _, err = clang_obj(clang_src, obj)
         if rc != 0:
             return f"{label}: clang failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
-        rc, _, err = run([CLANG, "-w", str(ll), str(obj), "-o", str(binary)])
+        rc, _, err = run([CLANG, "-w", str(ll), str(obj), "-o", str(binary), "-lm"])
         if rc != 0:
             return f"{label}: link failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
         got = run([str(binary)])

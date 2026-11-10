@@ -2707,6 +2707,15 @@ impl Parser<'_> {
                     token.column,
                 ))
             }
+            TokenKind::Float => {
+                self.advance();
+                Ok(Expr::float_lit(
+                    token.value.expect("float token"),
+                    token.float_kind.expect("float token type"),
+                    token.line,
+                    token.column,
+                ))
+            }
             TokenKind::Ident => {
                 self.advance();
                 if let Some(NameBinding::EnumConst(value)) = self.lookup_name(&token.spelling) {
@@ -3008,6 +3017,7 @@ fn eval_ice(expr: &Expr) -> Result<BVal, BoundErr> {
             bits: *bits & value_ty.mask(),
             ty: *value_ty,
         }),
+        Expr::Float { .. } => Err(BoundErr::NotConst),
         Expr::Sizeof { operand, .. } => {
             let size = match operand {
                 SizeofOperand::Type(ty) => ty.size().ok_or(BoundErr::Incomplete)?,
@@ -3073,6 +3083,7 @@ fn eval_ice(expr: &Expr) -> Result<BVal, BoundErr> {
 fn type_only(expr: &Expr) -> Result<CType, BoundErr> {
     match expr {
         Expr::Int { value_ty, .. } => Ok(CType::from_name(*value_ty)),
+        Expr::Float { kind, .. } => Ok(CType::Float(*kind)),
         Expr::Str { bytes, .. } => Ok(CType::array(
             CType::from_name(TypeName::Char),
             Some(bytes.len() as u64 + 1),

@@ -2,23 +2,22 @@
 
 ## Current milestone
 
-**Structs and unions passed and returned by value, System V AMD64, on top of `switch` and the host-header subset.** An aggregate of at most 16 bytes whose eightbytes are all INTEGER is coerced to register pieces (`i8` through `i64`, or `ptr` when an eightbyte is exactly one pointer). A larger aggregate, or one with an unaligned field, is `byval` on the way in and `sret` on the way out. An eightbyte that needs an SSE register is rejected until floating-point lowering. An x87 aggregate is passed in memory, which is what the psABI does for arguments, and returning one is rejected because the value belongs in `%st0`. INTEGER wins over SSE in the same eightbyte. A multi-eightbyte aggregate that does not fit in the remaining general registers is passed entirely in memory, and those registers stay available. A call result can be assigned, used in `?:`, or have a member read (`f().x`). Function pointers are usable end to end: decay, `fp(...)` and `(*fp)(...)`, arrays, members, typedefs of function types, and `qsort`. Programs can `#include` the host glibc headers for `stdio.h`, `stdlib.h`, `string.h`, `stdint.h`, `ctype.h`, and `assert.h`. The compiler supplies `stddef.h`, `stdarg.h`, `stdbool.h`, and `limits.h`. The Nora Sandler suite is fetched at a pinned commit and run by `harness/run_wacc.py`. It is not vendored.
+**`float` and `double`, on top of aggregate calls and the host-header subset.** Decimal and hexadecimal floating constants are lexed, including an `f`/`F` suffix. The usual arithmetic conversions, integer/float conversions, and the `float` to `double` default argument promotion are applied, so `printf("%f", x)` passes a `double`. Arithmetic, comparisons, unary `+`/`-`, `!`, compound assignment, `++`/`--`, `?:`, casts, and the conditions of `if` / `while` / `for` / `&&` / `||` accept floating operands. `switch` still requires an integer. File-scope and `static` objects may have constant floating initializers, and floating members are allowed in structs, unions, and arrays. Scalar `float` and `double` parameters and returns use XMM registers. An SSE eightbyte of an aggregate is `float`, `double`, or `<2 x float>`. INTEGER still wins over SSE in the same eightbyte. A lone integer eightbyte stays an integer when general registers run out. An SSE eightbyte, or a mixed aggregate that is short a register of either class, is `byval` and does not consume the registers that remain. `long double` may still be named so a header parses, but a constant, a definition, or an expression that produces one is rejected. An x87 aggregate is passed in memory and returning one is still rejected. Programs can `#include` the host glibc headers for `stdio.h`, `stdlib.h`, `string.h`, `stdint.h`, `ctype.h`, `math.h`, and `assert.h`. The compiler supplies `stddef.h`, `stdarg.h`, `stdbool.h`, and `limits.h`. The Nora Sandler suite is fetched at a pinned commit and run by `harness/run_wacc.py`. It is not vendored.
 
 ## External suite
 
-`main` at `70e489f` had **68** unit tests, **103/103** harness programs, and a suite run of **1254 executed, 1176 passed, 78 known failures, 363 skipped**. After aggregate calls: **74** unit tests, **107/107** harness programs (including one cross-ABI pair), and **1285 executed, 1194 passed, 91 known failures, 332 skipped**, 0 unexpected, 0 panics. The 31 struct-by-value tests are no longer skipped. Sixteen of them pass. Fifteen still fail because of `double` or an SSE-register aggregate. `incomplete_structs.c` and `incomplete_union_types.c` pass: a prototype may name an incomplete aggregate, and the type is complete before the call. The one test tagged with both `goto` and `switch` stays skipped; it uses `goto`.
+`main` at `21e850e` had **74** unit tests, **107/107** harness programs, and a suite run of **1285 executed, 1194 passed, 91 known failures, 332 skipped**. After `float` and `double`: **78** unit tests, **110/110** harness programs (including two cross-ABI pairs), and **1354 executed, 1354 passed, 0 known failures, 263 skipped**, 0 unexpected, 0 panics. Chapter 13 runs. All 69 of its tests pass, including the three NaN extra-credit tests. The 91 programs that failed because of a floating constant or an SSE aggregate now pass, including the 15 struct-by-value tests that needed `double`. `extern struct S x;` may name an incomplete type defined in another translation unit, which is what `opaque_struct_client.c` does. The one test tagged with both `goto` and `switch` stays skipped; it uses `goto`.
 
 Licence: **MIT**, Copyright (c) 2023 Nora Sandler. The licence allows redistribution. The tree is still fetched, not committed. Source: https://github.com/nlsandler/writing-a-c-compiler-tests. Pinned commit: `ae12014d2dec14488f3f80d14df4b6d8e4634d7d` (2026-02-17). Recorded in `tests/external/README.md`. `scripts/fetch_wacc_tests.sh` clones that commit into `tests/external/wacc/` (gitignored). CI caches that directory.
 
 `harness/run_wacc.py` does not call the suite's `test_compiler`. A valid program is compiled with `build/compiler`, linked with `clang`, and compared with `expected_results.json` (return code and stdout). If that entry is missing, `clang -std=c11` is the oracle. A `libraries/` test compiles one translation unit here and the other with clang, in both directions. Assembly helpers named in `test_properties.json` are the Linux `.s` file. Each command has a 10 second timeout. An invalid program must exit non-zero and must not crash. A compiler panic fails the run even if the test is listed in `harness/wacc_known_failures.txt`. A listed test that passes is reported so the line can be removed. An unlisted failure fails the run.
 
-Chapters run: 1–12 and 14–18 (return through structs, including `long`, unsigned, pointers, arrays, character and string tests, `void` / `sizeof`). Extra-credit bitwise, compound assignment, and increment tests are included.
+Chapters run: 1–18 (return through structs, including `long`, unsigned, pointers, arrays, character and string tests, `void` / `sizeof`, and floating point). Extra-credit bitwise, compound assignment, increment, and NaN tests are included.
 
 Skipped, and not listed as failures:
 
 | Skip | Tests | Why |
 | --- | --- | --- |
-| Chapter 13 | 69 | floating point is not started (`double`). `helper_libs/` is not a test. |
 | Chapter 19 | 167 | Part III. The runner inspects the book's own assembly for constant folding, copy propagation, dead stores, and unreachable code. It does not only run the program. |
 | Chapter 20 | 66 | Part III register allocation. Same assembly inspection, including coalescing. Helper libraries are not tests. |
 | Extra credit `goto` | 30 | not started. One of these is also tagged `switch` (`switch_goto_mid_case.c`). It jumps with `goto`, so it stays skipped. |
@@ -27,7 +26,7 @@ There is no separate function-pointer chapter in this pin. A function pointer is
 
 ### Per-chapter results
 
-Run locally with `python3 harness/run_wacc.py` after the fetch. 1285 executed, **1194 passed**, **91 known failures**, **332 skipped**, 0 unexpected, 0 compiler panics.
+Run locally with `python3 harness/run_wacc.py` after the fetch. 1354 executed, **1354 passed**, **0 known failures**, **263 skipped**, 0 unexpected, 0 compiler panics.
 
 | Chapter | Run | Passed | Known failures | Skipped |
 | --- | --- | --- | --- | --- |
@@ -43,21 +42,21 @@ Run locally with `python3 harness/run_wacc.py` after the fetch. 1285 executed, *
 | 10 | 67 | 67 | 0 | 5 |
 | 11 | 55 | 55 | 0 | 0 |
 | 12 | 38 | 38 | 0 | 0 |
-| 13 | 0 | 0 | 0 | 69 |
-| 14 | 78 | 68 | 10 | 0 |
-| 15 | 106 | 94 | 12 | 0 |
-| 16 | 96 | 88 | 8 | 0 |
-| 17 | 88 | 81 | 7 | 0 |
-| 18 | 307 | 253 | 54 | 1 |
+| 13 | 69 | 69 | 0 | 0 |
+| 14 | 78 | 78 | 0 | 0 |
+| 15 | 106 | 106 | 0 | 0 |
+| 16 | 96 | 96 | 0 | 0 |
+| 17 | 88 | 88 | 0 | 0 |
+| 18 | 307 | 307 | 0 | 1 |
 | 19 | 0 | 0 | 0 | 167 |
 | 20 | 0 | 0 | 0 | 66 |
-| **Total** | **1285** | **1194** | **91** | **332** |
+| **Total** | **1354** | **1354** | **0** | **263** |
 
 ### Known-failure categories
 
 | Category | Tests | Meaning |
 | --- | --- | --- |
-| `unsupported-double` | 91 | `double`, a floating constant, or an aggregate whose ABI class needs an SSE or x87 register. Later chapters, including fifteen union extra-credit tests, fifteen struct-by-value tests, and `struct_decl_in_switch_statement.c`, use a floating constant or a `double` member in a program whose main feature is something else. `float` and `double` may appear in a declaration. An expression that computes one is still rejected. Integer aggregates are passed and returned by value. |
+None. The previous `unsupported-double` list (91 tests) now passes. `long double` is rejected when an expression produces one; this pin does not do that outside a comment. `goto` stays skipped.
 
 ### Diagnostics fixed while running the suite
 
@@ -74,12 +73,12 @@ No test in the run panicked, and no executed program disagreed with `expected_re
 | --- | --- | --- |
 | `cargo fmt --all -- --check` | rustc **1.85.1** (4eb161250 2025-03-15) | clean |
 | `cargo clippy --offline --all-targets -- -D warnings` | same | clean |
-| `cargo test --offline --lib` | same | **74 passed, 0 failed** |
+| `cargo test --offline --lib` | same | **78 passed, 0 failed** |
 | `make` | GNU make **4.3** | `build/compiler` produced |
-| `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **107/107 passed** |
-| `scripts/fetch_wacc_tests.sh` then `python3 harness/run_wacc.py` | same Clang and Python | **1194 passed, 91 known failures, 332 skipped, 0 unexpected** |
+| `python3 harness/run_tests.py` | Ubuntu Clang **18.1.3** (`x86_64-pc-linux-gnu`), Python **3.12.3** | **110/110 passed** |
+| `scripts/fetch_wacc_tests.sh` then `python3 harness/run_wacc.py` | same Clang and Python | **1354 passed, 0 known failures, 263 skipped, 0 unexpected** |
 
-`tests/100_agg.c` covers register and memory aggregates, `f().x`, and `?:`. `tests/101_fnptr.c` covers decay, `(*fp)(...)`, arrays, struct members, a function typedef, and `qsort`. `tests/102_div.c` calls the host `div` and `ldiv`. `tests/xabi/01_agg_def.c` and `01_agg_use.c` are linked both ways against Clang. `tests/99_switch.c` covers fallthrough, nested switches, `break` and `continue`, Duff's device, a case inside `if`, a jump over an automatic initializer, enum and character constants, casts, `sizeof`, and every integer width from `char` through `unsigned long long`, plus `_Bool`. GitHub Actions for this step is not in this file yet. The switch step's Actions runs are in the switch record below.
+`tests/100_agg.c` covers register and memory aggregates, `f().x`, and `?:`. `tests/101_fnptr.c` covers decay, `(*fp)(...)`, arrays, struct members, a function typedef, and `qsort`. `tests/102_div.c` calls the host `div` and `ldiv`. `tests/103_float.c` covers floating arithmetic, comparisons, casts, compound assignment, `++`/`--`, globals, a `static` local, a struct member, a union, and `printf("%f", ...)`. `tests/104_libm.c` calls `sin`, `cos`, `sqrt`, `fma`, and `ldexp`. The harness links with `-lm`. `tests/xabi/01_agg_def.c` and `01_agg_use.c` are linked both ways against Clang. `tests/xabi/02_fp_def.c` and `02_fp_use.c` do the same for `float` and `double` arguments, returns, and mixed INTEGER/SSE structs, including a `byval` spill when the XMM registers are full. `tests/99_switch.c` covers fallthrough, nested switches, `break` and `continue`, Duff's device, a case inside `if`, a jump over an automatic initializer, enum and character constants, casts, `sizeof`, and every integer width from `char` through `unsigned long long`, plus `_Bool`. GitHub Actions for this step is not in this file yet. The switch step's Actions runs are in the switch record below.
 
 ## Stage 2, step 1 — built-in preprocessor
 
@@ -92,6 +91,8 @@ The compiler is a Rust binary. `make` installs it at `build/compiler`. It accept
 1. **Done.** Built-in preprocessor (this step). Real libc headers are not required yet; `include/` is a temporary stand-in. See below.
 2. **Done.** `typedef`, `enum`, unions, and the declarations the host headers need. See the step 2 record below.
 3. Basic standard headers are in use: the compiler supplies the freestanding ones, and glibc supplies the rest listed in the step 2 record.
+4. **Done.** Passing and returning an integer aggregate by value. See the aggregate-call record below.
+5. **Done.** `float` and `double`. `long double` is rejected when an expression produces one. See the floating-point record below.
 
 ## Milestone 2 plan
 
@@ -155,6 +156,7 @@ GitHub Actions for this step is not copied here.
 - [x] Passing and returning structs and unions by value (System V AMD64 INTEGER and MEMORY classes)
 - [x] Function pointers: decay, calls, arrays, members, typedefs, and `qsort`
 - [x] `switch`, `case`, and `default`, including nested labels, fallthrough, and an LLVM `switch`
+- [x] `float` and `double`: constants, conversions, operators, SSE parameters and returns, and mixed INTEGER/SSE aggregates
 
 ## Supported syntax
 
@@ -230,7 +232,7 @@ A character array (`char`, `signed char`, or `unsigned char`) may be initialized
 
 What is not enforced: `volatile` does not change code generation. Loads and stores are ordinary LLVM loads and stores, not `volatile`. This compiler does not optimize, but a later LLVM pass can. A cast may drop `const` or `volatile`; the cast is accepted and a later write is not diagnosed. `restrict` is accepted on pointers and does not change the IR; see the stage 2 step 2 record. Duplicate qualifiers are errors here; Clang only warns.
 
-A variadic declaration such as `int printf(const char *, ...);` is kept. The IR is `declare i32 @printf(ptr, ...)`, with `signext` or `zeroext` on a narrow fixed parameter or return, the same as any other function. A call is `call i32 (ptr, ...) @printf(...)`. Fixed arguments are converted to the parameter type. Further arguments get the default argument promotions: `char` and `short`, signed or unsigned, become `int`. Pointers are not promoted. `float`, `double`, and `long double` may be declared, but an expression that computes one is rejected. `int f(...);` is rejected because C11 requires a named parameter before `...`. A definition that uses `...` is rejected. `<stdarg.h>` supplies `va_list`; `va_start`, `va_arg`, and `va_copy` are diagnostics, not argument access. A call still requires a visible declaration. C11 has no implicit declaration, and this compiler does not add one.
+A variadic declaration such as `int printf(const char *, ...);` is kept. The IR is `declare i32 @printf(ptr, ...)`, with `signext` or `zeroext` on a narrow fixed parameter or return, the same as any other function. A call is `call i32 (ptr, ...) @printf(...)`. Fixed arguments are converted to the parameter type. Further arguments get the default argument promotions: `char` and `short`, signed or unsigned, become `int`, and `float` becomes `double`. Pointers are not promoted. `long double` may be declared, but an expression that produces one is rejected. `int f(...);` is rejected because C11 requires a named parameter before `...`. A definition that uses `...` is rejected. `<stdarg.h>` supplies `va_list`; `va_start`, `va_arg`, and `va_copy` are diagnostics, not argument access. A call still requires a visible declaration. C11 has no implicit declaration, and this compiler does not add one.
 
 Hello world is `tests/62_hello.c`:
 
@@ -261,7 +263,7 @@ A struct may be a local, a file-scope object (`extern` or `static` included), or
 
 - The preprocessor implements translation phases 2–4 for the directives listed below. Trigraphs are not recognized. `_Pragma` and `__DATE__` / `__TIME__` are not implemented. `#include_next` is. A `#` that survives expansion is a stray-token diagnostic. Digraphs (`<:`, `:>`, `<%`, `%>`, `%:`, `%:%:`) are recognized as the corresponding punctuators.
 - An integer constant that fits in no type on the C11 6.4.4.1 list for its suffix and base is a diagnostic. A decimal constant that does not fit in signed `long long` is rejected even when it fits in `unsigned long long`.
-- No bit-fields, flexible array members, or anonymous struct/union members. No designated initializers. An aggregate passed in an SSE or x87 register is rejected. `float`, `double`, and `long double` may be declared (so the system headers parse) but an expression that computes one is rejected, and a floating constant is a lexical error. No variable-length arrays. Wide string and character literals are rejected in program text; a wide character constant in a preprocessor expression is accepted as the corresponding character value. An empty struct or union is rejected. Defining a variadic function is not implemented. `va_start`, `va_arg`, and `va_copy` expand to undeclared names, so a use is a diagnostic.
+- No bit-fields, flexible array members, or anonymous struct/union members. No designated initializers. Returning an x87 aggregate is rejected. `long double` may be declared (so a header can name it) but a constant with an `l`/`L` suffix, a definition that takes or returns one, and an expression that produces one are rejected. No variable-length arrays. Wide string and character literals are rejected in program text; a wide character constant in a preprocessor expression is accepted as the corresponding character value. An empty struct or union is rejected. Defining a variadic function is not implemented. `va_start`, `va_arg`, and `va_copy` expand to undeclared names, so a use is a diagnostic.
 - Multi-character character constants (`'ab'`) are rejected; Clang accepts them as an implementation-defined `int`. A hex or octal escape outside `unsigned char` is a diagnostic, matching Clang. Runtime shift counts outside `0 .. width`, signed left shifts of negative values, and signed left shifts that do not fit are undefined and are not diagnosed outside constant initializers. Signed overflow at runtime is undefined and is not diagnosed. Modifying a string literal is undefined and is not diagnosed. `volatile` does not emit volatile loads or stores. A cast may drop `const`.
 - No `goto`. A label (`name:`) is a diagnostic. `?:` accepts two operands of the same struct or union type. `switch` is implemented, as described above. A `case` range (`case 1 ... 3`) is a GNU extension and is rejected.
 - An empty parameter list on a declaration that is not a definition (`int f();`) is rejected. C11 treats that as a non-prototype. This subset requires a prototype: `(void)` or a parameter type list. A definition may still use `()`.
@@ -283,13 +285,25 @@ A struct may be a local, a file-scope object (`extern` or `static` included), or
 
 ## Next actions
 
-Floating expressions are the largest remaining bucket. An aggregate that needs an SSE or x87 register waits on that. `goto` is not started. `switch`, integer aggregate calls, and function pointers are implemented.
+`long double` (x87, `%st0`) and `goto` are the largest remaining gaps. `float`, `double`, SSE aggregates, integer aggregate calls, `switch`, and function pointers are implemented.
 
 ## Stage 2 step 4 record
 
 Aggregate calls and function pointers. Local results: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **74 passed**, `make` produced `build/compiler`, `python3 harness/run_tests.py` **107/107 passed**, and `python3 harness/run_wacc.py` **1194 passed, 91 known failures, 332 skipped, 0 unexpected**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. `main` at `70e489f` was **1254 executed, 1176 passed, 78 known failures, 363 skipped**. GitHub Actions for this step is not in this file yet.
 
 Classification follows the System V AMD64 psABI. Each eightbyte is INTEGER, SSE, x87, or MEMORY. INTEGER wins when it shares an eightbyte with SSE, so `struct { int i; float f; }` is one `i64` even though float lowering is not implemented. A pure SSE or x87 eightbyte is a diagnostic. More than 16 bytes, or an unaligned field, is memory. Register pieces use the field span in that eightbyte, rounded up to the strictest field alignment there: three bytes are `i24`, `struct { long a; char b; }` is `i64` plus `i8`, and a lone pointer eightbyte is `ptr`. `byval` is aligned to at least 8. `sret` uses the aggregate's alignment. The hidden `sret` pointer is a normal LLVM `sret` argument, so the x86-64 backend returns it in `%rax`. A variadic argument uses the same classification and the same register budget. A multi-eightbyte aggregate that does not fit in the registers still free is passed entirely in memory.
+
+## Floating-point record
+
+`float` is IEEE binary32 and `double` is IEEE binary64. A decimal constant is rounded to nearest, ties to even, by the host `f32`/`f64` conversion. A hexadecimal constant is converted from its binary significand with the same rounding, including subnormals, overflow to infinity, and underflow to zero. An unsuffixed constant is `double`. `f`/`F` is `float`. `l`/`L` is a diagnostic: `long double` is not computed. A floating constant in `#if` is a diagnostic, because a preprocessor expression is an integer constant expression.
+
+The usual arithmetic conversions follow C11 6.3.1.8. `double` wins over `float`, and either wins over every integer. Integer-to-floating conversion uses `sitofp` or `uitofp`. Floating-to-integer conversion truncates toward zero (`fptosi` / `fptoui`). A constant that is not finite, or that does not fit in the destination integer, is a diagnostic. `_Bool` is 0 when the value compares equal to 0 and 1 otherwise, so a NaN converts to 1. `float` promotes to `double` in a variadic argument. `%`, shifts, and bitwise operators still require integers. Comparisons use ordered `fcmp` predicates, except `!=`, which is `une`, so a NaN compares unequal. `if (x)` is `fcmp une` against zero, so a NaN is true and `-0.0` is false. `!x` is that condition inverted, which is `0 == x`.
+
+An SSE eightbyte is one XMM register. Two `float` fields in one eightbyte are `<2 x float>`. A `double` is `double`. A single `float` is `float`. INTEGER wins when an integer shares the eightbyte, and that integer is `i64` when several fields share it inside a larger aggregate, or the scalar width when the eightbyte holds one aligned scalar. A field that continues across an eightbyte boundary keeps the partial width, so `unsigned char[10]` is still `i64` plus `i16`. Eight XMM registers are tracked beside the six general registers. Scalar `float` and `double` consume XMM registers. LLVM places a scalar past `xmm7` on the stack. An aggregate that needs an XMM register and does not have one is `byval`.
+
+`tests/xabi/02_fp_def.c` and `02_fp_use.c` are linked both ways with Clang. `tests/104_libm.c` calls glibc through `<math.h>`. The harness and the suite runner link with `-lm`.
+
+Local results: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **78 passed**, `make` produced `build/compiler`, `python3 harness/run_tests.py` **110/110 passed**, and `python3 harness/run_wacc.py` **1354 passed, 0 known failures, 263 skipped, 0 unexpected**, on rustc 1.85.1 and Ubuntu Clang 18.1.3. GitHub Actions for this step is not in this file yet.
 
 ## Switch record
 
