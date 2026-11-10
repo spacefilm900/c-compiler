@@ -162,7 +162,7 @@ struct Sema {
     global_order: Vec<String>,
     func_order: Vec<String>,
     /// String literals that need a private global, keyed by bytes including NUL.
-    strings: Vec<(Vec<u8>, String)>,
+    strings: Vec<(Vec<u8>, String, bool)>,
     /// Block-scope `static` objects. They have no linkage, so they are not in
     /// the file-scope symbol table. The name is an LLVM symbol, not the C name.
     static_locals: Vec<IrGlobal>,
@@ -356,11 +356,6 @@ impl Sema {
     }
 
     fn check_function(&mut self, func: &mut FuncDef) -> Result<(), Diagnostic> {
-        if func.ret_type.is_long_double()
-            || func.params.iter().any(|param| param.ty.is_long_double())
-        {
-            return self.err(func.line, func.column, "long double is not supported");
-        }
         self.current_ret = func.ret_type.clone();
         self.fn_name = func.name.clone();
         self.current_func = func.name.clone();
@@ -474,9 +469,10 @@ impl Sema {
         unit.strings = self
             .strings
             .iter()
-            .map(|(bytes, name)| StrConst {
+            .map(|(bytes, name, wide)| StrConst {
                 name: name.clone(),
                 bytes: bytes.clone(),
+                wide: *wide,
             })
             .collect();
         Ok(())
@@ -551,9 +547,11 @@ impl Sema {
         let mut ty = ty.clone();
         if let CType::Array(elem, None) = &ty {
             let elem = (**elem).clone();
-            if let Some(bytes) = string_payload(init) {
-                if elem.is_character() {
+            if let Some((bytes, wide)) = string_payload(init) {
+                if !wide && elem.is_character() {
                     ty = CType::array(elem.clone(), Some(bytes.len() as u64 + 1));
+                } else if wide && elem.as_integer() == Some(TypeName::Int) {
+                    ty = CType::array(elem.clone(), Some(bytes.len() as u64 / 4 + 1));
                 } else if matches!(init, Init::Expr(_)) {
                     let (line, column) = init_pos(init);
                     return self.err(
@@ -714,9 +712,10 @@ impl Sema {
                 return Ok(());
             }
         }
-        if let Some(bytes) = string_payload(init).map(|bytes| bytes.to_vec()) {
-            if is_char_array(ty) {
-                return self.fill_from_string(ty, &bytes, base, stores, init);
+        if let Some((bytes, wide)) = string_payload(init) {
+            let bytes = bytes.to_vec();
+            if (!wide && is_char_array(ty)) || (wide && is_wchar_array(ty)) {
+                return self.fill_from_string(ty, &bytes, wide, base, stores, init);
             }
             if matches!(init, Init::Expr(_)) {
                 let (line, column) = init_pos(init);
@@ -750,9 +749,10 @@ impl Sema {
                 return self.err(*line, *column, "excess elements in array initializer");
             }
             let off = base + index * elem_size;
-            if is_char_array(elem) {
-                if let Some(bytes) = string_payload(&items[pos]).map(|bytes| bytes.to_vec()) {
-                    self.fill_from_string(elem, &bytes, off, stores, &items[pos])?;
+            if let Some((bytes, wide)) = string_payload(&items[pos]) {
+                let bytes = bytes.to_vec();
+                if (!wide && is_char_array(elem)) || (wide && is_wchar_array(elem)) {
+                    self.fill_from_string(elem, &bytes, wide, off, stores, &items[pos])?;
                     pos += 1;
                     index += 1;
                     continue;
@@ -988,6 +988,7 @@ impl Sema {
             children: init_children(ty, false),
             index: 0,
             base,
+            is_union: ty.is_union(),
         }];
         for item in items {
             if let Init::Designated {
@@ -1028,25 +1029,48 @@ impl Sema {
             return self.err(line, column, "designator does not match this type");
         }
         for (nth, designator) in designators.iter().enumerate() {
+            if let Designator::Field { name, line, column } = designator {
+                if current.unqualified().is_array() {
+                    return self.err(*line, *column, "field designator on an array");
+                }
+                let Some(path) = field_designator_path(&current, name) else {
+                    return self.err(*line, *column, format!("no member named '{name}'"));
+                };
+                let mut chosen = None;
+                for (step, index) in path.iter().enumerate() {
+                    let children = init_children(&current, true);
+                    if children.is_empty() || *index >= children.len() {
+                        return self.err(*line, *column, "designator does not match this type");
+                    }
+                    let child = children[*index].clone();
+                    let is_union = current.is_union();
+                    frames.push(InitFrame {
+                        children,
+                        index: *index,
+                        base: current_base,
+                        is_union,
+                    });
+                    if step + 1 == path.len() {
+                        chosen = Some(child);
+                        break;
+                    }
+                    current_base += child.offset;
+                    current = child.ty.clone();
+                }
+                let child = chosen.expect("designator path");
+                if nth + 1 == designators.len() {
+                    return Ok((child, frames));
+                }
+                current_base += child.offset;
+                current = child.ty;
+                continue;
+            }
             let children = init_children(&current, true);
             if children.is_empty() {
                 return self.err(line, column, "designator does not match this type");
             }
             let index = match designator {
-                Designator::Field { name, line, column } => {
-                    if current.unqualified().is_array() {
-                        return self.err(*line, *column, "field designator on an array");
-                    }
-                    let Some(index) = children.iter().position(|child| {
-                        child
-                            .field
-                            .as_ref()
-                            .is_some_and(|field| field.name == *name)
-                    }) else {
-                        return self.err(*line, *column, format!("no member named '{name}'"));
-                    };
-                    index
-                }
+                Designator::Field { .. } => unreachable!("field designators are handled above"),
                 Designator::Index { expr, line, column } => {
                     if !current.unqualified().is_array() {
                         return self.err(*line, *column, "array designator on a non-array");
@@ -1081,6 +1105,7 @@ impl Sema {
                 children,
                 index,
                 base: current_base,
+                is_union: current.is_union(),
             });
             if nth + 1 == designators.len() {
                 return Ok((child, frames));
@@ -1153,6 +1178,7 @@ impl Sema {
                 children: nested,
                 index: 0,
                 base: child_base,
+                is_union: child.ty.is_union(),
             });
             let _ = root;
         }
@@ -1166,6 +1192,7 @@ impl Sema {
         &self,
         ty: &CType,
         bytes: &[u8],
+        wide: bool,
         base: u64,
         stores: &mut Vec<ElemStore>,
         init: &Init,
@@ -1174,23 +1201,37 @@ impl Sema {
         let Some(len) = ty.array_len() else {
             return self.err(line, column, "array size missing");
         };
-        if bytes.len() as u64 > len {
+        let units: Vec<u64> = if wide {
+            bytes
+                .chunks(4)
+                .map(|chunk| {
+                    let mut acc = 0u64;
+                    for (index, byte) in chunk.iter().enumerate() {
+                        acc |= u64::from(*byte) << (8 * index);
+                    }
+                    acc
+                })
+                .collect()
+        } else {
+            bytes.iter().map(|byte| u64::from(*byte)).collect()
+        };
+        if units.len() as u64 > len {
             return self.err(line, column, "initializer string is too long for the array");
         }
         let elem = ty.array_elem().expect("character array").clone();
         let elem_size = elem.size().expect("character element");
-        let mut data = bytes.to_vec();
+        let mut data = units;
         if (data.len() as u64) < len {
             data.push(0);
         }
-        for (index, byte) in data.iter().enumerate() {
+        for (index, value) in data.iter().enumerate() {
             if index as u64 >= len {
                 break;
             }
             stores.push(ElemStore {
                 offset: base + index as u64 * elem_size,
                 ty: elem.clone(),
-                expr: Expr::int(u64::from(*byte), TypeName::Int, line, column),
+                expr: Expr::int(*value, TypeName::Int, line, column),
                 bits: None,
             });
         }
@@ -1334,9 +1375,6 @@ impl Sema {
             return self.const_diag(name, expr);
         }
         if let Some(kind) = dest.float_kind() {
-            if kind == crate::ast::FloatKind::LongDouble {
-                return self.err(expr.line(), expr.column(), "long double is not supported");
-            }
             return match eval_num(expr) {
                 Ok(value) => match value.to_real(kind) {
                     Some(bits) => Ok(ConstInit::Float(bits)),
@@ -2182,7 +2220,7 @@ impl Sema {
                 let bytes = self.fn_name.as_bytes().to_vec();
                 let line = *line;
                 let column = *column;
-                *expr = Expr::str_lit(bytes, line, column);
+                *expr = Expr::str_lit(bytes, false, line, column);
             }
         }
         match expr {
@@ -2216,39 +2254,52 @@ impl Sema {
         }
     }
 
-    /// A string literal has type `char[N]`, counting the terminating NUL.
-    /// The private global is created when the address is used, not for
-    /// `sizeof` and not when the literal only initializes a character array.
+    /// A string literal has type `char[N]` or `wchar_t[N]`, counting the
+    /// terminating NUL. The private global is created when the address is
+    /// used, not for `sizeof` and not when the literal only initializes an
+    /// array.
     fn check_str(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
-        let len = match expr {
-            Expr::Str { bytes, .. } => bytes.len() as u64 + 1,
+        let (len, elem) = match expr {
+            Expr::Str {
+                bytes, wide: true, ..
+            } => (bytes.len() as u64 / 4 + 1, TypeName::Int),
+            Expr::Str { bytes, .. } => (bytes.len() as u64 + 1, TypeName::Char),
             _ => unreachable!("string literal"),
         };
-        expr.set_ty(CType::array(CType::from_name(TypeName::Char), Some(len)));
+        expr.set_ty(CType::array(CType::from_name(elem), Some(len)));
         Ok(())
     }
 
     /// Record a string literal the first time its address is needed. Identical
     /// contents share one private global.
     fn ensure_string(&mut self, expr: &mut Expr) {
-        let bytes = match expr {
+        let (bytes, wide) = match expr {
             Expr::Str {
                 symbol: None,
                 bytes,
+                wide,
                 ..
-            } => bytes.clone(),
+            } => (bytes.clone(), *wide),
             _ => return,
         };
-        let symbol = self.intern_string(&bytes);
+        let symbol = self.intern_string(&bytes, wide);
         if let Expr::Str { symbol: slot, .. } = expr {
             *slot = Some(symbol);
         }
     }
 
-    fn intern_string(&mut self, bytes: &[u8]) -> String {
+    fn intern_string(&mut self, bytes: &[u8], wide: bool) -> String {
         let mut key = bytes.to_vec();
-        key.push(0);
-        if let Some((_, name)) = self.strings.iter().find(|(stored, _)| stored == &key) {
+        if wide {
+            key.extend_from_slice(&[0, 0, 0, 0]);
+        } else {
+            key.push(0);
+        }
+        if let Some((_, name, _)) = self
+            .strings
+            .iter()
+            .find(|(stored, _, stored_wide)| stored == &key && *stored_wide == wide)
+        {
             return name.clone();
         }
         let name = if self.strings.is_empty() {
@@ -2256,7 +2307,7 @@ impl Sema {
         } else {
             format!(".str.{}", self.strings.len())
         };
-        self.strings.push((key, name.clone()));
+        self.strings.push((key, name.clone(), wide));
         name
     }
 
@@ -2303,9 +2354,6 @@ impl Sema {
                 expr.column(),
                 format!("cannot use incomplete type '{}' as a value", ty.display()),
             );
-        }
-        if ty.is_long_double() {
-            return self.err(expr.line(), expr.column(), "long double is not supported");
         }
         Ok(())
     }
@@ -2405,7 +2453,7 @@ impl Sema {
     ) -> Result<CType, Diagnostic> {
         let left_ty = left.ty().expect("typed");
         let right_ty = right.ty().expect("typed");
-        if let Some(common) = self.float_arith(&left_ty, &right_ty, line, column)? {
+        if let Some(common) = self.float_arith(&left_ty, &right_ty) {
             return Ok(common);
         }
         if left_ty.is_integer() && right_ty.is_integer() {
@@ -2423,29 +2471,20 @@ impl Sema {
         )
     }
 
-    /// `Some` when at least one operand is `float` or `double` and both are
-    /// arithmetic. `None` when neither is floating, so the caller keeps the
-    /// integer or pointer rule. `long double` is an error.
-    fn float_arith(
-        &self,
-        left: &CType,
-        right: &CType,
-        line: usize,
-        column: usize,
-    ) -> Result<Option<CType>, Diagnostic> {
+    /// `Some` when at least one operand is floating and both are arithmetic.
+    /// `None` when neither is floating, so the caller keeps the integer or
+    /// pointer rule. `long double` wins the usual arithmetic conversions.
+    fn float_arith(&self, left: &CType, right: &CType) -> Option<CType> {
         if !(left.is_float() || right.is_float()) {
-            return Ok(None);
-        }
-        if left.is_long_double() || right.is_long_double() {
-            return self.err(line, column, "long double is not supported");
+            return None;
         }
         if left.is_arithmetic() && right.is_arithmetic() {
-            return Ok(Some(CType::Float(crate::float::usual_real(
+            return Some(CType::Float(crate::float::usual_real(
                 left.float_kind(),
                 right.float_kind(),
-            ))));
+            )));
         }
-        Ok(None)
+        None
     }
 
     fn check_compare(
@@ -2458,9 +2497,6 @@ impl Sema {
     ) -> Result<CType, Diagnostic> {
         let left_ty = left.ty().expect("typed");
         let right_ty = right.ty().expect("typed");
-        if left_ty.is_long_double() || right_ty.is_long_double() {
-            return self.err(line, column, "long double is not supported");
-        }
         if (left_ty.is_float() || right_ty.is_float())
             && left_ty.is_arithmetic()
             && right_ty.is_arithmetic()
@@ -2517,7 +2553,7 @@ impl Sema {
     ) -> Result<CType, Diagnostic> {
         let left_ty = left.ty().expect("typed");
         let right_ty = right.ty().expect("typed");
-        if let Some(common) = self.float_arith(&left_ty, &right_ty, line, column)? {
+        if let Some(common) = self.float_arith(&left_ty, &right_ty) {
             return Ok(common);
         }
         if left_ty.is_integer() && right_ty.is_integer() {
@@ -2645,9 +2681,6 @@ impl Sema {
                 UnaryOp::Plus | UnaryOp::Minus => {
                     self.decay(expr)?;
                     let src = expr.ty().expect("typed");
-                    if src.is_long_double() {
-                        return self.err(line, column, "long double is not supported");
-                    }
                     if let Some(kind) = src.float_kind() {
                         // Unary `+` and `-` do not promote a floating operand.
                         CType::Float(kind)
@@ -2731,9 +2764,6 @@ impl Sema {
                     );
                 }
                 let rhs = value.ty().expect("typed");
-                if dest.is_long_double() || rhs.is_long_double() {
-                    return self.err(line, column, "long double is not supported");
-                }
                 if !dest.is_arithmetic() || !rhs.is_arithmetic() {
                     return self.err(
                         line,
@@ -2769,9 +2799,6 @@ impl Sema {
             let column = *column;
             self.check_modifiable(target)?;
             let dest = target.ty().expect("lvalue type");
-            if dest.is_long_double() {
-                return self.err(line, column, "long double is not supported");
-            }
             if !dest.is_scalar() {
                 return self.err(
                     line,
@@ -2889,9 +2916,6 @@ impl Sema {
             }
             if !ty_name.is_void() {
                 let src = inner.ty().expect("typed");
-                if ty_name.is_long_double() || src.is_long_double() {
-                    return self.err(line, column, "long double is not supported");
-                }
                 // C11 6.5.4: an arithmetic type converts to any arithmetic
                 // type. A pointer converts to an integer and the reverse.
                 // There is no conversion between a pointer and a floating type.
@@ -2919,6 +2943,24 @@ impl Sema {
     }
 
     fn check_call(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        if let Expr::Call { callee, .. } = &*expr {
+            if let Expr::Var { name, .. } = callee.as_ref() {
+                if matches!(
+                    name.as_str(),
+                    "__builtin_memcpy" | "__builtin_memmove" | "__builtin_memset"
+                ) {
+                    let name = name.clone();
+                    return self.check_memory_builtin(expr, &name);
+                }
+                if matches!(
+                    name.as_str(),
+                    "__builtin_signbit" | "__builtin_signbitf" | "__builtin_signbitl"
+                ) {
+                    let name = name.clone();
+                    return self.check_signbit(expr, &name);
+                }
+            }
+        }
         let direct = match expr {
             Expr::Call { callee, .. } => match callee.as_ref() {
                 Expr::Var { name, .. } => matches!(self.lookup(name), Some(Symbol::Func(_))),
@@ -3018,6 +3060,102 @@ impl Sema {
             });
         }
         expr.set_ty(ret);
+        Ok(())
+    }
+
+    /// `__builtin_signbit`, `__builtin_signbitf`, and `__builtin_signbitl`.
+    ///
+    /// The result is 1 when the sign bit of the floating value is set, and 0
+    /// otherwise, including for NaN and negative zero. The argument is
+    /// converted to the builtin’s floating type.
+    fn check_signbit(&mut self, expr: &mut Expr, name: &str) -> Result<(), Diagnostic> {
+        let (line, column) = (expr.line(), expr.column());
+        let Expr::Call { args, .. } = expr else {
+            unreachable!("signbit");
+        };
+        if args.len() != 1 {
+            return self.err(line, column, format!("{name} expects 1 argument"));
+        }
+        self.check_expr(&mut args[0])?;
+        self.decay(&mut args[0])?;
+        let ty = args[0].ty().expect("typed");
+        if !ty.is_arithmetic() {
+            return self.err(
+                args[0].line(),
+                args[0].column(),
+                format!("{name} requires an arithmetic argument"),
+            );
+        }
+        if let Expr::Call { resolved, .. } = expr {
+            *resolved = Some(CallRes {
+                name: name.to_string(),
+                ret: CType::int_type(),
+                params: Vec::new(),
+                variadic: false,
+                indirect: false,
+            });
+        }
+        expr.set_ty(CType::int_type());
+        Ok(())
+    }
+
+    /// The three C library memory builtins. They are not declared: a call
+    /// names them directly. The result type is `void *`, and the value is
+    /// the first argument.
+    fn check_memory_builtin(&mut self, expr: &mut Expr, name: &str) -> Result<(), Diagnostic> {
+        let (line, column) = (expr.line(), expr.column());
+        let Expr::Call { args, .. } = expr else {
+            unreachable!("builtin call");
+        };
+        if args.len() != 3 {
+            return self.err(line, column, format!("{name} expects 3 arguments"));
+        }
+        for arg in args.iter_mut() {
+            self.check_expr(arg)?;
+            self.decay(arg)?;
+        }
+        let dest = args[0].ty().expect("typed");
+        let mid = args[1].ty().expect("typed");
+        let len = args[2].ty().expect("typed");
+        if !dest.is_pointer() {
+            return self.err(
+                args[0].line(),
+                args[0].column(),
+                format!("{name} destination must be a pointer"),
+            );
+        }
+        if name == "__builtin_memset" {
+            if !mid.is_integer() {
+                return self.err(
+                    args[1].line(),
+                    args[1].column(),
+                    format!("{name} value must be an integer"),
+                );
+            }
+        } else if !mid.is_pointer() {
+            return self.err(
+                args[1].line(),
+                args[1].column(),
+                format!("{name} source must be a pointer"),
+            );
+        }
+        if !len.is_integer() {
+            return self.err(
+                args[2].line(),
+                args[2].column(),
+                format!("{name} size must be an integer"),
+            );
+        }
+        if let Expr::Call { resolved, .. } = expr {
+            *resolved = Some(CallRes {
+                name: name.to_string(),
+                ret: CType::pointer(CType::Void),
+                params: Vec::new(),
+                variadic: false,
+                indirect: false,
+            });
+        }
+        expr.set_ty(CType::pointer(CType::Void));
         Ok(())
     }
 
@@ -3161,9 +3299,6 @@ impl Sema {
                 format!("cannot assign to const-qualified type '{}'", ty.display()),
             );
         }
-        if ty.is_long_double() {
-            return self.err(expr.line(), expr.column(), "long double is not supported");
-        }
         if ty.is_record() {
             if ty.contains_const() {
                 return self.err(
@@ -3211,9 +3346,6 @@ impl Sema {
             }
             _ => unreachable!("va_arg"),
         };
-        if type_arg.is_long_double() {
-            return self.err(line, column, "long double is not supported");
-        }
         if !type_arg.is_complete() || type_arg.is_array() || type_arg.is_func() {
             return self.err(
                 line,
@@ -3332,7 +3464,7 @@ impl Sema {
                     format!("member access on incomplete type 'struct {}'", handle.tag()),
                 );
             }
-            let Some((found_index, found)) = handle.field(&field_name) else {
+            let Some(hit) = handle.lookup_member(&field_name) else {
                 return self.err(
                     line,
                     column,
@@ -3342,9 +3474,12 @@ impl Sema {
                     ),
                 );
             };
-            *index = Some(found_index);
+            let found = hit.field;
+            *index = Some(hit.index);
             *offset = Some(found.offset);
-            *bytewise = handle.is_union() || handle.has_bitfield();
+            // An anonymous member's fields are not one LLVM index of the
+            // outer object. A byte offset from the outer base reaches them.
+            *bytewise = hit.indirect || handle.is_union() || handle.has_bitfield();
             // The struct object's qualifiers apply to the member (C11 6.5.2.3).
             let field_ty = found.ty.clone();
             let declared_int = field_ty.as_integer();
@@ -3445,9 +3580,6 @@ impl Sema {
     /// rejects the program. A cast may drop qualifiers; that is not diagnosed.
     fn can_assign(&self, dest: &CType, src: &Expr) -> Result<(), Diagnostic> {
         let src_ty = src.ty().expect("typed");
-        if dest.is_long_double() || src_ty.is_long_double() {
-            return self.err(src.line(), src.column(), "long double is not supported");
-        }
         if dest.is_arithmetic() && src_ty.is_arithmetic() {
             return Ok(());
         }
@@ -3543,9 +3675,6 @@ impl Sema {
 
     fn require_scalar(&self, expr: &Expr) -> Result<(), Diagnostic> {
         match expr.ty() {
-            Some(ty) if ty.is_long_double() => {
-                self.err(expr.line(), expr.column(), "long double is not supported")
-            }
             Some(ty) if ty.is_scalar() => Ok(()),
             Some(ty) if ty.is_void() => self.err(
                 expr.line(),
@@ -3579,9 +3708,6 @@ impl Sema {
         }
         if left.unqualified().is_record() && compatible(&left.unqualified(), &right.unqualified()) {
             return Ok(left);
-        }
-        if left.is_long_double() || right.is_long_double() {
-            return self.err(line, column, "long double is not supported");
         }
         if (left.is_float() || right.is_float()) && left.is_arithmetic() && right.is_arithmetic() {
             return Ok(CType::Float(crate::float::usual_real(
@@ -3712,6 +3838,33 @@ struct InitFrame {
     children: Vec<InitChild>,
     index: usize,
     base: u64,
+    /// A union initializes one member. The next positional item continues
+    /// after the union, not at another member of it.
+    is_union: bool,
+}
+
+/// Indexes through `init_children(..., true)` that reach `name`.
+///
+/// Anonymous struct and union members are not names, so a designator steps
+/// through them to the member they promote.
+fn field_designator_path(ty: &CType, name: &str) -> Option<Vec<usize>> {
+    let children = init_children(ty, true);
+    for (index, child) in children.iter().enumerate() {
+        if child.field.as_ref().is_some_and(|field| field.name == name) {
+            return Some(vec![index]);
+        }
+        if child
+            .field
+            .as_ref()
+            .is_some_and(StructField::is_anonymous_record)
+        {
+            if let Some(mut rest) = field_designator_path(&child.ty, name) {
+                rest.insert(0, index);
+                return Some(rest);
+            }
+        }
+    }
+    None
 }
 
 fn init_children(ty: &CType, union_all: bool) -> Vec<InitChild> {
@@ -3751,6 +3904,10 @@ fn advance_frames(frames: &mut Vec<InitFrame>) -> bool {
         let Some(frame) = frames.last_mut() else {
             return false;
         };
+        if frame.is_union {
+            frames.pop();
+            continue;
+        }
         frame.index += 1;
         if frame.index < frame.children.len() {
             return true;
@@ -3762,7 +3919,9 @@ fn advance_frames(frames: &mut Vec<InitFrame>) -> bool {
 fn initializable_fields(fields: Vec<StructField>, union_ty: bool) -> Vec<StructField> {
     let fields: Vec<_> = fields
         .into_iter()
-        .filter(|field| !field.name.is_empty() && field.bit_width != Some(0))
+        .filter(|field| {
+            field.bit_width != Some(0) && (!field.name.is_empty() || field.is_anonymous_record())
+        })
         .collect();
     if union_ty {
         fields.into_iter().take(1).collect()
@@ -3921,16 +4080,21 @@ fn is_char_array(ty: &CType) -> bool {
 
 /// Bytes of a string literal used as an initializer, including a single pair
 /// of braces around that literal (`char s[4] = {"hi"}`).
-fn string_payload(init: &Init) -> Option<&[u8]> {
+fn string_payload(init: &Init) -> Option<(&[u8], bool)> {
     match init {
-        Init::Expr(Expr::Str { bytes, .. }) => Some(bytes),
+        Init::Expr(Expr::Str { bytes, wide, .. }) => Some((bytes, *wide)),
         Init::Designated { .. } => None,
         Init::List { items, .. } => match items.as_slice() {
-            [Init::Expr(Expr::Str { bytes, .. })] => Some(bytes),
+            [Init::Expr(Expr::Str { bytes, wide, .. })] => Some((bytes, *wide)),
             _ => None,
         },
         Init::Expr(_) => None,
     }
+}
+
+fn is_wchar_array(ty: &CType) -> bool {
+    ty.array_elem()
+        .is_some_and(|elem| elem.as_integer() == Some(TypeName::Int))
 }
 
 fn void_ptr_mix(left: &CType, right: &CType) -> bool {
@@ -3958,7 +4122,8 @@ fn takes_one_init(ty: &CType, init: &Init) -> bool {
     if matches!(init, Init::List { .. }) || ty.is_scalar() {
         return true;
     }
-    string_payload(init).is_some() && is_char_array(ty)
+    string_payload(init)
+        .is_some_and(|(_, wide)| (!wide && is_char_array(ty)) || (wide && is_wchar_array(ty)))
 }
 
 fn classify_init(ty: &CType, mut stores: Vec<ElemStore>) -> CheckedInit {
@@ -4357,7 +4522,7 @@ fn is_zero(value: &CVal) -> bool {
 enum NumConst {
     Int(CVal),
     Real {
-        bits: u64,
+        bits: u128,
         kind: crate::ast::FloatKind,
     },
 }
@@ -4377,16 +4542,10 @@ impl NumConst {
         }
     }
 
-    fn to_real(&self, dest: crate::ast::FloatKind) -> Option<u64> {
+    fn to_real(&self, dest: crate::ast::FloatKind) -> Option<u128> {
         match self {
             NumConst::Int(value) => Some(crate::float::int_to_real(value.bits, value.ty, dest)),
-            NumConst::Real { bits, kind } => {
-                if *kind == crate::ast::FloatKind::LongDouble {
-                    None
-                } else {
-                    Some(crate::float::real_to_real(*bits, *kind, dest))
-                }
-            }
+            NumConst::Real { bits, kind } => Some(crate::float::real_to_real(*bits, *kind, dest)),
         }
     }
 
@@ -4474,9 +4633,6 @@ fn eval_num(expr: &Expr) -> Result<NumConst, ConstError> {
         Expr::Cast { ty_name, expr, .. } => {
             let value = eval_num(expr)?;
             if let Some(kind) = ty_name.float_kind() {
-                if kind == crate::ast::FloatKind::LongDouble {
-                    return Err(ConstError::NotConst);
-                }
                 Ok(NumConst::Real {
                     bits: value.to_real(kind).ok_or(ConstError::NotConst)?,
                     kind,
@@ -5682,22 +5838,16 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
         assert!(sema_err("enum E x;").contains("incomplete enum"));
         assert!(sema_err("restrict int x;").contains("restrict requires a pointer"));
         sema_ok("int main(void) { float f; f = 1; return f == 1.0f; }");
-        assert!(sema_err("int main(void) { return 1.0L; }").contains("long double"));
+        sema_ok("int main(void) { return 1.0L; }");
         sema_ok(
             "enum { N = (int)3.9 }; int main(void) { int a[(int)2.9]; return N == 3 && sizeof(a) == 2 * sizeof(int); }",
         );
         assert!(sema_err("enum { N = 1.5 };").contains("not an integer constant"));
         assert!(sema_err("enum { N = (int)-1.5 };").contains("not an integer constant"));
-        assert!(
-            sema_err("extern long double x; void f(void) { for (;; x++) {} }")
-                .contains("long double is not supported")
-        );
+        sema_ok("extern long double x; void f(void) { for (;; x++) {} }");
         sema_ok("int main(void) { int *p = (int)0.0; switch (1) { case (int)1.5: return p == 0; } return 1; }");
-        assert!(
-            sema_err("int main(void) { long double x; x = 1.0; return 0; }")
-                .contains("long double is not supported")
-        );
-        assert!(sema_err("long double f(long double x) { return x; }").contains("long double"));
+        sema_ok("int main(void) { long double x; x = 1.0; return 0; }");
+        sema_ok("long double f(long double x) { return x; }");
         assert!(
             sema_err("union U { int x; char c; }; union U u = {1, 2};").contains("excess elements")
         );

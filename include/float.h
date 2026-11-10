@@ -1,7 +1,7 @@
 /* Compiler-provided <float.h> for x86_64 System V.
    float is IEEE binary32, double is IEEE binary64, and long double is
    80-bit extended precision. The long double macros use an L suffix so
-   they have the right type. This compiler does not compute that value. */
+   they have the right type. The values are the x87 extended format. */
 #ifndef _FLOAT_H
 #define _FLOAT_H
 

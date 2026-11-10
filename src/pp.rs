@@ -98,6 +98,7 @@ pub fn preprocess_tokens(
         column: eof_col,
         filename: eof_file,
         value: None,
+        float_hi: 0,
         int_ty: None,
         float_kind: None,
         bytes: None,

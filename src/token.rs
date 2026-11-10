@@ -10,8 +10,9 @@ pub enum TokenKind {
     Eof,
     Ident,
     Int,
-    /// A `float` or `double` constant. The bits are on [`Token::value`] and
-    /// the type is [`Token::float_kind`]. `long double` is not a token.
+    /// A floating constant. The low bits are on [`Token::value`], the high
+    /// 16 bits of a `long double` are on [`Token::float_hi`], and the type
+    /// is [`Token::float_kind`].
     Float,
     /// A decoded string literal. The bytes live on [`Token::bytes`] and do
     /// not include the implicit terminating NUL.
@@ -119,9 +120,13 @@ pub struct Token {
     /// Source file this token came from. The preprocessor sets this for
     /// tokens that originated in a `#include`d file.
     pub filename: String,
-    /// Present for [`TokenKind::Int`]. The low bits of an integer or character
-    /// constant. The type is [`Token::int_ty`].
+    /// Present for [`TokenKind::Int`] and [`TokenKind::Float`]. The low bits
+    /// of an integer, a character constant, or a floating constant. The
+    /// integer type is [`Token::int_ty`]. A `long double` also stores its
+    /// high 16 bits in [`Token::float_hi`].
     pub value: Option<u64>,
+    /// Bits 64..79 of a `long double` constant. Zero for every other token.
+    pub float_hi: u16,
     /// Type chosen for an integer constant (C11 6.4.4.1) or `int` for a
     /// character constant (C11 6.4.4.4).
     pub int_ty: Option<TypeName>,
