@@ -54,10 +54,10 @@ Approved by the owner on 2026-11-09 (pull request 8). That step's `include/` was
 
 Search order in the current code (`src/pp.rs`):
 
-- `#include "file"` searches the including file's directory, then each `-I` directory, then the compiler's `include/`, then the host directories.
+- `#include "file"` searches the including file's directory, then each `-I` directory, then every compiler `include/` directory, then the host directories.
 - `#include <file>` skips the including file's directory and uses the rest of that list.
-- The compiler directory is the first of `include/`, the crate's `include/`, and `include/` next to the executable (walking up to eight parent directories) that contains `stddef.h`.
-- The host directories are `/usr/include/x86_64-linux-gnu` and `/usr/include`, when those directories exist.
+- Every compiler directory that contains `stddef.h` is appended, in order, and a path already listed is skipped: `include/` in the working directory, the crate's `include/`, then `include/` beside the executable and beside each of up to eight parent directories. A header missing from an earlier directory can come from a later compiler directory, still before the host directories.
+- The host directories, after every compiler directory, are `/usr/include/x86_64-linux-gnu` and `/usr/include`, when those directories exist.
 - `#include_next` resumes after the directory that provided the current file. If that directory is not in the search list, the directive behaves like `#include`.
 
 ## Headers
@@ -99,7 +99,8 @@ Follow the C standard. Where the standard leaves a choice, follow the gcc and cl
 
 `STATUS.md` and the git history do not record a separate approval date for this rule. The oracle in the harness and in CI is Clang. gcc is not run there. Cases those files already record:
 
-- The standard wins where Clang is more permissive. Dropping `const` on assignment, arithmetic on `void *`, a pointer compared with an integer, an evaluated comma in a constant initializer, and a multi-character character constant are diagnostics.
+- The standard wins where Clang is more permissive. Dropping `const` on assignment, arithmetic on `void *`, a pointer compared with an integer, and an evaluated comma in a constant initializer are diagnostics.
+- A multi-character character constant such as `'ab'` has an implementation-defined value (C11 6.4.4.4). This subset rejects it. `STATUS.md` records that as a limitation. Clang accepts it as an `int`.
 - An implementation-defined choice that is recorded as matching Clang on this target: an out-of-range conversion to a signed type keeps the low bits and reads them as two's complement; a completed enumeration is compatible with `int` (C11 6.7.2.2); an omitted `__VA_ARGS__` deletes a comma written as `, ## __VA_ARGS__`, matching Clang's `-std=c11`.
 
 ## Platforms
