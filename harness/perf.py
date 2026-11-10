@@ -44,21 +44,23 @@ def clang_version() -> str:
     return proc.stdout.splitlines()[0] if proc.stdout else "unknown"
 
 
-def time_call(cmd: list[str], cwd: Path | None = None, timeout: float = 60) -> tuple[float, int]:
+def time_call(
+    cmd: list[str], cwd: Path | None = None, timeout: float = 60, keep_stdout: bool = False
+) -> tuple[float, int, bytes]:
     start = time.perf_counter()
     try:
         proc = subprocess.run(
             cmd,
             cwd=cwd,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if keep_stdout else subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
             timeout=timeout,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return time.perf_counter() - start, 124
-    return time.perf_counter() - start, proc.returncode
+        return time.perf_counter() - start, 124, b""
+    return time.perf_counter() - start, proc.returncode, proc.stdout or b""
 
 
 def compile_harness(work: Path) -> dict:
@@ -68,10 +70,10 @@ def compile_harness(work: Path) -> dict:
     ours_fail = 0
     clang_fail = 0
     for src in sources:
-        dt, rc = time_call([COMPILER_COMMAND, str(src), "-o", str(work / f"{src.stem}.ll")])
+        dt, rc, _out = time_call([COMPILER_COMMAND, str(src), "-o", str(work / f"{src.stem}.ll")])
         ours += dt
         ours_fail += rc != 0
-        dt, rc = time_call(
+        dt, rc, _out = time_call(
             [
                 CLANG,
                 "-std=c11",
@@ -128,16 +130,16 @@ def run_harness(work: Path) -> dict:
                 continue
         except subprocess.TimeoutExpired:
             continue
-        dt, ours_rc = time_call([str(mine)], timeout=30)
+        dt, ours_rc, ours_out = time_call([str(mine)], timeout=30, keep_stdout=True)
         ours += dt
-        dt, clang_rc = time_call([str(ref)], timeout=30)
+        dt, clang_rc, clang_out = time_call([str(ref)], timeout=30, keep_stdout=True)
         clang += dt
         ran += 1
-        # time_call reports a timeout as 124. The same nonzero exit on both
-        # sides is not a mismatch: the programs agreed.
+        # time_call reports a timeout as 124. The same exit and the same
+        # stdout, including a shared nonzero exit, is not a mismatch.
         if ours_rc == 124 or clang_rc == 124:
             timeouts += 1
-        elif ours_rc != clang_rc:
+        elif ours_rc != clang_rc or ours_out != clang_out:
             mismatches += 1
     return {
         "files": ran,
@@ -339,7 +341,7 @@ def markdown(report: dict) -> str:
         )
     lines.append(
         f"| Harness run ({r['files']} programs, "
-        f"{r.get('mismatches', 0)} exit mismatches, {r.get('timeouts', 0)} timeouts) "
+        f"{r.get('mismatches', 0)} result mismatches, {r.get('timeouts', 0)} timeouts) "
         f"| {r['ours_s']} s | {r['clang_s']} s |"
     )
     if suite.get("clang_s") is not None:
