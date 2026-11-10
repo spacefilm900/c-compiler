@@ -237,7 +237,32 @@ impl Quals {
 pub struct StructField {
     pub name: String,
     pub ty: CType,
+    /// Byte offset of a normal member, or of the storage unit that holds a
+    /// bit-field. The unit is the aligned region of the field's declared type
+    /// that contains [`StructField::bit_offset`].
     pub offset: u64,
+    /// Bit offset from the start of the struct. Meaningful when `bit_width`
+    /// is set. Bit 0 is the least significant bit of the first byte.
+    pub bit_offset: u32,
+    /// `Some` when this member is a bit-field, including a zero-width unnamed
+    /// field used only for alignment. `None` is an ordinary member.
+    pub bit_width: Option<u32>,
+}
+
+impl StructField {
+    pub fn plain(name: impl Into<String>, ty: CType, offset: u64) -> Self {
+        Self {
+            name: name.into(),
+            ty,
+            offset,
+            bit_offset: 0,
+            bit_width: None,
+        }
+    }
+
+    pub fn is_bitfield(&self) -> bool {
+        self.bit_width.is_some()
+    }
 }
 
 /// Identity of one struct declaration.
@@ -370,13 +395,24 @@ impl StructRef {
     }
 
     pub fn field(&self, name: &str) -> Option<(usize, StructField)> {
+        if name.is_empty() {
+            return None;
+        }
         let body = self.data.borrow();
         let fields = body.fields.as_ref()?;
         fields
             .iter()
             .enumerate()
-            .find(|(_, field)| field.name == name)
+            .find(|(_, field)| field.name == name && field.bit_width != Some(0))
             .map(|(index, field)| (index, field.clone()))
+    }
+
+    /// A member is a bit-field, including a zero-width one. The LLVM type is
+    /// then a byte array, the same shape as a union, because several C
+    /// members share one storage unit.
+    pub fn has_bitfield(&self) -> bool {
+        self.fields()
+            .is_some_and(|fields| fields.iter().any(StructField::is_bitfield))
     }
 
     pub fn complete(&self, fields: Vec<StructField>, size: u64, align: u32, llvm_name: String) {
@@ -421,6 +457,138 @@ pub fn layout_record(fields: &[(u64, u32)]) -> Option<(Vec<u64>, u64, u32)> {
 /// member, rounded up to the strictest alignment.
 pub fn layout_union(fields: &[(u64, u32)]) -> Option<(Vec<u64>, u64, u32)> {
     layout_fields(fields, true)
+}
+
+/// One member passed to [`layout_members`].
+///
+/// A bit-field sets `bit_width`. `size` and `align` are then the declared
+/// type's size and alignment, which are the storage unit the field must fit
+/// in. A normal member leaves `bit_width` as `None` and uses its own size
+/// and alignment. `named` is false for an unnamed bit-field; those occupy
+/// bits but do not increase the struct's alignment.
+pub struct LayoutMember {
+    pub size: u64,
+    pub align: u32,
+    pub bit_width: Option<u32>,
+    pub named: bool,
+}
+
+/// Where [`layout_members`] put one member.
+///
+/// `offset` is the byte offset of a normal member, or the start of the
+/// storage unit that holds a bit-field. `bit_offset` is the absolute bit
+/// position from the start of the object (bit 0 is the least significant bit
+/// of byte 0). `bit_width` copies the input.
+pub struct LayoutPlace {
+    pub offset: u64,
+    pub bit_offset: u32,
+    pub bit_width: Option<u32>,
+}
+
+/// System V AMD64 member layout, including bit-fields.
+///
+/// Ordinary members are aligned to their alignment. A bit-field is packed
+/// from low bits to high bits and must lie entirely inside one storage unit
+/// of its declared type: if it does not fit in the unit that contains the
+/// next free bit, it starts at the next unit of that alignment. A zero-width
+/// bit-field rounds the next free bit up to that alignment. Unnamed
+/// bit-fields do not change the struct's alignment. The size is the end of
+/// the last byte that was reserved, rounded up to the struct alignment.
+///
+/// A union places every member at offset 0. Each bit-field starts at bit 0.
+/// The size is the largest member, and the alignment is the strictest
+/// alignment of a named member.
+pub fn layout_members(
+    members: &[LayoutMember],
+    union_layout: bool,
+) -> Option<(Vec<LayoutPlace>, u64, u32)> {
+    if union_layout {
+        return layout_union_members(members);
+    }
+    let mut places = Vec::with_capacity(members.len());
+    let mut bit_pos: u64 = 0;
+    let mut align = 1u32;
+    for member in members {
+        let field_align = member.align.max(1);
+        if let Some(width) = member.bit_width {
+            let unit_bits = member.size.max(1).saturating_mul(8);
+            let align_bits = u64::from(field_align).saturating_mul(8);
+            if width == 0 {
+                bit_pos = align_up(bit_pos, align_bits)?;
+                places.push(LayoutPlace {
+                    offset: bit_pos / 8,
+                    bit_offset: bit_pos as u32,
+                    bit_width: Some(0),
+                });
+            } else {
+                let width = u64::from(width);
+                let within = bit_pos % unit_bits;
+                if within + width > unit_bits {
+                    bit_pos = align_up(bit_pos, align_bits)?;
+                }
+                let unit_start = bit_pos - (bit_pos % unit_bits);
+                places.push(LayoutPlace {
+                    offset: unit_start / 8,
+                    bit_offset: bit_pos as u32,
+                    bit_width: Some(width as u32),
+                });
+                bit_pos = bit_pos.checked_add(width)?;
+                if member.named {
+                    align = align.max(field_align);
+                }
+            }
+        } else {
+            let byte = align_up((bit_pos + 7) / 8, u64::from(field_align))?;
+            places.push(LayoutPlace {
+                offset: byte,
+                bit_offset: 0,
+                bit_width: None,
+            });
+            bit_pos = byte.checked_add(member.size)?.saturating_mul(8);
+            align = align.max(field_align);
+        }
+    }
+    let bytes = (bit_pos + 7) / 8;
+    let size = align_up(bytes, u64::from(align))?;
+    Some((places, size, align))
+}
+
+fn layout_union_members(members: &[LayoutMember]) -> Option<(Vec<LayoutPlace>, u64, u32)> {
+    let mut places = Vec::with_capacity(members.len());
+    let mut align = 1u32;
+    let mut size = 0u64;
+    for member in members {
+        let field_align = member.align.max(1);
+        if let Some(width) = member.bit_width {
+            if width == 0 {
+                places.push(LayoutPlace {
+                    offset: 0,
+                    bit_offset: 0,
+                    bit_width: Some(0),
+                });
+            } else {
+                places.push(LayoutPlace {
+                    offset: 0,
+                    bit_offset: 0,
+                    bit_width: Some(width),
+                });
+                size = size.max(member.size.max(1));
+                if member.named {
+                    align = align.max(field_align);
+                }
+            }
+        } else {
+            places.push(LayoutPlace {
+                offset: 0,
+                bit_offset: 0,
+                bit_width: None,
+            });
+            size = size.max(member.size);
+            align = align.max(field_align);
+        }
+    }
+    let size = align_up(size, u64::from(align))?;
+    Some((places, size, align))
 }
 
 fn layout_fields(fields: &[(u64, u32)], union_layout: bool) -> Option<(Vec<u64>, u64, u32)> {
@@ -647,6 +815,21 @@ impl CType {
 
     pub fn is_float(&self) -> bool {
         matches!(self.peel(), CType::Float(_))
+    }
+
+    pub fn as_float(&self) -> Option<FloatKind> {
+        match self.peel() {
+            CType::Float(kind) => Some(*kind),
+            _ => None,
+        }
+    }
+
+    pub fn is_volatile(&self) -> bool {
+        self.quals().is_volatile
+    }
+
+    pub fn record_has_bitfield(&self) -> bool {
+        self.struct_ref().is_some_and(StructRef::has_bitfield)
     }
 
     pub fn is_func(&self) -> bool {
@@ -1206,6 +1389,30 @@ pub enum Init {
         line: usize,
         column: usize,
     },
+    /// A designated initializer: `.field = ...` or `[index] = ...`, including
+    /// a chain such as `.a[1].b`. The designators are relative to the object
+    /// of the enclosing brace list.
+    Designated {
+        designators: Vec<Designator>,
+        init: Box<Init>,
+        line: usize,
+        column: usize,
+    },
+}
+
+/// One step of a designated initializer.
+#[derive(Debug, Clone)]
+pub enum Designator {
+    Field {
+        name: String,
+        line: usize,
+        column: usize,
+    },
+    Index {
+        expr: Expr,
+        line: usize,
+        column: usize,
+    },
 }
 
 /// One scalar or pointer store inside an aggregate initializer.
@@ -1218,6 +1425,22 @@ pub struct ElemStore {
     pub offset: u64,
     pub ty: CType,
     pub expr: Expr,
+    /// Set when the store writes a bit-field. `abs_bit` is from the start of
+    /// the object being initialized. The value is converted to `ty` and then
+    /// truncated to `width` bits.
+    pub bits: Option<BitStore>,
+}
+
+/// Where a bit-field initializer is written.
+#[derive(Debug, Clone)]
+pub struct BitStore {
+    pub abs_bit: u32,
+    pub width: u32,
+    pub container_bits: u32,
+    pub signed_field: bool,
+    /// Declared type, before the integer promotions. A `_Bool` field converts
+    /// to 0 or 1 before the width mask.
+    pub declared: TypeName,
 }
 
 /// Initializer after type checking. Aggregates are flat element stores; the
@@ -1257,6 +1480,8 @@ pub enum ConstInit {
         width: u32,
     },
     Aggregate(Vec<ConstInit>),
+    /// Raw little-endian bytes of a bit-field aggregate.
+    Bytes(Vec<u8>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1417,10 +1642,48 @@ pub enum Expr {
         offset: Option<u64>,
         /// Address the member with a byte `getelementptr` from the base.
         /// Unions do this: every member is at offset 0, and the LLVM type is
-        /// not a list of those members.
+        /// not a list of those members. A struct that contains a bit-field
+        /// does too.
         bytewise: bool,
+        /// Set for a bit-field. `ty` is the type of the value after integer
+        /// promotion. `bit_width` is the declared width.
+        bit_width: Option<u32>,
+        /// The declared bit-field type is signed, so a read sign-extends.
+        bit_signed: bool,
+        /// Storage unit width in bits: 8, 16, 32, or 64.
+        container_bits: u32,
+        /// Bit position of the field from the start of the struct.
+        abs_bit: u32,
+        /// Declared type of a bit-field, before integer promotions. `_Bool`
+        /// converts a nonzero value to 1 before the field is masked.
+        bit_declared: TypeName,
         ty: Option<CType>,
     },
+    /// `__builtin_va_arg(ap, type)`.
+    VaArg {
+        ap: Box<Expr>,
+        type_arg: CType,
+        line: usize,
+        column: usize,
+        ty: Option<CType>,
+    },
+    /// `__builtin_va_start`, `__builtin_va_end`, or `__builtin_va_copy`.
+    /// The result type is `void`.
+    VaOp {
+        op: VaOp,
+        args: Vec<Expr>,
+        line: usize,
+        column: usize,
+        ty: Option<CType>,
+    },
+}
+
+/// Which `<stdarg.h>` operation a [`Expr::VaOp`] performs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VaOp {
+    Start,
+    End,
+    Copy,
 }
 
 impl Expr {
@@ -1597,6 +1860,31 @@ impl Expr {
             index: None,
             offset: None,
             bytewise: false,
+            bit_width: None,
+            bit_signed: false,
+            container_bits: 0,
+            abs_bit: 0,
+            bit_declared: TypeName::Int,
+            ty: None,
+        }
+    }
+
+    pub fn va_arg(ap: Expr, type_arg: CType, line: usize, column: usize) -> Self {
+        Expr::VaArg {
+            ap: Box::new(ap),
+            type_arg,
+            line,
+            column,
+            ty: None,
+        }
+    }
+
+    pub fn va_op(op: VaOp, args: Vec<Expr>, line: usize, column: usize) -> Self {
+        Expr::VaOp {
+            op,
+            args,
+            line,
+            column,
             ty: None,
         }
     }
@@ -1629,7 +1917,9 @@ impl Expr {
             | Expr::Index { line, .. }
             | Expr::Decay { line, .. }
             | Expr::Str { line, .. }
-            | Expr::Member { line, .. } => *line,
+            | Expr::Member { line, .. }
+            | Expr::VaArg { line, .. }
+            | Expr::VaOp { line, .. } => *line,
         }
     }
 
@@ -1651,7 +1941,9 @@ impl Expr {
             | Expr::Index { column, .. }
             | Expr::Decay { column, .. }
             | Expr::Str { column, .. }
-            | Expr::Member { column, .. } => *column,
+            | Expr::Member { column, .. }
+            | Expr::VaArg { column, .. }
+            | Expr::VaOp { column, .. } => *column,
         }
     }
 
@@ -1673,7 +1965,9 @@ impl Expr {
             | Expr::Index { ty, .. }
             | Expr::Decay { ty, .. }
             | Expr::Str { ty, .. }
-            | Expr::Member { ty, .. } => ty.clone(),
+            | Expr::Member { ty, .. }
+            | Expr::VaArg { ty, .. }
+            | Expr::VaOp { ty, .. } => ty.clone(),
         }
     }
 
@@ -1695,7 +1989,9 @@ impl Expr {
             | Expr::Index { ty: slot, .. }
             | Expr::Decay { ty: slot, .. }
             | Expr::Str { ty: slot, .. }
-            | Expr::Member { ty: slot, .. } => *slot = Some(ty),
+            | Expr::Member { ty: slot, .. }
+            | Expr::VaArg { ty: slot, .. }
+            | Expr::VaOp { ty: slot, .. } => *slot = Some(ty),
         }
     }
 
@@ -1845,6 +2141,19 @@ pub enum Stmt {
         line: usize,
         column: usize,
     },
+    /// `identifier :` statement. The name has function scope.
+    Label {
+        name: String,
+        stmt: Box<Stmt>,
+        line: usize,
+        column: usize,
+    },
+    /// `goto` identifier `;`.
+    Goto {
+        name: String,
+        line: usize,
+        column: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -1859,9 +2168,9 @@ pub struct FuncDef {
     pub ret_type: CType,
     pub name: String,
     pub params: Vec<Param>,
-    /// The parameter list ends with `...`. A definition of a variadic function
-    /// is rejected; only a declaration is kept, so another translation unit
-    /// (the C library) can provide it.
+    /// The parameter list ends with `...`. A definition is accepted. The
+    /// body may use `<stdarg.h>`. A declaration with no body is an LLVM
+    /// `declare`, so another translation unit can provide it.
     pub variadic: bool,
     /// `None` is a prototype. `Some` is a definition.
     pub body: Option<Compound>,
@@ -2136,6 +2445,11 @@ fn dump_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
         }
         Stmt::Break { .. } => put(out, indent, "break"),
         Stmt::Continue { .. } => put(out, indent, "continue"),
+        Stmt::Label { name, stmt, .. } => {
+            put(out, indent, &format!("label {name}"));
+            dump_stmt(out, stmt, indent + 1);
+        }
+        Stmt::Goto { name, .. } => put(out, indent, &format!("goto {name}")),
     }
 }
 
@@ -2241,6 +2555,21 @@ fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
             put(out, indent, &format!("{kind} {field}"));
             dump_expr(out, base, indent + 1);
         }
+        Expr::VaArg { ap, .. } => {
+            put(out, indent, "va_arg");
+            dump_expr(out, ap, indent + 1);
+        }
+        Expr::VaOp { op, args, .. } => {
+            let name = match op {
+                VaOp::Start => "va_start",
+                VaOp::End => "va_end",
+                VaOp::Copy => "va_copy",
+            };
+            put(out, indent, name);
+            for arg in args {
+                dump_expr(out, arg, indent + 1);
+            }
+        }
         Expr::Call { callee, args, .. } => {
             match callee.as_ref() {
                 Expr::Var { name, .. } => put(out, indent, &format!("call {name}")),
@@ -2282,6 +2611,19 @@ fn dump_init(out: &mut String, init: &Init, indent: usize) {
                 dump_init(out, item, indent + 1);
             }
         }
+        Init::Designated {
+            designators, init, ..
+        } => {
+            let text = designators
+                .iter()
+                .map(|designator| match designator {
+                    Designator::Field { name, .. } => format!(".{name}"),
+                    Designator::Index { .. } => "[index]".to_string(),
+                })
+                .collect::<String>();
+            put(out, indent, &format!("designated {text}"));
+            dump_init(out, init, indent + 1);
+        }
     }
 }
 
@@ -2314,6 +2656,107 @@ mod tests {
         assert_eq!((off.as_slice(), size, align), (&[0, 4][..], 12, 4));
     }
 
+    fn bits(size: u64, align: u32, width: u32, named: bool) -> LayoutMember {
+        LayoutMember {
+            size,
+            align,
+            bit_width: Some(width),
+            named,
+        }
+    }
+
+    fn plain(size: u64, align: u32) -> LayoutMember {
+        LayoutMember {
+            size,
+            align,
+            bit_width: None,
+            named: true,
+        }
+    }
+
+    fn laid(members: &[LayoutMember]) -> (u64, u32, Vec<(u64, u32)>) {
+        let (places, size, align) = layout_members(members, false).unwrap();
+        let bits = places
+            .iter()
+            .map(|place| (place.offset, place.bit_offset))
+            .collect();
+        (size, align, bits)
+    }
+
+    #[test]
+    fn bitfield_layout_matches_the_psabi() {
+        // int a:3; int b:5. Both live in the low byte. Alignment comes from int.
+        assert_eq!(
+            laid(&[bits(4, 4, 3, true), bits(4, 4, 5, true)]),
+            (4, 4, vec![(0, 0), (0, 3)])
+        );
+        // char a:4; int b:4. The int fits in the same 4-byte unit.
+        assert_eq!(
+            laid(&[bits(1, 1, 4, true), bits(4, 4, 4, true)]),
+            (4, 4, vec![(0, 0), (0, 4)])
+        );
+        // int a:3; char b. The char starts at the next byte.
+        assert_eq!(
+            laid(&[bits(4, 4, 3, true), plain(1, 1)]),
+            (4, 4, vec![(0, 0), (1, 0)])
+        );
+        // char a; int b:5. The bit-field continues inside the int unit at bit 0.
+        assert_eq!(
+            laid(&[plain(1, 1), bits(4, 4, 5, true)]),
+            (4, 4, vec![(0, 0), (0, 8)])
+        );
+        // int a:20; int b:20. The second does not fit and starts a new int.
+        assert_eq!(
+            laid(&[bits(4, 4, 20, true), bits(4, 4, 20, true)]),
+            (8, 4, vec![(0, 0), (4, 32)])
+        );
+        // int a:3; int :0; int b:3.
+        assert_eq!(
+            laid(&[
+                bits(4, 4, 3, true),
+                bits(4, 4, 0, false),
+                bits(4, 4, 3, true)
+            ]),
+            (8, 4, vec![(0, 0), (4, 32), (4, 32)])
+        );
+        // char a:4; char b:5. The second char starts a new byte.
+        assert_eq!(
+            laid(&[bits(1, 1, 4, true), bits(1, 1, 5, true)]),
+            (2, 1, vec![(0, 0), (1, 8)])
+        );
+        // int a:17; char b:3. The char starts at bit 17.
+        assert_eq!(
+            laid(&[bits(4, 4, 17, true), bits(1, 1, 3, true)]),
+            (4, 4, vec![(0, 0), (2, 17)])
+        );
+        // char a:3; int :0; char b. The zero-width field aligns, but does not
+        // raise the struct alignment, so the size stays 5.
+        assert_eq!(
+            laid(&[bits(1, 1, 3, true), bits(4, 4, 0, false), plain(1, 1)]),
+            (5, 1, vec![(0, 0), (4, 32), (4, 0)])
+        );
+        // int :3; char a. Unnamed, so the alignment stays 1 and the char is
+        // in the next byte.
+        assert_eq!(
+            laid(&[bits(4, 4, 3, false), plain(1, 1)]),
+            (2, 1, vec![(0, 0), (1, 0)])
+        );
+        // int :3 alone is one byte. The unnamed field does not align the struct.
+        assert_eq!(laid(&[bits(4, 4, 3, false)]), (1, 1, vec![(0, 0)]));
+        // int :0 alone reserves nothing.
+        assert_eq!(laid(&[bits(4, 4, 0, false)]), (0, 1, vec![(0, 0)]));
+        // char a:5; int b:30. 30 bits do not fit in the remaining int unit.
+        assert_eq!(
+            laid(&[bits(1, 1, 5, true), bits(4, 4, 30, true)]),
+            (8, 4, vec![(0, 0), (4, 32)])
+        );
+        // int a:3; long b:3. The long fits in the 8-byte unit that starts at 0.
+        assert_eq!(
+            laid(&[bits(4, 4, 3, true), bits(8, 8, 3, true)]),
+            (8, 8, vec![(0, 0), (0, 3)])
+        );
+    }
+
     #[test]
     fn struct_identity_is_the_declaration() {
         let a = StructRef::new_incomplete(1, "S", RecordKind::Struct);
@@ -2322,11 +2765,7 @@ mod tests {
         assert_eq!(a.clone(), a);
         assert!(!a.is_complete());
         a.complete(
-            vec![StructField {
-                name: "x".to_string(),
-                ty: CType::int_type(),
-                offset: 0,
-            }],
+            vec![StructField::plain("x", CType::int_type(), 0)],
             4,
             4,
             "struct.S".to_string(),

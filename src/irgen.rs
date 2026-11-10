@@ -86,14 +86,22 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
     }
     let mut functions = Vec::new();
     let mut needs_memmove = false;
+    let mut needs_va = false;
     for decl in &unit.decls {
         if let TopDecl::Func(func) = decl {
             if func.body.is_some() {
-                let (text, copied) = render_function(func);
+                let (text, copied, va) = render_function(func);
                 needs_memmove |= copied;
+                needs_va |= va;
                 functions.push(text);
             }
         }
+    }
+    if needs_va {
+        out.push_str("declare void @llvm.va_start(ptr)\n");
+        out.push_str("declare void @llvm.va_end(ptr)\n");
+        out.push_str("declare void @llvm.va_copy(ptr, ptr)\n");
+        wrote_prelude = true;
     }
     if needs_memmove {
         // Overlap is allowed, so `s = s` is defined. The copy is the object
@@ -136,7 +144,7 @@ fn render_global(global: &IrGlobal) -> String {
 }
 
 fn render_struct(handle: &StructRef) -> String {
-    if handle.is_union() {
+    if handle.is_union() || handle.has_bitfield() {
         let size = handle.size().unwrap_or(0);
         let align = u64::from(handle.align().max(1));
         let body = if align != 0 && size % align == 0 && matches!(align, 1 | 2 | 4 | 8 | 16) {
@@ -172,9 +180,9 @@ fn render_string(literal: &StrConst) -> String {
 }
 
 fn render_declare(decl: &IrFunc) -> String {
-    // An unused prototype whose aggregate is still incomplete, or that would
-    // need an SSE register, has no callable signature yet. The symbol still
-    // has to exist when its address is taken.
+    // An unused prototype whose aggregate is still incomplete, or whose
+    // return would use `%st0`, has no callable signature yet. The symbol
+    // still has to exist when its address is taken.
     let Ok(sig) = function_sig(&decl.ret, &decl.params) else {
         return format!("declare void {}()", llvm_global(&decl.name));
     };
@@ -219,7 +227,7 @@ fn param_ir(ty: &CType, name: Option<&str>) -> String {
     }
 }
 
-fn render_function(func: &FuncDef) -> (String, bool) {
+fn render_function(func: &FuncDef) -> (String, bool, bool) {
     let body = func.body.as_ref().expect("defined function");
     let param_tys: Vec<CType> = func.params.iter().map(|param| param.ty.clone()).collect();
     // Semantic analysis rejects a definition whose aggregate needs an SSE
@@ -237,7 +245,7 @@ fn render_function(func: &FuncDef) -> (String, bool) {
         Linkage::Internal => "internal ",
         Linkage::External => "",
     };
-    let params = sig_params(&sig, false, Some(&names));
+    let params = sig_params(&sig, func.variadic, Some(&names));
     gen.emit(&format!(
         "define {linkage}{}{} {}({params}) {{",
         sig.ret_prefix,
@@ -275,7 +283,7 @@ fn render_function(func: &FuncDef) -> (String, bool) {
         gen.emit_implicit_return();
     }
     gen.emit("}");
-    (gen.lines.join("\n"), gen.needs_memmove)
+    (gen.lines.join("\n"), gen.needs_memmove, gen.needs_va)
 }
 
 fn local_slots(compound: &Compound) -> Vec<(String, CType)> {
@@ -321,7 +329,12 @@ fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, CType)>) {
             }
             collect_slots(body, slots);
         }
-        Stmt::Return { .. } | Stmt::Expr { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Label { stmt, .. } => collect_slots(stmt, slots),
+        Stmt::Return { .. }
+        | Stmt::Expr { .. }
+        | Stmt::Break { .. }
+        | Stmt::Continue { .. }
+        | Stmt::Goto { .. } => {}
     }
 }
 
@@ -344,6 +357,8 @@ struct Gen {
     ret_ty: CType,
     /// A whole-struct copy used `llvm.memmove`, which keeps padding bytes.
     needs_memmove: bool,
+    /// The body calls `llvm.va_start`, `llvm.va_end`, or `llvm.va_copy`.
+    needs_va: bool,
     /// Index in `lines` where the next entry-block alloca is inserted.
     alloca_at: usize,
     /// Set when the C return type is a struct or union.
@@ -364,6 +379,7 @@ impl Gen {
             switch_at: 0,
             ret_ty,
             needs_memmove: false,
+            needs_va: false,
             alloca_at: 0,
             ret_agg,
         }
@@ -439,8 +455,9 @@ impl Gen {
                 self.ensure_block();
                 if let Some(expr) = expr {
                     if self.ret_ty.unqualified().is_record() {
+                        let src_volatile = expr.ty().is_some_and(|ty| ty.is_volatile());
                         let src = self.record_ptr(expr);
-                        self.emit_record_return(&src);
+                        self.emit_record_return(&src, src_volatile);
                     } else {
                         let value = self.gen_val(expr);
                         let value =
@@ -485,6 +502,15 @@ impl Gen {
                     let _ = self.gen_expr(expr);
                 }
             }
+            Stmt::Label { name, stmt, .. } => {
+                let block = c_label(name);
+                self.place_label(&block);
+                self.gen_stmt(stmt);
+            }
+            Stmt::Goto { name, .. } => {
+                self.ensure_block();
+                self.br(&c_label(name));
+            }
             Stmt::Break { .. } => {
                 self.ensure_block();
                 let end = self
@@ -514,7 +540,8 @@ impl Gen {
             CheckedInit::Scalar(init) => {
                 if decl.ty.is_record() {
                     let src = self.record_ptr(init);
-                    self.copy_struct(&decl.ty, &src, &decl.slot);
+                    let src_volatile = init.ty().is_some_and(|ty| ty.is_volatile());
+                    self.copy_struct(&decl.ty, &src, &decl.slot, src_volatile);
                     return;
                 }
                 let value = self.gen_val(init);
@@ -524,10 +551,23 @@ impl Gen {
             CheckedInit::Aggregate(stores) => {
                 let mut ready = Vec::new();
                 let mut records = Vec::new();
+                let mut bits = Vec::new();
                 for store in stores {
+                    if let Some(info) = &store.bits {
+                        let value = self.gen_val(&store.expr);
+                        let dest = if info.declared == TypeName::Bool {
+                            CType::from_name(TypeName::Bool)
+                        } else {
+                            store.ty.clone()
+                        };
+                        let value = self.convert(&value, &store.expr.ty().expect("typed"), &dest);
+                        bits.push((store.offset, info.clone(), dest, value));
+                        continue;
+                    }
                     if store.ty.is_record() {
                         let src = self.record_ptr(&store.expr);
-                        records.push((store.offset, store.ty.clone(), src));
+                        let src_volatile = store.expr.ty().is_some_and(|ty| ty.is_volatile());
+                        records.push((store.offset, store.ty.clone(), src, src_volatile));
                         continue;
                     }
                     let value = self.gen_val(&store.expr);
@@ -544,9 +584,13 @@ impl Gen {
                     let addr = self.offset_ptr(&decl.slot, offset);
                     self.store(&ty, &value, &addr);
                 }
-                for (offset, ty, src) in records {
+                for (offset, ty, src, src_volatile) in records {
                     let addr = self.offset_ptr(&decl.slot, offset);
-                    self.copy_struct(&ty, &src, &addr);
+                    self.copy_struct(&ty, &src, &addr, src_volatile);
+                }
+                for (offset, info, ty, value) in bits {
+                    let addr = self.offset_ptr(&decl.slot, offset);
+                    self.write_bits(&addr, &info, &ty, &value);
                 }
             }
         }
@@ -554,11 +598,18 @@ impl Gen {
 
     /// Byte copy of a struct, including padding. `llvm.memmove` allows the
     /// source and destination to be the same object.
-    fn copy_struct(&mut self, ty: &CType, src: &str, dest: &str) {
+    fn copy_struct(&mut self, ty: &CType, src: &str, dest: &str, src_volatile: bool) {
         let size = ty.size().expect("complete struct");
         self.needs_memmove = true;
+        // A volatile source or destination is one access. LLVM may drop a
+        // non-volatile `memmove` of a volatile object.
+        let volatile = if ty.is_volatile() || src_volatile {
+            "true"
+        } else {
+            "false"
+        };
         self.emit(&format!(
-            "  call void @llvm.memmove.p0.p0.i64(ptr {dest}, ptr {src}, i64 {size}, i1 false)"
+            "  call void @llvm.memmove.p0.p0.i64(ptr {dest}, ptr {src}, i64 {size}, i1 {volatile})"
         ));
     }
 
@@ -575,13 +626,15 @@ impl Gen {
                 op: UnaryOp::Deref, ..
             }
             | Expr::Member { .. } => self.gen_addr(expr),
+            Expr::VaArg { .. } => self.gen_va_record(expr),
             Expr::Assign { target, value, .. } => {
                 // The right-hand side is evaluated before the destination is
                 // stored, matching scalar assignment.
+                let src_volatile = value.ty().is_some_and(|ty| ty.is_volatile());
                 let src = self.record_ptr(value);
                 let dest = self.gen_addr(target);
                 let ty = target.ty().expect("struct assignment");
-                self.copy_struct(&ty, &src, &dest);
+                self.copy_struct(&ty, &src, &dest, src_volatile);
                 dest
             }
             Expr::Call { .. } => self.materialize_call(expr),
@@ -600,12 +653,14 @@ impl Gen {
                 let end_label = self.label();
                 self.br_cond(&cond, &then_label, &else_label);
                 self.start(then_label);
+                let then_volatile = then_expr.ty().is_some_and(|ty| ty.is_volatile());
                 let then_src = self.record_ptr(then_expr);
-                self.copy_struct(&ty, &then_src, &tmp);
+                self.copy_struct(&ty, &then_src, &tmp, then_volatile);
                 self.br(&end_label);
                 self.start(else_label);
+                let else_volatile = else_expr.ty().is_some_and(|ty| ty.is_volatile());
                 let else_src = self.record_ptr(else_expr);
-                self.copy_struct(&ty, &else_src, &tmp);
+                self.copy_struct(&ty, &else_src, &tmp, else_volatile);
                 self.br(&end_label);
                 self.start(end_label);
                 tmp
@@ -786,7 +841,7 @@ impl Gen {
 
     fn store_param(&mut self, param: &Param, names: &[String], parts: &[Part]) {
         if parts.len() == 1 && matches!(parts[0].kind, PartKind::Byval) {
-            self.copy_struct(&param.ty, &names[0], &param.slot);
+            self.copy_struct(&param.ty, &names[0], &param.slot, false);
             return;
         }
         if parts
@@ -872,13 +927,13 @@ impl Gen {
         }
     }
 
-    fn emit_record_return(&mut self, src: &str) {
+    fn emit_record_return(&mut self, src: &str, src_volatile: bool) {
         let agg = self.ret_agg.clone().expect("record return");
         let align = self.ret_ty.align();
         match agg {
             AggAbi::Memory => {
                 let ty = self.ret_ty.clone();
-                self.copy_struct(&ty, src, "%agg.result");
+                self.copy_struct(&ty, src, "%agg.result", src_volatile);
                 self.emit("  ret void");
             }
             AggAbi::Direct(pieces) => {
@@ -936,9 +991,158 @@ impl Gen {
         }
     }
 
+    fn load_bitfield(&mut self, expr: &Expr) -> String {
+        let addr = self.gen_addr(expr);
+        self.load_bitfield_at(&addr, expr)
+    }
+
+    fn load_bitfield_at(&mut self, addr: &str, expr: &Expr) -> String {
+        let info = bit_info(expr).expect("bit-field");
+        let container = container_type(
+            info.container_bits,
+            info.signed_field,
+            expr.ty().expect("typed").quals(),
+        );
+        let raw = self.load(&container, addr);
+        let shift = info.abs_bit - (info.container_off as u32) * 8;
+        let shifted = if shift == 0 {
+            raw
+        } else {
+            let tmp = self.fresh();
+            self.emit(&format!(
+                "  {tmp} = lshr {} {raw}, {shift}",
+                container.ir_type()
+            ));
+            tmp
+        };
+        let mask = if info.width >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << info.width) - 1
+        };
+        let masked = self.fresh();
+        self.emit(&format!(
+            "  {masked} = and {} {shifted}, {mask}",
+            container.ir_type()
+        ));
+        let value_ty = expr.ty().expect("bit-field value type");
+        self.finish_bitfield(&masked, &info, &container, &value_ty)
+    }
+
+    /// The value of a bit-field after it is stored: the written bits, masked
+    /// to the field width, sign-extended when the field is signed, then
+    /// converted to the promoted type. C11 6.5.16 says an assignment
+    /// expression has that value. Reloading the container would be a second
+    /// volatile access.
+    fn finish_bitfield(
+        &mut self,
+        masked: &str,
+        info: &BitInfo,
+        container: &CType,
+        value_ty: &CType,
+    ) -> String {
+        let field = if info.signed_field && info.width < info.container_bits {
+            let up = info.container_bits - info.width;
+            let hi = self.fresh();
+            let lo = self.fresh();
+            self.emit(&format!(
+                "  {hi} = shl {} {masked}, {up}",
+                container.ir_type()
+            ));
+            self.emit(&format!("  {lo} = ashr {} {hi}, {up}", container.ir_type()));
+            lo
+        } else {
+            masked.to_string()
+        };
+        self.convert(&field, container, value_ty)
+    }
+
+    fn write_bits(&mut self, addr: &str, info: &BitStore, value_ty: &CType, value: &str) {
+        let container = container_type(info.container_bits, info.signed_field, value_ty.quals());
+        let raw = self.load(&container, addr);
+        let narrow = self.convert(value, value_ty, &container);
+        let shift = info.abs_bit % info.container_bits;
+        let mask = width_mask(info.width);
+        let masked = self.fresh();
+        self.emit(&format!(
+            "  {masked} = and {} {narrow}, {mask}",
+            container.ir_type()
+        ));
+        let placed = if shift == 0 {
+            masked
+        } else {
+            let tmp = self.fresh();
+            self.emit(&format!(
+                "  {tmp} = shl {} {masked}, {shift}",
+                container.ir_type()
+            ));
+            tmp
+        };
+        let clear_mask = (!((mask as u128) << shift)) & width_mask_u128(info.container_bits);
+        let cleared = self.fresh();
+        self.emit(&format!(
+            "  {cleared} = and {} {raw}, {clear_mask}",
+            container.ir_type()
+        ));
+        let merged = self.fresh();
+        self.emit(&format!(
+            "  {merged} = or {} {cleared}, {placed}",
+            container.ir_type()
+        ));
+        self.store(&container, &merged, addr);
+    }
+
+    fn store_bitfield(&mut self, addr: &str, expr: &Expr, value: &str, from: &CType) -> String {
+        let info = bit_info(expr).expect("bit-field");
+        let container = container_type(
+            info.container_bits,
+            info.signed_field,
+            expr.ty().expect("typed").quals(),
+        );
+        let raw = self.load(&container, addr);
+        let value_ty = expr.ty().expect("bit-field value type");
+        // Assignment converts to the declared type. `_Bool` is 0 or 1, so
+        // masking the original bits would turn 2 into 0.
+        let declared_ty = CType::from_name(info.declared);
+        let as_declared = self.convert(value, from, &declared_ty);
+        let from_ty = declared_ty;
+        let narrow = self.convert(&as_declared, &from_ty, &container);
+        let shift = info.abs_bit - (info.container_off as u32) * 8;
+        let mask = width_mask(info.width);
+        let masked = self.fresh();
+        self.emit(&format!(
+            "  {masked} = and {} {narrow}, {mask}",
+            container.ir_type()
+        ));
+        let placed = if shift == 0 {
+            masked.clone()
+        } else {
+            let tmp = self.fresh();
+            self.emit(&format!(
+                "  {tmp} = shl {} {masked}, {shift}",
+                container.ir_type()
+            ));
+            tmp
+        };
+        let clear_mask = (!((mask as u128) << shift)) & width_mask_u128(info.container_bits);
+        let cleared = self.fresh();
+        self.emit(&format!(
+            "  {cleared} = and {} {raw}, {clear_mask}",
+            container.ir_type()
+        ));
+        let merged = self.fresh();
+        self.emit(&format!(
+            "  {merged} = or {} {cleared}, {placed}",
+            container.ir_type()
+        ));
+        self.store(&container, &merged, addr);
+        self.finish_bitfield(&masked, &info, &container, &value_ty)
+    }
+
     fn store(&mut self, ty: &CType, value: &str, slot: &str) {
         self.emit(&format!(
-            "  store {} {value}, ptr {slot}, align {}",
+            "  store{} {} {value}, ptr {slot}, align {}",
+            vol_attr(ty),
             ty.ir_type(),
             ty.align()
         ));
@@ -947,7 +1151,8 @@ impl Gen {
     fn load(&mut self, ty: &CType, slot: &str) -> String {
         let tmp = self.fresh();
         self.emit(&format!(
-            "  {tmp} = load {}, ptr {slot}, align {}",
+            "  {tmp} = load{} {}, ptr {slot}, align {}",
+            vol_attr(ty),
             ty.ir_type(),
             ty.align()
         ));
@@ -1000,6 +1205,23 @@ impl Gen {
                 "  {tmp} = {op} {} {value} to {}",
                 from_i.ir_type(),
                 to_i.ir_type()
+            ));
+            return tmp;
+        }
+        if let (Some(from_f), Some(to_f)) = (from.as_float(), to.as_float()) {
+            if from_f == to_f {
+                return value.to_string();
+            }
+            let op = if matches!((from_f, to_f), (FloatKind::Float, FloatKind::Double)) {
+                "fpext"
+            } else {
+                "fptrunc"
+            };
+            let tmp = self.fresh();
+            self.emit(&format!(
+                "  {tmp} = {op} {} {value} to {}",
+                from.ir_type(),
+                to.ir_type()
             ));
             return tmp;
         }
@@ -1319,12 +1541,16 @@ impl Gen {
             Stmt::For { body, .. } => {
                 self.collect_switch_targets(body, cases, default_label, labels);
             }
+            Stmt::Label { stmt, .. } => {
+                self.collect_switch_targets(stmt, cases, default_label, labels);
+            }
             Stmt::Decl(_)
             | Stmt::FuncDecl(_)
             | Stmt::Return { .. }
             | Stmt::Expr { .. }
             | Stmt::Break { .. }
-            | Stmt::Continue { .. } => {}
+            | Stmt::Continue { .. }
+            | Stmt::Goto { .. } => {}
         }
     }
 
@@ -1343,6 +1569,237 @@ impl Gen {
             self.br(label);
         }
         self.start(label.to_string());
+    }
+
+    fn gen_va_op(&mut self, op: VaOp, args: &[Expr]) {
+        self.needs_va = true;
+        match op {
+            VaOp::Start | VaOp::End => {
+                let ptr = self.gen_val(&args[0]);
+                let intrinsic = if op == VaOp::Start {
+                    "llvm.va_start"
+                } else {
+                    "llvm.va_end"
+                };
+                self.emit(&format!("  call void @{intrinsic}(ptr {ptr})"));
+            }
+            VaOp::Copy => {
+                let dest = self.gen_val(&args[0]);
+                let src = self.gen_val(&args[1]);
+                self.emit(&format!("  call void @llvm.va_copy(ptr {dest}, ptr {src})"));
+            }
+        }
+    }
+
+    /// Address of the next variadic argument, advanced in `ap`.
+    ///
+    /// The layout is the System V AMD64 register save area: six general
+    /// registers at offsets 0..48 and eight XMM registers at offsets 48..176.
+    /// An argument that does not fit in the registers still free is taken
+    /// from the overflow area, which stays 8-byte aligned. A two-register
+    /// aggregate that does not fit leaves the leftover register unused.
+    fn va_arg_addr(&mut self, ap: &str, ty: &CType) -> String {
+        match va_class(ty) {
+            VaClass::Gp {
+                slots,
+                stack_align,
+                stack_size,
+            } => self.va_reg_or_stack(
+                ap,
+                &RegFetch {
+                    field: 0,
+                    slots,
+                    stride: 8,
+                    limit: 48,
+                    stack_align,
+                    stack_size,
+                },
+            ),
+            VaClass::Fp => self.va_reg_or_stack(
+                ap,
+                &RegFetch {
+                    field: 4,
+                    slots: 1,
+                    stride: 16,
+                    limit: 176,
+                    stack_align: 8,
+                    stack_size: 8,
+                },
+            ),
+            VaClass::Mem { align, size } => self.va_overflow(ap, align, size),
+            VaClass::Pieces(_) => unreachable!("split aggregates are copied per eightbyte"),
+        }
+    }
+
+    fn va_reg_or_stack(&mut self, ap: &str, fetch: &RegFetch) -> String {
+        let RegFetch {
+            field,
+            slots,
+            stride,
+            limit,
+            stack_align,
+            stack_size,
+        } = *fetch;
+        let off_ptr = self.offset_ptr(ap, field);
+        let off_ty = CType::from_name(TypeName::UInt);
+        let offset = self.load(&off_ty, &off_ptr);
+        let need = u64::from(slots) * stride;
+        let sum = self.fresh();
+        self.emit(&format!("  {sum} = add i32 {offset}, {need}"));
+        let fits = self.fresh();
+        self.emit(&format!("  {fits} = icmp ule i32 {sum}, {limit}"));
+        let reg_label = self.label();
+        let stack_label = self.label();
+        let done = self.label();
+        self.br_cond(&fits, &reg_label, &stack_label);
+
+        self.start(reg_label.clone());
+        let save_slot = self.offset_ptr(ap, 16);
+        let save = self.load(&CType::pointer(CType::Void), &save_slot);
+        let reg_addr = self.fresh();
+        self.emit(&format!(
+            "  {reg_addr} = getelementptr inbounds i8, ptr {save}, i32 {offset}"
+        ));
+        self.store(&off_ty, &sum, &off_ptr);
+        self.br(&done);
+
+        self.start(stack_label.clone());
+        let stack_addr = self.va_overflow(ap, stack_align, stack_size);
+        self.br(&done);
+
+        self.start(done);
+        let addr = self.fresh();
+        self.emit(&format!(
+            "  {addr} = phi ptr [ {reg_addr}, %{reg_label} ], [ {stack_addr}, %{stack_label} ]"
+        ));
+        addr
+    }
+
+    fn va_overflow(&mut self, ap: &str, align: u64, size: u64) -> String {
+        let off_ptr = self.offset_ptr(ap, 8);
+        let current = self.load(&CType::pointer(CType::Void), &off_ptr);
+        let aligned = self.align_ptr(&current, align.max(8));
+        let next = self.fresh();
+        self.emit(&format!(
+            "  {next} = getelementptr inbounds i8, ptr {aligned}, i64 {size}"
+        ));
+        self.store(&CType::pointer(CType::Void), &next, &off_ptr);
+        aligned
+    }
+
+    fn align_ptr(&mut self, ptr: &str, align: u64) -> String {
+        if align <= 1 {
+            return ptr.to_string();
+        }
+        let bits = self.fresh();
+        self.emit(&format!("  {bits} = ptrtoint ptr {ptr} to i64"));
+        let added = self.fresh();
+        self.emit(&format!("  {added} = add i64 {bits}, {}", align - 1));
+        let mask = (align as i64).wrapping_neg();
+        let masked = self.fresh();
+        self.emit(&format!("  {masked} = and i64 {added}, {mask}"));
+        let out = self.fresh();
+        self.emit(&format!("  {out} = inttoptr i64 {masked} to ptr"));
+        out
+    }
+
+    fn gen_va_arg(&mut self, expr: &Expr) -> String {
+        let Expr::VaArg { ap, type_arg, .. } = expr else {
+            unreachable!("va_arg");
+        };
+        let ap_ptr = self.gen_val(ap);
+        let addr = self.va_arg_addr(&ap_ptr, type_arg);
+        self.load(type_arg, &addr)
+    }
+
+    fn gen_va_record(&mut self, expr: &Expr) -> String {
+        let Expr::VaArg { ap, type_arg, .. } = expr else {
+            unreachable!("va_arg record");
+        };
+        let ap_ptr = self.gen_val(ap);
+        if let VaClass::Pieces(pieces) = va_class(type_arg) {
+            return self.va_split(&ap_ptr, type_arg, &pieces);
+        }
+        let addr = self.va_arg_addr(&ap_ptr, type_arg);
+        let slot = self.entry_alloca(type_arg);
+        self.copy_struct(type_arg, &addr, &slot, type_arg.is_volatile());
+        slot
+    }
+
+    /// `va_arg` of an aggregate whose eightbytes are not one contiguous
+    /// image in the register save area. A `double` pair is two XMM slots
+    /// sixteen bytes apart, and a mixed INTEGER/SSE aggregate uses both
+    /// register classes. Either class being full sends the whole argument
+    /// to the overflow area.
+    fn va_split(&mut self, ap: &str, ty: &CType, pieces: &[crate::abi::RegPiece]) -> String {
+        let gp_n = pieces.iter().filter(|piece| !piece.is_sse()).count() as u64;
+        let fp_n = pieces.len() as u64 - gp_n;
+        let gp_ptr = self.offset_ptr(ap, 0);
+        let fp_ptr = self.offset_ptr(ap, 4);
+        let off_ty = CType::from_name(TypeName::UInt);
+        let gp = self.load(&off_ty, &gp_ptr);
+        let fp = self.load(&off_ty, &fp_ptr);
+        let fits = self.fresh();
+        self.emit(&format!(
+            "  {fits} = icmp ule i32 {gp}, {}",
+            48u64.saturating_sub(gp_n * 8)
+        ));
+        let fp_fits = self.fresh();
+        self.emit(&format!(
+            "  {fp_fits} = icmp ule i32 {fp}, {}",
+            176u64.saturating_sub(fp_n * 16)
+        ));
+        let both = self.fresh();
+        self.emit(&format!("  {both} = and i1 {fits}, {fp_fits}"));
+        let reg_label = self.label();
+        let stack_label = self.label();
+        let done = self.label();
+        self.br_cond(&both, &reg_label, &stack_label);
+
+        let slot = self.entry_alloca(ty);
+        self.start(reg_label.clone());
+        let save_slot = self.offset_ptr(ap, 16);
+        let save = self.load(&CType::pointer(CType::Void), &save_slot);
+        let mut gp_at = gp;
+        let mut fp_at = fp;
+        for piece in pieces {
+            let cursor = if piece.is_sse() {
+                let at = fp_at.clone();
+                let next = self.fresh();
+                self.emit(&format!("  {next} = add i32 {at}, 16"));
+                fp_at = next;
+                at
+            } else {
+                let at = gp_at.clone();
+                let next = self.fresh();
+                self.emit(&format!("  {next} = add i32 {at}, 8"));
+                gp_at = next;
+                at
+            };
+            let src = self.fresh();
+            self.emit(&format!(
+                "  {src} = getelementptr inbounds i8, ptr {save}, i32 {cursor}"
+            ));
+            let dest = self.offset_ptr(&slot, piece.offset());
+            let bytes = piece_bytes(piece);
+            self.needs_memmove = true;
+            self.emit(&format!(
+                "  call void @llvm.memmove.p0.p0.i64(ptr {dest}, ptr {src}, i64 {bytes}, i1 false)"
+            ));
+        }
+        self.store(&off_ty, &gp_at, &gp_ptr);
+        self.store(&off_ty, &fp_at, &fp_ptr);
+        self.br(&done);
+
+        self.start(stack_label.clone());
+        let align = u64::from(ty.align()).max(8);
+        let size = (ty.size().unwrap_or(8) + 7) & !7;
+        let stack_addr = self.va_overflow(ap, align, size.max(8));
+        self.copy_struct(ty, &stack_addr, &slot, ty.is_volatile());
+        self.br(&done);
+
+        self.start(done);
+        slot
     }
 
     fn gen_val(&mut self, expr: &Expr) -> String {
@@ -1445,9 +1902,14 @@ impl Gen {
                 let addr = self.gen_addr(target);
                 let dest = target.ty().expect("lvalue type");
                 let raw = self.gen_val(value);
-                let stored = self.convert(&raw, &value.ty().expect("typed"), &dest);
-                self.store(&dest, &stored, &addr);
-                Some(stored)
+                let src_ty = value.ty().expect("typed");
+                if bit_info(target).is_some() {
+                    Some(self.store_bitfield(&addr, target, &raw, &src_ty))
+                } else {
+                    let stored = self.convert(&raw, &src_ty, &dest);
+                    self.store(&dest, &stored, &addr);
+                    Some(stored)
+                }
             }
             Expr::CompoundAssign {
                 op, target, value, ..
@@ -1494,13 +1956,17 @@ impl Gen {
             }
             Expr::Decay { expr, .. } => Some(self.gen_addr(expr)),
             Expr::Str { .. } => Some(self.gen_addr(expr)),
-            Expr::Member { ty, .. } => {
-                let addr = self.gen_addr(expr);
-                let ty = ty.clone().expect("typed");
-                if ty.is_array() {
-                    Some(addr)
+            Expr::Member { ty, bit_width, .. } => {
+                if bit_width.is_some() {
+                    Some(self.load_bitfield(expr))
                 } else {
-                    Some(self.load(&ty, &addr))
+                    let addr = self.gen_addr(expr);
+                    let ty = ty.clone().expect("typed");
+                    if ty.is_array() {
+                        Some(addr)
+                    } else {
+                        Some(self.load(&ty, &addr))
+                    }
                 }
             }
             Expr::Call {
@@ -1509,6 +1975,11 @@ impl Gen {
                 resolved,
                 ..
             } => self.gen_call(callee, args, resolved.as_ref().expect("resolved call")),
+            Expr::VaArg { .. } => Some(self.gen_va_arg(expr)),
+            Expr::VaOp { op, args, .. } => {
+                self.gen_va_op(*op, args);
+                None
+            }
         }
     }
 
@@ -1718,7 +2189,11 @@ impl Gen {
         // address is still computed only once.
         let rhs = self.gen_val(value);
         let addr = self.gen_addr(target);
-        let old = self.load(&dest, &addr);
+        let old = if bit_info(target).is_some() {
+            self.load_bitfield_at(&addr, target)
+        } else {
+            self.load(&dest, &addr)
+        };
         if dest.is_pointer() {
             let mut idx = self.extend_i64(&rhs, &rhs_ty);
             if op == BinOp::Sub {
@@ -1765,14 +2240,22 @@ impl Gen {
             common.ir_type()
         ));
         let stored = self.convert(&updated, &common_ty, &dest);
-        self.store(&dest, &stored, &addr);
-        stored
+        if bit_info(target).is_some() {
+            self.store_bitfield(&addr, target, &stored, &dest)
+        } else {
+            self.store(&dest, &stored, &addr);
+            stored
+        }
     }
 
     fn gen_incdec(&mut self, op: IncOp, target: &Expr) -> String {
         let dest = target.ty().expect("lvalue type");
         let addr = self.gen_addr(target);
-        let old = self.load(&dest, &addr);
+        let old = if bit_info(target).is_some() {
+            self.load_bitfield_at(&addr, target)
+        } else {
+            self.load(&dest, &addr)
+        };
         if dest.is_float() {
             let kind = dest.float_kind().expect("float");
             let one_bits = if kind == FloatKind::Float {
@@ -1787,8 +2270,13 @@ impl Gen {
                 "  {updated} = {inst} {} {old}, {one}",
                 dest.ir_type()
             ));
-            self.store(&dest, &updated, &addr);
-            return if op.is_prefix() { updated } else { old };
+            let written = if bit_info(target).is_some() {
+                self.store_bitfield(&addr, target, &updated, &dest)
+            } else {
+                self.store(&dest, &updated, &addr);
+                updated
+            };
+            return if op.is_prefix() { written } else { old };
         }
         if dest.is_pointer() {
             let elem = dest.pointee().expect("pointer").ir_type();
@@ -1811,9 +2299,14 @@ impl Gen {
             common.ir_type()
         ));
         let stored = self.convert(&updated, &common_ty, &dest);
-        self.store(&dest, &stored, &addr);
-        if op.is_prefix() {
+        let written = if bit_info(target).is_some() {
+            self.store_bitfield(&addr, target, &stored, &dest)
+        } else {
+            self.store(&dest, &stored, &addr);
             stored
+        };
+        if op.is_prefix() {
+            written
         } else {
             old
         }
@@ -2079,6 +2572,186 @@ fn default_promote(ty: &CType) -> CType {
     }
 }
 
+struct BitInfo {
+    width: u32,
+    signed_field: bool,
+    container_bits: u32,
+    abs_bit: u32,
+    container_off: u64,
+    declared: TypeName,
+}
+
+fn bit_info(expr: &Expr) -> Option<BitInfo> {
+    match expr {
+        Expr::Member {
+            bit_width: Some(width),
+            bit_signed,
+            container_bits,
+            abs_bit,
+            bit_declared,
+            offset,
+            ..
+        } => Some(BitInfo {
+            width: *width,
+            signed_field: *bit_signed,
+            container_bits: *container_bits,
+            abs_bit: *abs_bit,
+            container_off: offset.unwrap_or(0),
+            declared: *bit_declared,
+        }),
+        _ => None,
+    }
+}
+
+fn container_type(bits: u32, signed_field: bool, quals: Quals) -> CType {
+    let name = match (bits, signed_field) {
+        (8, true) => TypeName::Char,
+        (8, false) => TypeName::UChar,
+        (16, true) => TypeName::Short,
+        (16, false) => TypeName::UShort,
+        (32, true) => TypeName::Int,
+        (32, false) => TypeName::UInt,
+        (_, true) => TypeName::Long,
+        (_, false) => TypeName::ULong,
+    };
+    CType::from_name(name).with_quals(quals)
+}
+
+fn width_mask(bits: u32) -> u64 {
+    if bits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    }
+}
+
+fn width_mask_u128(bits: u32) -> u128 {
+    if bits >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << bits) - 1
+    }
+}
+
+struct RegFetch {
+    field: u64,
+    slots: u32,
+    stride: u64,
+    limit: u64,
+    stack_align: u64,
+    stack_size: u64,
+}
+
+enum VaClass {
+    Gp {
+        slots: u32,
+        stack_align: u64,
+        stack_size: u64,
+    },
+    Fp,
+    Mem {
+        align: u64,
+        size: u64,
+    },
+    /// Eightbytes that are not one packed image in the save area.
+    Pieces(Vec<crate::abi::RegPiece>),
+}
+
+fn va_class(ty: &CType) -> VaClass {
+    let bare = ty.unqualified();
+    if bare.is_record() {
+        let size = bare.size().unwrap_or(1);
+        let stack = (size + 7) & !7;
+        return match crate::abi::classify_for(&bare, crate::abi::AggUse::Param) {
+            Ok(AggAbi::Direct(pieces)) => {
+                let sse = pieces.iter().filter(|piece| piece.is_sse()).count();
+                if sse == 0 {
+                    VaClass::Gp {
+                        slots: pieces.len().max(1) as u32,
+                        stack_align: 8,
+                        stack_size: stack.max(8),
+                    }
+                } else if sse == pieces.len() && pieces.len() == 1 {
+                    // One XMM slot holds the whole object in its low bytes.
+                    VaClass::Fp
+                } else {
+                    VaClass::Pieces(pieces)
+                }
+            }
+            _ => VaClass::Mem {
+                align: u64::from(bare.align()).max(8),
+                size: stack.max(8),
+            },
+        };
+    }
+    if bare.as_float().is_some() {
+        return VaClass::Fp;
+    }
+    let size = bare.size().unwrap_or(8);
+    VaClass::Gp {
+        slots: 1,
+        stack_align: 8,
+        stack_size: ((size + 7) & !7).max(8),
+    }
+}
+
+fn piece_bytes(piece: &crate::abi::RegPiece) -> u64 {
+    match piece {
+        crate::abi::RegPiece::Ptr { .. } => 8,
+        crate::abi::RegPiece::Int { bits, .. } => u64::from(bits / 8),
+        crate::abi::RegPiece::Sse { kind, .. } => match kind {
+            crate::abi::SsePiece::Float => 4,
+            crate::abi::SsePiece::Double | crate::abi::SsePiece::FloatPair => 8,
+        },
+    }
+}
+
+fn vol_attr(ty: &CType) -> &'static str {
+    if ty.is_volatile() {
+        " volatile"
+    } else {
+        ""
+    }
+}
+
+fn c_label(name: &str) -> String {
+    format!("C.{name}")
+}
+
+/// Spell raw bytes as the union-shaped LLVM constant for `ty`.
+fn render_byte_blob(ty: &CType, raw: &[u8]) -> String {
+    let mut bytes = vec![0u8; ty.size().unwrap_or(raw.len() as u64) as usize];
+    let n = raw.len().min(bytes.len());
+    bytes[..n].copy_from_slice(&raw[..n]);
+    let align = u64::from(ty.align().max(1));
+    let (elem, step) = match align {
+        2 => ("i16", 2usize),
+        4 => ("i32", 4),
+        8 => ("i64", 8),
+        16 => ("i128", 16),
+        _ => ("i8", 1),
+    };
+    let step = if bytes.len() % step != 0 { 1 } else { step };
+    let elem = if step == 1 { "i8" } else { elem };
+    let count = bytes.len() / step;
+    if bytes.iter().all(|byte| *byte == 0) {
+        return "zeroinitializer".to_string();
+    }
+    let mut parts = Vec::new();
+    for index in 0..count {
+        let mut acc: u128 = 0;
+        for byte in 0..step {
+            acc |= u128::from(bytes[index * step + byte]) << (8 * byte);
+        }
+        parts.push(format!("{elem} {acc}"));
+    }
+    if ty.is_union() || ty.record_has_bitfield() {
+        format!("{{ [ {count} x {elem} ] [ {} ] }}", parts.join(", "))
+    } else {
+        format!("[ {} ]", parts.join(", "))
+    }
+}
+
 fn common_real(left: &CType, right: &CType) -> CType {
     CType::Float(crate::float::usual_real(
         left.float_kind(),
@@ -2288,11 +2961,20 @@ fn write_const_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: us
             true
         }
         ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => false,
+        ConstInit::Bytes(raw) => {
+            for (index, byte) in raw.iter().enumerate() {
+                let at = offset + index;
+                if at < bytes.len() {
+                    bytes[at] = *byte;
+                }
+            }
+            true
+        }
     }
 }
 
 fn render_const(ty: &CType, value: &ConstInit) -> String {
-    if ty.is_union() {
+    if ty.is_union() || ty.record_has_bitfield() {
         return render_union_const(ty, value);
     }
     match value {
@@ -2314,6 +2996,7 @@ fn render_const(ty: &CType, value: &ConstInit) -> String {
             };
             format!("ptrtoint ({} to {ir})", render_ptr_operand(ptr))
         }
+        ConstInit::Bytes(raw) => render_byte_blob(ty, raw),
         ConstInit::Aggregate(items) => {
             if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
                 if fields.len() != items.len() {
