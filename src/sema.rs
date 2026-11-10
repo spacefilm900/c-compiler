@@ -52,6 +52,7 @@ pub fn analyze_tokens(
         scopes: vec![HashMap::new()],
         loop_depth: 0,
         current_ret: CType::int_type(),
+        fn_name: String::new(),
         current_func: String::new(),
         global_order: Vec::new(),
         func_order: Vec::new(),
@@ -107,6 +108,8 @@ struct VarSym {
 #[derive(Clone)]
 struct FuncSym {
     name: String,
+    /// Linker name, including an `__asm__` label.
+    symbol: String,
     ret: CType,
     params: Vec<CType>,
     variadic: bool,
@@ -134,6 +137,10 @@ struct Sema {
     scopes: Vec<HashMap<String, Symbol>>,
     loop_depth: u32,
     current_ret: CType,
+    /// Name of the function whose body is being checked. Empty at file scope.
+    /// `__func__` uses it. `current_func` is the same name, kept for the
+    /// static-local symbol so the two uses stay obvious at their call sites.
+    fn_name: String,
     /// Name of the function whose body is being checked. Static locals use it
     /// in their LLVM symbol so two functions can each have a `static int x`.
     current_func: String,
@@ -226,11 +233,19 @@ impl Sema {
     }
 
     fn declare_func(&mut self, func: &mut FuncDef) -> Result<(), Diagnostic> {
-        if func.ret_type.unqualified().is_struct() {
+        // A prototype may return a struct or union so the system headers can
+        // declare div, ldiv, and lldiv. A definition, and any call, still
+        // cannot: the System V class-ification for aggregates is not done.
+        if func.body.is_some() && func.ret_type.unqualified().is_record() {
+            let word = func
+                .ret_type
+                .struct_ref()
+                .map(|handle| handle.kind().word())
+                .unwrap_or("struct");
             return self.err(
                 func.line,
                 func.column,
-                "returning a struct by value is not supported",
+                format!("returning a {word} by value is not supported"),
             );
         }
         let mut seen = HashSet::new();
@@ -276,6 +291,7 @@ impl Sema {
                 self.func_order.push(name.clone());
                 self.insert_file(Symbol::Func(FuncSym {
                     name,
+                    symbol: func.symbol.clone(),
                     ret: func.ret_type.clone(),
                     params: params.clone(),
                     variadic: func.variadic,
@@ -310,6 +326,11 @@ impl Sema {
                 if is_def {
                     self.mark_defined(&name);
                 }
+                if func.symbol != func.name {
+                    if let Some(Symbol::Func(existing)) = self.file_get_mut(&name) {
+                        existing.symbol = func.symbol.clone();
+                    }
+                }
             }
             Some(Symbol::Var(_)) => unreachable!("variable rejected above"),
         }
@@ -318,6 +339,7 @@ impl Sema {
 
     fn check_function(&mut self, func: &mut FuncDef) -> Result<(), Diagnostic> {
         self.current_ret = func.ret_type.clone();
+        self.fn_name = func.name.clone();
         self.current_func = func.name.clone();
         self.push();
         for param in &func.params {
@@ -335,6 +357,8 @@ impl Sema {
         let body = func.body.as_mut().expect("defined function");
         self.check_compound(body, false)?;
         self.pop();
+        self.fn_name.clear();
+        self.current_func.clear();
         Ok(())
     }
 
@@ -359,7 +383,7 @@ impl Sema {
                     }
                 } else {
                     func_decls.push(IrFunc {
-                        name: func.name.clone(),
+                        name: func.symbol.clone(),
                         ret: func.ret.clone(),
                         params: func.params.clone(),
                         variadic: func.variadic,
@@ -441,7 +465,7 @@ impl Sema {
         let linkage = match storage {
             Storage::Static => Linkage::Internal,
             Storage::Extern => prior.unwrap_or(Linkage::External),
-            Storage::None => Linkage::External,
+            Storage::None | Storage::Typedef => Linkage::External,
         };
         self.same_linkage(linkage, prior, storage, line, column, name)
     }
@@ -458,7 +482,9 @@ impl Sema {
         // so `static int f(void); int f(void) { ... }` keeps internal linkage.
         let linkage = match storage {
             Storage::Static => Linkage::Internal,
-            Storage::Extern | Storage::None => prior.unwrap_or(Linkage::External),
+            Storage::Extern | Storage::None | Storage::Typedef => {
+                prior.unwrap_or(Linkage::External)
+            }
         };
         self.same_linkage(linkage, prior, storage, line, column, name)
     }
@@ -581,7 +607,7 @@ impl Sema {
             return Ok(());
         }
         if let Init::Expr(expr) = init {
-            if ty.is_struct() {
+            if ty.is_record() {
                 if string_payload(init).is_some() {
                     return self.err(line, column, "struct initializer must be a brace list");
                 }
@@ -606,7 +632,7 @@ impl Sema {
                 );
             }
         }
-        if ty.is_struct() {
+        if ty.is_record() {
             return self.fill_struct(ty, init, base, stores, line, column);
         }
         let CType::Array(elem, Some(len)) = ty else {
@@ -666,13 +692,22 @@ impl Sema {
             *pos += 1;
             return Ok(());
         }
-        if ty.is_struct() {
+        if ty.is_record() {
             let Some(fields) = ty.struct_ref().and_then(StructRef::fields) else {
                 return self.err(
                     line,
                     column,
                     format!("variable has incomplete type '{}'", ty.display()),
                 );
+            };
+            // An unbraced union consumes one initializer, the first member.
+            // Every member is at offset 0, so walking all of them would store
+            // later items on top of the same bytes and steal them from the
+            // enclosing initializer.
+            let fields: Vec<_> = if ty.is_union() {
+                fields.into_iter().take(1).collect()
+            } else {
+                fields
             };
             for field in &fields {
                 if *pos >= items.len() {
@@ -723,6 +758,12 @@ impl Sema {
                 format!("variable has incomplete type '{}'", ty.display()),
             );
         };
+        // A brace list for a union initializes the first member only.
+        let fields: Vec<_> = if ty.is_union() {
+            fields.into_iter().take(1).collect()
+        } else {
+            fields
+        };
         let Init::List {
             items,
             line,
@@ -760,7 +801,7 @@ impl Sema {
     /// An expression whose type is this struct initializes the whole field,
     /// instead of the first scalar inside it (`struct Line l = {p, q}`).
     fn covers_struct(&mut self, ty: &CType, init: &Init) -> bool {
-        if !ty.unqualified().is_struct() {
+        if !ty.unqualified().is_record() {
             return false;
         }
         let Init::Expr(expr) = init else {
@@ -777,7 +818,7 @@ impl Sema {
             return false;
         }
         probe.ty().is_some_and(|src| {
-            src.unqualified().is_struct() && compatible(&ty.unqualified(), &src.unqualified())
+            src.unqualified().is_record() && compatible(&ty.unqualified(), &src.unqualified())
         })
     }
 
@@ -864,7 +905,15 @@ impl Sema {
         for store in stores {
             folded.push((store.offset, self.fold_one(name, &store.expr, &store.ty)?));
         }
-        Ok(assemble(ty, &folded, 0))
+        let value = assemble(ty, &folded, 0);
+        if !union_bytes_ok(ty, &value) {
+            return self.err(
+                stores.first().map(|store| store.expr.line()).unwrap_or(1),
+                stores.first().map(|store| store.expr.column()).unwrap_or(1),
+                format!("initializer of '{name}' uses an address in a union"),
+            );
+        }
+        Ok(value)
     }
 
     fn fold_one(&self, name: &str, expr: &Expr, dest: &CType) -> Result<ConstInit, Diagnostic> {
@@ -913,7 +962,7 @@ impl Sema {
                 Err(_) => self.const_diag(name, expr),
             };
         }
-        if dest.is_struct() {
+        if dest.is_record() {
             return self.err(
                 expr.line(),
                 expr.column(),
@@ -954,6 +1003,10 @@ impl Sema {
 
     fn file_get(&self, name: &str) -> Option<Symbol> {
         self.scopes.first().expect("file scope").get(name).cloned()
+    }
+
+    fn file_get_mut(&mut self, name: &str) -> Option<&mut Symbol> {
+        self.scopes.first_mut().expect("file scope").get_mut(name)
     }
 
     fn global_state(&self, name: &str) -> Option<GlobalState> {
@@ -1159,6 +1212,7 @@ impl Sema {
             Storage::Extern => self.declare_block_extern(decl),
             Storage::Static => self.declare_static_local(decl),
             Storage::None => self.declare_auto(decl),
+            Storage::Typedef => unreachable!("a typedef is not a variable declaration"),
         }
     }
 
@@ -1349,13 +1403,9 @@ impl Sema {
     /// (C11 6.2.2p5). `static` is not allowed (C11 6.7.1p7). A nested body is
     /// rejected by the parser, so this is never a definition.
     fn declare_block_func(&mut self, func: &mut FuncDef) -> Result<(), Diagnostic> {
-        if func.ret_type.unqualified().is_struct() {
-            return self.err(
-                func.line,
-                func.column,
-                "returning a struct by value is not supported",
-            );
-        }
+        // A block-scope function declaration is a prototype. Returning a
+        // struct or union from a prototype is allowed; a call that uses the
+        // value is still rejected.
         if func.storage == Storage::Static {
             return self.err(
                 func.line,
@@ -1389,6 +1439,7 @@ impl Sema {
             .unwrap_or(false);
         self.insert(Symbol::Func(FuncSym {
             name,
+            symbol: func.symbol.clone(),
             ret: func.ret_type.clone(),
             params,
             variadic: func.variadic,
@@ -1562,6 +1613,7 @@ impl Sema {
                 self.func_order.push(name.clone());
                 self.insert_file(Symbol::Func(FuncSym {
                     name: name.clone(),
+                    symbol: func.symbol.clone(),
                     ret: func.ret_type.clone(),
                     params: params.to_vec(),
                     variadic: func.variadic,
@@ -1597,6 +1649,25 @@ impl Sema {
     }
 
     fn check_expr(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        if let Expr::Var {
+            name, line, column, ..
+        } = expr
+        {
+            if (name == "__func__" || name == "__PRETTY_FUNCTION__") && self.lookup(name).is_none()
+            {
+                if self.fn_name.is_empty() {
+                    return self.err(
+                        *line,
+                        *column,
+                        format!("'{name}' is not allowed outside a function"),
+                    );
+                }
+                let bytes = self.fn_name.as_bytes().to_vec();
+                let line = *line;
+                let column = *column;
+                *expr = Expr::str_lit(bytes, line, column);
+            }
+        }
         match expr {
             Expr::Int { value_ty, .. } => {
                 let value_ty = *value_ty;
@@ -1677,7 +1748,7 @@ impl Sema {
         let Some(ty) = expr.ty() else {
             return Ok(());
         };
-        if let CType::Array(elem, _) = ty {
+        if let CType::Array(elem, _) = ty.clone() {
             let line = expr.line();
             let column = expr.column();
             let inner = std::mem::replace(expr, Expr::int(0, TypeName::Int, line, column));
@@ -1686,6 +1757,19 @@ impl Sema {
                 line,
                 column,
                 ty: Some(CType::pointer(*elem)),
+            };
+            return Ok(());
+        }
+        if ty.is_func() {
+            let line = expr.line();
+            let column = expr.column();
+            let ptr = CType::pointer(ty);
+            let inner = std::mem::replace(expr, Expr::int(0, TypeName::Int, line, column));
+            *expr = Expr::Decay {
+                expr: Box::new(inner),
+                line,
+                column,
+                ty: Some(ptr),
             };
             return Ok(());
         }
@@ -1718,12 +1802,15 @@ impl Sema {
         };
         let (slot, ty) = match sym {
             Symbol::Var(var) => (var.slot, var.ty),
-            Symbol::Func(_) => {
-                return self.err(
-                    line,
-                    column,
-                    format!("function '{name}' used as a value is not supported"),
-                );
+            Symbol::Func(func) => {
+                // A function used as a value is a use. A static function that
+                // is never defined must still be diagnosed, and the IR must
+                // not name it without a declaration.
+                self.note_use(&name, line, column);
+                (
+                    format!("@{}", func.symbol),
+                    CType::func(func.ret, func.params, func.variadic),
+                )
             }
         };
         if let Expr::Var { resolved, .. } = expr {
@@ -1908,14 +1995,18 @@ impl Sema {
             self.ensure_string(expr);
             match op {
                 UnaryOp::Addr => {
-                    if !expr.is_lvalue() {
+                    let inner_ty = expr.ty().expect("typed");
+                    if inner_ty.is_func() {
+                        CType::pointer(inner_ty)
+                    } else if !expr.is_lvalue() {
                         return self.err(
                             line,
                             column,
                             "cannot take the address of this expression",
                         );
+                    } else {
+                        CType::pointer(inner_ty)
                     }
-                    CType::pointer(expr.ty().expect("lvalue type"))
                 }
                 UnaryOp::Deref => {
                     self.decay(expr)?;
@@ -2163,6 +2254,16 @@ impl Sema {
     }
 
     fn check_call(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        let direct = match expr {
+            Expr::Call { callee, .. } => match callee.as_ref() {
+                Expr::Var { name, .. } => matches!(self.lookup(name), Some(Symbol::Func(_))),
+                _ => false,
+            },
+            _ => false,
+        };
+        if !direct {
+            return self.check_indirect_call(expr);
+        }
         let (name, line, column, argc) = match expr {
             Expr::Call {
                 callee,
@@ -2196,15 +2297,16 @@ impl Sema {
             }
         };
         let (fname, ret, params, variadic) = match sym {
-            Symbol::Func(func) => (func.name, func.ret, func.params, func.variadic),
-            Symbol::Var(_) => {
-                return self.err(
-                    line,
-                    column,
-                    format!("called object '{name}' is not a function"),
-                );
-            }
+            Symbol::Func(func) => (func.symbol, func.ret, func.params, func.variadic),
+            Symbol::Var(_) => unreachable!("direct call is a function"),
         };
+        if ret.unqualified().is_record() {
+            return self.err(
+                line,
+                column,
+                "returning a struct or union by value is not supported",
+            );
+        }
         let arity = params.len();
         if variadic {
             if argc < arity {
@@ -2249,6 +2351,79 @@ impl Sema {
                 ret: ret.clone(),
                 params,
                 variadic,
+                indirect: false,
+            });
+        }
+        expr.set_ty(ret);
+        Ok(())
+    }
+
+    fn check_indirect_call(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        let (line, column) = (expr.line(), expr.column());
+        let Expr::Call { callee, args, .. } = expr else {
+            unreachable!("call");
+        };
+        self.check_expr(callee)?;
+        self.decay(callee)?;
+        let ty = callee.ty().expect("typed");
+        let Some(func) = ty.pointee().and_then(CType::func_ty).cloned() else {
+            return self.err(
+                line,
+                column,
+                format!("called object of type '{}' is not a function", ty.display()),
+            );
+        };
+        if func.ret.unqualified().is_record() {
+            return self.err(
+                line,
+                column,
+                "returning a struct or union by value is not supported",
+            );
+        }
+        let argc = args.len();
+        let arity = func.params.len();
+        if func.variadic {
+            if argc < arity {
+                return self.err(
+                    line,
+                    column,
+                    format!(
+                        "function expects at least {arity} {}, found {argc}",
+                        if arity == 1 { "argument" } else { "arguments" },
+                    ),
+                );
+            }
+        } else if argc != arity {
+            return self.err(
+                line,
+                column,
+                format!(
+                    "function expects {arity} {}, found {argc}",
+                    if arity == 1 { "argument" } else { "arguments" },
+                ),
+            );
+        }
+        let params = func.params.clone();
+        let ret = func.ret.clone();
+        let variadic = func.variadic;
+        if let Expr::Call { args, .. } = expr {
+            for (index, arg) in args.iter_mut().enumerate() {
+                self.check_expr(arg)?;
+                self.decay(arg)?;
+                if index < params.len() {
+                    self.can_assign(&params[index], arg)?;
+                } else {
+                    self.require_scalar(arg)?;
+                }
+            }
+        }
+        if let Expr::Call { resolved, .. } = expr {
+            *resolved = Some(CallRes {
+                name: String::new(),
+                ret: ret.clone(),
+                params,
+                variadic,
+                indirect: true,
             });
         }
         expr.set_ty(ret);
@@ -2325,7 +2500,14 @@ impl Sema {
                 format!("cannot assign to const-qualified type '{}'", ty.display()),
             );
         }
-        if ty.is_struct() {
+        if ty.is_float() {
+            return self.err(
+                expr.line(),
+                expr.column(),
+                "floating-point expressions are not supported",
+            );
+        }
+        if ty.is_record() {
             if ty.contains_const() {
                 return self.err(
                     expr.line(),
@@ -2350,6 +2532,7 @@ impl Sema {
             column,
             index,
             offset,
+            bytewise,
             ..
         } = expr
         {
@@ -2401,6 +2584,7 @@ impl Sema {
             };
             *index = Some(found_index);
             *offset = Some(found.offset);
+            *bytewise = handle.is_union();
             // The struct object's qualifiers apply to the member (C11 6.5.2.3).
             found.ty.with_quals(base_ty.quals())
         } else {
@@ -2442,6 +2626,13 @@ impl Sema {
     /// rejects the program. A cast may drop qualifiers; that is not diagnosed.
     fn can_assign(&self, dest: &CType, src: &Expr) -> Result<(), Diagnostic> {
         let src_ty = src.ty().expect("typed");
+        if dest.is_float() || src_ty.is_float() {
+            return self.err(
+                src.line(),
+                src.column(),
+                "floating-point expressions are not supported",
+            );
+        }
         if src_ty.is_void() {
             return self.err(
                 src.line(),
@@ -2452,8 +2643,13 @@ impl Sema {
         if dest.is_integer() && src_ty.is_integer() {
             return Ok(());
         }
-        if dest.unqualified().is_struct()
-            && src_ty.unqualified().is_struct()
+        // C11 6.5.16.1: a pointer may be assigned to `_Bool`. The value is
+        // 0 when the pointer is null and 1 otherwise.
+        if dest.as_integer() == Some(TypeName::Bool) && src_ty.is_pointer() {
+            return Ok(());
+        }
+        if dest.unqualified().is_record()
+            && src_ty.unqualified().is_record()
             && compatible(&dest.unqualified(), &src_ty.unqualified())
         {
             return Ok(());
@@ -2498,6 +2694,11 @@ impl Sema {
 
     fn require_scalar(&self, expr: &Expr) -> Result<(), Diagnostic> {
         match expr.ty() {
+            Some(ty) if ty.is_float() => self.err(
+                expr.line(),
+                expr.column(),
+                "floating-point expressions are not supported",
+            ),
             Some(ty) if ty.is_scalar() => Ok(()),
             Some(ty) if ty.is_void() => self.err(
                 expr.line(),
@@ -2528,6 +2729,9 @@ impl Sema {
         let right = else_expr.ty().expect("typed");
         if left.is_void() && right.is_void() {
             return Ok(CType::Void);
+        }
+        if left.unqualified().is_record() && compatible(&left.unqualified(), &right.unqualified()) {
+            return Ok(left);
         }
         if left.is_integer() && right.is_integer() {
             return Ok(CType::from_name(
@@ -2728,11 +2932,47 @@ fn classify_init(ty: &CType, mut stores: Vec<ElemStore>) -> CheckedInit {
     // store at that field's offset.
     let whole = stores.len() == 1
         && (ty.is_scalar()
-            || (ty.is_struct() && compatible(&stores[0].ty.unqualified(), &ty.unqualified())));
+            || (ty.is_record() && compatible(&stores[0].ty.unqualified(), &ty.unqualified())));
     if whole {
         return CheckedInit::Scalar(stores.remove(0).expr);
     }
     CheckedInit::Aggregate(stores)
+}
+
+/// A union constant is rendered as raw bytes. An address in that constant
+/// needs a relocation, which those bytes cannot hold.
+fn union_bytes_ok(ty: &CType, value: &ConstInit) -> bool {
+    match value {
+        ConstInit::Zero | ConstInit::Int(_) => true,
+        // A null pointer and an integer converted to a pointer are bytes.
+        // The address of an object needs a relocation.
+        ConstInit::Ptr(PtrConst::Null | PtrConst::IntToPtr(_)) => true,
+        ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => !ty.is_union(),
+        ConstInit::Aggregate(items) => {
+            if ty.is_union() {
+                return items.first().is_none_or(const_has_no_address);
+            }
+            if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
+                return fields
+                    .iter()
+                    .zip(items)
+                    .all(|(field, item)| union_bytes_ok(&field.ty, item));
+            }
+            if let Some(elem) = ty.array_elem() {
+                return items.iter().all(|item| union_bytes_ok(elem, item));
+            }
+            true
+        }
+    }
+}
+
+fn const_has_no_address(value: &ConstInit) -> bool {
+    match value {
+        ConstInit::Zero | ConstInit::Int(_) => true,
+        ConstInit::Ptr(PtrConst::Null | PtrConst::IntToPtr(_)) => true,
+        ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => false,
+        ConstInit::Aggregate(items) => items.iter().all(const_has_no_address),
+    }
 }
 
 fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
@@ -2744,6 +2984,14 @@ fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
             .unwrap_or_else(|| zero_const(ty));
     }
     if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
+        // A union's initializer describes the first member. The other members
+        // occupy the same bytes; copying the store into each of them would
+        // reinterpret those bits as a different type.
+        let fields: Vec<_> = if ty.is_union() {
+            fields.into_iter().take(1).collect()
+        } else {
+            fields
+        };
         let mut items = Vec::new();
         for field in &fields {
             items.push(assemble(&field.ty, stores, base + field.offset));
@@ -3488,10 +3736,10 @@ mod tests {
             sema_err("int main(void) { return foo(1); }").contains("undeclared identifier 'foo'")
         );
         assert!(sema_err("int main(void) { int x; return x(1); }")
-            .contains("called object 'x' is not a function"));
+            .contains("called object of type 'int' is not a function"));
         assert!(
             sema_err("int f(void) { return 1; } int main(void) { return f; }")
-                .contains("function 'f' used as a value")
+                .contains("incompatible types")
         );
         assert!(sema_err("int main(void) { break; }").contains("'break' is not inside a loop"));
         assert!(
@@ -3511,10 +3759,10 @@ mod tests {
         assert!(sema_err(
             "int id(int x) { return x; } int main(void) { int id = 5; return id(1); }"
         )
-        .contains("called object 'id' is not a function"));
+        .contains("is not a function"));
         assert!(
             sema_err("int add(int a) { return a; } int main(void) { return add(1, 2)(3); }")
-                .contains("only direct function calls are supported")
+                .contains("expects 1 argument")
         );
         assert!(sema_err("int f(int a); void f(int a);").contains("conflicting types for 'f'"));
         assert!(
@@ -4091,7 +4339,7 @@ struct Node n = {4, 0};
         assert!(sema_err("struct S { int x; int x; };").contains("duplicate member"));
         assert!(sema_err("struct S { int n; int a[]; };").contains("flexible array"));
         assert!(sema_err("struct S { int x : 3; };").contains("bit-fields"));
-        assert!(sema_err("struct { int x; } s;").contains("anonymous structs"));
+        sema_ok("struct { int x; } s; int main(void) { s.x = 1; return s.x; }");
         assert!(sema_err("struct S {};").contains("no members"));
         assert!(
             sema_err("struct S { int x; int y; }; struct S s = { .y = 1 };")
@@ -4118,5 +4366,52 @@ void f(struct S *p);
 void f(struct S *p) { p->x = 1; }
 ",
         );
+    }
+
+    #[test]
+    fn typedef_enum_union_diagnostics() {
+        sema_ok(
+            "\
+typedef int T;
+typedef T T;
+enum E { A = 1, B };
+union U { int x; char c; };
+int main(void) { T t = A; union U u = {t}; return u.x + B; }
+",
+        );
+        assert!(sema_err("typedef int T; typedef long T;").contains("redefinition of 'T'"));
+        assert!(sema_err("enum E x;").contains("incomplete enum"));
+        assert!(sema_err("restrict int x;").contains("restrict requires a pointer"));
+        assert!(sema_err("int main(void) { float f; f = 1; return 0; }")
+            .contains("floating-point expressions are not supported"));
+        assert!(
+            sema_err("union U { int x; char c; }; union U u = {1, 2};").contains("excess elements")
+        );
+        assert!(sema_err(
+            "struct S { int x; }; struct S f(void); int main(void) { return f().x; }"
+        )
+        .contains("returning a struct or union by value"));
+        assert!(sema_err("enum E { A = 1, A = 2 };").contains("redefinition of 'A'"));
+        assert!(
+            sema_err("static int f(void); int main(void) { int (*p)(void) = f; return 0; }")
+                .contains("static function 'f' is used but not defined")
+        );
+        assert!(sema_err("int g; union U { int *p; long l; } u = { &g };")
+            .contains("address in a union"));
+        sema_ok("union U { int *p; long l; } u = { 0 };");
+        sema_ok("union U { int *p; long l; } u = { (int *)1 };");
+        sema_ok("struct S { int a; union { char *s; long n; } v; } g = { 1 };");
+        sema_ok("struct T { int a; }; int main(void) { union T; int x = 1; return x; }");
+        assert!(sema_err("struct T { int a; }; void g(union T *p);").contains("different tag type"));
+        assert!(sema_err("struct T { int a; union T *p; };").contains("different tag type"));
+        sema_ok("int main(void) { int *p = 0; _Bool b = p; return b; }");
+        let err = crate::compile_to_ir(
+            "#include <stdarg.h>\nint f(va_list ap) { return va_arg(ap, int); }\n",
+            "va.c",
+        );
+        assert!(err
+            .unwrap_err()
+            .to_string()
+            .contains("__cc_va_arg_is_not_supported"));
     }
 }

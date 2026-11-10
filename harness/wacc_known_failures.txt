@@ -4,20 +4,11 @@
 # A listed test that now passes is reported so this line can be removed.
 # A compiler crash or panic fails the run even when the test is listed.
 
-# unsupported-struct-conditional: ?: does not accept a struct operand (2)
-chapter_18/valid/no_structure_parameters/struct_copy/copy_struct.c unsupported-struct-conditional
-chapter_18/valid/no_structure_parameters/struct_copy/copy_struct_with_dot_operator.c unsupported-struct-conditional
-
-# unsupported-struct-by-value: a function type that passes or returns a struct by value is rejected (1)
+# unsupported-struct-by-value: passing or returning a struct or union by value is rejected (2)
 chapter_18/valid/no_structure_parameters/semantic_analysis/incomplete_structs.c unsupported-struct-by-value
 
-# unsupported-double: double, float, and floating constants are not implemented (73)
-chapter_14/valid/casts/cast_between_pointer_types.c unsupported-double
-chapter_14/valid/casts/pointer_int_casts.c unsupported-double
-chapter_14/valid/casts/null_pointer_conversion.c unsupported-double
-chapter_14/valid/comparisons/compare_to_null.c unsupported-double
+# unsupported-double: double, a floating constant, or both (75)
 chapter_14/valid/comparisons/pointers_as_conditions.c unsupported-double
-chapter_14/valid/declarators/abstract_declarators.c unsupported-double
 chapter_14/valid/declarators/declarators.c unsupported-double
 chapter_14/valid/dereference/multilevel_indirection.c unsupported-double
 chapter_14/valid/dereference/read_through_pointers.c unsupported-double
@@ -38,7 +29,6 @@ chapter_15/valid/initialization/static_nested.c unsupported-double
 chapter_15/valid/libraries/set_array_val.c unsupported-double
 chapter_15/valid/libraries/set_array_val_client.c unsupported-double
 chapter_15/valid/pointer_arithmetic/pointer_add.c unsupported-double
-chapter_15/valid/pointer_arithmetic/pointer_diff.c unsupported-double
 chapter_15/valid/subscripting/simple_subscripts.c unsupported-double
 chapter_16/valid/char_constants/char_constant_operations.c unsupported-double
 chapter_16/valid/chars/access_through_char_pointer.c unsupported-double
@@ -49,12 +39,8 @@ chapter_16/valid/chars/partial_initialization.c unsupported-double
 chapter_16/valid/chars/static_initializers.c unsupported-double
 chapter_16/valid/extra_credit/compound_assign_chars.c unsupported-double
 chapter_17/valid/extra_credit/sizeof_compound.c unsupported-double
-chapter_17/valid/libraries/sizeof_extern.c unsupported-double
-chapter_17/valid/libraries/sizeof_extern_client.c unsupported-double
 chapter_17/valid/sizeof/simple.c unsupported-double
-chapter_17/valid/sizeof/sizeof_basic_types.c unsupported-double
 chapter_17/valid/sizeof/sizeof_consts.c unsupported-double
-chapter_17/valid/sizeof/sizeof_derived_types.c unsupported-double
 chapter_17/valid/sizeof/sizeof_expressions.c unsupported-double
 chapter_17/valid/void_pointer/conversion_by_assignment.c unsupported-double
 chapter_17/valid/void_pointer/explicit_cast.c unsupported-double
@@ -81,7 +67,23 @@ chapter_18/valid/no_structure_parameters/scalar_member_access/dot.c unsupported-
 chapter_18/valid/no_structure_parameters/scalar_member_access/nested_struct.c unsupported-double
 chapter_18/valid/no_structure_parameters/semantic_analysis/namespaces.c unsupported-double
 chapter_18/valid/no_structure_parameters/semantic_analysis/resolve_tags.c unsupported-double
-chapter_18/valid/no_structure_parameters/size_and_offset_calculations/member_offsets.c unsupported-double
-chapter_18/valid/no_structure_parameters/size_and_offset_calculations/sizeof_exps.c unsupported-double
-chapter_18/valid/no_structure_parameters/size_and_offset_calculations/sizeof_type.c unsupported-double
 chapter_18/valid/no_structure_parameters/struct_copy/copy_struct_with_arrow_operator.c unsupported-double
+# Union extra-credit tests whose remaining failure is a floating constant (15)
+chapter_18/valid/extra_credit/libraries/classify_unions.c unsupported-double
+chapter_18/valid/extra_credit/libraries/classify_unions_client.c unsupported-double
+chapter_18/valid/extra_credit/libraries/param_passing.c unsupported-double
+chapter_18/valid/extra_credit/libraries/param_passing_client.c unsupported-double
+chapter_18/valid/extra_credit/libraries/static_union_inits.c unsupported-double
+chapter_18/valid/extra_credit/libraries/union_inits.c unsupported-double
+chapter_18/valid/extra_credit/libraries/union_inits_client.c unsupported-double
+chapter_18/valid/extra_credit/libraries/union_retvals.c unsupported-double
+chapter_18/valid/extra_credit/libraries/union_retvals_client.c unsupported-double
+chapter_18/valid/extra_credit/member_access/nested_union_access.c unsupported-double
+chapter_18/valid/extra_credit/member_access/static_union_access.c unsupported-double
+chapter_18/valid/extra_credit/member_access/union_init_and_member_access.c unsupported-double
+chapter_18/valid/extra_credit/semantic_analysis/union_namespace.c unsupported-double
+chapter_18/valid/extra_credit/union_copy/assign_to_union.c unsupported-double
+chapter_18/valid/extra_credit/union_copy/copy_thru_pointer.c unsupported-double
+
+# unsupported-struct-by-value also covers a union passed by value (2 total)
+chapter_18/valid/extra_credit/semantic_analysis/incomplete_union_types.c unsupported-struct-by-value

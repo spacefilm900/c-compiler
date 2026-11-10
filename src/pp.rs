@@ -106,8 +106,11 @@ pub fn preprocess_tokens(
 
 fn default_system_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    push_system(&mut dirs, PathBuf::from("include"));
-    push_system(
+    // The compiler's own headers (stddef.h, stdarg.h, stdbool.h, limits.h)
+    // come before the C library, the same way a hosted compiler searches its
+    // builtin include directory first.
+    push_compiler(&mut dirs, PathBuf::from("include"));
+    push_compiler(
         &mut dirs,
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("include"),
     );
@@ -115,15 +118,21 @@ fn default_system_dirs() -> Vec<PathBuf> {
         let mut dir = exe.parent().map(Path::to_path_buf);
         for _ in 0..8 {
             let Some(current) = dir else { break };
-            push_system(&mut dirs, current.join("include"));
+            push_compiler(&mut dirs, current.join("include"));
             dir = current.parent().map(Path::to_path_buf);
+        }
+    }
+    for path in ["/usr/include/x86_64-linux-gnu", "/usr/include"] {
+        let path = PathBuf::from(path);
+        if path.is_dir() && !dirs.iter().any(|dir| dir == &path) {
+            dirs.push(path);
         }
     }
     dirs
 }
 
-fn push_system(dirs: &mut Vec<PathBuf>, path: PathBuf) {
-    if path.join("stdio.h").is_file() && !dirs.iter().any(|dir| dir == &path) {
+fn push_compiler(dirs: &mut Vec<PathBuf>, path: PathBuf) {
+    if path.join("stddef.h").is_file() && !dirs.iter().any(|dir| dir == &path) {
         dirs.push(path);
     }
 }
@@ -312,6 +321,9 @@ struct FileInfo {
     real_path: PathBuf,
     canonical: PathBuf,
     depth: usize,
+    /// Directory the file was found in, for `#include_next`. None for the
+    /// main source file.
+    found_dir: Option<PathBuf>,
 }
 
 struct Cond {
@@ -442,6 +454,10 @@ impl Processor {
             ("__ORDER_BIG_ENDIAN__", "4321"),
             ("__ORDER_PDP_ENDIAN__", "3412"),
             ("__BYTE_ORDER__", "__ORDER_LITTLE_ENDIAN__"),
+            ("__USER_LABEL_PREFIX__", ""),
+            ("__WCHAR_MAX__", "2147483647"),
+            ("__WCHAR_MIN__", "(-2147483647 - 1)"),
+            ("__WINT_TYPE__", "unsigned int"),
         ];
         for (name, body) in BUILTINS {
             let mac = self.macro_from_parts(name, None, false, body_tokens(body)?, None)?;
@@ -481,6 +497,7 @@ impl Processor {
             real_path: path,
             canonical,
             depth: 0,
+            found_dir: None,
         });
     }
 
@@ -868,7 +885,8 @@ impl Processor {
         match name_tok.spelling.as_str() {
             "define" => self.do_define(&hash),
             "undef" => self.do_undef(&hash),
-            "include" => self.do_include(&hash),
+            "include" => self.do_include(&hash, false),
+            "include_next" => self.do_include(&hash, true),
             "if" => self.do_if(&hash),
             "ifdef" => self.do_ifdef(&hash, true),
             "ifndef" => self.do_ifdef(&hash, false),
@@ -934,7 +952,7 @@ impl Processor {
         Ok(())
     }
 
-    fn do_include(&mut self, at: &PpToken) -> Result<(), Diagnostic> {
+    fn do_include(&mut self, at: &PpToken, include_next: bool) -> Result<(), Diagnostic> {
         let line = self.take_line()?;
         let tokens = if starts_header(&line) {
             line
@@ -948,7 +966,12 @@ impl Processor {
         if name.is_empty() {
             return Err(error_at(at, "empty file name"));
         }
-        self.include_file(&name, quote, at)
+        let after = if include_next {
+            self.files[at.file_id as usize].found_dir.clone()
+        } else {
+            None
+        };
+        self.include_file(&name, quote, at, after.as_deref())
     }
 
     fn do_if(&mut self, at: &PpToken) -> Result<(), Diagnostic> {
@@ -1066,8 +1089,14 @@ impl Processor {
         }
     }
 
-    fn include_file(&mut self, name: &str, quote: bool, at: &PpToken) -> Result<(), Diagnostic> {
-        let path = self.search(name, quote, at)?;
+    fn include_file(
+        &mut self,
+        name: &str,
+        quote: bool,
+        at: &PpToken,
+        after: Option<&Path>,
+    ) -> Result<(), Diagnostic> {
+        let (path, found_dir) = self.search(name, quote, at, after)?;
         let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
         if self.once.contains(&canonical) {
             return Ok(());
@@ -1083,6 +1112,7 @@ impl Processor {
             real_path: path,
             canonical,
             depth,
+            found_dir: Some(found_dir),
         });
         let mut included = lex_source(&text, &display, file_id)?;
         // A header that does not end in a new-line must not continue into the
@@ -1108,22 +1138,35 @@ impl Processor {
         Ok(())
     }
 
-    fn search(&self, name: &str, quote: bool, at: &PpToken) -> Result<PathBuf, Diagnostic> {
-        let mut candidates = Vec::new();
+    fn search(
+        &self,
+        name: &str,
+        quote: bool,
+        at: &PpToken,
+        after: Option<&Path>,
+    ) -> Result<(PathBuf, PathBuf), Diagnostic> {
+        let mut dirs = Vec::new();
         if quote {
             if let Some(dir) = self.files[at.file_id as usize].real_path.parent() {
-                candidates.push(dir.join(name));
+                dirs.push(dir.to_path_buf());
             }
         }
-        for dir in &self.include_dirs {
-            candidates.push(dir.join(name));
-        }
-        for dir in &self.system_dirs {
-            candidates.push(dir.join(name));
-        }
-        for path in &candidates {
+        dirs.extend(self.include_dirs.iter().cloned());
+        dirs.extend(self.system_dirs.iter().cloned());
+        // `#include_next` resumes after the last copy of the directory that
+        // provided the current file. If that directory is not in this search
+        // list, the directive behaves like `#include`.
+        let start = match after {
+            Some(found) => dirs
+                .iter()
+                .rposition(|dir| dir == found)
+                .map_or(0, |index| index + 1),
+            None => 0,
+        };
+        for dir in dirs.into_iter().skip(start) {
+            let path = dir.join(name);
             if path.is_file() {
-                return Ok(path.clone());
+                return Ok((path, dir));
             }
         }
         Err(error_at(at, format!("'{name}' file not found")))
@@ -1915,7 +1958,17 @@ fn is_ident_text(text: &str) -> bool {
 }
 
 fn literal_val(tok: &PpToken) -> Result<Val, Diagnostic> {
-    match crate::lexer::lex(&tok.spelling, &tok.display) {
+    // A wide or Unicode prefix does not change the value of a character
+    // constant in a preprocessor expression (`L'\0'` is 0). The phase-7
+    // lexer still rejects those prefixes in program text.
+    let spelling = tok
+        .spelling
+        .strip_prefix("u8")
+        .or_else(|| tok.spelling.strip_prefix('L'))
+        .or_else(|| tok.spelling.strip_prefix('u'))
+        .or_else(|| tok.spelling.strip_prefix('U'))
+        .unwrap_or(&tok.spelling);
+    match crate::lexer::lex(spelling, &tok.display) {
         Ok(mut tokens) => {
             tokens.pop();
             if tokens.len() != 1 || tokens[0].value.is_none() || tokens[0].int_ty.is_none() {

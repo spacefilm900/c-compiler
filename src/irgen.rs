@@ -121,6 +121,23 @@ fn render_global(global: &IrGlobal) -> String {
 }
 
 fn render_struct(handle: &StructRef) -> String {
+    if handle.is_union() {
+        let size = handle.size().unwrap_or(0);
+        let align = u64::from(handle.align().max(1));
+        let body = if align != 0 && size % align == 0 && matches!(align, 1 | 2 | 4 | 8 | 16) {
+            let elem = match align {
+                1 => "i8",
+                2 => "i16",
+                4 => "i32",
+                8 => "i64",
+                _ => "i128",
+            };
+            format!("[ {} x {elem} ]", size / align)
+        } else {
+            format!("[ {size} x i8 ]")
+        };
+        return format!("%{} = type {{ {body} }}", handle.llvm_name());
+    }
     let fields = handle.fields().unwrap_or_default();
     let body = fields
         .iter()
@@ -187,7 +204,7 @@ fn render_function(func: &FuncDef) -> (String, bool) {
         "define {linkage}{}{} {}({params}) {{",
         ret_prefix(&func.ret_type),
         func.ret_type.ir_type(),
-        llvm_global(&func.name)
+        llvm_global(&func.symbol)
     ));
     gen.emit("entry:");
     gen.cur = "entry".to_string();
@@ -421,7 +438,7 @@ impl Gen {
         };
         match checked {
             CheckedInit::Scalar(init) => {
-                if decl.ty.is_struct() {
+                if decl.ty.is_record() {
                     if let Some(src) = self.struct_bytes(init) {
                         self.copy_struct(&decl.ty, &src, &decl.slot);
                         return;
@@ -474,11 +491,11 @@ impl Gen {
     /// Address of a struct object whose bytes should be copied. An assignment
     /// result is the object just stored, so `u = (s = t)` copies from `s`.
     fn struct_bytes(&mut self, expr: &Expr) -> Option<String> {
-        if expr.ty().is_some_and(|ty| ty.is_struct()) && expr.is_lvalue() {
+        if expr.ty().is_some_and(|ty| ty.is_record()) && expr.is_lvalue() {
             return Some(self.gen_addr(expr));
         }
         if let Expr::Assign { target, .. } = expr {
-            if target.ty().is_some_and(|ty| ty.is_struct()) {
+            if target.ty().is_some_and(|ty| ty.is_record()) {
                 let _ = self.gen_expr(expr);
                 return Some(self.gen_addr(target));
             }
@@ -513,7 +530,28 @@ impl Gen {
     /// integer is `ptrtoint` to the destination width. That is the
     /// implementation-defined conversion Clang uses on x86_64-pc-linux-gnu.
     fn convert(&mut self, value: &str, from: &CType, to: &CType) -> String {
+        // C11 6.3.1.2: a pointer converts to `_Bool` as 0 when null and 1
+        // otherwise. Truncating the address to a byte is not that conversion.
+        if from.is_pointer() && to.as_integer() == Some(TypeName::Bool) {
+            let cmp = self.fresh();
+            let tmp = self.fresh();
+            self.emit(&format!("  {cmp} = icmp ne ptr {value}, null"));
+            self.emit(&format!("  {tmp} = zext i1 {cmp} to i8"));
+            return tmp;
+        }
         if let (Some(from_i), Some(to_i)) = (from.as_integer(), to.as_integer()) {
+            // `_Bool` is 0 or 1. A same-width truncation would keep the low
+            // byte, so `( _Bool )2` would stay 2.
+            if to_i == TypeName::Bool && from_i != TypeName::Bool {
+                let cmp = self.fresh();
+                let tmp = self.fresh();
+                self.emit(&format!(
+                    "  {cmp} = icmp ne {} {value}, 0",
+                    from_i.ir_type()
+                ));
+                self.emit(&format!("  {tmp} = zext i1 {cmp} to i8"));
+                return tmp;
+            }
             if from_i.width() == to_i.width() {
                 return value.to_string();
             }
@@ -687,7 +725,7 @@ impl Gen {
             Expr::Var { resolved, ty, .. } => {
                 let slot = &resolved.as_ref().expect("resolved variable").slot;
                 let ty = ty.clone().expect("typed variable");
-                if ty.is_array() {
+                if ty.is_array() || ty.is_func() {
                     Some(slot.clone())
                 } else {
                     Some(self.load(&ty, slot))
@@ -765,7 +803,7 @@ impl Gen {
             Expr::Assign { target, value, .. } => {
                 let addr = self.gen_addr(target);
                 let dest = target.ty().expect("lvalue type");
-                if dest.is_struct() {
+                if dest.is_record() {
                     if let Some(src) = self.struct_bytes(value) {
                         self.copy_struct(&dest, &src, &addr);
                     } else {
@@ -834,9 +872,12 @@ impl Gen {
                     Some(self.load(&ty, &addr))
                 }
             }
-            Expr::Call { args, resolved, .. } => {
-                self.gen_call(args, resolved.as_ref().expect("resolved call"))
-            }
+            Expr::Call {
+                callee,
+                args,
+                resolved,
+                ..
+            } => self.gen_call(callee, args, resolved.as_ref().expect("resolved call")),
         }
     }
 
@@ -854,7 +895,12 @@ impl Gen {
             Expr::Decay { expr, .. } => self.gen_addr(expr),
             Expr::Str { symbol, .. } => llvm_global(symbol.as_deref().expect("string symbol")),
             Expr::Member {
-                base, arrow, index, ..
+                base,
+                arrow,
+                index,
+                offset,
+                bytewise,
+                ..
             } => {
                 let base_ptr = if *arrow {
                     self.gen_val(base)
@@ -863,21 +909,28 @@ impl Gen {
                 } else {
                     self.spill(base)
                 };
-                let struct_ty = if *arrow {
-                    base.ty()
-                        .as_ref()
-                        .and_then(CType::pointee)
-                        .expect("pointer to struct")
-                        .clone()
-                } else {
-                    base.ty().expect("struct")
-                };
-                let index = index.expect("member index");
                 let tmp = self.fresh();
-                self.emit(&format!(
-                    "  {tmp} = getelementptr inbounds {}, ptr {base_ptr}, i32 0, i32 {index}",
-                    struct_ty.ir_type()
-                ));
+                if *bytewise {
+                    let offset = offset.expect("member offset");
+                    self.emit(&format!(
+                        "  {tmp} = getelementptr inbounds i8, ptr {base_ptr}, i64 {offset}"
+                    ));
+                } else {
+                    let struct_ty = if *arrow {
+                        base.ty()
+                            .as_ref()
+                            .and_then(CType::pointee)
+                            .expect("pointer to struct")
+                            .clone()
+                    } else {
+                        base.ty().expect("struct")
+                    };
+                    let index = index.expect("member index");
+                    self.emit(&format!(
+                        "  {tmp} = getelementptr inbounds {}, ptr {base_ptr}, i32 0, i32 {index}",
+                        struct_ty.ir_type()
+                    ));
+                }
                 tmp
             }
             _ => panic!("internal compiler error: address of a non-lvalue"),
@@ -1076,7 +1129,7 @@ impl Gen {
         }
     }
 
-    fn gen_call(&mut self, args: &[Expr], resolved: &CallRes) -> Option<String> {
+    fn gen_call(&mut self, callee: &Expr, args: &[Expr], resolved: &CallRes) -> Option<String> {
         let mut rendered = Vec::new();
         for (index, arg) in args.iter().enumerate() {
             let value = self.gen_val(arg);
@@ -1094,7 +1147,11 @@ impl Gen {
             }
         }
         let arglist = rendered.join(", ");
-        let callee = llvm_global(&resolved.name);
+        let callee = if resolved.indirect {
+            self.gen_val(callee)
+        } else {
+            llvm_global(&resolved.name)
+        };
         // A variadic call names the function type, including `...`
         // (`call i32 (ptr, ...) @printf(...)`). Other calls name only the
         // return type, which is what the existing tests match.
@@ -1383,7 +1440,118 @@ fn ptr_pred(op: BinOp) -> &'static str {
     }
 }
 
+/// A union's LLVM type is `{ [N x iK] }` with the union's alignment. The
+/// constant is the first member's bytes, little endian, padded with zeros.
+fn render_union_const(ty: &CType, value: &ConstInit) -> String {
+    let size = ty.size().unwrap_or(0) as usize;
+    let align = usize::try_from(ty.align().max(1)).unwrap_or(1);
+    let mut bytes = vec![0u8; size];
+    // Semantic analysis rejects an address constant in a union before this
+    // runs. A `false` result here is a bug in that check, not a zero.
+    assert!(
+        write_const_bytes(ty, value, &mut bytes, 0),
+        "union initializer contains a value that is not a byte constant"
+    );
+    if bytes.iter().all(|byte| *byte == 0) {
+        return "zeroinitializer".to_string();
+    }
+    let (elem, step) = match align {
+        2 => ("i16", 2),
+        4 => ("i32", 4),
+        8 => ("i64", 8),
+        16 => ("i128", 16),
+        _ => ("i8", 1),
+    };
+    let count = if step == 0 || bytes.len() % step != 0 {
+        bytes.len()
+    } else {
+        bytes.len() / step
+    };
+    let step = if bytes.len() % step != 0 { 1 } else { step };
+    let elem = if step == 1 { "i8" } else { elem };
+    let mut parts = Vec::new();
+    for index in 0..count {
+        let mut acc: u128 = 0;
+        for byte in 0..step {
+            let at = index * step + byte;
+            if at < bytes.len() {
+                acc |= u128::from(bytes[at]) << (8 * byte);
+            }
+        }
+        parts.push(format!("{elem} {acc}"));
+    }
+    format!("{{ [ {count} x {elem} ] [ {} ] }}", parts.join(", "))
+}
+
+fn write_const_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: usize) -> bool {
+    match value {
+        ConstInit::Zero => true,
+        ConstInit::Int(bits) => {
+            let Some(int) = ty.as_integer() else {
+                return false;
+            };
+            let width = (int.width() / 8) as usize;
+            for index in 0..width {
+                let at = offset + index;
+                if at < bytes.len() {
+                    bytes[at] = (*bits >> (8 * index)) as u8;
+                }
+            }
+            true
+        }
+        ConstInit::Aggregate(items) => {
+            if ty.is_union() {
+                let Some(field) = ty.struct_ref().and_then(|handle| {
+                    handle.fields().and_then(|fields| fields.into_iter().next())
+                }) else {
+                    return true;
+                };
+                let Some(item) = items.first() else {
+                    return true;
+                };
+                return write_const_bytes(&field.ty, item, bytes, offset);
+            }
+            if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
+                for (field, item) in fields.iter().zip(items) {
+                    let at = offset + field.offset as usize;
+                    if !write_const_bytes(&field.ty, item, bytes, at) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            if let (Some(elem), Some(len)) = (ty.array_elem(), ty.array_len()) {
+                let step = elem.size().unwrap_or(0) as usize;
+                for index in 0..len as usize {
+                    let Some(item) = items.get(index) else {
+                        break;
+                    };
+                    if !write_const_bytes(elem, item, bytes, offset + index * step) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            false
+        }
+        ConstInit::Ptr(PtrConst::Null) => true,
+        ConstInit::Ptr(PtrConst::IntToPtr(bits)) => {
+            for index in 0..8 {
+                let at = offset + index;
+                if at < bytes.len() {
+                    bytes[at] = (*bits >> (8 * index)) as u8;
+                }
+            }
+            true
+        }
+        ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => false,
+    }
+}
+
 fn render_const(ty: &CType, value: &ConstInit) -> String {
+    if ty.is_union() {
+        return render_union_const(ty, value);
+    }
     match value {
         ConstInit::Zero => zero_const_spelling(ty),
         ConstInit::Int(bits) => ty
@@ -2151,5 +2319,24 @@ int main(void) {
             let reference = run_reference_file(&path);
             assert_eq!(mine, reference, "{name}");
         }
+    }
+
+    #[test]
+    fn union_enum_and_function_pointer_ir() {
+        let source = "\
+enum E { A = 2, B };
+union U { int x; unsigned char b; };
+int id(int n) { return n; }
+int main(void) {
+    union U u = {A};
+    int (*p)(int) = id;
+    return u.b + p(B);
+}
+";
+        let ir = crate::compile_to_ir(source, "union.c").unwrap();
+        assert!(ir.contains("%union.U = type"), "{ir}");
+        assert!(ir.contains("getelementptr inbounds i8"), "{ir}");
+        assert!(ir.contains("call i32 %"), "{ir}");
+        assert_eq!(run_binary(&ir), run_reference(source));
     }
 }
