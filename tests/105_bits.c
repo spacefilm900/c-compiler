@@ -1,4 +1,4 @@
-#include <string.h>
+void *memcpy(void *, const void *, unsigned long);
 
 struct A {
     int a : 3;
@@ -64,6 +64,21 @@ int main(void) {
     } s1 = {1};
     if (s1.x != -1) {
         return 9;
+    }
+    struct {
+        int a : 3;
+    } s3;
+    int assigned = (s3.a = 7);
+    if (assigned != -1 || s3.a != -1) {
+        return 10;
+    }
+    s3.a = 3;
+    if ((s3.a += 4) != -1) {
+        return 11;
+    }
+    s3.a = 3;
+    if (++s3.a != -4) {
+        return 12;
     }
     return 0;
 }

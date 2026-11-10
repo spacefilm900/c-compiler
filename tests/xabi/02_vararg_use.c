@@ -1,4 +1,4 @@
-#include <string.h>
+void *memcpy(void *, const void *, unsigned long);
 
 int sum_ints(int n, ...);
 double last_double(int n, ...);

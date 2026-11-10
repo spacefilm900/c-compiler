@@ -4,6 +4,24 @@ struct Pair {
     int c;
 };
 
+struct Pair file_pair = {1, .a = 2, 3};
+
+int rows[][2] = {[1][0] = 3, 4};
+
+union Wide {
+    char b;
+    long a;
+};
+
+union Wide file_wide = {.a = 0x1234};
+
+union Dbl {
+    double d;
+    long l;
+};
+
+union Dbl file_dbl = {1.5};
+
 struct Nested {
     int a[3];
     int b;
@@ -40,6 +58,18 @@ int main(void) {
     } u = {.b = 3};
     if (u.b != 3) {
         return 7;
+    }
+    if (file_pair.a != 2 || file_pair.b != 3 || file_pair.c != 0) {
+        return 8;
+    }
+    if (sizeof rows != 4 * sizeof(int) || rows[1][0] != 3 || rows[1][1] != 4) {
+        return 9;
+    }
+    if (file_wide.a != 0x1234) {
+        return 10;
+    }
+    if (file_dbl.d != 1.5) {
+        return 11;
     }
     return 0;
 }

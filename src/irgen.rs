@@ -1009,6 +1009,22 @@ impl Gen {
             "  {masked} = and {} {shifted}, {mask}",
             container.ir_type()
         ));
+        let value_ty = expr.ty().expect("bit-field value type");
+        self.finish_bitfield(&masked, &info, &container, &value_ty)
+    }
+
+    /// The value of a bit-field after it is stored: the written bits, masked
+    /// to the field width, sign-extended when the field is signed, then
+    /// converted to the promoted type. C11 6.5.16 says an assignment
+    /// expression has that value. Reloading the container would be a second
+    /// volatile access.
+    fn finish_bitfield(
+        &mut self,
+        masked: &str,
+        info: &BitInfo,
+        container: &CType,
+        value_ty: &CType,
+    ) -> String {
         let field = if info.signed_field && info.width < info.container_bits {
             let up = info.container_bits - info.width;
             let hi = self.fresh();
@@ -1020,10 +1036,9 @@ impl Gen {
             self.emit(&format!("  {lo} = ashr {} {hi}, {up}", container.ir_type()));
             lo
         } else {
-            masked
+            masked.to_string()
         };
-        let value_ty = expr.ty().expect("bit-field value type");
-        self.convert(&field, &container, &value_ty)
+        self.convert(&field, container, value_ty)
     }
 
     fn write_bits(&mut self, addr: &str, info: &BitStore, value_ty: &CType, value: &str) {
@@ -1061,7 +1076,7 @@ impl Gen {
         self.store(&container, &merged, addr);
     }
 
-    fn store_bitfield(&mut self, addr: &str, expr: &Expr, value: &str) {
+    fn store_bitfield(&mut self, addr: &str, expr: &Expr, value: &str) -> String {
         let info = bit_info(expr).expect("bit-field");
         let container = container_type(
             info.container_bits,
@@ -1079,7 +1094,7 @@ impl Gen {
             container.ir_type()
         ));
         let placed = if shift == 0 {
-            masked
+            masked.clone()
         } else {
             let tmp = self.fresh();
             self.emit(&format!(
@@ -1100,6 +1115,7 @@ impl Gen {
             container.ir_type()
         ));
         self.store(&container, &merged, addr);
+        self.finish_bitfield(&masked, &info, &container, &value_ty)
     }
 
     fn store(&mut self, ty: &CType, value: &str, slot: &str) {
@@ -1867,11 +1883,11 @@ impl Gen {
                 let raw = self.gen_val(value);
                 let stored = self.convert(&raw, &value.ty().expect("typed"), &dest);
                 if bit_info(target).is_some() {
-                    self.store_bitfield(&addr, target, &stored);
+                    Some(self.store_bitfield(&addr, target, &stored))
                 } else {
                     self.store(&dest, &stored, &addr);
+                    Some(stored)
                 }
-                Some(stored)
             }
             Expr::CompoundAssign {
                 op, target, value, ..
@@ -2203,11 +2219,11 @@ impl Gen {
         ));
         let stored = self.convert(&updated, &common_ty, &dest);
         if bit_info(target).is_some() {
-            self.store_bitfield(&addr, target, &stored);
+            self.store_bitfield(&addr, target, &stored)
         } else {
             self.store(&dest, &stored, &addr);
+            stored
         }
-        stored
     }
 
     fn gen_incdec(&mut self, op: IncOp, target: &Expr) -> String {
@@ -2232,12 +2248,13 @@ impl Gen {
                 "  {updated} = {inst} {} {old}, {one}",
                 dest.ir_type()
             ));
-            if bit_info(target).is_some() {
-                self.store_bitfield(&addr, target, &updated);
+            let written = if bit_info(target).is_some() {
+                self.store_bitfield(&addr, target, &updated)
             } else {
                 self.store(&dest, &updated, &addr);
-            }
-            return if op.is_prefix() { updated } else { old };
+                updated
+            };
+            return if op.is_prefix() { written } else { old };
         }
         if dest.is_pointer() {
             let elem = dest.pointee().expect("pointer").ir_type();
@@ -2260,13 +2277,14 @@ impl Gen {
             common.ir_type()
         ));
         let stored = self.convert(&updated, &common_ty, &dest);
-        if bit_info(target).is_some() {
-            self.store_bitfield(&addr, target, &stored);
+        let written = if bit_info(target).is_some() {
+            self.store_bitfield(&addr, target, &stored)
         } else {
             self.store(&dest, &stored, &addr);
-        }
-        if op.is_prefix() {
             stored
+        };
+        if op.is_prefix() {
+            written
         } else {
             old
         }

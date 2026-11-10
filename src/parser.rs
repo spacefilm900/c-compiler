@@ -1273,17 +1273,17 @@ impl Parser<'_> {
                     });
                 } else {
                     let named = self.parse_named_decl(specs.ty.clone())?;
-                    let width = if self.current().kind == TokenKind::Colon {
-                        Some(self.parse_bit_width(&specs.ty, true)?)
-                    } else {
-                        None
-                    };
                     let DeclKind::Object(ty) = named.kind else {
                         return Err(self.error_at(
                             named.line,
                             named.column,
                             "function members are not supported",
                         ));
+                    };
+                    let width = if self.current().kind == TokenKind::Colon {
+                        Some(self.parse_bit_width(&ty, true)?)
+                    } else {
+                        None
                     };
                     if width.is_none() && ty.is_array() && ty.array_len().is_none() {
                         return Err(self.error_at(
@@ -1377,7 +1377,7 @@ impl Parser<'_> {
         } else {
             integer.width()
         };
-        if signed as u32 > max {
+        if signed > i64::from(max) {
             return Err(self.error_at(
                 expr.line(),
                 expr.column(),

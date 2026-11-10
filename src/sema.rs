@@ -630,6 +630,27 @@ impl Sema {
                 if at > 1_000_000 {
                     return self.err(*line, *column, "array designator is too large");
                 }
+                if designators.len() > 1 {
+                    let rest = designators[1..].to_vec();
+                    let dline = *dline;
+                    let dcol = *dcol;
+                    let mut scratch = Vec::new();
+                    let (_child, mut frames) = self.seek_designator(elem, 0, &rest, dline, dcol)?;
+                    pos += 1;
+                    if !advance_frames(&mut frames) {
+                        frames.clear();
+                    }
+                    while pos < items.len()
+                        && !frames.is_empty()
+                        && !matches!(items[pos], Init::Designated { .. })
+                    {
+                        self.positional_one(&items[pos], &mut frames, &mut scratch, elem)?;
+                        pos += 1;
+                    }
+                    count = count.max(at + 1);
+                    index = at + 1;
+                    continue;
+                }
                 index = at;
                 pos += 1;
             } else {
@@ -1190,8 +1211,18 @@ impl Sema {
         ty: &CType,
         stores: &[ElemStore],
     ) -> Result<ConstInit, Diagnostic> {
-        if ty.record_has_bitfield() {
+        if ty.is_union() || ty.record_has_bitfield() {
             return self.fold_bit_object(name, ty, stores);
+        }
+        if stores.iter().any(|store| store.bits.is_some()) {
+            let first = &stores[0].expr;
+            return self.err(
+                first.line(),
+                first.column(),
+                format!(
+                    "constant initializer of '{name}' with a nested bit-field struct is not supported"
+                ),
+            );
         }
         let mut folded = Vec::new();
         for store in stores {
@@ -1227,21 +1258,20 @@ impl Sema {
                     );
                 };
                 pack_bits(&mut bytes, bits.abs_bit, bits.width, raw);
-            } else if store.ty.is_integer() || store.ty.is_pointer() {
+            } else {
                 let value = self.fold_one(name, &store.expr, &store.ty)?;
                 if !write_folded_bytes(&store.ty, &value, &mut bytes, store.offset as usize) {
+                    let kind = if ty.is_union() {
+                        "union"
+                    } else {
+                        "bit-field struct"
+                    };
                     return self.err(
                         store.expr.line(),
                         store.expr.column(),
-                        format!("initializer of '{name}' uses an address in a bit-field struct"),
+                        format!("initializer of '{name}' uses an address in a {kind}"),
                     );
                 }
-            } else {
-                return self.err(
-                    store.expr.line(),
-                    store.expr.column(),
-                    format!("initializer of '{name}' is not a constant expression"),
-                );
             }
         }
         Ok(ConstInit::Bytes(bytes))
@@ -3768,6 +3798,16 @@ fn write_folded_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: u
             }
             true
         }
+        ConstInit::Float(bits) => {
+            let width = ty.size().unwrap_or(0) as usize;
+            for index in 0..width {
+                let at = offset + index;
+                if at < bytes.len() {
+                    bytes[at] = (*bits >> (8 * index)) as u8;
+                }
+            }
+            true
+        }
         ConstInit::Ptr(PtrConst::Null) | ConstInit::Ptr(PtrConst::IntToPtr(_)) => {
             let bits = match value {
                 ConstInit::Ptr(PtrConst::IntToPtr(bits)) => *bits,
@@ -3968,6 +4008,7 @@ fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
     if ty.is_scalar() {
         return stores
             .iter()
+            .rev()
             .find(|(offset, _)| *offset == base)
             .map(|(_, value)| value.clone())
             .unwrap_or_else(|| zero_const(ty));
@@ -5682,6 +5723,14 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
         );
         assert!(sema_err("int g; union U { int *p; long l; } u = { &g };")
             .contains("address in a union"));
+        assert!(sema_err("struct S { int *p : 3; };").contains("non-integral"));
+        assert!(sema_err("struct S { int x : 4294967297L; };").contains("exceeds the width"));
+        assert!(
+            sema_err("struct A { int a : 3; }; struct O { struct A in; } g = {{1}};")
+                .contains("nested bit-field")
+        );
+        sema_ok("union U { char b; long a; } g = { .a = 0x1234 };");
+        sema_ok("union U { double d; long l; } g = { 1.5 };");
         sema_ok("union U { int *p; long l; } u = { 0 };");
         sema_ok("union U { int *p; long l; } u = { (int *)1 };");
         sema_ok("struct S { int a; union { char *s; long n; } v; } g = { 1 };");
