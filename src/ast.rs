@@ -1438,6 +1438,9 @@ pub struct BitStore {
     pub width: u32,
     pub container_bits: u32,
     pub signed_field: bool,
+    /// Declared type, before the integer promotions. A `_Bool` field converts
+    /// to 0 or 1 before the width mask.
+    pub declared: TypeName,
 }
 
 /// Initializer after type checking. Aggregates are flat element stores; the
@@ -1651,6 +1654,9 @@ pub enum Expr {
         container_bits: u32,
         /// Bit position of the field from the start of the struct.
         abs_bit: u32,
+        /// Declared type of a bit-field, before integer promotions. `_Bool`
+        /// converts a nonzero value to 1 before the field is masked.
+        bit_declared: TypeName,
         ty: Option<CType>,
     },
     /// `__builtin_va_arg(ap, type)`.
@@ -1858,6 +1864,7 @@ impl Expr {
             bit_signed: false,
             container_bits: 0,
             abs_bit: 0,
+            bit_declared: TypeName::Int,
             ty: None,
         }
     }

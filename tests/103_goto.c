@@ -1,4 +1,11 @@
+void typedef_label(void) {
+    typedef int T;
+    T:
+    return;
+}
+
 int main(void) {
+    typedef_label();
     int n = 0;
     int i = 0;
 start:

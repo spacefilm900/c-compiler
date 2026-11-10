@@ -963,6 +963,7 @@ impl Sema {
                     width,
                     container_bits: (field.ty.size().unwrap_or(1) * 8) as u32,
                     signed_field: declared.is_signed(),
+                    declared,
                 }),
             });
             return Ok(());
@@ -1249,7 +1250,12 @@ impl Sema {
         let mut bytes = vec![0u8; size];
         for store in stores {
             if let Some(bits) = &store.bits {
-                let value = self.fold_one(name, &store.expr, &store.ty)?;
+                let fold_ty = if bits.declared == TypeName::Bool {
+                    CType::from_name(TypeName::Bool)
+                } else {
+                    store.ty.clone()
+                };
+                let value = self.fold_one(name, &store.expr, &fold_ty)?;
                 let ConstInit::Int(raw) = value else {
                     return self.err(
                         store.expr.line(),
@@ -3286,6 +3292,7 @@ impl Sema {
             bit_signed,
             container_bits,
             abs_bit,
+            bit_declared,
             ..
         } = expr
         {
@@ -3346,6 +3353,7 @@ impl Sema {
                 let declared = declared_int.expect("a bit-field has an integer type");
                 *bit_width = Some(width);
                 *bit_signed = declared.is_signed();
+                *bit_declared = declared;
                 *container_bits = (found.ty.size().unwrap_or(1) * 8) as u32;
                 *abs_bit = found.bit_offset;
                 member_ty = CType::from_name(bitfield_value_type(declared, width))
@@ -5731,6 +5739,15 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
         );
         sema_ok("union U { char b; long a; } g = { .a = 0x1234 };");
         sema_ok("union U { double d; long l; } g = { 1.5 };");
+        let ir = crate::compile_to_ir(
+            "volatile struct S { int a; } v; struct S x; void f(void) { x = v; }\n",
+            "vol.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("call void @llvm.memmove.p0.p0.i64(ptr @x, ptr @v, i64 4, i1 true)"),
+            "{ir}"
+        );
         sema_ok("union U { int *p; long l; } u = { 0 };");
         sema_ok("union U { int *p; long l; } u = { (int *)1 };");
         sema_ok("struct S { int a; union { char *s; long n; } v; } g = { 1 };");

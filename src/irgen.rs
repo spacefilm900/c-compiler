@@ -455,8 +455,9 @@ impl Gen {
                 self.ensure_block();
                 if let Some(expr) = expr {
                     if self.ret_ty.unqualified().is_record() {
+                        let src_volatile = expr.ty().is_some_and(|ty| ty.is_volatile());
                         let src = self.record_ptr(expr);
-                        self.emit_record_return(&src);
+                        self.emit_record_return(&src, src_volatile);
                     } else {
                         let value = self.gen_val(expr);
                         let value =
@@ -539,7 +540,8 @@ impl Gen {
             CheckedInit::Scalar(init) => {
                 if decl.ty.is_record() {
                     let src = self.record_ptr(init);
-                    self.copy_struct(&decl.ty, &src, &decl.slot);
+                    let src_volatile = init.ty().is_some_and(|ty| ty.is_volatile());
+                    self.copy_struct(&decl.ty, &src, &decl.slot, src_volatile);
                     return;
                 }
                 let value = self.gen_val(init);
@@ -553,14 +555,19 @@ impl Gen {
                 for store in stores {
                     if let Some(info) = &store.bits {
                         let value = self.gen_val(&store.expr);
-                        let value =
-                            self.convert(&value, &store.expr.ty().expect("typed"), &store.ty);
-                        bits.push((store.offset, info.clone(), store.ty.clone(), value));
+                        let dest = if info.declared == TypeName::Bool {
+                            CType::from_name(TypeName::Bool)
+                        } else {
+                            store.ty.clone()
+                        };
+                        let value = self.convert(&value, &store.expr.ty().expect("typed"), &dest);
+                        bits.push((store.offset, info.clone(), dest, value));
                         continue;
                     }
                     if store.ty.is_record() {
                         let src = self.record_ptr(&store.expr);
-                        records.push((store.offset, store.ty.clone(), src));
+                        let src_volatile = store.expr.ty().is_some_and(|ty| ty.is_volatile());
+                        records.push((store.offset, store.ty.clone(), src, src_volatile));
                         continue;
                     }
                     let value = self.gen_val(&store.expr);
@@ -577,9 +584,9 @@ impl Gen {
                     let addr = self.offset_ptr(&decl.slot, offset);
                     self.store(&ty, &value, &addr);
                 }
-                for (offset, ty, src) in records {
+                for (offset, ty, src, src_volatile) in records {
                     let addr = self.offset_ptr(&decl.slot, offset);
-                    self.copy_struct(&ty, &src, &addr);
+                    self.copy_struct(&ty, &src, &addr, src_volatile);
                 }
                 for (offset, info, ty, value) in bits {
                     let addr = self.offset_ptr(&decl.slot, offset);
@@ -591,10 +598,16 @@ impl Gen {
 
     /// Byte copy of a struct, including padding. `llvm.memmove` allows the
     /// source and destination to be the same object.
-    fn copy_struct(&mut self, ty: &CType, src: &str, dest: &str) {
+    fn copy_struct(&mut self, ty: &CType, src: &str, dest: &str, src_volatile: bool) {
         let size = ty.size().expect("complete struct");
         self.needs_memmove = true;
-        let volatile = if ty.is_volatile() { "true" } else { "false" };
+        // A volatile source or destination is one access. LLVM may drop a
+        // non-volatile `memmove` of a volatile object.
+        let volatile = if ty.is_volatile() || src_volatile {
+            "true"
+        } else {
+            "false"
+        };
         self.emit(&format!(
             "  call void @llvm.memmove.p0.p0.i64(ptr {dest}, ptr {src}, i64 {size}, i1 {volatile})"
         ));
@@ -617,10 +630,11 @@ impl Gen {
             Expr::Assign { target, value, .. } => {
                 // The right-hand side is evaluated before the destination is
                 // stored, matching scalar assignment.
+                let src_volatile = value.ty().is_some_and(|ty| ty.is_volatile());
                 let src = self.record_ptr(value);
                 let dest = self.gen_addr(target);
                 let ty = target.ty().expect("struct assignment");
-                self.copy_struct(&ty, &src, &dest);
+                self.copy_struct(&ty, &src, &dest, src_volatile);
                 dest
             }
             Expr::Call { .. } => self.materialize_call(expr),
@@ -639,12 +653,14 @@ impl Gen {
                 let end_label = self.label();
                 self.br_cond(&cond, &then_label, &else_label);
                 self.start(then_label);
+                let then_volatile = then_expr.ty().is_some_and(|ty| ty.is_volatile());
                 let then_src = self.record_ptr(then_expr);
-                self.copy_struct(&ty, &then_src, &tmp);
+                self.copy_struct(&ty, &then_src, &tmp, then_volatile);
                 self.br(&end_label);
                 self.start(else_label);
+                let else_volatile = else_expr.ty().is_some_and(|ty| ty.is_volatile());
                 let else_src = self.record_ptr(else_expr);
-                self.copy_struct(&ty, &else_src, &tmp);
+                self.copy_struct(&ty, &else_src, &tmp, else_volatile);
                 self.br(&end_label);
                 self.start(end_label);
                 tmp
@@ -825,7 +841,7 @@ impl Gen {
 
     fn store_param(&mut self, param: &Param, names: &[String], parts: &[Part]) {
         if parts.len() == 1 && matches!(parts[0].kind, PartKind::Byval) {
-            self.copy_struct(&param.ty, &names[0], &param.slot);
+            self.copy_struct(&param.ty, &names[0], &param.slot, false);
             return;
         }
         if parts
@@ -911,13 +927,13 @@ impl Gen {
         }
     }
 
-    fn emit_record_return(&mut self, src: &str) {
+    fn emit_record_return(&mut self, src: &str, src_volatile: bool) {
         let agg = self.ret_agg.clone().expect("record return");
         let align = self.ret_ty.align();
         match agg {
             AggAbi::Memory => {
                 let ty = self.ret_ty.clone();
-                self.copy_struct(&ty, src, "%agg.result");
+                self.copy_struct(&ty, src, "%agg.result", src_volatile);
                 self.emit("  ret void");
             }
             AggAbi::Direct(pieces) => {
@@ -1076,7 +1092,7 @@ impl Gen {
         self.store(&container, &merged, addr);
     }
 
-    fn store_bitfield(&mut self, addr: &str, expr: &Expr, value: &str) -> String {
+    fn store_bitfield(&mut self, addr: &str, expr: &Expr, value: &str, from: &CType) -> String {
         let info = bit_info(expr).expect("bit-field");
         let container = container_type(
             info.container_bits,
@@ -1085,7 +1101,12 @@ impl Gen {
         );
         let raw = self.load(&container, addr);
         let value_ty = expr.ty().expect("bit-field value type");
-        let narrow = self.convert(value, &value_ty, &container);
+        // Assignment converts to the declared type. `_Bool` is 0 or 1, so
+        // masking the original bits would turn 2 into 0.
+        let declared_ty = CType::from_name(info.declared);
+        let as_declared = self.convert(value, from, &declared_ty);
+        let from_ty = declared_ty;
+        let narrow = self.convert(&as_declared, &from_ty, &container);
         let shift = info.abs_bit - (info.container_off as u32) * 8;
         let mask = width_mask(info.width);
         let masked = self.fresh();
@@ -1701,7 +1722,7 @@ impl Gen {
         }
         let addr = self.va_arg_addr(&ap_ptr, type_arg);
         let slot = self.entry_alloca(type_arg);
-        self.copy_struct(type_arg, &addr, &slot);
+        self.copy_struct(type_arg, &addr, &slot, type_arg.is_volatile());
         slot
     }
 
@@ -1774,7 +1795,7 @@ impl Gen {
         let align = u64::from(ty.align()).max(8);
         let size = (ty.size().unwrap_or(8) + 7) & !7;
         let stack_addr = self.va_overflow(ap, align, size.max(8));
-        self.copy_struct(ty, &stack_addr, &slot);
+        self.copy_struct(ty, &stack_addr, &slot, ty.is_volatile());
         self.br(&done);
 
         self.start(done);
@@ -1881,10 +1902,11 @@ impl Gen {
                 let addr = self.gen_addr(target);
                 let dest = target.ty().expect("lvalue type");
                 let raw = self.gen_val(value);
-                let stored = self.convert(&raw, &value.ty().expect("typed"), &dest);
+                let src_ty = value.ty().expect("typed");
                 if bit_info(target).is_some() {
-                    Some(self.store_bitfield(&addr, target, &stored))
+                    Some(self.store_bitfield(&addr, target, &raw, &src_ty))
                 } else {
+                    let stored = self.convert(&raw, &src_ty, &dest);
                     self.store(&dest, &stored, &addr);
                     Some(stored)
                 }
@@ -2219,7 +2241,7 @@ impl Gen {
         ));
         let stored = self.convert(&updated, &common_ty, &dest);
         if bit_info(target).is_some() {
-            self.store_bitfield(&addr, target, &stored)
+            self.store_bitfield(&addr, target, &stored, &dest)
         } else {
             self.store(&dest, &stored, &addr);
             stored
@@ -2249,7 +2271,7 @@ impl Gen {
                 dest.ir_type()
             ));
             let written = if bit_info(target).is_some() {
-                self.store_bitfield(&addr, target, &updated)
+                self.store_bitfield(&addr, target, &updated, &dest)
             } else {
                 self.store(&dest, &updated, &addr);
                 updated
@@ -2278,7 +2300,7 @@ impl Gen {
         ));
         let stored = self.convert(&updated, &common_ty, &dest);
         let written = if bit_info(target).is_some() {
-            self.store_bitfield(&addr, target, &stored)
+            self.store_bitfield(&addr, target, &stored, &dest)
         } else {
             self.store(&dest, &stored, &addr);
             stored
@@ -2556,6 +2578,7 @@ struct BitInfo {
     container_bits: u32,
     abs_bit: u32,
     container_off: u64,
+    declared: TypeName,
 }
 
 fn bit_info(expr: &Expr) -> Option<BitInfo> {
@@ -2565,6 +2588,7 @@ fn bit_info(expr: &Expr) -> Option<BitInfo> {
             bit_signed,
             container_bits,
             abs_bit,
+            bit_declared,
             offset,
             ..
         } => Some(BitInfo {
@@ -2573,6 +2597,7 @@ fn bit_info(expr: &Expr) -> Option<BitInfo> {
             container_bits: *container_bits,
             abs_bit: *abs_bit,
             container_off: offset.unwrap_or(0),
+            declared: *bit_declared,
         }),
         _ => None,
     }

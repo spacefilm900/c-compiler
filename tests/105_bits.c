@@ -1,5 +1,9 @@
 void *memcpy(void *, const void *, unsigned long);
 
+static struct {
+    _Bool b : 1;
+} ss = {2};
+
 struct A {
     int a : 3;
     int b : 5;
@@ -79,6 +83,22 @@ int main(void) {
     s3.a = 3;
     if (++s3.a != -4) {
         return 12;
+    }
+    struct {
+        _Bool b : 1;
+    } sb;
+    sb.b = 2;
+    if (sb.b != 1) {
+        return 13;
+    }
+    struct {
+        _Bool b : 1;
+    } sl = {2};
+    if (sl.b != 1) {
+        return 14;
+    }
+    if (ss.b != 1) {
+        return 15;
     }
     return 0;
 }

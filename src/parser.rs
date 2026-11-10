@@ -2028,7 +2028,11 @@ impl Parser<'_> {
     fn parse_compound_items(&mut self, line: usize, column: usize) -> Result<Compound, Diagnostic> {
         let mut items = Vec::new();
         while !matches!(self.current().kind, TokenKind::RBrace | TokenKind::Eof) {
-            if self.starts_declaration() {
+            // `T:` is a label when `T` is a typedef (C11 6.2.3). A declaration
+            // test would consume `T` as the type and then reject the colon.
+            let is_label =
+                self.current().kind == TokenKind::Ident && self.lookahead() == TokenKind::Colon;
+            if !is_label && self.starts_declaration() {
                 items.extend(self.parse_block_declaration(false)?);
             } else if let Some(message) = unsupported(self.current().kind) {
                 return Err(self.error(message));
