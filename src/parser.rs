@@ -3061,6 +3061,14 @@ fn eval_ice(expr: &Expr) -> Result<BVal, BoundErr> {
         }
         Expr::Cast { ty_name, expr, .. } => {
             let dest = ty_name.as_integer().ok_or(BoundErr::Vla)?;
+            // C11 6.6 allows a floating constant only as the immediate
+            // operand of a cast to an integer type. `(int)3.5` is an
+            // integer constant; `1.5` and `(int)(1.5 + 2.5)` are not.
+            if let Expr::Float { bits, kind, .. } = expr.as_ref() {
+                let bits =
+                    crate::float::real_to_int(*bits, *kind, dest).ok_or(BoundErr::Overflow)?;
+                return Ok(BVal { bits, ty: dest });
+            }
             let value = eval_ice(expr)?;
             Ok(BVal {
                 bits: convert_bits(value.bits, value.ty, dest),

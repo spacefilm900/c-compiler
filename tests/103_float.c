@@ -116,5 +116,10 @@ int main(void) {
         return 23;
     }
     printf("%.1f %.2f\n", f, gd);
+    enum { CAST_N = (int)3.9 };
+    int bound[(int)2.9];
+    if (CAST_N != 3 || sizeof(bound) != 2 * sizeof(int)) {
+        return 24;
+    }
     return 0;
 }

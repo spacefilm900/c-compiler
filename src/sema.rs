@@ -4947,6 +4947,11 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
         assert!(sema_err("enum E x;").contains("incomplete enum"));
         assert!(sema_err("restrict int x;").contains("restrict requires a pointer"));
         sema_ok("int main(void) { float f; f = 1; return f == 1.0f; }");
+        sema_ok(
+            "enum { N = (int)3.9 }; int main(void) { int a[(int)2.9]; return N == 3 && sizeof(a) == 2 * sizeof(int); }",
+        );
+        assert!(sema_err("enum { N = 1.5 };").contains("not an integer constant"));
+        assert!(sema_err("enum { N = (int)-1.5 };").contains("not an integer constant"));
         assert!(
             sema_err("int main(void) { long double x; x = 1.0; return 0; }")
                 .contains("long double is not supported")
