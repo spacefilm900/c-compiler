@@ -1265,7 +1265,14 @@ impl Sema {
         if ty.is_union() || ty.record_has_bitfield() {
             return self.fold_bit_object(name, ty, stores);
         }
-        if stores.iter().any(|store| store.bits.is_some()) {
+        // A plain member of a nested bit-field record has no bit store. The
+        // record is still a byte image, so that member has to be written into
+        // it. A bit store is also enough on its own: a union's range walk
+        // sees only the first member, and a later bit-field member would
+        // otherwise be missed.
+        let mut nested = Vec::new();
+        bit_record_ranges(ty, 0, &mut nested);
+        if stores.iter().any(|store| store.bits.is_some()) || !nested.is_empty() {
             return self.fold_nested_bits(name, ty, stores);
         }
         let mut folded = Vec::new();

@@ -40,6 +40,13 @@ struct Q {
 
 struct Q qplain = {{2, 'y'}, &glob};
 
+struct R {
+    struct B in;
+    int *p;
+};
+
+struct R designated = {.in.c = 'z', .p = &glob};
+
 int main(void) {
     if (g.in.a != 1 || g.in.b != 2 || g.n != 9) {
         return 1;
@@ -62,6 +69,9 @@ int main(void) {
     }
     if (qplain.in.a != 2 || qplain.in.c != 'y' || *qplain.p != 5) {
         return 7;
+    }
+    if (designated.in.a != 0 || designated.in.c != 'z' || *designated.p != 5) {
+        return 8;
     }
     return 0;
 }
