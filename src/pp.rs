@@ -99,6 +99,7 @@ pub fn preprocess_tokens(
         filename: eof_file,
         value: None,
         int_ty: None,
+        float_kind: None,
         bytes: None,
     });
     Ok(out)
@@ -1971,6 +1972,12 @@ fn literal_val(tok: &PpToken) -> Result<Val, Diagnostic> {
     match crate::lexer::lex(spelling, &tok.display) {
         Ok(mut tokens) => {
             tokens.pop();
+            if tokens.len() == 1 && tokens[0].kind == TokenKind::Float {
+                return Err(error_at(
+                    tok,
+                    "floating constant in preprocessor expression",
+                ));
+            }
             if tokens.len() != 1 || tokens[0].value.is_none() || tokens[0].int_ty.is_none() {
                 return Err(error_at(
                     tok,

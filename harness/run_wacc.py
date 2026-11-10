@@ -10,10 +10,11 @@ no entry, clang -std=c11 is the oracle. A library test compiles one
 translation unit here and the other files with clang. An invalid program
 must be rejected with a non-zero exit and must not crash or panic.
 
-Chapters 13, 19, and 20 are skipped, as are valid tests for extra-credit
-features this compiler has not started (goto, nan). Structs passed or
-returned by value are run. Union tests and switch tests are run. A
-test tagged with both goto and switch stays skipped.
+Chapters 19 and 20 are skipped, as are valid tests for extra-credit
+features this compiler has not started (goto). Chapter 13 (floating
+point) is run, including its NaN tests. Structs passed or returned by
+value are run. Union tests and switch tests are run. A test tagged
+with both goto and switch stays skipped.
 harness/wacc_known_failures.txt lists the remaining failures. A test that is
 not listed must pass. A listed test that passes is reported, not failed.
 A compiler crash or panic fails the run even when the test is listed.
@@ -43,17 +44,16 @@ SUITE = Path(os.environ.get("WACC_ROOT", ROOT / "tests" / "external" / "wacc"))
 KNOWN_PATH = ROOT / "harness" / "wacc_known_failures.txt"
 
 # Part I, long, unsigned, pointers, arrays, characters, void/sizeof, structs.
-INCLUDED_CHAPTERS = set(range(1, 13)) | set(range(14, 19))
+INCLUDED_CHAPTERS = set(range(1, 19))
 CHAPTER_SKIP = {
-    13: "chapter skipped: floating point is not started",
     19: "chapter skipped: part III optimizations inspect the book's assembly",
     20: "chapter skipped: part III register allocation inspects the book's assembly",
 }
 # Extra-credit features with no frontend support. Bitwise, compound
-# assignment, and increment are implemented, so those tests are run.
-# Unions and switch are implemented. `goto` and `nan` are not.
+# assignment, increment, floating point, and NaN are implemented, so
+# those tests are run. Unions and switch are implemented. `goto` is not.
 # A test tagged with both `goto` and `switch` stays skipped.
-UNSUPPORTED_EXTRA = {"goto", "nan"}
+UNSUPPORTED_EXTRA = {"goto"}
 INVALID_MARKERS = (
     "invalid_lex",
     "invalid_parse",
@@ -238,9 +238,10 @@ def link_and_run(
     tmp: Path,
 ) -> tuple:
     exe = tmp / "prog"
-    cmd = [clang, "-w", "-o", str(exe), *objects]
-    if needs_lm:
-        cmd.append("-lm")
+    # libm is linked for every program. Chapter 13 calls copysign and
+    # fma from tests the suite does not list in requires_mathlib.
+    del needs_lm
+    cmd = [clang, "-w", "-o", str(exe), *objects, "-lm"]
     rc, _out, err = run_cmd(cmd, timeout, cwd)
     if rc != 0:
         return None, f"link failed ({rc}): {clip(err)}"

@@ -179,7 +179,11 @@ impl Sema {
             ty = shaped_ty.clone();
         }
         decl.ty = ty.clone();
-        if !ty.is_array() && !ty.is_complete() {
+        // `extern struct S x;` may name an object completed in another
+        // translation unit. A definition, including a tentative definition,
+        // needs a complete type (C11 6.9.2).
+        let extern_only = decl.init.is_none() && decl.storage == Storage::Extern;
+        if !ty.is_array() && !ty.is_complete() && !extern_only {
             return self.err(
                 decl.line,
                 decl.column,
@@ -344,6 +348,11 @@ impl Sema {
     }
 
     fn check_function(&mut self, func: &mut FuncDef) -> Result<(), Diagnostic> {
+        if func.ret_type.is_long_double()
+            || func.params.iter().any(|param| param.ty.is_long_double())
+        {
+            return self.err(func.line, func.column, "long double is not supported");
+        }
         self.current_ret = func.ret_type.clone();
         self.fn_name = func.name.clone();
         self.current_func = func.name.clone();
@@ -924,8 +933,21 @@ impl Sema {
 
     fn fold_one(&self, name: &str, expr: &Expr, dest: &CType) -> Result<ConstInit, Diagnostic> {
         if let Some(dest_int) = dest.as_integer() {
-            if let Ok(value) = eval_const_expr(expr) {
-                return Ok(ConstInit::Int(convert_bits(value.bits, value.ty, dest_int)));
+            match eval_num(expr) {
+                Ok(NumConst::Int(value)) => {
+                    return Ok(ConstInit::Int(convert_bits(value.bits, value.ty, dest_int)));
+                }
+                Ok(NumConst::Real { bits, kind }) => {
+                    return match crate::float::real_to_int(bits, kind, dest_int) {
+                        Some(converted) => Ok(ConstInit::Int(converted)),
+                        None => self.err(
+                            expr.line(),
+                            expr.column(),
+                            format!("initializer of '{name}' overflows '{}'", dest_int.as_str()),
+                        ),
+                    };
+                }
+                Err(_) => {}
             }
             if let Expr::Cast {
                 ty_name,
@@ -958,6 +980,22 @@ impl Sema {
                 }
             }
             return self.const_diag(name, expr);
+        }
+        if let Some(kind) = dest.float_kind() {
+            if kind == crate::ast::FloatKind::LongDouble {
+                return self.err(expr.line(), expr.column(), "long double is not supported");
+            }
+            return match eval_num(expr) {
+                Ok(value) => match value.to_real(kind) {
+                    Some(bits) => Ok(ConstInit::Float(bits)),
+                    None => self.err(
+                        expr.line(),
+                        expr.column(),
+                        format!("initializer of '{name}' is not a constant expression"),
+                    ),
+                },
+                Err(_) => self.const_diag(name, expr),
+            };
         }
         if dest.is_pointer() {
             if is_null_pointer_constant(expr) {
@@ -1403,16 +1441,8 @@ impl Sema {
             }
             local_ty = composite(&prior.ty, &local_ty);
         }
-        if !local_ty.is_array() && !local_ty.is_complete() {
-            return self.err(
-                decl.line,
-                decl.column,
-                format!(
-                    "variable '{name}' has incomplete type '{}'",
-                    local_ty.display()
-                ),
-            );
-        }
+        // `extern struct S x;` in a block may name an incomplete type. The
+        // object is defined in another translation unit.
         let slot = self.bind_file_object(&name, &local_ty, linkage, decl.line, decl.column)?;
         decl.ty = local_ty.clone();
         decl.slot = slot.clone();
@@ -1743,6 +1773,11 @@ impl Sema {
                 expr.set_ty(CType::from_name(value_ty));
                 Ok(())
             }
+            Expr::Float { kind, .. } => {
+                let kind = *kind;
+                expr.set_ty(CType::Float(kind));
+                Ok(())
+            }
             Expr::Var { .. } => self.check_var(expr),
             Expr::Bin { .. } => self.check_bin(expr),
             Expr::Unary { .. } => self.check_unary(expr),
@@ -1849,6 +1884,9 @@ impl Sema {
                 format!("cannot use incomplete type '{}' as a value", ty.display()),
             );
         }
+        if ty.is_long_double() {
+            return self.err(expr.line(), expr.column(), "long double is not supported");
+        }
         Ok(())
     }
 
@@ -1909,7 +1947,10 @@ impl Sema {
                 self.check_compare(op, left, right, line, column)?
             } else if matches!(op, BinOp::Add | BinOp::Sub) {
                 self.check_additive(op, left, right, line, column)?
-            } else {
+            } else if matches!(
+                op,
+                BinOp::Mod | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr
+            ) {
                 self.require_integer(left)?;
                 self.require_integer(right)?;
                 let left_ty = integer_ty(left);
@@ -1920,12 +1961,71 @@ impl Sema {
                     left_ty.usual(right_ty)
                 };
                 CType::from_name(result)
+            } else {
+                self.arith_type(op, left, right, line, column)?
             }
         } else {
             unreachable!("binary expression");
         };
         expr.set_ty(ty);
         Ok(())
+    }
+
+    /// `*` and `/` on arithmetic types. One floating operand selects the
+    /// usual real type (C11 6.3.1.8): `double` beats `float`, and either
+    /// beats every integer. `%` and the bitwise operators stay on the
+    /// integer path.
+    fn arith_type(
+        &self,
+        op: BinOp,
+        left: &Expr,
+        right: &Expr,
+        line: usize,
+        column: usize,
+    ) -> Result<CType, Diagnostic> {
+        let left_ty = left.ty().expect("typed");
+        let right_ty = right.ty().expect("typed");
+        if let Some(common) = self.float_arith(&left_ty, &right_ty, line, column)? {
+            return Ok(common);
+        }
+        if left_ty.is_integer() && right_ty.is_integer() {
+            return Ok(CType::from_name(integer_ty(left).usual(integer_ty(right))));
+        }
+        self.err(
+            line,
+            column,
+            format!(
+                "invalid operands to '{}' ({} and {})",
+                op.as_str(),
+                left_ty.display(),
+                right_ty.display()
+            ),
+        )
+    }
+
+    /// `Some` when at least one operand is `float` or `double` and both are
+    /// arithmetic. `None` when neither is floating, so the caller keeps the
+    /// integer or pointer rule. `long double` is an error.
+    fn float_arith(
+        &self,
+        left: &CType,
+        right: &CType,
+        line: usize,
+        column: usize,
+    ) -> Result<Option<CType>, Diagnostic> {
+        if !(left.is_float() || right.is_float()) {
+            return Ok(None);
+        }
+        if left.is_long_double() || right.is_long_double() {
+            return self.err(line, column, "long double is not supported");
+        }
+        if left.is_arithmetic() && right.is_arithmetic() {
+            return Ok(Some(CType::Float(crate::float::usual_real(
+                left.float_kind(),
+                right.float_kind(),
+            ))));
+        }
+        Ok(None)
     }
 
     fn check_compare(
@@ -1938,6 +2038,15 @@ impl Sema {
     ) -> Result<CType, Diagnostic> {
         let left_ty = left.ty().expect("typed");
         let right_ty = right.ty().expect("typed");
+        if left_ty.is_long_double() || right_ty.is_long_double() {
+            return self.err(line, column, "long double is not supported");
+        }
+        if (left_ty.is_float() || right_ty.is_float())
+            && left_ty.is_arithmetic()
+            && right_ty.is_arithmetic()
+        {
+            return Ok(CType::int_type());
+        }
         if left_ty.is_integer() && right_ty.is_integer() {
             return Ok(CType::int_type());
         }
@@ -1988,6 +2097,9 @@ impl Sema {
     ) -> Result<CType, Diagnostic> {
         let left_ty = left.ty().expect("typed");
         let right_ty = right.ty().expect("typed");
+        if let Some(common) = self.float_arith(&left_ty, &right_ty, line, column)? {
+            return Ok(common);
+        }
         if left_ty.is_integer() && right_ty.is_integer() {
             return Ok(CType::from_name(integer_ty(left).usual(integer_ty(right))));
         }
@@ -2103,10 +2215,24 @@ impl Sema {
                     self.require_scalar(expr)?;
                     CType::int_type()
                 }
-                UnaryOp::Plus | UnaryOp::Minus | UnaryOp::BitNot => {
+                UnaryOp::BitNot => {
                     self.decay(expr)?;
                     self.require_integer(expr)?;
                     CType::from_name(integer_ty(expr).promote())
+                }
+                UnaryOp::Plus | UnaryOp::Minus => {
+                    self.decay(expr)?;
+                    let src = expr.ty().expect("typed");
+                    if src.is_long_double() {
+                        return self.err(line, column, "long double is not supported");
+                    }
+                    if let Some(kind) = src.float_kind() {
+                        // Unary `+` and `-` do not promote a floating operand.
+                        CType::Float(kind)
+                    } else {
+                        self.require_integer(expr)?;
+                        CType::from_name(integer_ty(expr).promote())
+                    }
                 }
             }
         } else {
@@ -2171,6 +2297,33 @@ impl Sema {
                 }
                 self.require_integer(value)?;
                 self.require_complete_pointee(&dest, line, column)?;
+            } else if dest.is_float() || value.ty().is_some_and(|ty| ty.is_float()) {
+                if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) {
+                    return self.err(
+                        line,
+                        column,
+                        format!(
+                            "floating compound assignment does not allow '{}'",
+                            op.compound_spelling()
+                        ),
+                    );
+                }
+                let rhs = value.ty().expect("typed");
+                if dest.is_long_double() || rhs.is_long_double() {
+                    return self.err(line, column, "long double is not supported");
+                }
+                if !dest.is_arithmetic() || !rhs.is_arithmetic() {
+                    return self.err(
+                        line,
+                        column,
+                        format!(
+                            "invalid operands to '{}' ({} and {})",
+                            op.compound_spelling(),
+                            dest.display(),
+                            rhs.display()
+                        ),
+                    );
+                }
             } else {
                 self.require_integer(value)?;
             }
@@ -2194,6 +2347,9 @@ impl Sema {
             let column = *column;
             self.check_modifiable(target)?;
             let dest = target.ty().expect("lvalue type");
+            if dest.is_long_double() {
+                return self.err(line, column, "long double is not supported");
+            }
             if !dest.is_scalar() {
                 return self.err(
                     line,
@@ -2308,7 +2464,13 @@ impl Sema {
             }
             if !ty_name.is_void() {
                 let src = inner.ty().expect("typed");
-                let ok = (ty_name.is_integer() && src.is_integer())
+                if ty_name.is_long_double() || src.is_long_double() {
+                    return self.err(line, column, "long double is not supported");
+                }
+                // C11 6.5.4: an arithmetic type converts to any arithmetic
+                // type. A pointer converts to an integer and the reverse.
+                // There is no conversion between a pointer and a floating type.
+                let ok = (ty_name.is_arithmetic() && src.is_arithmetic())
                     || (ty_name.is_pointer() && (src.is_pointer() || src.is_integer()))
                     || (ty_name.is_integer() && src.is_pointer());
                 if !ok {
@@ -2574,13 +2736,6 @@ impl Sema {
                 format!("cannot assign to const-qualified type '{}'", ty.display()),
             );
         }
-        if ty.is_float() {
-            return self.err(
-                expr.line(),
-                expr.column(),
-                "floating-point expressions are not supported",
-            );
-        }
         if ty.is_record() {
             if ty.contains_const() {
                 return self.err(
@@ -2755,12 +2910,11 @@ impl Sema {
     /// rejects the program. A cast may drop qualifiers; that is not diagnosed.
     fn can_assign(&self, dest: &CType, src: &Expr) -> Result<(), Diagnostic> {
         let src_ty = src.ty().expect("typed");
-        if dest.is_float() || src_ty.is_float() {
-            return self.err(
-                src.line(),
-                src.column(),
-                "floating-point expressions are not supported",
-            );
+        if dest.is_long_double() || src_ty.is_long_double() {
+            return self.err(src.line(), src.column(), "long double is not supported");
+        }
+        if dest.is_arithmetic() && src_ty.is_arithmetic() {
+            return Ok(());
         }
         if src_ty.is_void() {
             return self.err(
@@ -2854,11 +3008,9 @@ impl Sema {
 
     fn require_scalar(&self, expr: &Expr) -> Result<(), Diagnostic> {
         match expr.ty() {
-            Some(ty) if ty.is_float() => self.err(
-                expr.line(),
-                expr.column(),
-                "floating-point expressions are not supported",
-            ),
+            Some(ty) if ty.is_long_double() => {
+                self.err(expr.line(), expr.column(), "long double is not supported")
+            }
             Some(ty) if ty.is_scalar() => Ok(()),
             Some(ty) if ty.is_void() => self.err(
                 expr.line(),
@@ -2892,6 +3044,15 @@ impl Sema {
         }
         if left.unqualified().is_record() && compatible(&left.unqualified(), &right.unqualified()) {
             return Ok(left);
+        }
+        if left.is_long_double() || right.is_long_double() {
+            return self.err(line, column, "long double is not supported");
+        }
+        if (left.is_float() || right.is_float()) && left.is_arithmetic() && right.is_arithmetic() {
+            return Ok(CType::Float(crate::float::usual_real(
+                left.float_kind(),
+                right.float_kind(),
+            )));
         }
         if left.is_integer() && right.is_integer() {
             return Ok(CType::from_name(
@@ -3103,7 +3264,7 @@ fn classify_init(ty: &CType, mut stores: Vec<ElemStore>) -> CheckedInit {
 /// needs a relocation, which those bytes cannot hold.
 fn union_bytes_ok(ty: &CType, value: &ConstInit) -> bool {
     match value {
-        ConstInit::Zero | ConstInit::Int(_) => true,
+        ConstInit::Zero | ConstInit::Int(_) | ConstInit::Float(_) => true,
         // A null pointer and an integer converted to a pointer are bytes.
         // The address of an object needs a relocation.
         ConstInit::Ptr(PtrConst::Null | PtrConst::IntToPtr(_)) => true,
@@ -3128,7 +3289,7 @@ fn union_bytes_ok(ty: &CType, value: &ConstInit) -> bool {
 
 fn const_has_no_address(value: &ConstInit) -> bool {
     match value {
-        ConstInit::Zero | ConstInit::Int(_) => true,
+        ConstInit::Zero | ConstInit::Int(_) | ConstInit::Float(_) => true,
         ConstInit::Ptr(PtrConst::Null | PtrConst::IntToPtr(_)) => true,
         ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => false,
         ConstInit::Aggregate(items) => items.iter().all(const_has_no_address),
@@ -3475,6 +3636,245 @@ fn is_zero(value: &CVal) -> bool {
     value.bits & value.ty.mask() == 0
 }
 
+/// A constant value that may be an integer or a `float`/`double`.
+enum NumConst {
+    Int(CVal),
+    Real {
+        bits: u64,
+        kind: crate::ast::FloatKind,
+    },
+}
+
+impl NumConst {
+    fn is_zero(&self) -> bool {
+        match self {
+            NumConst::Int(value) => is_zero(value),
+            NumConst::Real { bits, kind } => crate::float::real_is_zero(*kind, *bits),
+        }
+    }
+
+    fn real_kind(&self) -> Option<crate::ast::FloatKind> {
+        match self {
+            NumConst::Real { kind, .. } => Some(*kind),
+            NumConst::Int(_) => None,
+        }
+    }
+
+    fn to_real(&self, dest: crate::ast::FloatKind) -> Option<u64> {
+        match self {
+            NumConst::Int(value) => Some(crate::float::int_to_real(value.bits, value.ty, dest)),
+            NumConst::Real { bits, kind } => {
+                if *kind == crate::ast::FloatKind::LongDouble {
+                    None
+                } else {
+                    Some(crate::float::real_to_real(*bits, *kind, dest))
+                }
+            }
+        }
+    }
+
+    fn to_int(&self, dest: TypeName) -> Result<CVal, ConstError> {
+        match self {
+            NumConst::Int(value) => Ok(CVal {
+                bits: convert_bits(value.bits, value.ty, dest),
+                ty: dest,
+            }),
+            NumConst::Real { bits, kind } => {
+                let bits = crate::float::real_to_int(*bits, *kind, dest)
+                    .ok_or(ConstError::Overflow(dest))?;
+                Ok(CVal { bits, ty: dest })
+            }
+        }
+    }
+}
+
+fn has_real(expr: &Expr) -> bool {
+    match expr {
+        Expr::Float { .. } => true,
+        Expr::Int { .. } | Expr::Sizeof { .. } => false,
+        Expr::Unary { op, expr, .. } => {
+            !matches!(op, UnaryOp::Addr | UnaryOp::Deref) && has_real(expr)
+        }
+        Expr::Bin { left, right, .. } => has_real(left) || has_real(right),
+        Expr::Cond {
+            cond,
+            then_expr,
+            else_expr,
+            ty,
+            ..
+        } => {
+            ty.as_ref().is_some_and(|ty| ty.is_float())
+                || has_real(cond)
+                || has_real(then_expr)
+                || has_real(else_expr)
+        }
+        Expr::Cast { ty_name, expr, .. } => ty_name.is_float() || has_real(expr),
+        _ => false,
+    }
+}
+
+fn eval_num(expr: &Expr) -> Result<NumConst, ConstError> {
+    if !has_real(expr) {
+        return Ok(NumConst::Int(eval_const_expr(expr)?));
+    }
+    match expr {
+        Expr::Float { bits, kind, .. } => Ok(NumConst::Real {
+            bits: *bits,
+            kind: *kind,
+        }),
+        Expr::Int { .. } | Expr::Sizeof { .. } => Ok(NumConst::Int(eval_const_expr(expr)?)),
+        Expr::Unary {
+            op, expr: inner, ..
+        } => eval_real_unary(*op, inner),
+        Expr::Bin {
+            op, left, right, ..
+        } => eval_real_binop(*op, left, right),
+        Expr::Cond {
+            cond,
+            then_expr,
+            else_expr,
+            ty,
+            ..
+        } => {
+            let chosen = if eval_num(cond)?.is_zero() {
+                else_expr
+            } else {
+                then_expr
+            };
+            let value = eval_num(chosen)?;
+            let result = ty.as_ref().ok_or(ConstError::NotConst)?;
+            if let Some(kind) = result.float_kind() {
+                Ok(NumConst::Real {
+                    bits: value.to_real(kind).ok_or(ConstError::NotConst)?,
+                    kind,
+                })
+            } else if let Some(dest) = result.as_integer() {
+                Ok(NumConst::Int(value.to_int(dest)?))
+            } else {
+                Err(ConstError::NotConst)
+            }
+        }
+        Expr::Cast { ty_name, expr, .. } => {
+            let value = eval_num(expr)?;
+            if let Some(kind) = ty_name.float_kind() {
+                if kind == crate::ast::FloatKind::LongDouble {
+                    return Err(ConstError::NotConst);
+                }
+                Ok(NumConst::Real {
+                    bits: value.to_real(kind).ok_or(ConstError::NotConst)?,
+                    kind,
+                })
+            } else if let Some(dest) = ty_name.as_integer() {
+                Ok(NumConst::Int(value.to_int(dest)?))
+            } else {
+                Err(ConstError::NotConst)
+            }
+        }
+        _ => Err(ConstError::NotConst),
+    }
+}
+
+fn eval_real_unary(op: UnaryOp, expr: &Expr) -> Result<NumConst, ConstError> {
+    if matches!(op, UnaryOp::Addr | UnaryOp::Deref) {
+        return Err(ConstError::NotConst);
+    }
+    let value = eval_num(expr)?;
+    match op {
+        UnaryOp::Plus => match value {
+            NumConst::Int(value) => Ok(NumConst::Int(promote_val(value))),
+            real => Ok(real),
+        },
+        UnaryOp::Minus => match value {
+            NumConst::Int(value) => Ok(NumConst::Int(negate(promote_val(value))?)),
+            NumConst::Real { bits, kind } => Ok(NumConst::Real {
+                bits: crate::float::negate(kind, bits),
+                kind,
+            }),
+        },
+        UnaryOp::Not => Ok(NumConst::Int(c_int(i32::from(value.is_zero())))),
+        UnaryOp::BitNot => {
+            let NumConst::Int(value) = value else {
+                return Err(ConstError::NotConst);
+            };
+            let value = promote_val(value);
+            Ok(NumConst::Int(CVal {
+                bits: (!value.bits) & value.ty.mask(),
+                ty: value.ty,
+            }))
+        }
+        UnaryOp::Addr | UnaryOp::Deref => Err(ConstError::NotConst),
+    }
+}
+
+fn eval_real_binop(op: BinOp, left: &Expr, right: &Expr) -> Result<NumConst, ConstError> {
+    match op {
+        BinOp::And => {
+            if eval_num(left)?.is_zero() {
+                return Ok(NumConst::Int(c_int(0)));
+            }
+            Ok(NumConst::Int(c_int(i32::from(!eval_num(right)?.is_zero()))))
+        }
+        BinOp::Or => {
+            if !eval_num(left)?.is_zero() {
+                return Ok(NumConst::Int(c_int(1)));
+            }
+            Ok(NumConst::Int(c_int(i32::from(!eval_num(right)?.is_zero()))))
+        }
+        _ => {
+            let left = eval_num(left)?;
+            let right = eval_num(right)?;
+            if left.real_kind().is_some() || right.real_kind().is_some() {
+                let kind = crate::float::usual_real(left.real_kind(), right.real_kind());
+                let left_bits = left.to_real(kind).ok_or(ConstError::NotConst)?;
+                let right_bits = right.to_real(kind).ok_or(ConstError::NotConst)?;
+                if op.is_cmp() {
+                    let cmp = match op {
+                        BinOp::Eq => crate::float::FloatCmp::Eq,
+                        BinOp::Ne => crate::float::FloatCmp::Ne,
+                        BinOp::Lt => crate::float::FloatCmp::Lt,
+                        BinOp::Gt => crate::float::FloatCmp::Gt,
+                        BinOp::Le => crate::float::FloatCmp::Le,
+                        BinOp::Ge => crate::float::FloatCmp::Ge,
+                        _ => return Err(ConstError::NotConst),
+                    };
+                    return Ok(NumConst::Int(c_int(i32::from(crate::float::apply_cmp(
+                        cmp, kind, left_bits, right_bits,
+                    )))));
+                }
+                let flop = match op {
+                    BinOp::Add => crate::float::FloatOp::Add,
+                    BinOp::Sub => crate::float::FloatOp::Sub,
+                    BinOp::Mul => crate::float::FloatOp::Mul,
+                    BinOp::Div => crate::float::FloatOp::Div,
+                    _ => return Err(ConstError::NotConst),
+                };
+                return Ok(NumConst::Real {
+                    bits: crate::float::apply_bin(flop, kind, left_bits, right_bits),
+                    kind,
+                });
+            }
+            let NumConst::Int(left) = left else {
+                return Err(ConstError::NotConst);
+            };
+            let NumConst::Int(right) = right else {
+                return Err(ConstError::NotConst);
+            };
+            if matches!(op, BinOp::Shl | BinOp::Shr) {
+                return Ok(NumConst::Int(eval_shift(op, left, right)?));
+            }
+            let ty = left.ty.usual(right.ty);
+            let left = convert_bits(left.bits, left.ty, ty);
+            let right = convert_bits(right.bits, right.ty, ty);
+            if op.is_cmp() {
+                return Ok(NumConst::Int(c_int(i32::from(compare(
+                    op, left, right, ty,
+                )))));
+            }
+            Ok(NumConst::Int(arith(op, left, right, ty)?))
+        }
+    }
+}
+
 /// Integer constant expression (C11 6.6).
 ///
 /// `&&`, `||`, and `?:` skip the operand that is not evaluated.
@@ -3494,6 +3894,7 @@ fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
             bits: *bits & value_ty.mask(),
             ty: *value_ty,
         }),
+        Expr::Float { .. } => Err(ConstError::NotConst),
         Expr::Sizeof { operand, .. } => {
             let size = match operand {
                 SizeofOperand::Type(ty) => ty.size(),
@@ -3536,6 +3937,14 @@ fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
             let Some(dest) = ty_name.as_integer() else {
                 return Err(ConstError::NotConst);
             };
+            // C11 6.6: a floating constant may appear in an integer constant
+            // expression only as the immediate operand of a cast. `(int)1.5`
+            // is folded; a bare `1.5` stays non-constant.
+            if let Expr::Float { bits, kind, .. } = expr.as_ref() {
+                let bits = crate::float::real_to_int(*bits, *kind, dest)
+                    .ok_or(ConstError::Overflow(dest))?;
+                return Ok(CVal { bits, ty: dest });
+            }
             let value = eval_const_expr(expr)?;
             Ok(CVal {
                 bits: convert_bits(value.bits, value.ty, dest),
@@ -4474,6 +4883,7 @@ struct Node n = {4, 0};
         .contains("expression is not assignable"));
         sema_ok("struct S { int x; }; struct S f(void) { struct S s; return s; }");
         assert!(sema_err("struct S; struct S s;").contains("incomplete type 'struct S'"));
+        sema_ok("struct S; extern struct S x; int main(void) { return &x == 0; }");
         assert!(
             sema_err("struct S; struct S *p; int main(void) { *p; return 0; }")
                 .contains("cannot use incomplete type 'struct S' as a value")
@@ -4547,8 +4957,22 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
         assert!(sema_err("typedef int T; typedef long T;").contains("redefinition of 'T'"));
         assert!(sema_err("enum E x;").contains("incomplete enum"));
         assert!(sema_err("restrict int x;").contains("restrict requires a pointer"));
-        assert!(sema_err("int main(void) { float f; f = 1; return 0; }")
-            .contains("floating-point expressions are not supported"));
+        sema_ok("int main(void) { float f; f = 1; return f == 1.0f; }");
+        sema_ok(
+            "enum { N = (int)3.9 }; int main(void) { int a[(int)2.9]; return N == 3 && sizeof(a) == 2 * sizeof(int); }",
+        );
+        assert!(sema_err("enum { N = 1.5 };").contains("not an integer constant"));
+        assert!(sema_err("enum { N = (int)-1.5 };").contains("not an integer constant"));
+        assert!(
+            sema_err("extern long double x; void f(void) { for (;; x++) {} }")
+                .contains("long double is not supported")
+        );
+        sema_ok("int main(void) { int *p = (int)0.0; switch (1) { case (int)1.5: return p == 0; } return 1; }");
+        assert!(
+            sema_err("int main(void) { long double x; x = 1.0; return 0; }")
+                .contains("long double is not supported")
+        );
+        assert!(sema_err("long double f(long double x) { return x; }").contains("long double"));
         assert!(
             sema_err("union U { int x; char c; }; union U u = {1, 2};").contains("excess elements")
         );
@@ -4557,10 +4981,8 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
                 .contains("incomplete type")
         );
         sema_ok("struct S { int x; }; struct S f(void); int main(void) { return f().x; }");
-        assert!(
-            sema_err("struct S { double d; }; void f(struct S s) { (void)s; }")
-                .contains("SSE register")
-        );
+        sema_ok("struct S { double d; }; void f(struct S s) { (void)s; }");
+        sema_ok("struct S { float a; float b; }; struct S f(struct S s) { return s; }");
         sema_ok("struct S { long double x; }; void f(struct S s) { (void)s; }");
         assert!(sema_err(
             "struct S { long double x; }; struct S f(void) { struct S s; return s; }"

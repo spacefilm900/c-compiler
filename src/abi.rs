@@ -2,11 +2,12 @@
 //!
 //! The rules are the ones in the psABI (section 3.2.3). Each aggregate is
 //! split into eightbyte chunks. Integer and pointer chunks travel in general
-//! registers; a chunk that needs an SSE or x87 register is rejected until
-//! floating-point code generation exists, but the class merge already treats
-//! INTEGER as winning over SSE in the same eightbyte, which is what the psABI
-//! specifies. An aggregate larger than two eightbytes, or one with an
-//! unaligned field, is passed in memory.
+//! registers. An SSE chunk travels in an XMM register: one `float`, one
+//! `double`, or `<2 x float>` when two floats share the eightbyte. INTEGER
+//! wins over SSE in the same eightbyte. An x87 aggregate is passed in memory,
+//! and returning one is rejected because the value belongs in `%st0`. An
+//! aggregate larger than two eightbytes, or one with an unaligned field, is
+//! passed in memory.
 //!
 //! LLVM IR for this ABI does not pass the struct type itself. A register
 //! aggregate is coerced to integer pieces (or `ptr` when an eightbyte is
@@ -32,19 +33,47 @@ pub enum RegPiece {
     Int { bits: u32, offset: u64 },
     /// A pointer that occupies the whole eightbyte at `offset`.
     Ptr { offset: u64 },
+    /// One XMM register at `offset`. Two `float` fields share `<2 x float>`.
+    Sse { kind: SsePiece, offset: u64 },
+}
+
+/// The LLVM type of one SSE eightbyte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SsePiece {
+    Float,
+    Double,
+    /// Two `float` values in the low 64 bits of one XMM register.
+    FloatPair,
+}
+
+impl SsePiece {
+    fn ir(self) -> &'static str {
+        match self {
+            SsePiece::Float => "float",
+            SsePiece::Double => "double",
+            SsePiece::FloatPair => "<2 x float>",
+        }
+    }
 }
 
 impl RegPiece {
     pub fn offset(&self) -> u64 {
         match self {
-            RegPiece::Int { offset, .. } | RegPiece::Ptr { offset } => *offset,
+            RegPiece::Int { offset, .. }
+            | RegPiece::Ptr { offset }
+            | RegPiece::Sse { offset, .. } => *offset,
         }
+    }
+
+    pub fn is_sse(&self) -> bool {
+        matches!(self, RegPiece::Sse { .. })
     }
 
     pub fn ir_type(&self) -> String {
         match self {
             RegPiece::Ptr { .. } => "ptr".to_string(),
             RegPiece::Int { bits, .. } => format!("i{bits}"),
+            RegPiece::Sse { kind, .. } => kind.ir().to_string(),
         }
     }
 }
@@ -101,6 +130,7 @@ pub enum PartKind {
 /// that pointer is a hidden first argument and the LLVM return type is `void`.
 /// `free_int` is how many of the six general registers remain after the fixed
 /// parameters, so a variadic argument can continue the same budget.
+/// `free_sse` is the same count for the eight XMM registers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnSig {
     pub ret_type: String,
@@ -109,6 +139,7 @@ pub struct FnSig {
     pub sret_attrs: Option<String>,
     pub params: Vec<Vec<Part>>,
     pub free_int: usize,
+    pub free_sse: usize,
 }
 
 /// Whether the aggregate is a parameter or a return value.
@@ -126,9 +157,15 @@ pub fn function_sig(ret: &CType, params: &[CType]) -> Result<FnSig, AbiFail> {
     let (ret_type, ret_prefix, ret_agg, sret_attrs) = lower_return(ret)?;
     // Six general registers. The hidden sret pointer takes the first.
     let mut free_int = if sret_attrs.is_some() { 5 } else { 6 };
+    let mut free_sse = 8;
     let mut lowered = Vec::with_capacity(params.len());
     for param in params {
-        lowered.push(assign_regs(lower_param(param)?, param, &mut free_int));
+        lowered.push(assign_regs(
+            lower_param(param)?,
+            param,
+            &mut free_int,
+            &mut free_sse,
+        ));
     }
     Ok(FnSig {
         ret_type,
@@ -137,6 +174,7 @@ pub fn function_sig(ret: &CType, params: &[CType]) -> Result<FnSig, AbiFail> {
         sret_attrs,
         params: lowered,
         free_int,
+        free_sse,
     })
 }
 
@@ -147,23 +185,50 @@ pub fn function_sig(ret: &CType, params: &[CType]) -> Result<FnSig, AbiFail> {
 /// needs a register for every eightbyte. If even one is missing, the psABI
 /// passes the whole argument in memory and does not consume the registers
 /// that were still free.
-pub fn assign_regs(parts: Vec<Part>, ty: &CType, free_int: &mut usize) -> Vec<Part> {
-    let pieces = parts
-        .iter()
-        .filter(|part| matches!(part.kind, PartKind::Piece(_)))
-        .count();
-    if pieces > 1 && pieces > *free_int {
-        return vec![memory_part(ty)];
+pub fn assign_regs(
+    parts: Vec<Part>,
+    ty: &CType,
+    free_int: &mut usize,
+    free_sse: &mut usize,
+) -> Vec<Part> {
+    let mut int_n = 0usize;
+    let mut sse_n = 0usize;
+    for part in &parts {
+        if let PartKind::Piece(piece) = &part.kind {
+            if piece.is_sse() {
+                sse_n += 1;
+            } else {
+                int_n += 1;
+            }
+        }
     }
-    if pieces > 0 {
-        *free_int = free_int.saturating_sub(pieces);
+    if int_n + sse_n > 0 {
+        // A lone integer eightbyte stays an integer when general registers
+        // are exhausted; LLVM puts that integer on the stack. An SSE
+        // eightbyte, and any aggregate that is short a register of either
+        // class, is passed in memory and does not consume the registers
+        // that are still free.
+        let spill = if sse_n > 0 {
+            sse_n > *free_sse || int_n > *free_int
+        } else {
+            int_n > 1 && int_n > *free_int
+        };
+        if spill {
+            return vec![memory_part(ty)];
+        }
+        *free_int = free_int.saturating_sub(int_n);
+        *free_sse = free_sse.saturating_sub(sse_n);
         return parts;
     }
     if parts
         .first()
         .is_some_and(|part| matches!(part.kind, PartKind::Scalar))
     {
-        *free_int = free_int.saturating_sub(1);
+        if ty.is_sse_float() {
+            *free_sse = free_sse.saturating_sub(1);
+        } else if !ty.is_long_double() {
+            *free_int = free_int.saturating_sub(1);
+        }
     }
     parts
 }
@@ -224,10 +289,11 @@ fn lower_param(ty: &CType) -> Result<Vec<Part>, AbiFail> {
 
 /// Classify a complete struct or union used as a parameter.
 ///
-/// Incomplete types fail. An eightbyte that needs an SSE register fails.
-/// An x87 aggregate is memory: the psABI passes that class on the stack.
-/// Memory aggregates succeed even when they contain a floating-point member,
-/// because those are a byte copy.
+/// Incomplete types fail. An SSE eightbyte is an XMM piece. An x87 aggregate
+/// is memory: the psABI passes that class on the stack. Returning an x87
+/// aggregate fails, because the value belongs in `%st0`. Memory aggregates
+/// succeed even when they contain a floating-point member, because those
+/// are a byte copy.
 pub fn classify_aggregate(ty: &CType) -> Result<AggAbi, AbiFail> {
     classify_for(ty, AggUse::Param)
 }
@@ -254,7 +320,7 @@ pub fn classify_for(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
         return Ok(AggAbi::Memory);
     }
     let mut leaves = Vec::new();
-    collect_leaves(&bare, 0, &mut leaves);
+    collect_leaves(&bare, 0, false, &mut leaves);
     let unaligned = leaves
         .iter()
         .any(|leaf| leaf.offset % u64::from(leaf.align.max(1)) != 0);
@@ -277,8 +343,7 @@ pub fn classify_for(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
     let x87 = classes
         .iter()
         .any(|class| matches!(class, Class::X87 | Class::X87Up));
-    let sse = classes.iter().any(|class| *class == Class::Sse);
-    if sse || (x87 && use_as == AggUse::Return) {
+    if x87 && use_as == AggUse::Return {
         return Err(AbiFail::FloatReg);
     }
     if x87 {
@@ -287,10 +352,12 @@ pub fn classify_for(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
     }
     let mut pieces = Vec::new();
     for (index, class) in classes.iter().enumerate() {
-        if *class != Class::Integer {
-            continue;
-        }
-        if let Some(piece) = piece_at(index, &leaves, size) {
+        let piece = match class {
+            Class::Integer => integer_piece(index, eightbytes, &leaves, size),
+            Class::Sse => Some(sse_piece(index, &leaves)),
+            _ => None,
+        };
+        if let Some(piece) = piece {
             pieces.push(piece);
         }
     }
@@ -316,23 +383,35 @@ struct Leaf {
     align: u32,
     class: Class,
     is_ptr: bool,
+    /// The C field that produced this leaf also occupies another eightbyte.
+    /// A `char[10]` does. Two separate `char` fields do not.
+    spans: bool,
 }
 
-fn collect_leaves(ty: &CType, base: u64, out: &mut Vec<Leaf>) {
+fn crosses(offset: u64, size: u64) -> bool {
+    size > 0 && offset / 8 != (offset + size - 1) / 8
+}
+
+fn collect_leaves(ty: &CType, base: u64, inherited: bool, out: &mut Vec<Leaf>) {
     match ty.peel() {
-        CType::Int(name) => out.push(Leaf {
-            offset: base,
-            size: name.size().max(1),
-            align: name.align().max(1),
-            class: Class::Integer,
-            is_ptr: false,
-        }),
+        CType::Int(name) => {
+            let size = name.size().max(1);
+            out.push(Leaf {
+                offset: base,
+                size,
+                align: name.align().max(1),
+                class: Class::Integer,
+                is_ptr: false,
+                spans: inherited || crosses(base, size),
+            });
+        }
         CType::Pointer(_) => out.push(Leaf {
             offset: base,
             size: 8,
             align: 8,
             class: Class::Integer,
             is_ptr: true,
+            spans: inherited || crosses(base, 8),
         }),
         CType::Float(FloatKind::Float) => out.push(Leaf {
             offset: base,
@@ -340,6 +419,7 @@ fn collect_leaves(ty: &CType, base: u64, out: &mut Vec<Leaf>) {
             align: 4,
             class: Class::Sse,
             is_ptr: false,
+            spans: inherited || crosses(base, 4),
         }),
         CType::Float(FloatKind::Double) => out.push(Leaf {
             offset: base,
@@ -347,17 +427,20 @@ fn collect_leaves(ty: &CType, base: u64, out: &mut Vec<Leaf>) {
             align: 8,
             class: Class::Sse,
             is_ptr: false,
+            spans: inherited || crosses(base, 8),
         }),
         CType::Float(FloatKind::LongDouble) => {
             // The field's alignment is 16 and applies at `base`. The second
             // eightbyte is the padding half of the same field, not a second
             // member aligned to 16, so offset 8 is not an unaligned field.
+            let spans = inherited || crosses(base, 16);
             out.push(Leaf {
                 offset: base,
                 size: 8,
                 align: 16,
                 class: Class::X87,
                 is_ptr: false,
+                spans,
             });
             out.push(Leaf {
                 offset: base + 8,
@@ -365,22 +448,101 @@ fn collect_leaves(ty: &CType, base: u64, out: &mut Vec<Leaf>) {
                 align: 1,
                 class: Class::X87Up,
                 is_ptr: false,
+                spans,
             });
         }
         CType::Array(elem, Some(len)) => {
             let Some(elem_size) = elem.size() else {
                 return;
             };
+            let total = elem_size.saturating_mul(*len);
+            let spans = inherited || crosses(base, total);
             for index in 0..*len {
-                collect_leaves(elem, base + index * elem_size, out);
+                collect_leaves(elem, base + index * elem_size, spans, out);
             }
         }
         CType::Struct(handle) => {
             for field in handle.fields().unwrap_or_default() {
-                collect_leaves(&field.ty, base + field.offset, out);
+                collect_leaves(&field.ty, base + field.offset, inherited, out);
             }
         }
         CType::Void | CType::Func(_) | CType::Array(_, None) | CType::Qualified(_, _) => {}
+    }
+}
+
+/// Width of an INTEGER eightbyte.
+///
+/// A single eightbyte aggregate uses the bytes its fields occupy, rounded
+/// up to their alignment (`char[3]` is `i24`, `int` plus `char` is `i64`).
+/// In a larger aggregate, a field that continues into another eightbyte
+/// uses that same rule, so `unsigned char[10]` is `i64` plus `i16`. A
+/// separate field that sits entirely in one eightbyte is that field's width
+/// when it is one aligned scalar (`char` before a `double` is `i8`), and
+/// `i64` when several fields share the eightbyte.
+fn integer_piece(index: usize, eightbytes: usize, leaves: &[Leaf], size: u64) -> Option<RegPiece> {
+    let start = index as u64 * 8;
+    let limit = (start + 8).min(size);
+    let overlapping: Vec<&Leaf> = leaves
+        .iter()
+        .filter(|leaf| leaf.offset < limit && leaf.offset + leaf.size > start)
+        .collect();
+    if overlapping.is_empty() {
+        return None;
+    }
+    if overlapping.len() == 1
+        && overlapping[0].is_ptr
+        && overlapping[0].offset == start
+        && overlapping[0].size == 8
+    {
+        return Some(RegPiece::Ptr { offset: start });
+    }
+    let spans = overlapping.iter().any(|leaf| leaf.spans);
+    if eightbytes > 1 && !spans {
+        if let [leaf] = overlapping.as_slice() {
+            if leaf.offset == start
+                && matches!(leaf.size, 1 | 2 | 4 | 8)
+                && u64::from(leaf.align) == leaf.size
+            {
+                return Some(RegPiece::Int {
+                    bits: (leaf.size as u32) * 8,
+                    offset: start,
+                });
+            }
+        }
+        return Some(RegPiece::Int {
+            bits: 64,
+            offset: start,
+        });
+    }
+    piece_at(index, leaves, size)
+}
+
+fn sse_piece(index: usize, leaves: &[Leaf]) -> RegPiece {
+    let start = index as u64 * 8;
+    let limit = start + 8;
+    let overlapping: Vec<&Leaf> = leaves
+        .iter()
+        .filter(|leaf| {
+            leaf.class == Class::Sse && leaf.offset < limit && leaf.offset + leaf.size > start
+        })
+        .collect();
+    if overlapping.iter().any(|leaf| leaf.size == 8) {
+        return RegPiece::Sse {
+            kind: SsePiece::Double,
+            offset: start,
+        };
+    }
+    // Two `float` members of a union share offset 0. A pair occupies the
+    // high half of the eightbyte; counting leaves would treat that union
+    // as `<2 x float>` and load past the object.
+    let kind = if overlapping.iter().any(|leaf| leaf.offset >= start + 4) {
+        SsePiece::FloatPair
+    } else {
+        SsePiece::Float
+    };
+    RegPiece::Sse {
+        kind,
+        offset: start,
     }
 }
 
@@ -664,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn float_in_its_own_eightbyte_is_rejected_until_sse_exists() {
+    fn sse_eightbytes_use_xmm_pieces() {
         let only = record(
             200,
             vec![field("d", CType::Float(FloatKind::Double), 0)],
@@ -672,7 +834,116 @@ mod tests {
             8,
             false,
         );
-        assert_eq!(classify_aggregate(&only), Err(AbiFail::FloatReg));
+        assert_eq!(direct(&only), vec!["double".to_string()]);
+
+        let one_float = record(
+            210,
+            vec![field("f", CType::Float(FloatKind::Float), 0)],
+            4,
+            4,
+            false,
+        );
+        assert_eq!(direct(&one_float), vec!["float".to_string()]);
+
+        let two = record(
+            211,
+            vec![
+                field("a", CType::Float(FloatKind::Float), 0),
+                field("b", CType::Float(FloatKind::Float), 4),
+            ],
+            8,
+            4,
+            false,
+        );
+        assert_eq!(direct(&two), vec!["<2 x float>".to_string()]);
+
+        let three = record(
+            212,
+            vec![
+                field("a", CType::Float(FloatKind::Float), 0),
+                field("b", CType::Float(FloatKind::Float), 4),
+                field("c", CType::Float(FloatKind::Float), 8),
+            ],
+            12,
+            4,
+            false,
+        );
+        assert_eq!(
+            direct(&three),
+            vec!["<2 x float>".to_string(), "float".to_string()]
+        );
+
+        let int_double = record(
+            213,
+            vec![
+                field("i", ints(TypeName::Int), 0),
+                field("d", CType::Float(FloatKind::Double), 8),
+            ],
+            16,
+            8,
+            false,
+        );
+        assert_eq!(
+            direct(&int_double),
+            vec!["i32".to_string(), "double".to_string()]
+        );
+
+        let chars = record(
+            214,
+            vec![
+                field("a", CType::array(ints(TypeName::Char), Some(2)), 0),
+                field("d", CType::Float(FloatKind::Double), 8),
+            ],
+            16,
+            8,
+            false,
+        );
+        assert_eq!(
+            direct(&chars),
+            vec!["i64".to_string(), "double".to_string()]
+        );
+
+        let uni = record(
+            215,
+            vec![
+                field("f", CType::Float(FloatKind::Float), 0),
+                field("d", CType::Float(FloatKind::Double), 0),
+            ],
+            8,
+            8,
+            true,
+        );
+        assert_eq!(direct(&uni), vec!["double".to_string()]);
+
+        // Both members sit at offset 0. The object is one float.
+        let two_floats = record(
+            216,
+            vec![
+                field("a", CType::Float(FloatKind::Float), 0),
+                field("b", CType::Float(FloatKind::Float), 0),
+            ],
+            4,
+            4,
+            true,
+        );
+        assert_eq!(direct(&two_floats), vec!["float".to_string()]);
+
+        // The array reaches the high half, so the eightbyte is a pair.
+        let float_and_pair = record(
+            217,
+            vec![
+                field("a", CType::Float(FloatKind::Float), 0),
+                field(
+                    "b",
+                    CType::array(CType::Float(FloatKind::Float), Some(2)),
+                    0,
+                ),
+            ],
+            8,
+            4,
+            true,
+        );
+        assert_eq!(direct(&float_and_pair), vec!["<2 x float>".to_string()]);
 
         // int and float share an eightbyte, so INTEGER wins and the bits
         // travel in a general register.
@@ -723,6 +994,7 @@ mod tests {
         // The spilled aggregate does not take the last general register,
         // so the following int still has it.
         assert_eq!(sig.free_int, 0);
+        assert_eq!(sig.free_sse, 8);
 
         let mut fitted = vec![CType::int_type(); 4];
         fitted.push(s16);

@@ -2707,6 +2707,15 @@ impl Parser<'_> {
                     token.column,
                 ))
             }
+            TokenKind::Float => {
+                self.advance();
+                Ok(Expr::float_lit(
+                    token.value.expect("float token"),
+                    token.float_kind.expect("float token type"),
+                    token.line,
+                    token.column,
+                ))
+            }
             TokenKind::Ident => {
                 self.advance();
                 if let Some(NameBinding::EnumConst(value)) = self.lookup_name(&token.spelling) {
@@ -3008,6 +3017,7 @@ fn eval_ice(expr: &Expr) -> Result<BVal, BoundErr> {
             bits: *bits & value_ty.mask(),
             ty: *value_ty,
         }),
+        Expr::Float { .. } => Err(BoundErr::NotConst),
         Expr::Sizeof { operand, .. } => {
             let size = match operand {
                 SizeofOperand::Type(ty) => ty.size().ok_or(BoundErr::Incomplete)?,
@@ -3051,6 +3061,14 @@ fn eval_ice(expr: &Expr) -> Result<BVal, BoundErr> {
         }
         Expr::Cast { ty_name, expr, .. } => {
             let dest = ty_name.as_integer().ok_or(BoundErr::Vla)?;
+            // C11 6.6 allows a floating constant only as the immediate
+            // operand of a cast to an integer type. `(int)3.5` is an
+            // integer constant; `1.5` and `(int)(1.5 + 2.5)` are not.
+            if let Expr::Float { bits, kind, .. } = expr.as_ref() {
+                let bits =
+                    crate::float::real_to_int(*bits, *kind, dest).ok_or(BoundErr::Overflow)?;
+                return Ok(BVal { bits, ty: dest });
+            }
             let value = eval_ice(expr)?;
             Ok(BVal {
                 bits: convert_bits(value.bits, value.ty, dest),
@@ -3073,6 +3091,7 @@ fn eval_ice(expr: &Expr) -> Result<BVal, BoundErr> {
 fn type_only(expr: &Expr) -> Result<CType, BoundErr> {
     match expr {
         Expr::Int { value_ty, .. } => Ok(CType::from_name(*value_ty)),
+        Expr::Float { kind, .. } => Ok(CType::Float(*kind)),
         Expr::Str { bytes, .. } => Ok(CType::array(
             CType::from_name(TypeName::Char),
             Some(bytes.len() as u64 + 1),
