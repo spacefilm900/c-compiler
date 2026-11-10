@@ -4,5 +4,5 @@
 # A listed test that now passes is reported so this line can be removed.
 # A compiler crash or panic fails the run even when the test is listed.
 #
-# No entries. float, double, SSE aggregates, and goto pass. long double
-# is rejected, and this pin does not use it outside a comment.
+# No entries. float, double, long double, SSE aggregates, and goto are
+# implemented. This pin does not produce a long double outside a comment.

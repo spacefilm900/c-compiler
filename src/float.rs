@@ -3,10 +3,10 @@
 //!
 //! A constant is rounded to the nearest value of its type, with ties to even.
 //! That is the IEEE 754 default and the choice this target makes for the
-//! implementation-defined rounding in C11 6.4.4.2. Decimal text is converted
-//! by the Rust standard library, which uses that rounding. Hexadecimal
-//! constants are converted here from the binary significand. `long double`
-//! is not produced: the suffix `l`/`L` is rejected by the lexer.
+//! implementation-defined rounding in C11 6.4.4.2. Decimal `float` and
+//! `double` text is converted by the Rust standard library. `long double` is
+//! the 80-bit extended format, converted in [`crate::fp80`]. Hexadecimal
+//! constants are converted here from the binary significand.
 
 use crate::ast::{sign_extend, FloatKind, TypeName};
 
@@ -16,32 +16,41 @@ use crate::ast::{sign_extend, FloatKind, TypeName};
 /// LLVM's hexadecimal floating constant is that 64-bit pattern for both
 /// `float` and `double`. A `float` value is first widened; every `f32` value
 /// is exactly a `f64`.
-pub fn llvm_bits(kind: FloatKind, bits: u64) -> u64 {
+pub fn llvm_bits(kind: FloatKind, bits: u128) -> u128 {
     match kind {
-        FloatKind::Float => f64::from(f32::from_bits(bits as u32)).to_bits(),
-        FloatKind::Double => bits,
-        FloatKind::LongDouble => bits,
+        FloatKind::Float => u128::from(f64::from(f32::from_bits(bits as u32)).to_bits()),
+        FloatKind::Double => bits & 0xFFFF_FFFF_FFFF_FFFF,
+        FloatKind::LongDouble => bits & ((1u128 << 80) - 1),
     }
 }
 
-pub fn llvm_const(kind: FloatKind, bits: u64) -> String {
-    format!("0x{:016X}", llvm_bits(kind, bits))
+pub fn llvm_const(kind: FloatKind, bits: u128) -> String {
+    match kind {
+        FloatKind::LongDouble => format!("0xK{:020X}", llvm_bits(kind, bits)),
+        _ => format!("0x{:016X}", llvm_bits(kind, bits) as u64),
+    }
 }
 
-pub fn real_is_zero(kind: FloatKind, bits: u64) -> bool {
+pub fn real_is_zero(kind: FloatKind, bits: u128) -> bool {
     match kind {
         FloatKind::Float => f32::from_bits(bits as u32) == 0.0,
-        FloatKind::Double => f64::from_bits(bits) == 0.0,
-        FloatKind::LongDouble => false,
+        FloatKind::Double => f64::from_bits(bits as u64) == 0.0,
+        FloatKind::LongDouble => crate::fp80::is_zero(bits),
     }
 }
 
 /// Parse a decimal floating constant with the suffix already removed.
-pub fn parse_decimal(spelling: &str, kind: FloatKind) -> Option<u64> {
+pub fn parse_decimal(spelling: &str, kind: FloatKind) -> Option<u128> {
     match kind {
-        FloatKind::Float => spelling.parse::<f32>().ok().map(|v| u64::from(v.to_bits())),
-        FloatKind::Double => spelling.parse::<f64>().ok().map(f64::to_bits),
-        FloatKind::LongDouble => None,
+        FloatKind::Float => spelling
+            .parse::<f32>()
+            .ok()
+            .map(|v| u128::from(v.to_bits())),
+        FloatKind::Double => spelling
+            .parse::<f64>()
+            .ok()
+            .map(|v| u128::from(v.to_bits())),
+        FloatKind::LongDouble => crate::fp80::parse_decimal(spelling),
     }
 }
 
@@ -56,13 +65,22 @@ pub fn parse_hex(
     frac_digits: &str,
     bin_exp: i32,
     kind: FloatKind,
-) -> Option<u64> {
-    let is_f32 = match kind {
-        FloatKind::Float => true,
-        FloatKind::Double => false,
-        FloatKind::LongDouble => return None,
-    };
-    Some(hex_float_bits(int_digits, frac_digits, bin_exp, is_f32))
+) -> Option<u128> {
+    match kind {
+        FloatKind::Float => Some(u128::from(hex_float_bits(
+            int_digits,
+            frac_digits,
+            bin_exp,
+            true,
+        ))),
+        FloatKind::Double => Some(u128::from(hex_float_bits(
+            int_digits,
+            frac_digits,
+            bin_exp,
+            false,
+        ))),
+        FloatKind::LongDouble => Some(crate::fp80::parse_hex(int_digits, frac_digits, bin_exp)),
+    }
 }
 
 /// An exponent that does not fit in a modest `i32` is an infinity or a zero.
@@ -223,11 +241,14 @@ fn pack(exp_field: u32, frac: u64, is_f32: bool) -> u64 {
 /// every other integer the result is `None` when the value is not finite or
 /// does not fit. C leaves that case undefined; a constant initializer
 /// rejects it.
-pub fn real_to_int(bits: u64, kind: FloatKind, dest: TypeName) -> Option<u64> {
+pub fn real_to_int(bits: u128, kind: FloatKind, dest: TypeName) -> Option<u64> {
+    if kind == FloatKind::LongDouble {
+        return crate::fp80::to_int(bits, dest);
+    }
     let value = match kind {
         FloatKind::Float => f64::from(f32::from_bits(bits as u32)),
-        FloatKind::Double => f64::from_bits(bits),
-        FloatKind::LongDouble => return None,
+        FloatKind::Double => f64::from_bits(bits as u64),
+        FloatKind::LongDouble => unreachable!("long double is handled above"),
     };
     if dest == TypeName::Bool {
         return Some(u64::from(value != 0.0));
@@ -279,7 +300,10 @@ fn convert_wide(truncated: f64, dest: TypeName) -> Option<u64> {
 ///
 /// The cast goes straight to the destination format. Rounding through
 /// `f64` and then to `f32` can change a value that is not a tie in `f32`.
-pub fn int_to_real(bits: u64, src: TypeName, dest: FloatKind) -> u64 {
+pub fn int_to_real(bits: u64, src: TypeName, dest: FloatKind) -> u128 {
+    if dest == FloatKind::LongDouble {
+        return crate::fp80::from_int(bits, src);
+    }
     let signed = sign_extend(bits, src.width());
     let unsigned = bits & src.mask();
     match dest {
@@ -289,7 +313,7 @@ pub fn int_to_real(bits: u64, src: TypeName, dest: FloatKind) -> u64 {
             } else {
                 unsigned as f32
             };
-            u64::from(value.to_bits())
+            u128::from(value.to_bits())
         }
         FloatKind::Double => {
             let value = if src.is_signed() {
@@ -297,37 +321,59 @@ pub fn int_to_real(bits: u64, src: TypeName, dest: FloatKind) -> u64 {
             } else {
                 unsigned as f64
             };
-            value.to_bits()
+            u128::from(value.to_bits())
         }
-        FloatKind::LongDouble => 0,
+        FloatKind::LongDouble => unreachable!("long double is handled above"),
     }
 }
 
-pub fn real_to_real(bits: u64, src: FloatKind, dest: FloatKind) -> u64 {
+pub fn real_to_real(bits: u128, src: FloatKind, dest: FloatKind) -> u128 {
     if src == dest {
         return bits;
     }
+    if src == FloatKind::LongDouble {
+        return match dest {
+            FloatKind::Float => u128::from(crate::fp80::to_ieee(bits, true)),
+            FloatKind::Double => u128::from(crate::fp80::to_ieee(bits, false)),
+            FloatKind::LongDouble => bits,
+        };
+    }
+    if dest == FloatKind::LongDouble {
+        return match src {
+            FloatKind::Float => crate::fp80::from_ieee(bits as u64, true),
+            FloatKind::Double => crate::fp80::from_ieee(bits as u64, false),
+            FloatKind::LongDouble => bits,
+        };
+    }
     let value = match src {
         FloatKind::Float => f64::from(f32::from_bits(bits as u32)),
-        FloatKind::Double => f64::from_bits(bits),
-        FloatKind::LongDouble => return bits,
+        FloatKind::Double => f64::from_bits(bits as u64),
+        FloatKind::LongDouble => unreachable!("long double is handled above"),
     };
     match dest {
-        FloatKind::Float => u64::from((value as f32).to_bits()),
-        FloatKind::Double => value.to_bits(),
-        FloatKind::LongDouble => bits,
+        FloatKind::Float => u128::from((value as f32).to_bits()),
+        FloatKind::Double => u128::from(value.to_bits()),
+        FloatKind::LongDouble => unreachable!("long double is handled above"),
     }
 }
 
-pub fn negate(kind: FloatKind, bits: u64) -> u64 {
+pub fn negate(kind: FloatKind, bits: u128) -> u128 {
     match kind {
-        FloatKind::Float => u64::from((-f32::from_bits(bits as u32)).to_bits()),
-        FloatKind::Double => (-f64::from_bits(bits)).to_bits(),
-        FloatKind::LongDouble => bits,
+        FloatKind::Float => u128::from((-f32::from_bits(bits as u32)).to_bits()),
+        FloatKind::Double => u128::from((-f64::from_bits(bits as u64)).to_bits()),
+        FloatKind::LongDouble => crate::fp80::negate(bits),
     }
 }
 
-pub fn apply_bin(op: FloatOp, kind: FloatKind, left: u64, right: u64) -> u64 {
+pub fn apply_bin(op: FloatOp, kind: FloatKind, left: u128, right: u128) -> u128 {
+    if kind == FloatKind::LongDouble {
+        return match op {
+            FloatOp::Add => crate::fp80::add(left, right),
+            FloatOp::Sub => crate::fp80::sub(left, right),
+            FloatOp::Mul => crate::fp80::mul(left, right),
+            FloatOp::Div => crate::fp80::div(left, right),
+        };
+    }
     match kind {
         FloatKind::Float => {
             let left = f32::from_bits(left as u32);
@@ -338,24 +384,35 @@ pub fn apply_bin(op: FloatOp, kind: FloatKind, left: u64, right: u64) -> u64 {
                 FloatOp::Mul => left * right,
                 FloatOp::Div => left / right,
             };
-            u64::from(value.to_bits())
+            u128::from(value.to_bits())
         }
         FloatKind::Double => {
-            let left = f64::from_bits(left);
-            let right = f64::from_bits(right);
+            let left = f64::from_bits(left as u64);
+            let right = f64::from_bits(right as u64);
             let value = match op {
                 FloatOp::Add => left + right,
                 FloatOp::Sub => left - right,
                 FloatOp::Mul => left * right,
                 FloatOp::Div => left / right,
             };
-            value.to_bits()
+            u128::from(value.to_bits())
         }
-        FloatKind::LongDouble => 0,
+        FloatKind::LongDouble => unreachable!("long double is handled above"),
     }
 }
 
-pub fn apply_cmp(op: FloatCmp, kind: FloatKind, left: u64, right: u64) -> bool {
+pub fn apply_cmp(op: FloatCmp, kind: FloatKind, left: u128, right: u128) -> bool {
+    if kind == FloatKind::LongDouble {
+        let which = match op {
+            FloatCmp::Eq => crate::fp80::Cmp::Eq,
+            FloatCmp::Ne => crate::fp80::Cmp::Ne,
+            FloatCmp::Lt => crate::fp80::Cmp::Lt,
+            FloatCmp::Gt => crate::fp80::Cmp::Gt,
+            FloatCmp::Le => crate::fp80::Cmp::Le,
+            FloatCmp::Ge => crate::fp80::Cmp::Ge,
+        };
+        return crate::fp80::cmp(which, left, right);
+    }
     match kind {
         FloatKind::Float => {
             let left = f32::from_bits(left as u32);
@@ -363,11 +420,11 @@ pub fn apply_cmp(op: FloatCmp, kind: FloatKind, left: u64, right: u64) -> bool {
             cmp(op, left, right)
         }
         FloatKind::Double => {
-            let left = f64::from_bits(left);
-            let right = f64::from_bits(right);
+            let left = f64::from_bits(left as u64);
+            let right = f64::from_bits(right as u64);
             cmp(op, left, right)
         }
-        FloatKind::LongDouble => false,
+        FloatKind::LongDouble => unreachable!("long double is handled above"),
     }
 }
 
@@ -400,10 +457,14 @@ pub enum FloatCmp {
     Ge,
 }
 
-/// The common real type of two arithmetic types, when at least one is
-/// `float` or `double`. `long double` is not a result.
+/// The common real type of two arithmetic types (C11 6.3.1.8).
+///
+/// `long double` wins over `double`, and `double` wins over `float`. An
+/// integer operand is `None` and loses to every floating type.
 pub fn usual_real(left: Option<FloatKind>, right: Option<FloatKind>) -> FloatKind {
-    if left == Some(FloatKind::Double) || right == Some(FloatKind::Double) {
+    if left == Some(FloatKind::LongDouble) || right == Some(FloatKind::LongDouble) {
+        FloatKind::LongDouble
+    } else if left == Some(FloatKind::Double) || right == Some(FloatKind::Double) {
         FloatKind::Double
     } else {
         FloatKind::Float
@@ -414,7 +475,7 @@ pub fn usual_real(left: Option<FloatKind>, right: Option<FloatKind>) -> FloatKin
 mod tests {
     use super::*;
 
-    fn hex(int_digits: &str, frac: &str, exp: i32, kind: FloatKind) -> u64 {
+    fn hex(int_digits: &str, frac: &str, exp: i32, kind: FloatKind) -> u128 {
         parse_hex(int_digits, frac, exp, kind).unwrap()
     }
 
@@ -441,7 +502,7 @@ mod tests {
         );
         assert_eq!(
             hex("1", "", 1024, FloatKind::Double),
-            f64::INFINITY.to_bits()
+            u128::from(f64::INFINITY.to_bits())
         );
         // Tie to even: halfway between 1 and the next double stays at 1.
         assert_eq!(
@@ -462,7 +523,7 @@ mod tests {
         assert_eq!(hex("1", "fffffe", 127, FloatKind::Float), 0x7f7f_ffff);
         assert_eq!(
             hex("1", "", 128, FloatKind::Float),
-            u64::from(f32::INFINITY.to_bits())
+            u128::from(f32::INFINITY.to_bits())
         );
         assert_eq!(hex("1", "", -149, FloatKind::Float), 1);
         assert_eq!(hex("1", "000002", 0, FloatKind::Float), 0x3f80_0001);
@@ -489,7 +550,7 @@ mod tests {
         assert_eq!(big, rounded);
         assert_eq!(
             parse_decimal("1e309", FloatKind::Double).unwrap(),
-            f64::INFINITY.to_bits()
+            u128::from(f64::INFINITY.to_bits())
         );
         assert_eq!(parse_decimal("1e-400", FloatKind::Double).unwrap(), 0);
         assert_eq!(
@@ -524,11 +585,21 @@ mod tests {
             real_to_int(tiny, FloatKind::Double, TypeName::UInt),
             Some(0)
         );
-        assert!(real_to_int(f64::INFINITY.to_bits(), FloatKind::Double, TypeName::Int).is_none());
-        assert!(real_to_int(f64::NAN.to_bits(), FloatKind::Double, TypeName::Int).is_none());
+        assert!(real_to_int(
+            u128::from(f64::INFINITY.to_bits()),
+            FloatKind::Double,
+            TypeName::Int
+        )
+        .is_none());
+        assert!(real_to_int(
+            u128::from(f64::NAN.to_bits()),
+            FloatKind::Double,
+            TypeName::Int
+        )
+        .is_none());
         assert_eq!(
             int_to_real(u64::MAX, TypeName::ULong, FloatKind::Double),
-            (u64::MAX as f64).to_bits()
+            u128::from((u64::MAX as f64).to_bits())
         );
         assert_eq!(
             real_to_int(one_point_nine, FloatKind::Double, TypeName::Bool),
@@ -536,17 +607,25 @@ mod tests {
         );
         assert_eq!(real_to_int(0, FloatKind::Double, TypeName::Bool), Some(0));
         assert_eq!(
-            real_to_int(f64::NAN.to_bits(), FloatKind::Double, TypeName::Bool),
+            real_to_int(
+                u128::from(f64::NAN.to_bits()),
+                FloatKind::Double,
+                TypeName::Bool
+            ),
             Some(1)
         );
         assert_eq!(
-            real_to_int(f64::INFINITY.to_bits(), FloatKind::Double, TypeName::Bool),
+            real_to_int(
+                u128::from(f64::INFINITY.to_bits()),
+                FloatKind::Double,
+                TypeName::Bool
+            ),
             Some(1)
         );
         let wide = 4_611_686_293_305_294_849u64;
         assert_eq!(
             int_to_real(wide, TypeName::LongLong, FloatKind::Float),
-            u64::from((wide as i64 as f32).to_bits())
+            u128::from((wide as i64 as f32).to_bits())
         );
     }
 }

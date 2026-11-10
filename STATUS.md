@@ -4,7 +4,7 @@
 
 **Variadic definitions, `goto`, designated initializers, bit-fields, and `volatile`, on top of `float` and `double`.** A function may be defined with `...`. `<stdarg.h>` implements `va_list`, `va_start`, `va_arg`, `va_end`, and `va_copy` with `__builtin_va_list` and the matching builtins. `va_arg` follows the System V AMD64 register-save area: general registers at offsets 0..48, XMM registers at 48..176, then the overflow area. `float` promotes to `double`. An aggregate uses the same classification as a call. `llvm.va_start`, `llvm.va_end`, and `llvm.va_copy` are emitted; LLVM's `va_arg` instruction is not. `goto` and labels are function scope, including a forward jump. Designated initializers (`.field` and `[const]`) are accepted, and the next positional initializer continues at the next subobject. Bit-fields pack least-significant bit first in a storage unit of the declared type. `volatile` is `load volatile` and `store volatile`.
 
-`float` and `double` stay as on `main`. Decimal and hexadecimal floating constants are lexed, including an `f`/`F` suffix. The usual arithmetic conversions, integer/float conversions, and the `float` to `double` default argument promotion are applied, so `printf("%f", x)` passes a `double`. Arithmetic, comparisons, unary `+`/`-`, `!`, compound assignment, `++`/`--`, `?:`, casts, and the conditions of `if` / `while` / `for` / `&&` / `||` accept floating operands. `switch` still requires an integer. File-scope and `static` objects may have constant floating initializers, and floating members are allowed in structs, unions, and arrays. Scalar `float` and `double` parameters and returns use XMM registers. An SSE eightbyte of an aggregate is `float`, `double`, or `<2 x float>`. INTEGER still wins over SSE in the same eightbyte. A lone integer eightbyte stays an integer when general registers run out. An SSE eightbyte, or a mixed aggregate that is short a register of either class, is `byval` and does not consume the registers that remain. `long double` may still be named so a header parses, but a constant, a definition, or an expression that produces one is rejected. An x87 aggregate is passed in memory and returning one is still rejected. Programs can `#include` the host glibc headers for `stdio.h`, `stdlib.h`, `string.h`, `stdint.h`, `ctype.h`, `math.h`, and `assert.h`. The compiler supplies `stddef.h`, `stdarg.h`, `stdbool.h`, and `limits.h`. The Nora Sandler suite is fetched at a pinned commit and run by `harness/run_wacc.py`. It is not vendored.
+`float` and `double` stay as on `main`. Decimal and hexadecimal floating constants are lexed, including an `f`/`F` suffix. The usual arithmetic conversions, integer/float conversions, and the `float` to `double` default argument promotion are applied, so `printf("%f", x)` passes a `double`. Arithmetic, comparisons, unary `+`/`-`, `!`, compound assignment, `++`/`--`, `?:`, casts, and the conditions of `if` / `while` / `for` / `&&` / `||` accept floating operands. `switch` still requires an integer. File-scope and `static` objects may have constant floating initializers, and floating members are allowed in structs, unions, and arrays. Scalar `float` and `double` parameters and returns use XMM registers. An SSE eightbyte of an aggregate is `float`, `double`, or `<2 x float>`. INTEGER still wins over SSE in the same eightbyte. A lone integer eightbyte stays an integer when general registers run out. An SSE eightbyte, or a mixed aggregate that is short a register of either class, is `byval` and does not consume the registers that remain. `long double` is the 80-bit x87 format, stored in 16 bytes. A scalar parameter is passed in memory and a scalar return uses the x87 stack. `va_arg` of `long double` reads the overflow area, 16-byte aligned. An x87 aggregate is passed in memory and returning one is still rejected. Anonymous struct and union members (an untagged type specifier with no declarator) promote their members into the enclosing type. `L'...'` and `L"..."` are `wchar_t` literals, and `wchar_t` is `int`. `__builtin_memcpy`, `__builtin_memmove`, `__builtin_memset`, and `__builtin_signbit` / `__builtin_signbitf` / `__builtin_signbitl` are recognized. Programs can `#include` the host glibc headers for `stdio.h`, `stdlib.h`, `string.h`, `stdint.h`, `ctype.h`, `math.h`, and `assert.h`. The compiler supplies `stddef.h`, `stdarg.h`, `stdbool.h`, and `limits.h`. The Nora Sandler suite is fetched at a pinned commit and run by `harness/run_wacc.py`. It is not vendored.
 
 ## External suite
 
@@ -57,7 +57,7 @@ Run locally with `python3 harness/run_wacc.py` after the fetch. 1384 executed, *
 
 | Category | Tests | Meaning |
 | --- | --- | --- |
-None. The previous `unsupported-double` list (91 tests) passes on `main` and still passes here. Chapter 13 is 69/69. `long double` is rejected when an expression produces one; this pin does not do that outside a comment. The 30 `goto` tests pass, so they are not listed.
+None. The previous `unsupported-double` list (91 tests) passes on `main` and still passes here. Chapter 13 is 69/69. This pin does not produce a `long double` outside a comment. The 30 `goto` tests pass, so they are not listed.
 
 ### Diagnostics fixed while running the suite
 
@@ -93,7 +93,7 @@ The compiler is a Rust binary. `make` installs it at `build/compiler`. It accept
 2. **Done.** `typedef`, `enum`, unions, and the declarations the host headers need. See the step 2 record below.
 3. Basic standard headers are in use: the compiler supplies the freestanding ones, and glibc supplies the rest listed in the step 2 record.
 4. **Done.** Passing and returning an integer aggregate by value. See the aggregate-call record below.
-5. **Done.** `float` and `double`. `long double` is rejected when an expression produces one. See the floating-point record below.
+5. **Done.** `float`, `double`, and `long double`. See the floating-point record below.
 6. **Done.** Variadic definitions and `<stdarg.h>`, `goto`, designated initializers, bit-fields, and `volatile`. See the step 6 record below.
 
 ## Milestone 2 plan
@@ -220,7 +220,7 @@ A global initializer may be an integer constant expression, a floating constant 
 
 An array of 16 bytes or more has alignment at least 16, for locals and globals. That is the System V AMD64 rule. Smaller arrays use the element alignment. Pointers are 8-byte aligned. String-literal globals use alignment 1.
 
-A string literal uses the same escapes as a character constant. Adjacent literals are concatenated (`"hel" "lo"`). The type is `char[N]`, where `N` counts the terminating NUL, so `sizeof "abc"` is 4 and `sizeof ""` is 1. The literal decays to `char *` except as the operand of `sizeof` or unary `&`. When the address is used, the IR is a `private unnamed_addr constant` array of `i8`, named `.str` or `.str.N`. Identical contents share one global. A literal used only by `sizeof`, or only to initialize a character array, does not allocate that global. Modifying a string literal is undefined and is not diagnosed; the type is `char[N]`, not `const char[N]`. Wide literals (`L`, `u`, `U`, `u8`) are rejected.
+A string literal uses the same escapes as a character constant. Adjacent literals are concatenated (`"hel" "lo"`). The type is `char[N]`, where `N` counts the terminating NUL, so `sizeof "abc"` is 4 and `sizeof ""` is 1. The literal decays to `char *` except as the operand of `sizeof` or unary `&`. When the address is used, the IR is a `private unnamed_addr constant` array of `i8`, named `.str` or `.str.N`. Identical contents share one global. A literal used only by `sizeof`, or only to initialize a character array, does not allocate that global. Modifying a string literal is undefined and is not diagnosed; the type is `char[N]`, not `const char[N]`. `L` wide literals are accepted; `wchar_t` is `int`. `u`, `U`, and `u8` prefixes are rejected.
 
 A character array (`char`, `signed char`, or `unsigned char`) may be initialized by a string, optionally in one pair of braces. `char s[] = "hi"` has length 3, including NUL. `char s[10] = "hi"` stores `'h'`, `'i'`, NUL, and zeros. `char s[2] = "hi"` stores `'h'` and `'i'` and no NUL (C11 6.7.9). A longer literal is a diagnostic. `char m[][3] = {"hi", "yo"}` takes its outer length from the list. `char *p = "hi"` and `const char *p = "hi"` are address constants. `char *p = "hi" + 1` is the same global plus one byte.
 
@@ -234,7 +234,7 @@ A character array (`char`, `signed char`, or `unsigned char`) may be initialized
 
 A `volatile` object or member is a `load volatile` or `store volatile`. A volatile aggregate copy passes `i1 true` to `llvm.memmove`. This compiler does not otherwise optimize. A cast may drop `const` or `volatile`; the cast is accepted and a later write is not diagnosed. `restrict` is accepted on pointers and does not change the IR; see the stage 2 step 2 record. Duplicate qualifiers are errors here; Clang only warns.
 
-A variadic declaration such as `int printf(const char *, ...);` is kept. The IR is `declare i32 @printf(ptr, ...)`, with `signext` or `zeroext` on a narrow fixed parameter or return, the same as any other function. A call is `call i32 (ptr, ...) @printf(...)`. Fixed arguments are converted to the parameter type. Further arguments get the default argument promotions: `char` and `short`, signed or unsigned, become `int`, and `float` becomes `double`. Pointers are not promoted. `long double` may be declared, but an expression that produces one is rejected. `int f(...);` is rejected because C11 requires a named parameter before `...`. A definition may use `...`. `<stdarg.h>` implements `va_start`, `va_arg`, `va_end`, and `va_copy` from the System V register-save area. See the step 6 record. A call still requires a visible declaration. C11 has no implicit declaration, and this compiler does not add one.
+A variadic declaration such as `int printf(const char *, ...);` is kept. The IR is `declare i32 @printf(ptr, ...)`, with `signext` or `zeroext` on a narrow fixed parameter or return, the same as any other function. A call is `call i32 (ptr, ...) @printf(...)`. Fixed arguments are converted to the parameter type. Further arguments get the default argument promotions: `char` and `short`, signed or unsigned, become `int`, and `float` becomes `double`. Pointers are not promoted. `long double` is not promoted. `int f(...);` is rejected because C11 requires a named parameter before `...`. A definition may use `...`. `<stdarg.h>` implements `va_start`, `va_arg`, `va_end`, and `va_copy` from the System V register-save area. See the step 6 record. A call still requires a visible declaration. C11 has no implicit declaration, and this compiler does not add one.
 
 Hello world is `tests/62_hello.c`:
 
@@ -265,7 +265,7 @@ A struct may be a local, a file-scope object (`extern` or `static` included), or
 
 - The preprocessor implements translation phases 2–4 for the directives listed below. Trigraphs are not recognized. `_Pragma` and `__DATE__` / `__TIME__` are not implemented. `#include_next` is. A `#` that survives expansion is a stray-token diagnostic. Digraphs (`<:`, `:>`, `<%`, `%>`, `%:`, `%:%:`) are recognized as the corresponding punctuators.
 - An integer constant that fits in no type on the C11 6.4.4.1 list for its suffix and base is a diagnostic. A decimal constant that does not fit in signed `long long` is rejected even when it fits in `unsigned long long`.
-- No flexible array members or anonymous struct/union members. Returning an x87 aggregate is rejected. `long double` may be declared, and a constant with an `l`/`L` suffix is lexed so `<float.h>` can define `LDBL_*`. A definition that takes or returns `long double`, and an expression that produces one, are rejected. The stored bits of an `l`/`L` constant are not a computed value. No variable-length arrays. Wide string and character literals are rejected in program text; a wide character constant in a preprocessor expression is accepted as the corresponding character value. An empty struct or union is rejected. A variadic definition with no named parameter (`int f(...)`) is rejected.
+- No flexible array members. Returning an x87 aggregate is rejected. An untagged unnamed struct or union member is anonymous. A tagged member with no declarator is still rejected. `long double` is computed as 80-bit extended precision. No variable-length arrays. `L` wide string and character literals are accepted; `u`, `U`, and `u8` prefixes are rejected. A wide character constant in a preprocessor expression keeps the corresponding character value. An empty struct or union is rejected. A variadic definition with no named parameter (`int f(...)`) is rejected. `__builtin_alloca` and the other GCC builtins are not recognized, apart from the `va_*` builtins, the memory builtins, and `__builtin_signbit`.
 - Multi-character character constants (`'ab'`) are rejected; Clang accepts them as an implementation-defined `int`. A hex or octal escape outside `unsigned char` is a diagnostic, matching Clang. Runtime shift counts outside `0 .. width`, signed left shifts of negative values, and signed left shifts that do not fit are undefined and are not diagnosed outside constant initializers. Signed overflow at runtime is undefined and is not diagnosed. Modifying a string literal is undefined and is not diagnosed. A cast may drop `const`.
 - `goto` jumps to a label in the same function. Jumping into the scope of an automatic initializer is not diagnosed, the same as `switch`. A label followed by a declaration (`label: int x;`) is still a diagnostic. `?:` accepts two operands of the same struct or union type. `switch` is implemented, as described above. A `case` range (`case 1 ... 3`) is a GNU extension and is rejected. Computed `goto *expr` is rejected.
 - An empty parameter list on a declaration that is not a definition (`int f();`) is rejected. C11 treats that as a non-prototype. This subset requires a prototype: `(void)` or a parameter type list. A definition may still use `()`.
@@ -281,7 +281,7 @@ A struct may be a local, a file-scope object (`extern` or `static` included), or
 
 - `.github/workflows/ci.yml` runs on `push` and `pull_request` with workflow `contents: read`, cancel-in-progress for the same ref, and the runner `ubuntu-24.04`. The original job is unchanged: 20-minute timeout, Rust 1.85.1 (`rustfmt`, `clippy`), apt packages `clang`, `llvm`, `make`, and `python3`, Clang 15 or newer, then `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo test --offline --lib`, `make`, and `python3 harness/run_tests.py`.
 - A second job, `writing-a-c-compiler suite`, fetches the pinned suite and runs `python3 harness/run_wacc.py`. It has a 30-minute timeout and inherits the workflow token, which is `contents: read`. Saving the suite cache does not need `actions: write`. For `push` and `pull_request`, the runner's cache mode is `write`. The cache key is the pinned commit.
-- Stage 3 adds four jobs: `csmith differential` (20 minutes), `one true awk` (25 minutes), `gcc torture execute` (40 minutes), and `performance numbers` (25 minutes). They use the same runner and the same toolchain pin. The performance job's token is `contents: read` and `actions: write` so it can upload `reports/perf.json`. The other jobs stay at the workflow's `contents: read`. Fetched trees are cached by pin. The One True AWK job skips the private AWK Builder suites, with a log line, when `gh` cannot clone them.
+- Stage 3 adds four jobs: `csmith differential` (20 minutes), `one true awk` (75 minutes), `gcc torture execute` (40 minutes), and `performance numbers` (25 minutes). They use the same runner and the same toolchain pin. The performance job's token is `contents: read` and `actions: write` so it can upload `reports/perf.json`. The other jobs stay at the workflow's `contents: read`. Fetched trees are cached by pin. The One True AWK job skips the private AWK Builder suites, naming the missing `AWK_SUITE_READ_TOKEN` secret, when that secret is unset. When the secret is set, it is passed as `GH_TOKEN`, and a clone, build, or suite failure fails the job.
 - Pinned actions: `actions/checkout@11d5960a326750d5838078e36cf38b85af677262` (v4.4.0), `dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8` (v1) with toolchain `1.85.1`, `actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809` (v4.2.4), and `actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02` (v4.6.2) on the performance job.
 - `.coderabbit.yaml` follows CodeRabbit schema `https://coderabbit.ai/integrations/schema.v2.json`. The review profile is `CHILL`. The file does not install the GitHub App.
 - Milestone 1's Actions runs and the CodeRabbit review on pull request 1 are in the record below. Step 2's Actions runs and the CodeRabbit review are in the step 2 record below. Step 3's Actions runs and the CodeRabbit review are in the step 3 record below. Step 4's Actions runs and the CodeRabbit review are in the step 4 record below. Step 5's Actions runs were not copied into that step's record. This change's Actions runs and the CodeRabbit review are in the switch record below.
@@ -302,25 +302,18 @@ Local result on this machine, Ubuntu Clang 18.1.3: **23 passed, 17 known failure
 
 Pin `5739fd79bcfc75ba7526773d0cf634521f8aca3c` (tag `20260426`). `bison -d awkgram.y` writes the parser. `maketab` is compiled with the host `cc`, not this compiler, and writes `proctab.c`. Both awk builds use `-O0`. Clang also gets `-std=c11`. Both pass `-D_DEFAULT_SOURCE`, because this compiler defines `__STRICT_ANSI__` and glibc then hides `srandom`.
 
-This compiler does not yet build awk. The first diagnostic in each failing file:
+This compiler builds unmodified awk. The features that were blocking the compile are general C, not awk special cases: `__builtin_memcpy` (and `__builtin_memmove` / `__builtin_memset`), anonymous struct and union members, `long double` expressions, and `L` wide literals. Compiling awk then also required `__builtin_signbit`, `__builtin_signbitf`, and `__builtin_signbitl`, because `<math.h>`'s `signbit` expands to those names when `__GNUC__` is 4.2. The awk sources were not patched.
 
-| File | Diagnostic |
-| --- | --- |
-| `awkgram.tab.c` | `__builtin_memcpy` is not declared. Bison emits it because `__GNUC__` is 4. |
-| `main.c` | `<signal.h>` pulls in an anonymous struct in `sigcontext.h`. Anonymous members are rejected. |
-| `tran.c`, `lib.c` | `isinf` / `isnan` expand to a `?:` whose unused arm calls a `long double` function. An expression that produces `long double` is rejected. |
-| `run.c` | `L'\0'` is a wide character literal. |
-
-`b.c`, `lex.c`, `parse.c`, and `proctab.c` compile. The awk sources were not patched. CI fails this job until the build succeeds and the upstream `testdir` and `bugs-fixed` output match the Clang build.
+`bugs-fixed` is 31 programs, and this compiler's awk matches the Clang-built awk on all of them. The upstream `testdir` prints the same nine `BAD` lines for both builds. Eight are golden-file mismatches the Clang-built awk also produces here: `T.argv delete ARGV[2]`, and the `T.arnold` cases `a-format`, `decr-NF`, `ofs-rebuild`, `space`, `string-conv`, `system-status`, and `unary-plus`. The ninth is a test whose expected diagnostic contains the letters BAD; both builds miss that text. They are not differences between the two binaries. `harness/run_onetrueawk.py` compares the two lists and fails only when they differ.
 
 ### AWK Builder suites
 
 Two private repositories, fetched with `gh` at the pins in `tests/external/README.md`. `harness/run_awk_extra.py` runs them against `AWK_CLANG` and `AWK_CCOMP`.
 
-- POSIX challenge `v0.6` (`69b1f589`): portable, observational, and nonportable are reported separately. A compiler defect is a per-case disagreement. One True AWK itself fails portable cases AWK-391, AWK-392, and AWK-399.
+- POSIX challenge annotated tag `v0.6`. The tag object is `69b1f5895022956c5ebfc0d6d58fd45636b6dfaa`. The pin compared with `HEAD` is the commit that tag points at, `b46ea063c6d25372b6a2010ac537ca19a8fd1b1e`. Portable, observational, and nonportable are reported separately. A compiler defect is a per-case disagreement. One True AWK itself fails portable cases AWK-391, AWK-392, and AWK-399, so the runner's portable gate may exit nonzero. The harness still compares the two JSON files.
 - Shakespeare volume test (`46701e47`): one portable program, two inputs, stdout compared to the pinned expected files.
 
-`AWK_EXTRA_HOOK` is an optional command for a later suite. None is configured. This environment's GitHub token can read `spacefilm900/c-compiler` and cannot read the other private repositories, so the suites were not executed here. CI skips them with a log line when the clone fails, and does not fail the workflow for that skip. The One True AWK job still fails while awk itself does not build.
+`AWK_EXTRA_HOOK` is an optional command for a later suite. None is configured. This environment's GitHub token can read `spacefilm900/c-compiler` and cannot read the other private repositories, so the suites were not executed here. CI skips them only when `AWK_SUITE_READ_TOKEN` is unset. The One True AWK job builds awk with this compiler and compares that binary with the Clang build.
 
 ### GCC torture execute
 
@@ -328,22 +321,24 @@ Pin `5115c7e447fc07457443df874bf57840e8316d5f` (`releases/gcc-15.2.0`). Each pro
 
 `builtins/` is skipped (144 files). GCC's own harness links each of those with a `-lib.c` companion and `lib/main.c`, and the tests target compiler builtins. They are not standalone programs.
 
-Local result: **797 passed, 949 known failures, 0 unexpected, 1746 executed, 144 builtins files skipped**.
+The local run before `20010325-1.c` was removed was **827 passed, 919 known failures, 0 unexpected, 1746 executed, 144 builtins files skipped**. Thirty tests that were listed then passed: `long double` arithmetic and `va_arg`, anonymous members, `L` wide literals, and programs whose only missing piece was `__builtin_memcpy` or `__builtin_signbit`. They were removed from `harness/gcc_torture_known_failures.txt`.
+
+CI on `fc52cef` (job `gcc torture execute`, run [42878896739](https://github.com/spacefilm900/c-compiler/actions/runs/42878896739)) printed `NOW_PASS 20010325-1.c` and `827 passed, 918 known failures, 1 unexpected, 1746 executed, 144 builtins files skipped`. That program was still listed as `wide-literal` and exits 0, so the line was removed. With that pass counted, the summary is **828 passed, 918 known failures, 0 unexpected, 1746 executed, 144 builtins files skipped**.
 
 | Category | Tests |
 | --- | --- |
 | compile-error | 419 |
-| builtin | 370 |
+| builtin | 360 |
 | old-style-decl | 65 |
 | vla | 23 |
-| long-double | 22 |
 | nested-function | 13 |
 | runtime | 10 |
 | asm | 8 |
+| long-double | 6 |
 | complex | 6 |
-| wide-literal | 5 |
 | flexible-array | 4 |
-| anonymous-member | 3 |
+| wide-literal | 1 |
+| anonymous-member | 2 |
 | alignas | 1 |
 
 `runtime` means the program compiled and did not exit 0. Several of those are bit-field width or promotion tests, or an `aligned` attribute this compiler ignores. They are listed, not treated as a reason to copy GCC.
@@ -364,11 +359,13 @@ The numbers below are from the agent VM (Linux 6.12.113+, x86_64, Ubuntu Clang 1
 
 ### Headers added for the suites
 
-`<float.h>` and `<stdnoreturn.h>` are freestanding headers this compiler now supplies. `tests/108_float_h.c` prints the IEEE macros and matches Clang. `tests/109_noreturn.c` uses `noreturn`. An `l`/`L` constant is lexed so `LDBL_*` can appear in the header. Using that value is still rejected.
+`<float.h>` and `<stdnoreturn.h>` are freestanding headers this compiler supplies. `tests/108_float_h.c` prints the IEEE macros and matches Clang. `tests/109_noreturn.c` uses `noreturn`. An `l`/`L` constant is an 80-bit value, so a program can use `LDBL_MAX`.
+
+The timing table above is from before this compiler could build awk. The compile now succeeds, and the two awk binaries agree on `bugs-fixed` and on `testdir`.
 
 ## Next actions
 
-The testing stage is in place. One True AWK does not build yet. The blockers are `__builtin_memcpy`, anonymous struct members (needed by `<signal.h>`), `long double` in the `<math.h>` type-generic macros, and wide character literals. `long double` (x87), variable-length arrays, flexible array members, and anonymous members remain the largest language gaps. No new platform is started.
+The testing stage is in place, and unmodified One True AWK builds with this compiler. The two awk binaries agree on `bugs-fixed` and on the upstream `testdir`, including the golden-file lines the Clang build also fails. Variable-length arrays, flexible array members, returning an x87 aggregate, and the `u`/`U`/`u8` literal prefixes remain language gaps. No new platform is started.
 
 ## Stage 2 step 4 record
 
@@ -378,9 +375,9 @@ Classification follows the System V AMD64 psABI. Each eightbyte is INTEGER, SSE,
 
 ## Floating-point record
 
-`float` is IEEE binary32 and `double` is IEEE binary64. A decimal constant is rounded to nearest, ties to even, by the host `f32`/`f64` conversion. A hexadecimal constant is converted from its binary significand with the same rounding, including subnormals, overflow to infinity, and underflow to zero. An unsuffixed constant is `double`. `f`/`F` is `float`. `l`/`L` is a diagnostic: `long double` is not computed. A floating constant in `#if` is a diagnostic, because a preprocessor expression is an integer constant expression.
+`float` is IEEE binary32, `double` is IEEE binary64, and `long double` is 80-bit extended precision. A decimal constant is rounded to nearest, ties to even: `float` and `double` by the host `f32`/`f64` conversion, and `long double` from the decimal digits. A hexadecimal constant is converted from its binary significand with the same rounding, including subnormals, overflow to infinity, and underflow to zero. An unsuffixed constant is `double`. `f`/`F` is `float`. `l`/`L` is `long double`. A floating constant in `#if` is a diagnostic, because a preprocessor expression is an integer constant expression.
 
-The usual arithmetic conversions follow C11 6.3.1.8. `double` wins over `float`, and either wins over every integer. Integer-to-floating conversion uses `sitofp` or `uitofp`. Floating-to-integer conversion truncates toward zero (`fptosi` / `fptoui`). A constant that is not finite, or that does not fit in the destination integer, is a diagnostic. `_Bool` is 0 when the value compares equal to 0 and 1 otherwise, so a NaN converts to 1. `float` promotes to `double` in a variadic argument. `%`, shifts, and bitwise operators still require integers. Comparisons use ordered `fcmp` predicates, except `!=`, which is `une`, so a NaN compares unequal. `if (x)` is `fcmp une` against zero, so a NaN is true and `-0.0` is false. `!x` is that condition inverted, which is `0 == x`.
+The usual arithmetic conversions follow C11 6.3.1.8. `long double` wins over `double`, `double` wins over `float`, and any floating type wins over every integer. Integer-to-floating conversion uses `sitofp` or `uitofp`. Floating-to-integer conversion truncates toward zero (`fptosi` / `fptoui`). A constant that is not finite, or that does not fit in the destination integer, is a diagnostic. `_Bool` is 0 when the value compares equal to 0 and 1 otherwise, so a NaN converts to 1. `float` promotes to `double` in a variadic argument. `%`, shifts, and bitwise operators still require integers. Comparisons use ordered `fcmp` predicates, except `!=`, which is `une`, so a NaN compares unequal. `if (x)` is `fcmp une` against zero, so a NaN is true and `-0.0` is false. `!x` is that condition inverted, which is `0 == x`.
 
 An SSE eightbyte is one XMM register. Two `float` fields in one eightbyte are `<2 x float>`. A `double` is `double`. A single `float` is `float`. INTEGER wins when an integer shares the eightbyte, and that integer is `i64` when several fields share it inside a larger aggregate, or the scalar width when the eightbyte holds one aligned scalar. A field that continues across an eightbyte boundary keeps the partial width, so `unsigned char[10]` is still `i64` plus `i16`. Eight XMM registers are tracked beside the six general registers. Scalar `float` and `double` consume XMM registers. LLVM places a scalar past `xmm7` on the stack. An aggregate that needs an XMM register and does not have one is `byval`.
 

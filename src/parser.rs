@@ -396,6 +396,7 @@ impl Parser<'_> {
             ty,
             forward_tag: flags.forward_tag,
             introduced_tag: flags.introduced_tag,
+            anon_record: flags.anon_record,
             shadow_decl,
             line: flags.line,
             column: flags.column,
@@ -516,6 +517,11 @@ impl Parser<'_> {
         }
         let (ty, forward, line, column) = self.parse_record_specifier(kind)?;
         flags.any = true;
+        // C11 6.7.2.1: an anonymous member's type specifier is a struct or
+        // union specifier with no tag. A typedef name is not that specifier.
+        flags.anon_record = ty
+            .struct_ref()
+            .is_some_and(|handle| handle.tag().is_empty() && handle.is_complete());
         flags.struct_ty = Some(ty);
         flags.forward_tag = forward;
         flags.line = line;
@@ -1259,7 +1265,26 @@ impl Parser<'_> {
             }
             let specs = self.parse_specs(SpecPlace::Member)?;
             if self.current().kind == TokenKind::Semi {
-                return Err(self.error("anonymous struct members are not supported"));
+                if specs.anon_record {
+                    let ty = specs.ty.clone();
+                    let mut promoted = Vec::new();
+                    Self::promoted_names_of(&ty, &mut promoted);
+                    for name in promoted {
+                        if !names.insert(name.clone()) {
+                            return Err(self.error(format!("duplicate member '{name}'")));
+                        }
+                    }
+                    fields.push(StructField {
+                        name: String::new(),
+                        ty,
+                        offset: 0,
+                        bit_offset: 0,
+                        bit_width: None,
+                    });
+                    self.advance();
+                    continue;
+                }
+                return Err(self.error("expected a declarator"));
             }
             loop {
                 if self.current().kind == TokenKind::Colon {
@@ -1332,6 +1357,23 @@ impl Parser<'_> {
             self.expect(TokenKind::Semi, "';'")?;
         }
         Ok(fields)
+    }
+
+    /// Member names an anonymous struct or union contributes to its parent.
+    fn promoted_names_of(ty: &CType, out: &mut Vec<String>) {
+        let Some(fields) = ty.struct_ref().and_then(|handle| handle.fields()) else {
+            return;
+        };
+        for field in fields {
+            if field.bit_width == Some(0) {
+                continue;
+            }
+            if field.is_anonymous_record() {
+                Self::promoted_names_of(&field.ty, out);
+            } else if !field.name.is_empty() {
+                out.push(field.name.clone());
+            }
+        }
     }
 
     /// `: constant-expression` on a struct or union member.
@@ -2917,7 +2959,8 @@ impl Parser<'_> {
             TokenKind::Float => {
                 self.advance();
                 Ok(Expr::float_lit(
-                    token.value.expect("float bits"),
+                    (u128::from(token.float_hi) << 64)
+                        | u128::from(token.value.expect("float bits")),
                     token.float_kind.expect("float kind"),
                     token.line,
                     token.column,
@@ -2953,13 +2996,32 @@ impl Parser<'_> {
             }
             TokenKind::String => {
                 self.advance();
-                let mut bytes = token.bytes.expect("string token");
-                // Translation phase 6 concatenates adjacent string literals.
+                let mut pieces = vec![(
+                    token.spelling.starts_with('L'),
+                    token.bytes.expect("string token"),
+                )];
+                // Translation phase 6 concatenates adjacent literals. If any
+                // piece has an `L` prefix, the result is a wide string
+                // (C11 6.4.5p5). `u`, `U`, and `u8` are rejected by the lexer.
                 while self.current().kind == TokenKind::String {
                     let next = self.advance();
-                    bytes.extend(next.bytes.expect("string token"));
+                    pieces.push((
+                        next.spelling.starts_with('L'),
+                        next.bytes.expect("string token"),
+                    ));
                 }
-                Ok(Expr::str_lit(bytes, token.line, token.column))
+                let wide = pieces.iter().any(|(is_wide, _)| *is_wide);
+                let mut bytes = Vec::new();
+                for (piece_wide, piece) in pieces {
+                    if wide && !piece_wide {
+                        for byte in piece {
+                            bytes.extend_from_slice(&u32::from(byte).to_le_bytes());
+                        }
+                    } else {
+                        bytes.extend(piece);
+                    }
+                }
+                Ok(Expr::str_lit(bytes, wide, token.line, token.column))
             }
             TokenKind::LParen => {
                 self.advance();
@@ -3043,6 +3105,9 @@ struct Specs {
     forward_tag: Option<String>,
     /// An enum was defined here, so `enum { A };` needs no declarator.
     introduced_tag: bool,
+    /// The type specifier was an untagged struct or union definition, so a
+    /// member declaration with no declarator is an anonymous member.
+    anon_record: bool,
     /// See [`Parser::shadow_decl`].
     shadow_decl: Option<(String, RecordKind)>,
     line: usize,
@@ -3077,6 +3142,7 @@ struct SpecFlags {
     forward_tag: Option<String>,
     /// `enum { ... }` or `enum Tag { ... }` with no declarator is a declaration.
     introduced_tag: bool,
+    anon_record: bool,
     any: bool,
     line: usize,
     column: usize,
@@ -3310,10 +3376,15 @@ fn type_only(expr: &Expr) -> Result<CType, BoundErr> {
     match expr {
         Expr::Int { value_ty, .. } => Ok(CType::from_name(*value_ty)),
         Expr::Float { kind, .. } => Ok(CType::Float(*kind)),
-        Expr::Str { bytes, .. } => Ok(CType::array(
-            CType::from_name(TypeName::Char),
-            Some(bytes.len() as u64 + 1),
-        )),
+        Expr::Str { bytes, wide, .. } => {
+            let elem = if *wide { TypeName::Int } else { TypeName::Char };
+            let len = if *wide {
+                bytes.len() as u64 / 4 + 1
+            } else {
+                bytes.len() as u64 + 1
+            };
+            Ok(CType::array(CType::from_name(elem), Some(len)))
+        }
         Expr::Sizeof { .. } => Ok(CType::from_name(TypeName::ULong)),
         Expr::Unary { op, expr, .. } => {
             let inner = type_only(expr)?.as_integer().ok_or(BoundErr::Vla)?;

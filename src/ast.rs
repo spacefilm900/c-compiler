@@ -263,6 +263,21 @@ impl StructField {
     pub fn is_bitfield(&self) -> bool {
         self.bit_width.is_some()
     }
+
+    /// An unnamed struct or union member that is not a bit-field. C11 calls
+    /// it anonymous when its type specifier has no tag.
+    pub fn is_anonymous_record(&self) -> bool {
+        self.name.is_empty() && self.bit_width.is_none() && self.ty.is_record()
+    }
+}
+
+/// Where [`StructRef::lookup_member`] found a name.
+pub struct MemberHit {
+    pub index: usize,
+    pub field: StructField,
+    /// The name lives inside an anonymous member, so it is addressed by a
+    /// byte offset from the start of the outer object.
+    pub indirect: bool,
 }
 
 /// Identity of one struct declaration.
@@ -395,16 +410,62 @@ impl StructRef {
     }
 
     pub fn field(&self, name: &str) -> Option<(usize, StructField)> {
+        self.lookup_member(name).map(|hit| (hit.index, hit.field))
+    }
+
+    /// A member, including one reached through an anonymous struct or union.
+    ///
+    /// C11 6.7.2.1 makes the members of an untagged, unnamed struct or union
+    /// members of the enclosing type. `indirect` means the address is a byte
+    /// offset from the outer object, because the name is not one LLVM field.
+    pub fn lookup_member(&self, name: &str) -> Option<MemberHit> {
+        self.lookup_member_from(name, 0, Quals::default(), false)
+    }
+
+    fn lookup_member_from(
+        &self,
+        name: &str,
+        base: u64,
+        quals: Quals,
+        indirect: bool,
+    ) -> Option<MemberHit> {
         if name.is_empty() {
             return None;
         }
-        let body = self.data.borrow();
-        let fields = body.fields.as_ref()?;
-        fields
-            .iter()
-            .enumerate()
-            .find(|(_, field)| field.name == name && field.bit_width != Some(0))
-            .map(|(index, field)| (index, field.clone()))
+        let fields = self.fields()?;
+        for (index, field) in fields.iter().enumerate() {
+            if field.bit_width == Some(0) {
+                continue;
+            }
+            if field.name == name {
+                let mut found = field.clone();
+                found.offset = found.offset.saturating_add(base);
+                if found.bit_width.is_some() {
+                    found.bit_offset = found
+                        .bit_offset
+                        .saturating_add((base as u32).saturating_mul(8));
+                }
+                found.ty = found.ty.with_quals(quals);
+                return Some(MemberHit {
+                    index,
+                    field: found,
+                    indirect,
+                });
+            }
+            if field.name.is_empty() && field.bit_width.is_none() && field.ty.is_record() {
+                let inner = field.ty.struct_ref()?;
+                let nested = inner.lookup_member_from(
+                    name,
+                    base + field.offset,
+                    quals.merge(field.ty.quals()),
+                    true,
+                );
+                if nested.is_some() {
+                    return nested;
+                }
+            }
+        }
+        None
     }
 
     /// A member is a bit-field, including a zero-width one. The LLVM type is
@@ -629,9 +690,10 @@ pub struct FuncTy {
 /// `float`, `double`, and `long double` on this target.
 ///
 /// Sizes follow the System V AMD64 ABI: 4, 8, and 16. `long double` is the
-/// 80-bit extended format (`x86_fp80`), stored in 16 bytes. `float` and
-/// `double` are computed. `long double` may be named so a header can declare
-/// it, but a constant or an expression that produces one is rejected.
+/// 80-bit extended format (`x86_fp80`), stored in 16 bytes with the value
+/// in the low 10. All three types are computed. A scalar `long double` is
+/// passed in memory and returned in `%st0`; an aggregate that contains one
+/// is passed in memory, and returning that aggregate is rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FloatKind {
     Float,
@@ -1470,9 +1532,10 @@ pub enum PtrConst {
 pub enum ConstInit {
     Zero,
     Int(u64),
-    /// IEEE bits of a `float` (low 32) or `double`. The destination type
-    /// selects the width.
-    Float(u64),
+    /// IEEE bits of a `float` (low 32), `double` (low 64), or the 80-bit
+    /// extended pattern of a `long double`. The destination type selects
+    /// the width.
+    Float(u128),
     Ptr(PtrConst),
     /// `ptrtoint` of a pointer constant, then truncated to `width` bits.
     PtrToInt {
@@ -1513,10 +1576,11 @@ pub enum Expr {
         column: usize,
         ty: Option<CType>,
     },
-    /// A `float` or `double` constant (C11 6.4.4.2). `bits` are `f32` bits in
-    /// the low 32 for [`FloatKind::Float`], and `f64` bits for `double`.
+    /// A floating constant (C11 6.4.4.2). `bits` are `f32` bits in the low
+    /// 32 for [`FloatKind::Float`], `f64` bits for `double`, and the 80-bit
+    /// extended pattern for `long double`.
     Float {
-        bits: u64,
+        bits: u128,
         kind: FloatKind,
         line: usize,
         column: usize,
@@ -1620,11 +1684,15 @@ pub enum Expr {
         column: usize,
         ty: Option<CType>,
     },
-    /// A string literal. `bytes` does not include the implicit NUL. The type
-    /// is `char[N]` with `N == bytes.len() + 1`. `symbol` is the private
-    /// global that holds the literal, filled in when the address is needed.
+    /// A string literal. `bytes` does not include the implicit NUL. An
+    /// ordinary literal has type `char[N]` with `N == bytes.len() + 1`. A
+    /// wide literal (`wide`) stores little-endian `wchar_t` code units and
+    /// has type `wchar_t[N]`, and `wchar_t` is `int` on this target.
+    /// `symbol` is the private global that holds the literal, filled in when
+    /// the address is needed.
     Str {
         bytes: Vec<u8>,
+        wide: bool,
         line: usize,
         column: usize,
         symbol: Option<String>,
@@ -1697,7 +1765,7 @@ impl Expr {
         }
     }
 
-    pub fn float_lit(bits: u64, kind: FloatKind, line: usize, column: usize) -> Self {
+    pub fn float_lit(bits: u128, kind: FloatKind, line: usize, column: usize) -> Self {
         Expr::Float {
             bits,
             kind,
@@ -1889,9 +1957,10 @@ impl Expr {
         }
     }
 
-    pub fn str_lit(bytes: Vec<u8>, line: usize, column: usize) -> Self {
+    pub fn str_lit(bytes: Vec<u8>, wide: bool, line: usize, column: usize) -> Self {
         Expr::Str {
             bytes,
+            wide,
             line,
             column,
             symbol: None,
@@ -2241,7 +2310,10 @@ pub struct IrFunc {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StrConst {
     pub name: String,
+    /// Includes the terminating NUL. A wide literal's units are little-endian
+    /// `wchar_t` values, four bytes each, including the wide NUL.
     pub bytes: Vec<u8>,
+    pub wide: bool,
 }
 
 #[derive(Debug, Clone)]

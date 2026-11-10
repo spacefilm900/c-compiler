@@ -87,12 +87,16 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
     let mut functions = Vec::new();
     let mut needs_memmove = false;
     let mut needs_va = false;
+    let mut needs_memcpy = false;
+    let mut needs_memset = false;
     for decl in &unit.decls {
         if let TopDecl::Func(func) = decl {
             if func.body.is_some() {
-                let (text, copied, va) = render_function(func);
+                let (text, copied, va, memcpy, memset) = render_function(func);
                 needs_memmove |= copied;
                 needs_va |= va;
+                needs_memcpy |= memcpy;
+                needs_memset |= memset;
                 functions.push(text);
             }
         }
@@ -108,6 +112,14 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
         // representation, padding included. An aggregate load/store is not:
         // LLVM may leave the padding `undef`.
         out.push_str("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)\n");
+        wrote_prelude = true;
+    }
+    if needs_memcpy {
+        out.push_str("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n");
+        wrote_prelude = true;
+    }
+    if needs_memset {
+        out.push_str("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
         wrote_prelude = true;
     }
     if wrote_prelude {
@@ -171,6 +183,22 @@ fn render_struct(handle: &StructRef) -> String {
 }
 
 fn render_string(literal: &StrConst) -> String {
+    if literal.wide {
+        let count = literal.bytes.len() / 4;
+        let mut parts = Vec::with_capacity(count);
+        for chunk in literal.bytes.chunks(4) {
+            let mut unit = 0u32;
+            for (index, byte) in chunk.iter().enumerate() {
+                unit |= u32::from(*byte) << (8 * index);
+            }
+            parts.push(format!("i32 {unit}"));
+        }
+        return format!(
+            "@{} = private unnamed_addr constant [{count} x i32] [{}], align 4",
+            literal.name,
+            parts.join(", ")
+        );
+    }
     let n = literal.bytes.len();
     format!(
         "@{} = private unnamed_addr constant [{n} x i8] c{}, align 1",
@@ -227,7 +255,7 @@ fn param_ir(ty: &CType, name: Option<&str>) -> String {
     }
 }
 
-fn render_function(func: &FuncDef) -> (String, bool, bool) {
+fn render_function(func: &FuncDef) -> (String, bool, bool, bool, bool) {
     let body = func.body.as_ref().expect("defined function");
     let param_tys: Vec<CType> = func.params.iter().map(|param| param.ty.clone()).collect();
     // Semantic analysis rejects a definition whose aggregate needs an SSE
@@ -283,7 +311,13 @@ fn render_function(func: &FuncDef) -> (String, bool, bool) {
         gen.emit_implicit_return();
     }
     gen.emit("}");
-    (gen.lines.join("\n"), gen.needs_memmove, gen.needs_va)
+    (
+        gen.lines.join("\n"),
+        gen.needs_memmove,
+        gen.needs_va,
+        gen.needs_memcpy,
+        gen.needs_memset,
+    )
 }
 
 fn local_slots(compound: &Compound) -> Vec<(String, CType)> {
@@ -359,6 +393,8 @@ struct Gen {
     needs_memmove: bool,
     /// The body calls `llvm.va_start`, `llvm.va_end`, or `llvm.va_copy`.
     needs_va: bool,
+    needs_memcpy: bool,
+    needs_memset: bool,
     /// Index in `lines` where the next entry-block alloca is inserted.
     alloca_at: usize,
     /// Set when the C return type is a struct or union.
@@ -380,6 +416,8 @@ impl Gen {
             ret_ty,
             needs_memmove: false,
             needs_va: false,
+            needs_memcpy: false,
+            needs_memset: false,
             alloca_at: 0,
             ret_agg,
         }
@@ -1212,7 +1250,7 @@ impl Gen {
             if from_f == to_f {
                 return value.to_string();
             }
-            let op = if matches!((from_f, to_f), (FloatKind::Float, FloatKind::Double)) {
+            let op = if float_rank(to_f) > float_rank(from_f) {
                 "fpext"
             } else {
                 "fptrunc"
@@ -1249,10 +1287,10 @@ impl Gen {
             if from_f == to_f {
                 return value.to_string();
             }
-            let op = match (from_f, to_f) {
-                (FloatKind::Float, FloatKind::Double) => "fpext",
-                (FloatKind::Double, FloatKind::Float) => "fptrunc",
-                _ => return value.to_string(),
+            let op = if float_rank(to_f) > float_rank(from_f) {
+                "fpext"
+            } else {
+                "fptrunc"
             };
             let tmp = self.fresh();
             self.emit(&format!(
@@ -2258,10 +2296,10 @@ impl Gen {
         };
         if dest.is_float() {
             let kind = dest.float_kind().expect("float");
-            let one_bits = if kind == FloatKind::Float {
-                0x3f80_0000
-            } else {
-                0x3ff0_0000_0000_0000
+            let one_bits: u128 = match kind {
+                FloatKind::Float => 0x3f80_0000,
+                FloatKind::Double => 0x3ff0_0000_0000_0000,
+                FloatKind::LongDouble => 0x3FFF_8000_0000_0000_0000,
             };
             let one = crate::float::llvm_const(kind, one_bits);
             let updated = self.fresh();
@@ -2312,7 +2350,107 @@ impl Gen {
         }
     }
 
+    /// Sign bit of a floating value, as an `int`. `long double`'s sign is
+    /// bit 79, the high bit of the exponent word stored at offset 8.
+    fn gen_signbit(&mut self, name: &str, args: &[Expr]) -> Option<String> {
+        let kind = match name {
+            "__builtin_signbitf" => FloatKind::Float,
+            "__builtin_signbit" => FloatKind::Double,
+            "__builtin_signbitl" => FloatKind::LongDouble,
+            _ => return None,
+        };
+        let arg = &args[0];
+        let raw = self.gen_val(arg);
+        let src = arg.ty().expect("typed");
+        let dest = CType::Float(kind);
+        let value = self.convert(&raw, &src, &dest);
+        let neg = match kind {
+            FloatKind::Float => {
+                let bits = self.fresh();
+                self.emit(&format!("  {bits} = bitcast float {value} to i32"));
+                let cmp = self.fresh();
+                self.emit(&format!("  {cmp} = icmp slt i32 {bits}, 0"));
+                cmp
+            }
+            FloatKind::Double => {
+                let bits = self.fresh();
+                self.emit(&format!("  {bits} = bitcast double {value} to i64"));
+                let cmp = self.fresh();
+                self.emit(&format!("  {cmp} = icmp slt i64 {bits}, 0"));
+                cmp
+            }
+            FloatKind::LongDouble => {
+                let slot = self.entry_alloca(&CType::Float(FloatKind::LongDouble));
+                self.emit(&format!("  store x86_fp80 {value}, ptr {slot}, align 16"));
+                let hi = self.fresh();
+                self.emit(&format!(
+                    "  {hi} = getelementptr inbounds i8, ptr {slot}, i64 8"
+                ));
+                let word = self.fresh();
+                self.emit(&format!("  {word} = load i16, ptr {hi}, align 2"));
+                let cmp = self.fresh();
+                self.emit(&format!("  {cmp} = icmp slt i16 {word}, 0"));
+                cmp
+            }
+        };
+        let out = self.fresh();
+        self.emit(&format!("  {out} = zext i1 {neg} to i32"));
+        Some(out)
+    }
+
+    /// `__builtin_memcpy`, `__builtin_memmove`, and `__builtin_memset`.
+    ///
+    /// The copy is `llvm.memcpy` or `llvm.memmove`. The result is the
+    /// destination pointer, as the C library functions return `s1`.
+    fn gen_memory_builtin(&mut self, name: &str, args: &[Expr]) -> Option<String> {
+        let which = match name {
+            "__builtin_memcpy" => "llvm.memcpy.p0.p0.i64",
+            "__builtin_memmove" => "llvm.memmove.p0.p0.i64",
+            "__builtin_memset" => "llvm.memset.p0.i64",
+            _ => return None,
+        };
+        let dest = self.gen_val(&args[0]);
+        let len_ty = CType::from_name(TypeName::ULong);
+        let len_src = args[2].ty().expect("typed");
+        let len_val = self.gen_val(&args[2]);
+        let len = self.convert(&len_val, &len_src, &len_ty);
+        match name {
+            "__builtin_memset" => {
+                self.needs_memset = true;
+                let src_ty = args[1].ty().expect("typed");
+                let raw = self.gen_val(&args[1]);
+                let as_int = self.convert(&raw, &src_ty, &CType::from_name(TypeName::Int));
+                let byte = self.fresh();
+                self.emit(&format!("  {byte} = trunc i32 {as_int} to i8"));
+                self.emit(&format!(
+                    "  call void @{which}(ptr align 1 {dest}, i8 {byte}, i64 {len}, i1 false)"
+                ));
+            }
+            "__builtin_memcpy" => {
+                self.needs_memcpy = true;
+                let src = self.gen_val(&args[1]);
+                self.emit(&format!(
+                    "  call void @{which}(ptr align 1 {dest}, ptr align 1 {src}, i64 {len}, i1 false)"
+                ));
+            }
+            _ => {
+                self.needs_memmove = true;
+                let src = self.gen_val(&args[1]);
+                self.emit(&format!(
+                    "  call void @{which}(ptr align 1 {dest}, ptr align 1 {src}, i64 {len}, i1 false)"
+                ));
+            }
+        }
+        Some(dest)
+    }
+
     fn gen_call(&mut self, callee: &Expr, args: &[Expr], resolved: &CallRes) -> Option<String> {
+        if let Some(lowered) = self.gen_memory_builtin(&resolved.name, args) {
+            return Some(lowered);
+        }
+        if let Some(lowered) = self.gen_signbit(&resolved.name, args) {
+            return Some(lowered);
+        }
         let sig =
             function_sig(&resolved.ret, &resolved.params).expect("call has a System V signature");
         let rendered = self.render_call_args(args, resolved, &sig, None);
@@ -2684,6 +2822,15 @@ fn va_class(ty: &CType) -> VaClass {
             },
         };
     }
+    // `long double` is an x87 value. The register save area has no x87
+    // slots, so a variadic `long double` is taken from the overflow area,
+    // 16-byte aligned.
+    if bare.float_kind() == Some(FloatKind::LongDouble) {
+        return VaClass::Mem {
+            align: 16,
+            size: 16,
+        };
+    }
     if bare.as_float().is_some() {
         return VaClass::Fp;
     }
@@ -2749,6 +2896,14 @@ fn render_byte_blob(ty: &CType, raw: &[u8]) -> String {
         format!("{{ [ {count} x {elem} ] [ {} ] }}", parts.join(", "))
     } else {
         format!("[ {} ]", parts.join(", "))
+    }
+}
+
+fn float_rank(kind: FloatKind) -> u8 {
+    match kind {
+        FloatKind::Float => 0,
+        FloatKind::Double => 1,
+        FloatKind::LongDouble => 2,
     }
 }
 

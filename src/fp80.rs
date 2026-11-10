@@ -1,0 +1,1281 @@
+//! x87 80-bit extended precision, the System V representation of `long double`.
+//!
+//! A value is 1 sign bit, 15 exponent bits with bias 16383, and a 64-bit
+//! significand with an explicit integer bit. Normals keep that bit set.
+//! Subnormals use a zero exponent field and a clear integer bit; the least
+//! subnormal is 2^-16445. Infinities use an all-ones exponent and a
+//! significand of 2^63. The low 80 bits of a `u128` hold that pattern, which
+//! is also the little-endian memory image of the first 10 bytes. LLVM spells
+//! the same bits as `0xK` followed by 20 hex digits.
+//!
+//! Decimal conversion rounds to nearest, ties to even, which is the rounding
+//! this target uses for C11 6.4.4.2. Arithmetic here is the same rounding, so
+//! a constant initializer matches a runtime `x86_fp80` operation.
+
+use crate::ast::{sign_extend, TypeName};
+
+const BIAS: i32 = 16383;
+const EMAX: i32 = 16383;
+const EMIN: i32 = -16382;
+/// Power of two of the least bit of a subnormal significand.
+const SUB_SCALE: i32 = -16445;
+const INF: u128 = 0x7FFF_8000_0000_0000_0000;
+const QNAN: u128 = 0x7FFF_C000_0000_0000_0000;
+
+pub fn parse_decimal(body: &str) -> Option<u128> {
+    let bytes = body.as_bytes();
+    let mut index = 0;
+    let mut digits = Vec::new();
+    let mut frac: i32 = 0;
+    let mut saw = false;
+    let mut dot = false;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'0'..=b'9' => {
+                digits.push(bytes[index]);
+                if dot {
+                    frac += 1;
+                }
+                saw = true;
+                index += 1;
+            }
+            b'.' if !dot => {
+                dot = true;
+                index += 1;
+            }
+            _ => break,
+        }
+    }
+    if !saw {
+        return None;
+    }
+    let mut exp: i32 = 0;
+    if index < bytes.len() && matches!(bytes[index], b'e' | b'E') {
+        index += 1;
+        let neg = if index < bytes.len() && matches!(bytes[index], b'+' | b'-') {
+            let minus = bytes[index] == b'-';
+            index += 1;
+            minus
+        } else {
+            false
+        };
+        if index >= bytes.len() || !bytes[index].is_ascii_digit() {
+            return None;
+        }
+        let mut overflow = false;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            let digit = i32::from(bytes[index] - b'0');
+            exp = match exp
+                .checked_mul(10)
+                .and_then(|value| value.checked_add(digit))
+            {
+                Some(value) => value,
+                None => {
+                    overflow = true;
+                    break;
+                }
+            };
+            index += 1;
+        }
+        if overflow {
+            while index < bytes.len() && bytes[index].is_ascii_digit() {
+                index += 1;
+            }
+            if index != bytes.len() {
+                return None;
+            }
+            // A zero significand is zero for either exponent sign. A nonzero
+            // significand overflows to +infinity, or underflows to +0 when
+            // the exponent is negative. The literal itself has no sign; unary
+            // minus is a separate operator.
+            let all_zero = digits.iter().all(|digit| *digit == b'0');
+            if all_zero || neg {
+                return Some(0);
+            }
+            return Some(INF);
+        }
+        if neg {
+            exp = -exp;
+        }
+    }
+    if index != bytes.len() {
+        return None;
+    }
+    let mut start = 0;
+    while start < digits.len() && digits[start] == b'0' {
+        start += 1;
+    }
+    if start == digits.len() {
+        return Some(0);
+    }
+    while digits.len() > start && *digits.last().unwrap() == b'0' {
+        digits.pop();
+        frac -= 1;
+    }
+    let exp10 = i64::from(exp) - i64::from(frac);
+    Some(decimal_to_bits(&digits[start..], exp10))
+}
+
+pub fn parse_hex(int_digits: &str, frac_digits: &str, bin_exp: i32) -> u128 {
+    if int_digits
+        .bytes()
+        .chain(frac_digits.bytes())
+        .all(|byte| byte == b'0')
+    {
+        return 0;
+    }
+    hex_bits(int_digits, frac_digits, bin_exp)
+}
+
+pub fn is_zero(bits: u128) -> bool {
+    bits & ((1u128 << 79) - 1) == 0
+}
+
+pub fn negate(bits: u128) -> u128 {
+    bits ^ (1u128 << 79)
+}
+
+pub fn add(left: u128, right: u128) -> u128 {
+    arith(left, right, false)
+}
+
+pub fn sub(left: u128, right: u128) -> u128 {
+    arith(left, negate(right), false)
+}
+
+pub fn mul(left: u128, right: u128) -> u128 {
+    match classify(left, right) {
+        Class::Nan => QNAN,
+        Class::InfZero => QNAN,
+        Class::Inf(sign) => signed_inf(sign),
+        Class::Zero(sign) => signed_zero(sign),
+        Class::Finite(left, right) => {
+            let sign = left.sign ^ right.sign;
+            let prod = u128::from(left.sig) * u128::from(right.sig);
+            if prod == 0 {
+                return signed_zero(sign);
+            }
+            let scale0 = left.scale + right.scale;
+            finish(sign, scale0, prod, false)
+        }
+    }
+}
+
+pub fn div(left: u128, right: u128) -> u128 {
+    if is_nan(left) || is_nan(right) {
+        return QNAN;
+    }
+    let sign = sign_of(left) ^ sign_of(right);
+    if is_inf(left) {
+        return if is_inf(right) {
+            QNAN
+        } else {
+            signed_inf(sign)
+        };
+    }
+    if is_inf(right) || (is_zero(left) && !is_zero(right)) {
+        return signed_zero(sign);
+    }
+    if is_zero(right) {
+        return if is_zero(left) {
+            QNAN
+        } else {
+            signed_inf(sign)
+        };
+    }
+    let left = decode(left);
+    let right = decode(right);
+    if right.sig == 0 {
+        return if left.sig == 0 {
+            QNAN
+        } else {
+            signed_inf(sign)
+        };
+    }
+    // Two 64-bit quotient chunks. One chunk has no guard bit when the
+    // quotient is an exact 64-bit integer, so the remainder would only be
+    // a sticky flag and ties would not round.
+    let denom = u128::from(right.sig);
+    let numer = u128::from(left.sig) << 64;
+    let q1 = numer / denom;
+    let r1 = numer % denom;
+    let q2 = (r1 << 64) / denom;
+    let sticky = (r1 << 64) % denom != 0;
+    let scale_q1 = left.scale - right.scale - 64;
+    if q1 < (1u128 << 64) {
+        let acc = (q1 << 64) | q2;
+        finish(sign, scale_q1 - 64, acc, sticky)
+    } else {
+        let lost = q2 & 1 == 1;
+        let acc = (q1 << 63) | (q2 >> 1);
+        finish(sign, scale_q1 - 63, acc, sticky || lost)
+    }
+}
+
+pub fn cmp(op: Cmp, left: u128, right: u128) -> bool {
+    if is_nan(left) || is_nan(right) {
+        return op == Cmp::Ne;
+    }
+    if is_zero(left) && is_zero(right) {
+        return matches!(op, Cmp::Eq | Cmp::Le | Cmp::Ge);
+    }
+    let sign_l = sign_of(left);
+    let sign_r = sign_of(right);
+    let order = if sign_l != sign_r {
+        if sign_l {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Greater
+        }
+    } else {
+        let mag = cmp_mag(&decode(left), &decode(right));
+        if sign_l {
+            mag.reverse()
+        } else {
+            mag
+        }
+    };
+    match op {
+        Cmp::Eq => order.is_eq(),
+        Cmp::Ne => order.is_ne(),
+        Cmp::Lt => order.is_lt(),
+        Cmp::Gt => order.is_gt(),
+        Cmp::Le => order.is_le(),
+        Cmp::Ge => order.is_ge(),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Cmp {
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+}
+
+pub fn from_int(bits: u64, src: TypeName) -> u128 {
+    let signed = src.is_signed();
+    let wide = if signed {
+        sign_extend(bits, src.width())
+    } else {
+        0
+    };
+    let mag = if signed {
+        if wide == i64::MIN {
+            1u64 << 63
+        } else if wide < 0 {
+            (-wide) as u64
+        } else {
+            wide as u64
+        }
+    } else {
+        bits & src.mask()
+    };
+    if mag == 0 {
+        return 0;
+    }
+    let sign = signed && wide < 0;
+    let msb = 63 - mag.leading_zeros();
+    let sig = mag << (63 - msb);
+    pack(sign, msb as i32, sig)
+}
+
+pub fn to_int(bits: u128, dest: TypeName) -> Option<u64> {
+    if dest == TypeName::Bool {
+        return Some(u64::from(!is_zero(bits)));
+    }
+    if is_nan(bits) || is_inf(bits) {
+        return None;
+    }
+    let part = decode(bits);
+    if part.sig == 0 {
+        return Some(0);
+    }
+    // value = sig * 2^scale, truncated toward zero.
+    let exp = part.scale + 63;
+    if exp < 0 {
+        return Some(0);
+    }
+    if exp >= 64 {
+        return None;
+    }
+    let mag = part.sig >> (63 - exp);
+    if dest.is_signed() {
+        if dest.width() >= 64 {
+            if part.sign {
+                if mag > (1u64 << 63) {
+                    return None;
+                }
+                if mag == (1u64 << 63) {
+                    return Some(i64::MIN as u64);
+                }
+                return Some((-(mag as i64)) as u64);
+            }
+            if mag >= (1u64 << 63) {
+                return None;
+            }
+            return Some(mag);
+        }
+        let limit = 1i64 << (dest.width() - 1);
+        let signed = if part.sign { -(mag as i64) } else { mag as i64 };
+        if signed < -limit || signed >= limit {
+            return None;
+        }
+        Some(signed as u64 & dest.mask())
+    } else {
+        if part.sign && mag != 0 {
+            return None;
+        }
+        if dest.width() >= 64 {
+            return Some(mag);
+        }
+        let limit = 1u64 << dest.width();
+        if mag >= limit {
+            return None;
+        }
+        Some(mag)
+    }
+}
+
+pub fn from_ieee(bits: u64, is_f32: bool) -> u128 {
+    let (sign, exp, frac, prec, bias) = if is_f32 {
+        (
+            (bits >> 31) & 1 == 1,
+            ((bits >> 23) & 0xFF) as i32,
+            bits & 0x7F_FFFF,
+            24i32,
+            127i32,
+        )
+    } else {
+        (
+            bits >> 63 == 1,
+            ((bits >> 52) & 0x7FF) as i32,
+            bits & 0x000F_FFFF_FFFF_FFFF,
+            53,
+            1023,
+        )
+    };
+    let frac_bits = prec - 1;
+    if exp == 0 {
+        if frac == 0 {
+            return signed_zero(sign);
+        }
+        let msb = 63 - frac.leading_zeros();
+        let unbiased = (1 - bias) - frac_bits + msb as i32;
+        let sig = frac << (63 - msb);
+        return pack(sign, unbiased, sig);
+    }
+    let max_exp = if is_f32 { 0xFF } else { 0x7FF };
+    if exp == max_exp {
+        if frac == 0 {
+            return signed_inf(sign);
+        }
+        return if sign { negate(QNAN) } else { QNAN };
+    }
+    let sig = (1u64 << 63) | (frac << (63 - frac_bits));
+    let unbiased = exp - bias;
+    pack(sign, unbiased, sig)
+}
+
+pub fn to_ieee(bits: u128, is_f32: bool) -> u64 {
+    let prec: i32 = if is_f32 { 24 } else { 53 };
+    let emax: i32 = if is_f32 { 127 } else { 1023 };
+    let bias = emax;
+    let sign = sign_of(bits);
+    if is_nan(bits) {
+        return if is_f32 {
+            u64::from(f32::NAN.to_bits()) | if sign { 0x8000_0000 } else { 0 }
+        } else if sign {
+            f64::from_bits(f64::NAN.to_bits() | (1u64 << 63)).to_bits()
+        } else {
+            f64::NAN.to_bits()
+        };
+    }
+    if is_inf(bits) {
+        return if is_f32 {
+            u64::from(if sign {
+                f32::NEG_INFINITY.to_bits()
+            } else {
+                f32::INFINITY.to_bits()
+            })
+        } else if sign {
+            f64::NEG_INFINITY.to_bits()
+        } else {
+            f64::INFINITY.to_bits()
+        };
+    }
+    let part = decode(bits);
+    if part.sig == 0 {
+        return if is_f32 {
+            if sign {
+                0x8000_0000
+            } else {
+                0
+            }
+        } else if sign {
+            1u64 << 63
+        } else {
+            0
+        };
+    }
+    let exp = part.scale + 63;
+    // Keep `prec` bits starting at the integer bit.
+    let drop = 64 - prec;
+    let mut mant = part.sig >> drop;
+    let round = drop > 0 && ((part.sig >> (drop - 1)) & 1) == 1;
+    let sticky = drop > 1 && part.sig & ((1u64 << (drop - 1)) - 1) != 0;
+    if round && (sticky || mant & 1 == 1) {
+        mant += 1;
+        if mant == (1u64 << prec) {
+            mant >>= 1;
+            return pack_ieee(sign, exp + 1, mant, prec, emax, bias, is_f32);
+        }
+    }
+    pack_ieee(sign, exp, mant, prec, emax, bias, is_f32)
+}
+
+fn pack_ieee(
+    sign: bool,
+    exp: i32,
+    mant: u64,
+    prec: i32,
+    emax: i32,
+    bias: i32,
+    is_f32: bool,
+) -> u64 {
+    let mut exp = exp;
+    let mut mant = mant;
+    if exp > emax {
+        return if is_f32 {
+            u64::from(if sign {
+                f32::NEG_INFINITY.to_bits()
+            } else {
+                f32::INFINITY.to_bits()
+            })
+        } else if sign {
+            f64::NEG_INFINITY.to_bits()
+        } else {
+            f64::INFINITY.to_bits()
+        };
+    }
+    let emin = 1 - bias;
+    if exp < emin {
+        let shift = emin - exp;
+        if shift > prec {
+            return if sign {
+                if is_f32 {
+                    0x8000_0000
+                } else {
+                    1u64 << 63
+                }
+            } else {
+                0
+            };
+        }
+        let round = if shift == 0 {
+            false
+        } else {
+            ((mant >> (shift - 1)) & 1) == 1
+        };
+        let sticky = shift > 1 && mant & ((1u64 << (shift - 1)) - 1) != 0;
+        mant >>= shift;
+        if round && (sticky || mant & 1 == 1) {
+            mant += 1;
+        }
+        let limit = 1u64 << (prec - 1);
+        if mant >= limit {
+            exp = emin;
+        } else {
+            return put_ieee(sign, 0, mant, is_f32);
+        }
+    }
+    let frac = mant & ((1u64 << (prec - 1)) - 1);
+    put_ieee(sign, (exp + bias) as u32, frac, is_f32)
+}
+
+fn put_ieee(sign: bool, exp: u32, frac: u64, is_f32: bool) -> u64 {
+    if is_f32 {
+        let bits = (exp << 23) | (frac as u32 & 0x007F_FFFF);
+        u64::from(if sign { bits | 0x8000_0000 } else { bits })
+    } else {
+        let bits = (u64::from(exp) << 52) | (frac & 0x000F_FFFF_FFFF_FFFF);
+        if sign {
+            bits | (1u64 << 63)
+        } else {
+            bits
+        }
+    }
+}
+
+fn arith(left: u128, right: u128, _sub: bool) -> u128 {
+    if is_nan(left) || is_nan(right) {
+        return QNAN;
+    }
+    if is_inf(left) && is_inf(right) {
+        return if sign_of(left) == sign_of(right) {
+            signed_inf(sign_of(left))
+        } else {
+            QNAN
+        };
+    }
+    if is_inf(left) {
+        return left & !((1u128 << 64) - 1) | (1u128 << 63);
+    }
+    if is_inf(right) {
+        return right & !((1u128 << 64) - 1) | (1u128 << 63);
+    }
+    if is_zero(left) && is_zero(right) {
+        return if sign_of(left) && sign_of(right) {
+            signed_zero(true)
+        } else {
+            0
+        };
+    }
+    if is_zero(left) {
+        return right;
+    }
+    if is_zero(right) {
+        return left;
+    }
+    let left_p = decode(left);
+    let right_p = decode(right);
+    if left_p.sign == right_p.sign {
+        let mag = add_mag(&left_p, &right_p);
+        return encode(left_p.sign, mag);
+    }
+    match cmp_mag(&left_p, &right_p) {
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => encode(left_p.sign, sub_mag(&left_p, &right_p)),
+        std::cmp::Ordering::Less => encode(right_p.sign, sub_mag(&right_p, &left_p)),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Parts {
+    sign: bool,
+    /// Weight of significand bit 0. `value = sig * 2^scale`.
+    scale: i32,
+    sig: u64,
+}
+
+fn decode(bits: u128) -> Parts {
+    let sign = sign_of(bits);
+    let exp = exp_field(bits);
+    let sig = sig_field(bits);
+    if exp == 0 {
+        return Parts {
+            sign,
+            scale: SUB_SCALE,
+            sig,
+        };
+    }
+    Parts {
+        sign,
+        scale: exp as i32 - BIAS - 63,
+        sig,
+    }
+}
+
+fn encode(sign: bool, part: Parts) -> u128 {
+    if part.sig == 0 {
+        return signed_zero(sign);
+    }
+    // `part` is already normalized with the integer bit at bit 63, or it is
+    // a subnormal whose scale is SUB_SCALE.
+    let exp = part.scale + 63;
+    if exp > EMAX {
+        return signed_inf(sign);
+    }
+    if exp >= EMIN {
+        return pack(sign, exp, part.sig);
+    }
+    let shift = EMIN - exp;
+    shift_subnormal(sign, part.sig, shift, false, false)
+}
+
+fn add_mag(big_in: &Parts, small_in: &Parts) -> Parts {
+    let (big, small) = if big_in.scale >= small_in.scale {
+        (big_in, small_in)
+    } else {
+        (small_in, big_in)
+    };
+    let delta = (big.scale - small.scale) as u32;
+    let mut acc = u128::from(big.sig) << 64;
+    let (addend, lost) = shr_sticky(u128::from(small.sig) << 64, delta);
+    let (sum, carry) = acc.overflowing_add(addend);
+    acc = sum;
+    if carry {
+        let round = (acc >> 64) & 1 == 1;
+        let sticky = acc & ((1u128 << 64) - 1) != 0 || lost;
+        let sig = (1u64 << 63) | ((acc >> 65) as u64);
+        return round_parts(big.scale + 1, sig, round, sticky);
+    }
+    normalize(big.scale - 64, acc, lost)
+}
+
+fn sub_mag(big: &Parts, small: &Parts) -> Parts {
+    let delta = (big.scale - small.scale) as u32;
+    let mut acc = u128::from(big.sig) << 64;
+    let (subend, lost) = shr_sticky(u128::from(small.sig) << 64, delta);
+    if lost {
+        acc = acc.wrapping_sub(subend).wrapping_sub(1);
+    } else {
+        acc -= subend;
+    }
+    normalize(big.scale - 64, acc, lost)
+}
+
+/// `scale0` is the weight of bit 0 of `acc`.
+fn normalize(scale0: i32, acc: u128, sticky_in: bool) -> Parts {
+    if acc == 0 {
+        return Parts {
+            sign: false,
+            scale: 0,
+            sig: 0,
+        };
+    }
+    let msb = 127 - acc.leading_zeros() as i32;
+    if msb >= 63 {
+        let shift = (msb - 63) as u32;
+        let sig = (acc >> shift) as u64;
+        let round = shift > 0 && ((acc >> (shift - 1)) & 1) == 1;
+        let sticky = sticky_in || (shift > 1 && acc & ((1u128 << (shift - 1)) - 1) != 0);
+        round_parts(scale0 + msb - 63, sig, round, sticky)
+    } else {
+        let sig = (acc << (63 - msb)) as u64;
+        round_parts(scale0 + msb - 63, sig, false, sticky_in)
+    }
+}
+
+fn finish(sign: bool, scale0: i32, acc: u128, sticky: bool) -> u128 {
+    let part = normalize(scale0, acc, sticky);
+    encode(sign, part)
+}
+
+fn round_parts(scale: i32, mut sig: u64, round: bool, sticky: bool) -> Parts {
+    if round && (sticky || sig & 1 == 1) {
+        sig = sig.wrapping_add(1);
+        if sig == 0 {
+            return Parts {
+                sign: false,
+                scale: scale + 1,
+                sig: 1u64 << 63,
+            };
+        }
+    }
+    Parts {
+        sign: false,
+        scale,
+        sig,
+    }
+}
+
+fn shift_subnormal(sign: bool, sig: u64, shift: i32, round: bool, sticky: bool) -> u128 {
+    if shift >= 65 {
+        return signed_zero(sign);
+    }
+    if shift == 64 {
+        let top = sig >> 63 == 1;
+        let rest = sig & !(1u64 << 63) != 0 || round || sticky;
+        return if top && rest {
+            pack_raw(sign, 0, 1)
+        } else {
+            signed_zero(sign)
+        };
+    }
+    if shift <= 0 {
+        return pack_raw(sign, 0, sig);
+    }
+    let shift = shift as u32;
+    let new_round = ((sig >> (shift - 1)) & 1) == 1;
+    let new_sticky = sticky || round || (shift > 1 && sig & ((1u64 << (shift - 1)) - 1) != 0);
+    let mut newsig = sig >> shift;
+    if new_round && (new_sticky || newsig & 1 == 1) {
+        newsig += 1;
+    }
+    if newsig == 0 {
+        return signed_zero(sign);
+    }
+    if newsig >= (1u64 << 63) {
+        return pack(sign, EMIN, 1u64 << 63);
+    }
+    pack_raw(sign, 0, newsig)
+}
+
+fn cmp_mag(left: &Parts, right: &Parts) -> std::cmp::Ordering {
+    if left.sig == 0 && right.sig == 0 {
+        return std::cmp::Ordering::Equal;
+    }
+    if left.sig == 0 {
+        return std::cmp::Ordering::Less;
+    }
+    if right.sig == 0 {
+        return std::cmp::Ordering::Greater;
+    }
+    if left.scale >= right.scale {
+        let delta = (left.scale - right.scale) as u32;
+        if delta >= 64 {
+            return std::cmp::Ordering::Greater;
+        }
+        let av = u128::from(left.sig) << delta;
+        let bv = u128::from(right.sig);
+        av.cmp(&bv)
+    } else {
+        cmp_mag(right, left).reverse()
+    }
+}
+
+fn shr_sticky(value: u128, shift: u32) -> (u128, bool) {
+    if shift == 0 {
+        return (value, false);
+    }
+    if shift >= 128 {
+        return (0, value != 0);
+    }
+    let sticky = value & ((1u128 << shift) - 1) != 0;
+    (value >> shift, sticky)
+}
+
+enum Class {
+    Nan,
+    InfZero,
+    Inf(bool),
+    Zero(bool),
+    Finite(Parts, Parts),
+}
+
+fn classify(left: u128, right: u128) -> Class {
+    if is_nan(left) || is_nan(right) {
+        return Class::Nan;
+    }
+    let left_inf = is_inf(left);
+    let right_inf = is_inf(right);
+    let left_zero = is_zero(left);
+    let right_zero = is_zero(right);
+    let sign = sign_of(left) ^ sign_of(right);
+    if (left_inf && right_zero) || (right_inf && left_zero) {
+        return Class::InfZero;
+    }
+    if left_inf || right_inf {
+        return Class::Inf(sign);
+    }
+    if left_zero || right_zero {
+        return Class::Zero(sign);
+    }
+    Class::Finite(decode(left), decode(right))
+}
+
+fn decimal_to_bits(digits: &[u8], exp10: i64) -> u128 {
+    if exp10 > 20_000 {
+        return INF;
+    }
+    if exp10 < -20_000 {
+        return 0;
+    }
+    let mant = Big::from_digits(digits);
+    if mant.is_zero() {
+        return 0;
+    }
+    if exp10 >= 0 {
+        let num = mant.mul(&Big::pow5(exp10 as u32));
+        let bitlen = num.bit_length();
+        if bitlen == 0 {
+            return 0;
+        }
+        let (sig, round, sticky) = num.top_bits(bitlen);
+        let scale = (bitlen as i32 - 1) + exp10 as i32 - 63;
+        return encode(false, round_parts(scale, sig, round, sticky));
+    }
+    let k = (-exp10) as u32;
+    let den = Big::pow5(k);
+    let den_bits = den.bit_length().max(1);
+    let num_bits = mant.bit_length().max(1);
+    // Enough quotient bits for a 64-bit significand plus a guard. A huge
+    // mantissa already supplies them, so the shift stays non-negative.
+    let extra = (den_bits as i32 + 96 - num_bits as i32).max(0) as u32;
+    let shifted = mant.shl(extra);
+    let (quot, rem) = shifted.div_rem(&den);
+    let bitlen = quot.bit_length();
+    if bitlen == 0 {
+        return 0;
+    }
+    let (sig, round, mut sticky) = quot.top_bits(bitlen);
+    if !rem.is_zero() {
+        sticky = true;
+    }
+    // quot ≈ mant / 5^k * 2^extra, and the value is that times 2^(-k).
+    let scale = (bitlen as i32 - 1) - (extra as i32 + k as i32) - 63;
+    encode(false, round_parts(scale, sig, round, sticky))
+}
+
+fn hex_bits(int_digits: &str, frac_digits: &str, bin_exp: i32) -> u128 {
+    const PREC: i32 = 64;
+    let mut sig: u128 = 0;
+    let mut exp_lsb: i64 = i64::from(bin_exp) - 4 * frac_digits.len() as i64;
+    let mut sticky = false;
+    for byte in int_digits.bytes().chain(frac_digits.bytes()) {
+        let digit = match byte {
+            b'0'..=b'9' => u128::from(byte - b'0'),
+            b'a'..=b'f' => u128::from(byte - b'a') + 10,
+            b'A'..=b'F' => u128::from(byte - b'A') + 10,
+            _ => 0,
+        };
+        if sig > (u128::MAX >> 4) {
+            if sig & 0xF != 0 {
+                sticky = true;
+            }
+            sig >>= 4;
+            exp_lsb += 4;
+        }
+        sig = (sig << 4) | digit;
+    }
+    if sig == 0 {
+        return 0;
+    }
+    let msb = 127 - sig.leading_zeros() as i64;
+    let unbiased = exp_lsb + msb;
+    if unbiased > i64::from(EMAX) {
+        return INF;
+    }
+    if unbiased < i64::from(EMIN) {
+        return hex_subnormal(sig, exp_lsb, sticky);
+    }
+    let shift = msb - i64::from(PREC - 1);
+    let (mant, round, more) = split_sig(sig, shift, sticky);
+    let mut mant = mant;
+    let mut exp = unbiased;
+    if round && (more || mant & 1 == 1) {
+        mant = mant.wrapping_add(1);
+        if mant == 0 {
+            mant = 1u64 << 63;
+            exp += 1;
+        }
+    }
+    if exp > i64::from(EMAX) {
+        return INF;
+    }
+    pack(false, exp as i32, mant)
+}
+
+fn hex_subnormal(sig: u128, exp_lsb: i64, sticky: bool) -> u128 {
+    let lsb_exp = i64::from(EMIN) - 63;
+    let shift = lsb_exp - exp_lsb;
+    let (mant, round, more) = if shift <= 0 {
+        let shifted = sig << ((-shift) as u32);
+        (shifted as u64, false, sticky)
+    } else {
+        split_sig(sig, shift, sticky)
+    };
+    let mut mant = mant;
+    if round && (more || mant & 1 == 1) {
+        mant = mant.wrapping_add(1);
+    }
+    if mant >= (1u64 << 63) {
+        return pack(false, EMIN, 1u64 << 63);
+    }
+    pack_raw(false, 0, mant)
+}
+
+fn split_sig(sig: u128, shift: i64, sticky: bool) -> (u64, bool, bool) {
+    if shift <= 0 {
+        let mag = if shift == 0 {
+            sig
+        } else {
+            sig << ((-shift) as u32)
+        };
+        return (mag as u64, false, sticky);
+    }
+    if shift >= 128 {
+        return (0, false, sticky || sig != 0);
+    }
+    let shift = shift as u32;
+    let mag = (sig >> shift) as u64;
+    let round = ((sig >> (shift - 1)) & 1) == 1;
+    let rest = shift > 1 && sig & ((1u128 << (shift - 1)) - 1) != 0;
+    (mag, round, sticky || rest)
+}
+
+fn sign_of(bits: u128) -> bool {
+    (bits >> 79) & 1 == 1
+}
+
+fn exp_field(bits: u128) -> u32 {
+    ((bits >> 64) & 0x7FFF) as u32
+}
+
+fn sig_field(bits: u128) -> u64 {
+    bits as u64
+}
+
+fn is_nan(bits: u128) -> bool {
+    exp_field(bits) == 0x7FFF && sig_field(bits) != (1u64 << 63)
+}
+
+fn is_inf(bits: u128) -> bool {
+    exp_field(bits) == 0x7FFF && sig_field(bits) == (1u64 << 63)
+}
+
+fn signed_inf(sign: bool) -> u128 {
+    if sign {
+        negate(INF)
+    } else {
+        INF
+    }
+}
+
+fn signed_zero(sign: bool) -> u128 {
+    if sign {
+        1u128 << 79
+    } else {
+        0
+    }
+}
+
+fn pack(sign: bool, unbiased: i32, sig: u64) -> u128 {
+    if unbiased > EMAX {
+        return signed_inf(sign);
+    }
+    if unbiased < EMIN {
+        let shift = EMIN - unbiased;
+        return shift_subnormal(sign, sig, shift, false, false);
+    }
+    pack_raw(sign, (unbiased + BIAS) as u32, sig)
+}
+
+fn pack_raw(sign: bool, exp: u32, sig: u64) -> u128 {
+    let mut bits = u128::from(sig) | (u128::from(exp & 0x7FFF) << 64);
+    if sign {
+        bits |= 1u128 << 79;
+    }
+    bits
+}
+
+/// Little-endian base-2^32 integer. No trailing zero limb.
+#[derive(Clone)]
+struct Big {
+    d: Vec<u32>,
+}
+
+impl Big {
+    fn from_digits(digits: &[u8]) -> Self {
+        let mut value = Big { d: Vec::new() };
+        for digit in digits {
+            value = value.mul_small(10).add_small(u32::from(digit - b'0'));
+        }
+        value
+    }
+
+    fn is_zero(&self) -> bool {
+        self.d.is_empty()
+    }
+
+    fn pow5(mut exp: u32) -> Self {
+        let mut result = Big { d: vec![1] };
+        let mut base = Big { d: vec![5] };
+        while exp > 0 {
+            if exp & 1 == 1 {
+                result = result.mul(&base);
+            }
+            exp >>= 1;
+            if exp > 0 {
+                base = base.mul(&base);
+            }
+        }
+        result
+    }
+
+    fn bit_length(&self) -> u32 {
+        let Some(top) = self.d.last() else {
+            return 0;
+        };
+        (self.d.len() as u32 - 1) * 32 + (32 - top.leading_zeros())
+    }
+
+    fn mul_small(&self, factor: u32) -> Self {
+        if factor == 0 || self.is_zero() {
+            return Big { d: Vec::new() };
+        }
+        let mut d = Vec::with_capacity(self.d.len() + 1);
+        let mut carry = 0u64;
+        for limb in &self.d {
+            let prod = u64::from(*limb) * u64::from(factor) + carry;
+            d.push(prod as u32);
+            carry = prod >> 32;
+        }
+        if carry != 0 {
+            d.push(carry as u32);
+        }
+        Big { d }
+    }
+
+    fn add_small(&self, add: u32) -> Self {
+        if add == 0 {
+            return self.clone();
+        }
+        let mut d = self.d.clone();
+        if d.is_empty() {
+            d.push(add);
+            return Big { d };
+        }
+        let mut carry = u64::from(add);
+        for limb in &mut d {
+            let sum = u64::from(*limb) + carry;
+            *limb = sum as u32;
+            carry = sum >> 32;
+            if carry == 0 {
+                return Big { d };
+            }
+        }
+        if carry != 0 {
+            d.push(carry as u32);
+        }
+        Big { d }
+    }
+
+    fn mul(&self, other: &Self) -> Self {
+        if self.is_zero() || other.is_zero() {
+            return Big { d: Vec::new() };
+        }
+        let mut d = vec![0u32; self.d.len() + other.d.len()];
+        for (i, &left) in self.d.iter().enumerate() {
+            let mut carry = 0u64;
+            for (j, &right) in other.d.iter().enumerate() {
+                let prod = u64::from(left) * u64::from(right) + u64::from(d[i + j]) + carry;
+                d[i + j] = prod as u32;
+                carry = prod >> 32;
+            }
+            let mut k = i + other.d.len();
+            while carry != 0 {
+                let sum = u64::from(d[k]) + carry;
+                d[k] = sum as u32;
+                carry = sum >> 32;
+                k += 1;
+            }
+        }
+        while d.last() == Some(&0) {
+            d.pop();
+        }
+        Big { d }
+    }
+
+    fn shl(&self, bits: u32) -> Self {
+        if self.is_zero() || bits == 0 {
+            return self.clone();
+        }
+        let limbs = (bits / 32) as usize;
+        let rem = bits % 32;
+        let mut d = vec![0u32; limbs];
+        if rem == 0 {
+            d.extend_from_slice(&self.d);
+            return Big { d };
+        }
+        let mut carry = 0u32;
+        for limb in &self.d {
+            d.push((limb << rem) | carry);
+            carry = limb >> (32 - rem);
+        }
+        if carry != 0 {
+            d.push(carry);
+        }
+        Big { d }
+    }
+
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.d.len().cmp(&other.d.len()) {
+            std::cmp::Ordering::Equal => {}
+            order => return order,
+        }
+        for (left, right) in self.d.iter().rev().zip(other.d.iter().rev()) {
+            match left.cmp(right) {
+                std::cmp::Ordering::Equal => {}
+                order => return order,
+            }
+        }
+        std::cmp::Ordering::Equal
+    }
+
+    fn sub(&self, other: &Self) -> Self {
+        let mut d = self.d.clone();
+        let mut borrow = 0i64;
+        for (i, limb) in d.iter_mut().enumerate() {
+            let right = i64::from(*other.d.get(i).unwrap_or(&0));
+            let cur = i64::from(*limb) - right - borrow;
+            if cur < 0 {
+                *limb = (cur + (1i64 << 32)) as u32;
+                borrow = 1;
+            } else {
+                *limb = cur as u32;
+                borrow = 0;
+            }
+        }
+        while d.last() == Some(&0) {
+            d.pop();
+        }
+        Big { d }
+    }
+
+    fn div_rem(&self, den: &Self) -> (Self, Self) {
+        if self.cmp(den) == std::cmp::Ordering::Less {
+            return (Big { d: Vec::new() }, self.clone());
+        }
+        let shift = self.bit_length() - den.bit_length();
+        let mut den_shift = den.shl(shift);
+        let mut quot = Big { d: Vec::new() };
+        let mut rem = self.clone();
+        for i in (0..=shift).rev() {
+            if rem.cmp(&den_shift) != std::cmp::Ordering::Less {
+                rem = rem.sub(&den_shift);
+                quot.set_bit(i);
+            }
+            if i > 0 {
+                den_shift = den_shift.shr1();
+            }
+        }
+        (quot, rem)
+    }
+
+    fn shr1(&self) -> Self {
+        if self.is_zero() {
+            return Big { d: Vec::new() };
+        }
+        let mut d = Vec::with_capacity(self.d.len());
+        let mut carry = 0u32;
+        for limb in self.d.iter().rev() {
+            let next = (limb >> 1) | carry;
+            carry = (limb & 1) << 31;
+            d.push(next);
+        }
+        d.reverse();
+        while d.last() == Some(&0) {
+            d.pop();
+        }
+        Big { d }
+    }
+
+    fn set_bit(&mut self, bit: u32) {
+        let limb = (bit / 32) as usize;
+        if self.d.len() <= limb {
+            self.d.resize(limb + 1, 0);
+        }
+        self.d[limb] |= 1u32 << (bit % 32);
+    }
+
+    /// Top 64 bits, plus the following round bit and any lower sticky bit.
+    fn top_bits(&self, bitlen: u32) -> (u64, bool, bool) {
+        if bitlen <= 64 {
+            let sig = self.low_u64() << (64 - bitlen);
+            return (sig, false, false);
+        }
+        let drop = bitlen - 64;
+        let sig = self.bits_at(drop, 64);
+        let round = self.bit(drop - 1);
+        let sticky = drop > 1 && self.any_below(drop - 1);
+        (sig, round, sticky)
+    }
+
+    fn low_u64(&self) -> u64 {
+        let lo = u64::from(*self.d.first().unwrap_or(&0));
+        let hi = u64::from(*self.d.get(1).unwrap_or(&0));
+        lo | (hi << 32)
+    }
+
+    fn bit(&self, index: u32) -> bool {
+        let limb = (index / 32) as usize;
+        self.d
+            .get(limb)
+            .is_some_and(|word| word & (1u32 << (index % 32)) != 0)
+    }
+
+    fn any_below(&self, index: u32) -> bool {
+        let limb = (index / 32) as usize;
+        if self.d.iter().take(limb).any(|word| *word != 0) {
+            return true;
+        }
+        let mask = (1u32 << (index % 32)) - 1;
+        self.d.get(limb).is_some_and(|word| word & mask != 0)
+    }
+
+    fn bits_at(&self, start: u32, width: u32) -> u64 {
+        let mut out = 0u64;
+        for i in 0..width {
+            if self.bit(start + i) {
+                out |= 1u64 << i;
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dec(text: &str) -> u128 {
+        parse_decimal(text).unwrap()
+    }
+
+    #[test]
+    fn known_constants_match_x87_rounding() {
+        assert_eq!(dec("1.0"), 0x3FFF_8000_0000_0000_0000);
+        assert_eq!(dec("2.0"), 0x4000_8000_0000_0000_0000);
+        assert_eq!(dec("0.5"), 0x3FFE_8000_0000_0000_0000);
+        assert_eq!(dec("0.1"), 0x3FFB_CCCC_CCCC_CCCC_CCCD);
+        assert_eq!(dec("10"), 0x4002_A000_0000_0000_0000);
+        assert_eq!(dec("3.14159265358979323846"), 0x4000_C90F_DAA2_2168_C235);
+        assert_eq!(
+            dec("1.18973149535723176502e+4932"),
+            0x7FFE_FFFF_FFFF_FFFF_FFFF
+        );
+        assert_eq!(
+            dec("3.36210314311209350626e-4932"),
+            0x0001_8000_0000_0000_0000
+        );
+        assert_eq!(
+            dec("1.08420217248550443401e-19"),
+            0x3FC0_8000_0000_0000_0000
+        );
+        assert_eq!(dec("3.64519953188247460253e-4951"), 1);
+        assert_eq!(dec("1e4932"), 0x7FFE_D72C_B2A9_5C7E_F6CD);
+        assert_eq!(dec("1e-4951"), 0);
+        assert_eq!(dec("0e99999999999"), 0);
+        assert_eq!(dec("0.0e2147483648"), 0);
+        assert_eq!(dec("0e-99999999999"), 0);
+        assert!(is_inf(dec("1e99999999999")));
+        assert_eq!(parse_hex("1", "8", 1), 0x4000_C000_0000_0000_0000);
+        assert_eq!(parse_hex("1", "", 0), 0x3FFF_8000_0000_0000_0000);
+    }
+
+    #[test]
+    fn arithmetic_matches_extended_rounding() {
+        let one = dec("1.0");
+        let two = dec("2.0");
+        let three = parse_hex("1", "8", 1);
+        assert_eq!(add(one, one), two);
+        assert_eq!(add(one, two), three);
+        assert_eq!(sub(two, one), one);
+        assert_eq!(mul(two, two), dec("4.0"));
+        assert_eq!(div(dec("10"), two), dec("5"));
+        assert_eq!(add(one, negate(one)), 0);
+        assert!(is_inf(div(one, 0)));
+        assert!(is_nan(div(0, 0)));
+        assert_eq!(add(dec("0.1"), dec("0.2")), 0x3FFD_9999_9999_9999_999A);
+        assert_eq!(sub(one, dec("0.1")), 0x3FFE_E666_6666_6666_6666);
+        assert_eq!(mul(dec("0.1"), dec("10")), one);
+        assert_eq!(div(one, dec("3")), 0x3FFD_AAAA_AAAA_AAAA_AAAB);
+        assert_eq!(add(dec("1e20"), one), 0x4041_AD78_EBC5_AC62_0000);
+        assert_eq!(add(one, dec("1e-20")), one);
+        assert_eq!(negate(dec("0.1")), 0xBFFB_CCCC_CCCC_CCCC_CCCD);
+        assert_eq!(mul(dec("3.64519953188247460253e-4951"), dec("3")), 3);
+        assert!(is_inf(add(
+            dec("1.18973149535723176502e+4932"),
+            dec("1.18973149535723176502e+4932")
+        )));
+        assert_eq!(
+            sub(mul(dec("2.5"), dec("4")), dec("0.5")),
+            0x4002_9800_0000_0000_0000
+        );
+        assert_eq!(negate(0), 0x8000_0000_0000_0000_0000);
+    }
+}

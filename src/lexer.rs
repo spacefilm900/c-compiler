@@ -103,6 +103,7 @@ impl Lexer<'_> {
             column: self.column,
             filename: self.filename.to_string(),
             value: None,
+            float_hi: 0,
             int_ty: None,
             float_kind: None,
             bytes: None,
@@ -144,6 +145,7 @@ impl Lexer<'_> {
             column,
             filename: self.filename.to_string(),
             value: None,
+            float_hi: 0,
             int_ty: None,
             float_kind: None,
             bytes: None,
@@ -205,14 +207,20 @@ impl Lexer<'_> {
             self.bump();
         }
         let spelling = &self.source[start..self.index];
-        // `L"..."`, `u"..."`, `U"..."`, and `u8"..."` are encoding prefixes
-        // (C11 6.4.5). This subset has only ordinary string and character
-        // literals, so a prefix glued to a quote is a diagnostic.
-        if matches!(spelling, "L" | "u" | "U" | "u8") && matches!(self.peek(), Some(b'"' | b'\'')) {
+        // `L'...'` and `L"..."` are wide literals (C11 6.4.4.4, 6.4.5).
+        // `wchar_t` is `int` on this target. `u`, `U`, and `u8` prefixes
+        // are not implemented.
+        if spelling == "L" && self.peek() == Some(b'\'') {
+            return self.wide_char(start, line, column);
+        }
+        if spelling == "L" && self.peek() == Some(b'"') {
+            return self.wide_string(start, line, column);
+        }
+        if matches!(spelling, "u" | "U" | "u8") && matches!(self.peek(), Some(b'"' | b'\'')) {
             return self.fail(
                 line,
                 column,
-                "wide string and character literals are not supported",
+                "unicode string and character literals are not supported",
             );
         }
         let kind = keyword(spelling).unwrap_or(TokenKind::Ident);
@@ -324,22 +332,14 @@ impl Lexer<'_> {
         }
         let kind = self.float_suffix(line, column)?;
         let spelling = self.source[start..self.index].to_string();
-        // A `long double` constant is recognized so `<float.h>` can define
-        // `LDBL_*`. The value is not computed; semantic analysis rejects a
-        // use. The stored bits are unused.
-        let bits = if kind == FloatKind::LongDouble {
-            0
+        let body_len = if kind == FloatKind::Double {
+            spelling.len()
         } else {
-            let body_len = if kind == FloatKind::Float {
-                spelling.len() - 1
-            } else {
-                spelling.len()
-            };
-            let body = &spelling[..body_len];
-            let Some(bits) = parse_decimal(body, kind) else {
-                return self.fail(line, column, "invalid floating constant");
-            };
-            bits
+            spelling.len() - 1
+        };
+        let body = &spelling[..body_len];
+        let Some(bits) = parse_decimal(body, kind) else {
+            return self.fail(line, column, "invalid floating constant");
         };
         self.push_float(&spelling, bits, kind, line, column);
         Ok(())
@@ -406,7 +406,13 @@ impl Lexer<'_> {
             match parse_exponent(&exp_digits, neg) {
                 Ok(exp) => parse_hex(&int_digits, &frac_digits, exp, kind).unwrap_or(0),
                 Err(true) => 0,
-                Err(false) => inf_bits(kind == FloatKind::Float),
+                Err(false) => {
+                    if kind == FloatKind::LongDouble {
+                        0x7FFF_8000_0000_0000_0000
+                    } else {
+                        u128::from(inf_bits(kind == FloatKind::Float))
+                    }
+                }
             }
         };
         self.push_float(&spelling, bits, kind, line, column);
@@ -414,8 +420,7 @@ impl Lexer<'_> {
     }
 
     /// `f`/`F` selects `float`. No suffix selects `double`. `l`/`L` selects
-    /// `long double`. The constant is lexed so a header can name it; an
-    /// expression that produces a `long double` is still rejected later.
+    /// `long double`, the 80-bit extended format.
     fn float_suffix(&mut self, line: usize, column: usize) -> Result<FloatKind, Diagnostic> {
         match self.peek() {
             Some(b'f' | b'F') => {
@@ -445,7 +450,7 @@ impl Lexer<'_> {
     fn push_float(
         &mut self,
         spelling: &str,
-        bits: u64,
+        bits: u128,
         kind: FloatKind,
         line: usize,
         column: usize,
@@ -456,7 +461,8 @@ impl Lexer<'_> {
             line,
             column,
             filename: self.filename.to_string(),
-            value: Some(bits),
+            value: Some(bits as u64),
+            float_hi: (bits >> 64) as u16,
             int_ty: None,
             float_kind: Some(kind),
             bytes: None,
@@ -563,6 +569,7 @@ impl Lexer<'_> {
             column,
             filename: self.filename.to_string(),
             value: Some(bits),
+            float_hi: 0,
             int_ty: Some(ty),
             float_kind: None,
             bytes: None,
@@ -605,11 +612,177 @@ impl Lexer<'_> {
             column,
             filename: self.filename.to_string(),
             value: None,
+            float_hi: 0,
             int_ty: None,
             float_kind: None,
             bytes: Some(bytes),
         });
         Ok(())
+    }
+
+    /// `L'...'` has type `wchar_t`, which is `int` here. A source character in
+    /// the basic set keeps its code. A hex or octal escape may use the full
+    /// range of `unsigned int`; the result is that value converted to `int`.
+    fn wide_char(&mut self, start: usize, line: usize, column: usize) -> Result<(), Diagnostic> {
+        self.bump();
+        if matches!(self.peek(), None | Some(b'\n' | b'\r')) {
+            return self.fail(line, column, "unterminated character constant");
+        }
+        if self.peek() == Some(b'\'') {
+            return self.fail(line, column, "empty character constant");
+        }
+        let value = self.read_wide_unit(line, column, false)?;
+        if self.peek() != Some(b'\'') {
+            if matches!(self.peek(), None | Some(b'\n' | b'\r')) {
+                return self.fail(line, column, "unterminated character constant");
+            }
+            return self.fail(
+                line,
+                column,
+                "multi-character character constants are not supported",
+            );
+        }
+        self.bump();
+        let spelling = self.source[start..self.index].to_string();
+        self.push_int(&spelling, u64::from(value), TypeName::Int, line, column);
+        Ok(())
+    }
+
+    /// `L"..."` is `wchar_t[N]`. Each code unit is stored little-endian, and
+    /// the token does not include the terminating wide NUL.
+    fn wide_string(&mut self, start: usize, line: usize, column: usize) -> Result<(), Diagnostic> {
+        self.bump();
+        let mut bytes = Vec::new();
+        loop {
+            match self.peek() {
+                None | Some(b'\n' | b'\r') => {
+                    return self.fail(line, column, "unterminated string literal");
+                }
+                Some(b'"') => {
+                    self.bump();
+                    break;
+                }
+                _ => {
+                    let unit = self.read_wide_unit(line, column, true)?;
+                    bytes.extend_from_slice(&unit.to_le_bytes());
+                }
+            }
+        }
+        let spelling = self.source[start..self.index].to_string();
+        self.tokens.push(Token {
+            kind: TokenKind::String,
+            spelling,
+            line,
+            column,
+            filename: self.filename.to_string(),
+            value: None,
+            float_hi: 0,
+            int_ty: None,
+            float_kind: None,
+            bytes: Some(bytes),
+        });
+        Ok(())
+    }
+
+    /// One wide character or escape, as a `wchar_t` code unit.
+    fn read_wide_unit(
+        &mut self,
+        line: usize,
+        column: usize,
+        string: bool,
+    ) -> Result<u32, Diagnostic> {
+        let unterminated = if string {
+            "unterminated string literal"
+        } else {
+            "unterminated character constant"
+        };
+        let Some(byte) = self.peek() else {
+            return self.fail(line, column, unterminated);
+        };
+        if byte >= 128 {
+            return self.fail(
+                self.line,
+                self.column,
+                "non-ASCII characters are not supported",
+            );
+        }
+        if byte != b'\\' {
+            self.bump();
+            return Ok(u32::from(byte));
+        }
+        let esc_line = self.line;
+        let esc_column = self.column;
+        self.bump();
+        let Some(next) = self.peek() else {
+            return self.fail(line, column, unterminated);
+        };
+        if next == b'\n' || next == b'\r' {
+            return self.fail(
+                esc_line,
+                esc_column,
+                "backslash line splicing is not supported",
+            );
+        }
+        self.bump();
+        match next {
+            b'a' => Ok(7),
+            b'b' => Ok(8),
+            b'f' => Ok(12),
+            b'n' => Ok(10),
+            b'r' => Ok(13),
+            b't' => Ok(9),
+            b'v' => Ok(11),
+            b'\\' => Ok(u32::from(b'\\')),
+            b'\'' => Ok(u32::from(b'\'')),
+            b'"' => Ok(u32::from(b'"')),
+            b'?' => Ok(u32::from(b'?')),
+            b'0'..=b'7' => self.wide_octal(next),
+            b'x' => self.wide_hex(esc_line, esc_column),
+            _ => self.fail(esc_line, esc_column, "unknown escape sequence"),
+        }
+    }
+
+    /// An octal escape is at most three digits. The value must fit in
+    /// `unsigned int`, the unsigned type corresponding to `wchar_t`.
+    fn wide_octal(&mut self, first: u8) -> Result<u32, Diagnostic> {
+        let mut value = u32::from(first - b'0');
+        for _ in 0..2 {
+            match self.peek() {
+                Some(byte @ b'0'..=b'7') => {
+                    self.bump();
+                    value = value * 8 + u32::from(byte - b'0');
+                }
+                _ => break,
+            }
+        }
+        Ok(value)
+    }
+
+    fn wide_hex(&mut self, line: usize, column: usize) -> Result<u32, Diagnostic> {
+        let mut value: u32 = 0;
+        let mut digits = 0u32;
+        while let Some(byte) = self.peek() {
+            let digit = match byte {
+                b'0'..=b'9' => u32::from(byte - b'0'),
+                b'a'..=b'f' => u32::from(byte - b'a') + 10,
+                b'A'..=b'F' => u32::from(byte - b'A') + 10,
+                _ => break,
+            };
+            let Some(next) = value.checked_mul(16).and_then(|v| v.checked_add(digit)) else {
+                self.bump();
+                while self.peek().is_some_and(|b| b.is_ascii_hexdigit()) {
+                    self.bump();
+                }
+                return self.fail(line, column, "hex escape sequence out of range");
+            };
+            self.bump();
+            value = next;
+            digits += 1;
+        }
+        if digits == 0 {
+            return self.fail(line, column, "invalid hexadecimal escape");
+        }
+        Ok(value)
     }
 
     /// An integer character constant has type `int` (C11 6.4.4.4).
@@ -1106,9 +1279,10 @@ mod tests {
     #[test]
     fn rejects_literals_and_raw_hash() {
         assert!(err("\"hi").contains("unterminated string literal"));
-        assert!(err("L\"hi\"").contains("wide string and character literals"));
-        assert!(err("u8\"hi\"").contains("wide string and character literals"));
-        assert!(err("L'a'").contains("wide string and character literals"));
+        assert_eq!(tokens("L\"hi\"")[0].kind, TokenKind::String);
+        assert!(err("u8\"hi\"").contains("unicode string and character literals"));
+        assert_eq!(tokens("L'a'")[0].value, Some(u64::from(b'a')));
+        assert_eq!(tokens("L'\\0'")[0].value, Some(0));
         assert_eq!(
             tokens("1.0L")[0].float_kind,
             Some(crate::ast::FloatKind::LongDouble)

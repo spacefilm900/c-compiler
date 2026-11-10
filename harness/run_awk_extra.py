@@ -5,17 +5,22 @@ The suites are private and are fetched by scripts/fetch_awk_posix_challenge.sh
 and scripts/fetch_awk_volume.sh. They are not vendored, and cases/ is not
 modified. Results are written under tests/external/awk-results/ (gitignored).
 
-1. Independent POSIX AWK Challenge, tag v0.6. Portable, observational,
-   and nonportable are reported separately. The runner's default gate is
-   the portable class. One True AWK is known to fail portable cases
-   AWK-391, AWK-392, and AWK-399. A compiler bug is a case whose status
-   (or failure output) differs between the two binaries.
+1. Independent POSIX AWK Challenge, annotated tag v0.6. The pin is the
+   commit that tag points at (HEAD after checkout), not the tag object.
+   Portable, observational, and nonportable are reported separately. The
+   runner's default gate is the portable class. One True AWK is known to
+   fail portable cases AWK-391, AWK-392, and AWK-399, so that gate may
+   exit nonzero. This harness still compares the two JSON files. A
+   compiler bug is a case whose status (or failure output) differs
+   between the two binaries.
 
 2. Shakespeare volume test. One portable program, two inputs. Stdout must
    match the pinned expected files. Wall time is printed.
 
 Set AWK_EXTRA_ALLOW_MISSING=1 to exit 0 when the private clones are
-absent (the CI default). Without it, a missing clone is an error.
+absent. CI does not set that when AWK_SUITE_READ_TOKEN is present; a
+missing clone is then an error. CI does not run this harness at all
+when that secret is unset.
 
 AWK_EXTRA_HOOK, if set, is a command run after the two suites with
 AWK_CLANG and AWK_CCOMP in the environment. It is the extension point
@@ -47,7 +52,8 @@ VOLUME = Path(
     )
 )
 RESULTS = ROOT / "tests" / "external" / "awk-results"
-PIN_POSIX = "69b1f5895022956c5ebfc0d6d58fd45636b6dfaa"
+# Commit of annotated tag v0.6. The tag object is 69b1f589… and is not HEAD.
+PIN_POSIX = "b46ea063c6d25372b6a2010ac537ca19a8fd1b1e"
 PIN_VOLUME = "46701e477fe48a7e0592b8022c77ac29c4114582"
 RECORDED = "results/grok-v0.6-final-2026-11-08/onetrue.json"
 
@@ -57,12 +63,11 @@ def allow_missing() -> bool:
 
 
 def missing(what: str) -> int:
-    print(
-        f"SKIP: {what} is not available. "
-        "The default Actions GITHUB_TOKEN for spacefilm900/c-compiler "
-        "often cannot clone other private repositories."
-    )
-    return 0 if allow_missing() else 1
+    if allow_missing():
+        print(f"SKIP: {what} is not available.")
+        return 0
+    print(f"{what} is not available.")
+    return 1
 
 
 def head(path: Path) -> str:
