@@ -32,7 +32,7 @@ Integer types are LP64. `char` is signed. `char` / `signed char` / `unsigned cha
 
 Approved by the owner on 2026-11-09 (pull request 4).
 
-The module sets `target datalayout` to the System V AMD64 layout for this triple (`src/irgen.rs`), so `i64` stays 8-byte aligned. A `char` or `short` parameter or return value is extended to 32 bits: `signext` for signed types, `zeroext` for unsigned types and `_Bool`. `int` and wider integers have no extension attribute. The attribute is written on the definition, the declaration, and the call (`TypeName::abi_attr` in `src/ast.rs`).
+The module sets `target datalayout` to the System V AMD64 layout for this triple (`src/irgen.rs`), so `i64` stays 8-byte aligned. A narrow integer parameter or return keeps that width and carries an LLVM attribute. `char`, `signed char`, and `short` use `signext`. `unsigned char`, `unsigned short`, and `_Bool` use `zeroext`. `int` and wider integers have no extension attribute. The attribute is written on the `define`, the `declare`, and the `call` (`TypeName::abi_attr` in `src/ast.rs`). The `ret` instruction and the call result use the narrow type. This compiler does not emit a separate extend to 32 bits, and it does not define the excess bits of a narrow return.
 
 Struct and union layout follows the same ABI. Each struct member is aligned to its alignment, the struct alignment is the strictest member alignment, and the size is rounded up to that alignment. An array member uses the element alignment. A local or global array of 16 bytes or more has alignment at least 16; a member does not. Union members start at offset 0, and the size is the largest member rounded up to the strictest alignment. Whole-struct and whole-union assignment is `llvm.memmove` of the object size, so the copy includes padding.
 
@@ -40,11 +40,13 @@ The data layout and the struct layout were approved by the owner on 2026-11-09 (
 
 ## Aggregate classification
 
-`src/abi.rs` is not on `main`. The System V classification of aggregates into integer and SSE eightbytes is not implemented.
+`src/abi.rs` classifies a struct or union passed or returned by value. The rules are System V AMD64 psABI section 3.2.3. The aggregate is split into eightbyte chunks. Each eightbyte is INTEGER, SSE, x87, or MEMORY. INTEGER wins when it shares an eightbyte with SSE, so `struct { int i; float f; }` is one `i64` even though floating expressions are still rejected. A pure SSE eightbyte is a diagnostic. An x87 return is a diagnostic, because this compiler does not return a value in `%st0`. An x87 argument is passed in memory. An `X87UP` eightbyte that does not follow `X87` is memory. More than 16 bytes is memory for every aggregate this subset can form. A field that is not naturally aligned is memory.
 
-A definition that returns a struct or union by value is rejected. A call that passes or returns a struct or union by value is rejected. A prototype may still name a struct or union return type, so the host headers can declare `div`, `ldiv`, and `lldiv`. `src/sema.rs` records why a definition and a call still cannot: that classification is not done. `float`, `double`, and `long double` may appear in a declaration (`long double` is the 80-bit format stored in 16 bytes). An expression that computes one is a diagnostic.
+A register aggregate is coerced to one or two pieces. The piece is the span of the fields in that eightbyte, rounded up to the strictest field alignment there: three bytes are `i24`, `struct { long a; char b; }` is `i64` plus `i8`, and an eightbyte that is exactly one pointer is `ptr`. A memory parameter is `byval`, aligned to at least 8. A memory return is a hidden `sret` pointer, aligned to the aggregate, and the LLVM return type is `void`. The x86-64 backend returns that pointer in `%rax`. A call result is a temporary, so `s = f()`, `f().x`, and `c ? a : b` copy it with `llvm.memmove`. A prototype may name an incomplete struct or union. A definition and a call need a complete type. Six general registers are available. The hidden `sret` pointer takes the first. A variadic argument uses the same classification and the registers still free. A multi-eightbyte aggregate that does not fit in those registers is passed entirely in memory, and the registers that were still free stay free.
 
-`<stdarg.h>` describes `va_list` as the x86_64 register-save area (one-element array of the descriptor struct) so the host headers can parse. `va_start`, `va_arg`, and `va_copy` expand to undeclared names. They do not read arguments.
+Approved by the owner on 2026-11-10 (pull request 13).
+
+`float`, `double`, and `long double` may appear in a declaration (`long double` is the 80-bit format stored in 16 bytes). An expression that computes one is a diagnostic. `<stdarg.h>` describes `va_list` as the x86_64 register-save area (one-element array of the descriptor struct) so the host headers can parse. `va_start`, `va_arg`, and `va_copy` expand to undeclared names. They do not read arguments.
 
 ## Preprocessor and include search
 
@@ -101,7 +103,8 @@ Follow the C standard. Where the standard leaves a choice, follow the gcc and cl
 
 - The standard wins where Clang is more permissive. Dropping `const` on assignment, arithmetic on `void *`, a pointer compared with an integer, and an evaluated comma in a constant initializer are diagnostics.
 - A multi-character character constant such as `'ab'` has an implementation-defined value (C11 6.4.4.4). This subset rejects it. `STATUS.md` records that as a limitation. Clang accepts it as an `int`.
-- An implementation-defined choice that is recorded as matching Clang on this target: an out-of-range conversion to a signed type keeps the low bits and reads them as two's complement; a completed enumeration is compatible with `int` (C11 6.7.2.2); an omitted `__VA_ARGS__` deletes a comma written as `, ## __VA_ARGS__`, matching Clang's `-std=c11`.
+- An implementation-defined choice that is recorded as matching Clang on this target: an out-of-range conversion to a signed type keeps the low bits and reads them as two's complement. An omitted `__VA_ARGS__` deletes a comma written as `, ## __VA_ARGS__`, matching Clang's `-std=c11`.
+- A completed enumeration is compatible with `int`, including when every enumerator is nonnegative. `STATUS.md` records that choice (C11 6.7.2.2). A value that does not fit in `int` is a diagnostic. gcc and clang use `unsigned int` when there is no negative enumerator, so this choice differs from that majority.
 
 ## Platforms
 
