@@ -7069,4 +7069,39 @@ int main(void) {
             "int main(void) { int x; switch (x) { case 1: return 1; } switch (x) { case 1: return 2; } return 0; }",
         );
     }
+
+    #[test]
+    fn math_format_builtins_are_constant_floats() {
+        // C11 7.12p3–p5 and GCC "Floating-Point Format Builtins": these
+        // names are constant expressions of the documented types, so they
+        // may initialize static storage and appear in `_Generic`.
+        sema_ok("float n = __builtin_nanf(\"\");");
+        sema_ok("float i = __builtin_inff();");
+        sema_ok("double h = __builtin_huge_val();");
+        sema_ok("float hf = __builtin_huge_valf();");
+        sema_ok("long double hl = __builtin_huge_vall();");
+        sema_ok("double n = __builtin_nan(\"\");");
+        sema_ok("long double n = __builtin_nanl(\"\");");
+        sema_ok("double i = __builtin_inf();");
+        sema_ok("long double i = __builtin_infl();");
+        sema_ok("float n = __builtin_nanf(\"1\");");
+        sema_ok("float n = __builtin_nansf(\"\");");
+        sema_ok("double n = __builtin_nans(\"\");");
+        sema_ok("long double n = __builtin_nansl(\"\");");
+        sema_ok("int main(void) { static float n = __builtin_nanf(\"\"); return n != n; }");
+        sema_ok("int a = _Generic(__builtin_nanf(\"\"), float: 1, default: 0);");
+        sema_ok("int a = _Generic(__builtin_huge_val(), double: 1, default: 0);");
+        sema_ok("int a = _Generic(__builtin_huge_vall(), long double: 1, default: 0);");
+        // The system <math.h> macros expand to these builtins under
+        // __GNUC__ 3.3 or later (C11 7.12p3–p5).
+        let ir = crate::compile_to_ir(
+            "#include <math.h>\nfloat n = NAN;\nfloat i = INFINITY;\ndouble h = HUGE_VAL;\n",
+            "math-macros.c",
+        )
+        .expect("system math.h macros should compile");
+        assert!(
+            ir.contains("0x7FF8000000000000") && ir.contains("0x7FF0000000000000"),
+            "NAN and INFINITY / HUGE_VAL constants missing: {ir}"
+        );
+    }
 }

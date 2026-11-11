@@ -5595,6 +5595,53 @@ func int main
     }
 
     #[test]
+    fn math_format_builtins_in_constant_expressions() {
+        // C11 7.12p4–p5: INFINITY and NAN are constant expressions of type
+        // float. glibc spells them as these GCC builtins. The type of each
+        // builtin is visible to `_Generic` in an integer constant expression
+        // (6.5.1.1, 6.6, 6.7.10).
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_nanf(\"\"), float: 1, default: 0), \"NAN\");\n",
+        )
+        .is_empty());
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_inff(), float: 1, default: 0), \"INF\");\n",
+        )
+        .is_empty());
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_huge_val(), double: 1, default: 0), \"HV\");\n",
+        )
+        .is_empty());
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_huge_valf(), float: 1, default: 0), \"HVF\");\n",
+        )
+        .is_empty());
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_huge_vall(), long double: 1, default: 0), \"HVL\");\n",
+        )
+        .is_empty());
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_nan(\"\"), double: 1, default: 0), \"nan\");\n",
+        )
+        .is_empty());
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_nanl(\"\"), long double: 1, default: 0), \"nanl\");\n",
+        )
+        .is_empty());
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_inf(), double: 1, default: 0), \"inf\");\n",
+        )
+        .is_empty());
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_infl(), long double: 1, default: 0), \"infl\");\n",
+        )
+        .is_empty());
+        assert!(parsed("int a[sizeof(__builtin_nanf(\"\"))];\n").contains("global int [4] a"));
+        assert!(parsed("int a[sizeof(__builtin_huge_val())];\n").contains("global int [8] a"));
+        assert!(parsed("int a[sizeof(__builtin_huge_vall())];\n").contains("global int [16] a"));
+    }
+
+    #[test]
     fn smoke_sources_parse() {
         for name in [
             "tests/01_return_const.c",

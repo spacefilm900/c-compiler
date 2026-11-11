@@ -13,6 +13,10 @@ directory and then the host C library, the same search the compiler uses.
 Clang still uses the host headers. The declarations agree, so printf,
 strlen, malloc, and the macros in limits.h can be compared.
 
+Harness tests from 119 onward in tests/*.c do not use preprocessor
+directives or headers. tests/hosted/*.c may include system headers such
+as <math.h> and are run the same way as tests/*.c.
+
 tests/xabi/*_def.c is linked with the matching *_use.c in both directions:
 this compiler's IR with a Clang object, and the reverse. Both must match
 Clang compiling the two files together.
@@ -100,16 +104,19 @@ def test_cross(def_src, use_src, tmp):
 
 def main():
     tests = sorted((ROOT / "tests").glob("*.c"))
+    hosted = sorted((ROOT / "tests" / "hosted").glob("*.c"))
     crosses = sorted((ROOT / "tests" / "xabi").glob("*_def.c"))
     problems = []
     if not (COMPILER.is_file() and os.access(COMPILER, os.X_OK)):
         problems.append(f"compiler not found/executable: {COMPILER}")
     if shutil.which(CLANG) is None:
         problems.append(f"clang not found: {CLANG}")
-    total = len(tests) + len(crosses)
+    total = len(tests) + len(hosted) + len(crosses)
     if problems:
         for t in tests:
             print(f"FAIL {t.name}: " + "; ".join(problems))
+        for t in hosted:
+            print(f"FAIL {t.parent.name}/{t.name}: " + "; ".join(problems))
         for t in crosses:
             print(f"FAIL {t.parent.name}/{t.name}: " + "; ".join(problems))
         print(f"\n0/{total} passed")
@@ -120,6 +127,11 @@ def main():
         for t in tests:
             r = test(t, tmp)
             print(f"{'PASS' if r is None else 'FAIL'} {t.name}" + ("" if r is None else f": {r}"))
+            passed += r is None
+        for t in hosted:
+            r = test(t, tmp)
+            label = f"{t.parent.name}/{t.name}"
+            print(f"{'PASS' if r is None else 'FAIL'} {label}" + ("" if r is None else f": {r}"))
             passed += r is None
         for t in crosses:
             use = t.with_name(t.name[: -len("_def.c")] + "_use.c")
