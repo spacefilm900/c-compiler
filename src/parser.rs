@@ -174,17 +174,24 @@ impl Parser<'_> {
                 .expect("function scope")
                 .insert(name, binding);
         }
-        // C11 6.4.2.2: __func__ is implicitly declared at the start of the body.
+        // C11 6.4.2.2: static const char __func__[] = "function-name";
         {
             let scope = self.names.last_mut().expect("function scope");
-            let ty = CType::array(CType::from_name(TypeName::Char), None);
+            let func_ty = CType::array(
+                CType::from_name(TypeName::Char),
+                Some(declarator.name.len() as u64 + 1),
+            )
+            .with_quals(Quals {
+                is_const: true,
+                ..Quals::default()
+            });
             scope.insert(
                 "__func__".to_string(),
-                NameBinding::Ordinary(Some(ty.clone())),
+                NameBinding::Ordinary(Some(func_ty.clone())),
             );
             scope.insert(
                 "__PRETTY_FUNCTION__".to_string(),
-                NameBinding::Ordinary(Some(ty)),
+                NameBinding::Ordinary(Some(func_ty)),
             );
         }
         let body = self.parse_compound_scoped(false)?;

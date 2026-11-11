@@ -597,6 +597,33 @@ impl Sema {
         Ok((ty, stores))
     }
 
+    /// Fold an array designator after typing it, so `sizeof` operands are
+    /// typed before evaluation (C11 6.7.9p6, 6.5.3.4).
+    fn designator_index(
+        &mut self,
+        expr: &Expr,
+        line: usize,
+        column: usize,
+    ) -> Result<u64, Diagnostic> {
+        let mut expr = expr.clone();
+        self.check_expr(&mut expr)?;
+        let value = match eval_const_expr(&expr) {
+            Ok(value) if value.ty.is_integer() => value,
+            _ => {
+                return self.err(line, column, "designator is not an integer constant");
+            }
+        };
+        if value.ty.is_signed() {
+            let signed = sign_extend(value.bits, value.ty.width());
+            if signed < 0 {
+                return self.err(line, column, "array designator is negative");
+            }
+            Ok(signed as u64)
+        } else {
+            Ok(value.bits)
+        }
+    }
+
     fn infer_array_len(
         &mut self,
         elem: &CType,
@@ -622,21 +649,7 @@ impl Sema {
                 let Some(Designator::Index { expr, line, column }) = designators.first() else {
                     return self.err(*dline, *dcol, "array designator is required");
                 };
-                let value = match eval_const_expr(expr) {
-                    Ok(value) if value.ty.is_integer() => value,
-                    _ => {
-                        return self.err(*line, *column, "designator is not an integer constant");
-                    }
-                };
-                let at = if value.ty.is_signed() {
-                    let signed = sign_extend(value.bits, value.ty.width());
-                    if signed < 0 {
-                        return self.err(*line, *column, "array designator is negative");
-                    }
-                    signed as u64
-                } else {
-                    value.bits
-                };
+                let at = self.designator_index(expr, *line, *column)?;
                 if at > 1_000_000 {
                     return self.err(*line, *column, "array designator is too large");
                 }
@@ -1163,25 +1176,7 @@ impl Sema {
                     if !current.unqualified().is_array() {
                         return self.err(*line, *column, "array designator on a non-array");
                     }
-                    let value = match eval_const_expr(expr) {
-                        Ok(value) if value.ty.is_integer() => value,
-                        _ => {
-                            return self.err(
-                                *line,
-                                *column,
-                                "designator is not an integer constant",
-                            );
-                        }
-                    };
-                    let index = if value.ty.is_signed() {
-                        let signed = sign_extend(value.bits, value.ty.width());
-                        if signed < 0 {
-                            return self.err(*line, *column, "array designator is negative");
-                        }
-                        signed as u64
-                    } else {
-                        value.bits
-                    };
+                    let index = self.designator_index(expr, *line, *column)?;
                     if index as usize >= children.len() {
                         return self.err(*line, *column, "array designator is out of range");
                     }
@@ -5940,7 +5935,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            ir.contains("ret i32 7"),
+            ir.contains("store i32 7"),
             "sizeof in a selected designator must fold: {ir}"
         );
         let ir = crate::compile_to_ir(
