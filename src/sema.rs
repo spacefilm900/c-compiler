@@ -2421,9 +2421,11 @@ impl Sema {
     /// A generic selection (C11 6.5.1.1). The controlling expression is not
     /// evaluated; its type after lvalue conversion (qualifiers dropped, an
     /// array or function becomes a pointer) picks the association whose type
-    /// is compatible with it, or `default`. The node is replaced by the
-    /// chosen expression, which keeps its type and whether it is an lvalue.
-    /// The associations that are not chosen are not analyzed.
+    /// is compatible with it, or `default`. Every association expression is
+    /// analyzed for constraints and name resolution. The node is then
+    /// replaced by the chosen expression, which keeps its type and whether
+    /// it is an lvalue, so unselected expressions are not evaluated and
+    /// emit no IR.
     fn check_generic(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
         let Expr::Generic {
             control,
@@ -2495,6 +2497,11 @@ impl Sema {
                 ),
             );
         };
+        for (i, assoc) in assocs.iter_mut().enumerate() {
+            if i != index {
+                self.check_expr(&mut assoc.expr)?;
+            }
+        }
         *expr = assocs.swap_remove(index).expr;
         self.check_expr(expr)
     }
