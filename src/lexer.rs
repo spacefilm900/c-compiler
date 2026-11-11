@@ -11,6 +11,19 @@ use crate::diag::Diagnostic;
 use crate::float::{inf_bits, parse_decimal, parse_exponent, parse_hex};
 use crate::token::{keyword, Token, TokenKind};
 
+/// One character of a character constant or string literal, before it is
+/// encoded for the literal's prefix.
+#[derive(Clone, Copy)]
+enum SrcChar {
+    /// A source character, a simple escape, or a universal character name:
+    /// a code point, encoded as UTF-8, UTF-16, or UTF-32 as the prefix says.
+    Code(u32),
+    /// An octal escape: one code unit with this value.
+    Octal(u64),
+    /// A hexadecimal escape: one code unit with this value.
+    Hex(u64),
+}
+
 pub fn lex(source: &str, filename: &str) -> Result<Vec<Token>, Diagnostic> {
     Lexer {
         source,
@@ -591,25 +604,21 @@ impl Lexer<'_> {
     }
 
     /// An ordinary string literal (C11 6.4.5). Escapes are the same set as
-    /// character constants and must fit in `unsigned char`. The token's bytes
-    /// do not include the implicit terminating NUL; the type `char[N]` adds it.
+    /// character constants. A numeric escape must fit in `unsigned char`. A
+    /// source character outside ASCII, or a universal character name, is
+    /// stored as its UTF-8 bytes, the execution character set on this target.
+    /// The token's bytes do not include the implicit terminating NUL; the type
+    /// `char[N]` adds it.
     fn string_literal(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
         let start = self.index;
         self.bump();
-        let mut bytes = Vec::new();
-        loop {
-            match self.peek() {
-                None | Some(b'\n' | b'\r') => {
-                    return self.fail(line, column, "unterminated string literal");
-                }
-                Some(b'"') => {
-                    self.bump();
-                    break;
-                }
-                _ => bytes.push(self.read_char_byte(line, column, true)?),
-            }
-        }
+        let bytes = self.string_body(line, column, 8)?;
         let spelling = self.source[start..self.index].to_string();
+        self.push_string(spelling, bytes, line, column);
+        Ok(())
+    }
+
+    fn push_string(&mut self, spelling: String, bytes: Vec<u8>, line: usize, column: usize) {
         self.tokens.push(Token {
             kind: TokenKind::String,
             spelling,
@@ -622,7 +631,102 @@ impl Lexer<'_> {
             float_kind: None,
             bytes: Some(bytes),
         });
-        Ok(())
+    }
+
+    /// The characters of a string literal after the opening quote, encoded
+    /// in code units of `bits` bits, little-endian. 8 is UTF-8 (`""` and
+    /// `u8""`), 16 is UTF-16 (`u""`), and 32 is UTF-32 (`U""` and `L""`;
+    /// `wchar_t` holds ISO 10646 code points on this target).
+    fn string_body(
+        &mut self,
+        line: usize,
+        column: usize,
+        bits: u32,
+    ) -> Result<Vec<u8>, Diagnostic> {
+        let mut bytes = Vec::new();
+        loop {
+            match self.peek() {
+                None | Some(b'\n' | b'\r') => {
+                    return self.fail(line, column, "unterminated string literal");
+                }
+                Some(b'"') => {
+                    self.bump();
+                    return Ok(bytes);
+                }
+                _ => {
+                    let (at_line, at_column) = (self.line, self.column);
+                    let ch = self.read_source_char(line, column, true)?;
+                    for unit in self.encode_units(ch, bits, at_line, at_column, true)? {
+                        match bits {
+                            8 => bytes.push(unit as u8),
+                            16 => bytes.extend_from_slice(&(unit as u16).to_le_bytes()),
+                            _ => bytes.extend_from_slice(&unit.to_le_bytes()),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Code units for one character of a literal whose units are `bits`
+    /// wide. A numeric escape is one unit and must fit. A character, or a
+    /// universal character name, is encoded; in a character constant it must
+    /// be a single unit (C11 6.4.4.4p4 and p9 constrain the escapes; a
+    /// character that needs several `char`s or `char16_t`s is diagnosed the
+    /// same way, as there is no multi-unit character constant here).
+    fn encode_units(
+        &self,
+        ch: SrcChar,
+        bits: u32,
+        line: usize,
+        column: usize,
+        string: bool,
+    ) -> Result<Vec<u32>, Diagnostic> {
+        let limit = if bits >= 32 {
+            u64::from(u32::MAX)
+        } else {
+            (1u64 << bits) - 1
+        };
+        let units = match ch {
+            SrcChar::Octal(value) | SrcChar::Hex(value) => {
+                if value > limit {
+                    let what = if matches!(ch, SrcChar::Octal(_)) {
+                        "octal escape sequence out of range"
+                    } else {
+                        "hex escape sequence out of range"
+                    };
+                    return self.fail(line, column, what);
+                }
+                vec![value as u32]
+            }
+            SrcChar::Code(code) => match bits {
+                8 => {
+                    let ch = char::from_u32(code).expect("validated code point");
+                    let mut buf = [0u8; 4];
+                    ch.encode_utf8(&mut buf)
+                        .bytes()
+                        .map(u32::from)
+                        .collect::<Vec<_>>()
+                }
+                16 => {
+                    let ch = char::from_u32(code).expect("validated code point");
+                    let mut buf = [0u16; 2];
+                    ch.encode_utf16(&mut buf)
+                        .iter()
+                        .map(|unit| u32::from(*unit))
+                        .collect::<Vec<_>>()
+                }
+                _ => vec![code],
+            },
+        };
+        if !string && units.len() != 1 {
+            return self.fail(
+                line,
+                column,
+                "character too large for enclosing character literal type",
+            );
+        }
+        Ok(units)
     }
 
     /// A prefixed character constant (C11 6.4.4.4).
@@ -631,7 +735,9 @@ impl Lexer<'_> {
     /// (`char32_t`, unsigned int) and `L` (`wchar_t`, which is `int`).
     /// `wchar` selects that signed `int` result. A hex or octal escape that
     /// does not fit in the unsigned type of that width is a diagnostic.
-    /// `L` then converts the `unsigned int` value to `int`.
+    /// `L` then converts the `unsigned int` value to `int`. A character is
+    /// its UTF-16 or UTF-32 code unit; one that needs a surrogate pair does
+    /// not fit in `char16_t`.
     fn prefixed_char(
         &mut self,
         start: usize,
@@ -641,24 +747,7 @@ impl Lexer<'_> {
         wchar: bool,
     ) -> Result<(), Diagnostic> {
         self.bump();
-        if matches!(self.peek(), None | Some(b'\n' | b'\r')) {
-            return self.fail(line, column, "unterminated character constant");
-        }
-        if self.peek() == Some(b'\'') {
-            return self.fail(line, column, "empty character constant");
-        }
-        let value = self.read_code_unit(line, column, false, bits)?;
-        if self.peek() != Some(b'\'') {
-            if matches!(self.peek(), None | Some(b'\n' | b'\r')) {
-                return self.fail(line, column, "unterminated character constant");
-            }
-            return self.fail(
-                line,
-                column,
-                "multi-character character constants are not supported",
-            );
-        }
-        self.bump();
+        let value = self.char_body(line, column, bits)?;
         let spelling = self.source[start..self.index].to_string();
         let ty = if wchar {
             TypeName::Int
@@ -669,6 +758,32 @@ impl Lexer<'_> {
         };
         self.push_int(&spelling, u64::from(value), ty, line, column);
         Ok(())
+    }
+
+    /// The one character of a character constant after the opening quote,
+    /// and the closing quote, as a code unit of `bits` bits.
+    fn char_body(&mut self, line: usize, column: usize, bits: u32) -> Result<u32, Diagnostic> {
+        if matches!(self.peek(), None | Some(b'\n' | b'\r')) {
+            return self.fail(line, column, "unterminated character constant");
+        }
+        if self.peek() == Some(b'\'') {
+            return self.fail(line, column, "empty character constant");
+        }
+        let (at_line, at_column) = (self.line, self.column);
+        let ch = self.read_source_char(line, column, false)?;
+        if self.peek() != Some(b'\'') {
+            if matches!(self.peek(), None | Some(b'\n' | b'\r')) {
+                return self.fail(line, column, "unterminated character constant");
+            }
+            return self.fail(
+                line,
+                column,
+                "multi-character character constants are not supported",
+            );
+        }
+        let units = self.encode_units(ch, bits, at_line, at_column, false)?;
+        self.bump();
+        Ok(units[0])
     }
 
     /// A prefixed string literal. `bits` is 8 for `u8` (an array of `char`),
@@ -682,210 +797,39 @@ impl Lexer<'_> {
         bits: u32,
     ) -> Result<(), Diagnostic> {
         self.bump();
-        let mut bytes = Vec::new();
-        loop {
-            match self.peek() {
-                None | Some(b'\n' | b'\r') => {
-                    return self.fail(line, column, "unterminated string literal");
-                }
-                Some(b'"') => {
-                    self.bump();
-                    break;
-                }
-                _ => {
-                    let unit = self.read_code_unit(line, column, true, bits)?;
-                    match bits {
-                        8 => bytes.push(unit as u8),
-                        16 => bytes.extend_from_slice(&(unit as u16).to_le_bytes()),
-                        _ => bytes.extend_from_slice(&unit.to_le_bytes()),
-                    }
-                }
-            }
-        }
+        let bytes = self.string_body(line, column, bits)?;
         let spelling = self.source[start..self.index].to_string();
-        self.tokens.push(Token {
-            kind: TokenKind::String,
-            spelling,
-            line,
-            column,
-            filename: self.filename.to_string(),
-            value: None,
-            float_hi: 0,
-            int_ty: None,
-            float_kind: None,
-            bytes: Some(bytes),
-        });
+        self.push_string(spelling, bytes, line, column);
         Ok(())
-    }
-
-    /// One source character or escape, as a code unit that must fit in `bits`.
-    fn read_code_unit(
-        &mut self,
-        line: usize,
-        column: usize,
-        string: bool,
-        bits: u32,
-    ) -> Result<u32, Diagnostic> {
-        if bits <= 8 {
-            return Ok(u32::from(self.read_char_byte(line, column, string)?));
-        }
-        let value = self.read_wide_unit(line, column, string)?;
-        let limit = if bits >= 32 {
-            u32::MAX
-        } else {
-            (1u32 << bits) - 1
-        };
-        if value > limit {
-            return self.fail(line, column, "hex escape sequence out of range");
-        }
-        Ok(value)
-    }
-
-    /// One wide character or escape, as a `wchar_t` code unit.
-    fn read_wide_unit(
-        &mut self,
-        line: usize,
-        column: usize,
-        string: bool,
-    ) -> Result<u32, Diagnostic> {
-        let unterminated = if string {
-            "unterminated string literal"
-        } else {
-            "unterminated character constant"
-        };
-        let Some(byte) = self.peek() else {
-            return self.fail(line, column, unterminated);
-        };
-        if byte >= 128 {
-            return self.fail(
-                self.line,
-                self.column,
-                "non-ASCII characters are not supported",
-            );
-        }
-        if byte != b'\\' {
-            self.bump();
-            return Ok(u32::from(byte));
-        }
-        let esc_line = self.line;
-        let esc_column = self.column;
-        self.bump();
-        let Some(next) = self.peek() else {
-            return self.fail(line, column, unterminated);
-        };
-        if next == b'\n' || next == b'\r' {
-            return self.fail(
-                esc_line,
-                esc_column,
-                "backslash line splicing is not supported",
-            );
-        }
-        self.bump();
-        match next {
-            b'a' => Ok(7),
-            b'b' => Ok(8),
-            b'f' => Ok(12),
-            b'n' => Ok(10),
-            b'r' => Ok(13),
-            b't' => Ok(9),
-            b'v' => Ok(11),
-            b'\\' => Ok(u32::from(b'\\')),
-            b'\'' => Ok(u32::from(b'\'')),
-            b'"' => Ok(u32::from(b'"')),
-            b'?' => Ok(u32::from(b'?')),
-            b'0'..=b'7' => self.wide_octal(next),
-            b'x' => self.wide_hex(esc_line, esc_column),
-            _ => self.fail(esc_line, esc_column, "unknown escape sequence"),
-        }
-    }
-
-    /// An octal escape is at most three digits. The value must fit in
-    /// `unsigned int`, the unsigned type corresponding to `wchar_t`.
-    fn wide_octal(&mut self, first: u8) -> Result<u32, Diagnostic> {
-        let mut value = u32::from(first - b'0');
-        for _ in 0..2 {
-            match self.peek() {
-                Some(byte @ b'0'..=b'7') => {
-                    self.bump();
-                    value = value * 8 + u32::from(byte - b'0');
-                }
-                _ => break,
-            }
-        }
-        Ok(value)
-    }
-
-    fn wide_hex(&mut self, line: usize, column: usize) -> Result<u32, Diagnostic> {
-        let mut value: u32 = 0;
-        let mut digits = 0u32;
-        while let Some(byte) = self.peek() {
-            let digit = match byte {
-                b'0'..=b'9' => u32::from(byte - b'0'),
-                b'a'..=b'f' => u32::from(byte - b'a') + 10,
-                b'A'..=b'F' => u32::from(byte - b'A') + 10,
-                _ => break,
-            };
-            let Some(next) = value.checked_mul(16).and_then(|v| v.checked_add(digit)) else {
-                self.bump();
-                while self.peek().is_some_and(|b| b.is_ascii_hexdigit()) {
-                    self.bump();
-                }
-                return self.fail(line, column, "hex escape sequence out of range");
-            };
-            self.bump();
-            value = next;
-            digits += 1;
-        }
-        if digits == 0 {
-            return self.fail(line, column, "invalid hexadecimal escape");
-        }
-        Ok(value)
     }
 
     /// An integer character constant has type `int` (C11 6.4.4.4).
     /// One source character or one escape is accepted. A hex or octal escape
     /// must fit in `unsigned char`; Clang rejects a wider escape on this target.
     /// The value is that byte converted from `char` to `int`. `char` is signed,
-    /// so 128..255 are negative.
+    /// so 128..255 are negative. A character outside ASCII needs more than one
+    /// UTF-8 byte and is diagnosed.
     fn char_constant(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
         let start = self.index;
         self.bump();
-        if matches!(self.peek(), None | Some(b'\n' | b'\r')) {
-            return self.fail(line, column, "unterminated character constant");
-        }
-        if self.peek() == Some(b'\'') {
-            return self.fail(line, column, "empty character constant");
-        }
-        let value = u32::from(self.read_char_byte(line, column, false)?);
-        // The escape is a char, then converted to int (C11 6.4.4.4). char is
-        // signed here, so 128..255 become negative.
-        if self.peek() != Some(b'\'') {
-            if matches!(self.peek(), None | Some(b'\n' | b'\r')) {
-                return self.fail(line, column, "unterminated character constant");
-            }
-            return self.fail(
-                line,
-                column,
-                "multi-character character constants are not supported",
-            );
-        }
-        self.bump();
+        let value = self.char_body(line, column, 8)?;
         let spelling = self.source[start..self.index].to_string();
         let bits = crate::ast::sign_extend(u64::from(value), 8) as u32 as u64;
         self.push_int(&spelling, bits, TypeName::Int, line, column);
         Ok(())
     }
 
-    /// One source character or one escape, as an `unsigned char` value.
+    /// One source character or one escape (C11 6.4.4.4, 6.4.3).
     ///
     /// `string` selects the diagnostic for a missing closer. The escape set is
-    /// shared by character constants and string literals (C11 6.4.4.4).
-    fn read_char_byte(
+    /// shared by character constants and string literals. A multibyte source
+    /// character is decoded from UTF-8, the source character set here.
+    fn read_source_char(
         &mut self,
         line: usize,
         column: usize,
         string: bool,
-    ) -> Result<u8, Diagnostic> {
+    ) -> Result<SrcChar, Diagnostic> {
         let unterminated = if string {
             "unterminated string literal"
         } else {
@@ -895,15 +839,18 @@ impl Lexer<'_> {
             return self.fail(line, column, unterminated);
         };
         if byte >= 128 {
-            return self.fail(
-                self.line,
-                self.column,
-                "non-ASCII characters are not supported",
-            );
+            let ch = self.source[self.index..]
+                .chars()
+                .next()
+                .expect("UTF-8 source");
+            for _ in 0..ch.len_utf8() {
+                self.bump();
+            }
+            return Ok(SrcChar::Code(u32::from(ch)));
         }
         if byte != b'\\' {
             self.bump();
-            return Ok(byte);
+            return Ok(SrcChar::Code(u32::from(byte)));
         }
         let esc_line = self.line;
         let esc_column = self.column;
@@ -918,8 +865,11 @@ impl Lexer<'_> {
                 "backslash line splicing is not supported",
             );
         }
+        if next >= 128 {
+            return self.fail(esc_line, esc_column, "unknown escape sequence");
+        }
         self.bump();
-        let value = match next {
+        let simple = match next {
             b'a' => 7,
             b'b' => 8,
             b'f' => 12,
@@ -927,60 +877,76 @@ impl Lexer<'_> {
             b'r' => 13,
             b't' => 9,
             b'v' => 11,
-            b'\\' => u32::from(b'\\'),
-            b'\'' => u32::from(b'\''),
-            b'"' => u32::from(b'"'),
-            b'?' => u32::from(b'?'),
-            b'0'..=b'7' => self.octal_escape(next, esc_line, esc_column)?,
-            b'x' => self.hex_escape(esc_line, esc_column)?,
+            b'\\' | b'\'' | b'"' | b'?' => u32::from(next),
+            b'0'..=b'7' => return Ok(SrcChar::Octal(self.octal_digits(next))),
+            b'x' => return self.hex_digits(esc_line, esc_column).map(SrcChar::Hex),
+            b'u' => return self.universal_name(4, esc_line, esc_column),
+            b'U' => return self.universal_name(8, esc_line, esc_column),
             _ => return self.fail(esc_line, esc_column, "unknown escape sequence"),
         };
-        Ok(value as u8)
+        Ok(SrcChar::Code(simple))
     }
 
-    fn octal_escape(&mut self, first: u8, line: usize, column: usize) -> Result<u32, Diagnostic> {
-        let mut value = u32::from(first - b'0');
+    /// At most three octal digits (C11 6.4.4.4p1), so the value is below 512.
+    fn octal_digits(&mut self, first: u8) -> u64 {
+        let mut value = u64::from(first - b'0');
         for _ in 0..2 {
             match self.peek() {
                 Some(byte @ b'0'..=b'7') => {
                     self.bump();
-                    value = value * 8 + u32::from(byte - b'0');
+                    value = value * 8 + u64::from(byte - b'0');
                 }
                 _ => break,
             }
         }
-        if value > 255 {
-            return self.fail(line, column, "octal escape sequence out of range");
-        }
-        Ok(value)
+        value
     }
 
-    fn hex_escape(&mut self, line: usize, column: usize) -> Result<u32, Diagnostic> {
-        let mut value: u32 = 0;
+    /// Any number of hex digits. A value beyond 32 bits fits no code unit.
+    fn hex_digits(&mut self, line: usize, column: usize) -> Result<u64, Diagnostic> {
+        let mut value: u64 = 0;
         let mut digits = 0u32;
         while let Some(byte) = self.peek() {
-            let digit = match byte {
-                b'0'..=b'9' => u32::from(byte - b'0'),
-                b'a'..=b'f' => u32::from(byte - b'a') + 10,
-                b'A'..=b'F' => u32::from(byte - b'A') + 10,
-                _ => break,
+            let Some(digit) = (byte as char).to_digit(16) else {
+                break;
             };
-            let next = value.saturating_mul(16).saturating_add(digit);
-            if next > 255 {
-                self.bump();
-                while self.peek().is_some_and(|b| b.is_ascii_hexdigit()) {
-                    self.bump();
-                }
-                return self.fail(line, column, "hex escape sequence out of range");
-            }
             self.bump();
-            value = next;
+            value = value.saturating_mul(16).saturating_add(u64::from(digit));
             digits += 1;
         }
         if digits == 0 {
             return self.fail(line, column, "invalid hexadecimal escape");
         }
+        if value > u64::from(u32::MAX) {
+            return self.fail(line, column, "hex escape sequence out of range");
+        }
         Ok(value)
+    }
+
+    /// `\uXXXX` or `\UXXXXXXXX` (C11 6.4.3). The value is an ISO 10646
+    /// code point. It shall not be below U+00A0 other than U+0024, U+0040,
+    /// and U+0060, and shall not be a surrogate (D800 through DFFF). A value
+    /// above U+10FFFF names no character.
+    fn universal_name(
+        &mut self,
+        digits: u32,
+        line: usize,
+        column: usize,
+    ) -> Result<SrcChar, Diagnostic> {
+        let mut value = 0u32;
+        for _ in 0..digits {
+            let Some(digit) = self.peek().and_then(|byte| (byte as char).to_digit(16)) else {
+                return self.fail(line, column, "incomplete universal character name");
+            };
+            self.bump();
+            value = value * 16 + digit;
+        }
+        let allowed_low = matches!(value, 0x24 | 0x40 | 0x60);
+        if (value < 0xA0 && !allowed_low) || (0xD800..=0xDFFF).contains(&value) || value > 0x10FFFF
+        {
+            return self.fail(line, column, "invalid universal character name");
+        }
+        Ok(SrcChar::Code(value))
     }
 
     fn dot(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
@@ -1367,6 +1333,36 @@ mod tests {
         assert!(err("/* unterminated").contains("unterminated block comment"));
         assert!(err("#include <stdio.h>").contains("preprocessor directives"));
         assert!(err("int café").contains("non-ASCII"));
+        // UTF-8 source characters and universal character names (C11 6.4.3)
+        // are code points, encoded for each prefix.
+        assert_eq!(
+            tokens("\"\\u00c4\"")[0].bytes.as_deref(),
+            Some(&[0xC3, 0x84][..])
+        );
+        assert_eq!(
+            tokens("u8\"€\"")[0].bytes.as_deref(),
+            Some(&[0xE2, 0x82, 0xAC][..])
+        );
+        assert_eq!(
+            tokens("u\"\\U0001F600\"")[0].bytes.as_deref(),
+            Some(&[0x3D, 0xD8, 0x00, 0xDE][..])
+        );
+        assert_eq!(
+            tokens("L\"Ä\"")[0].bytes.as_deref(),
+            Some(&[0xC4, 0, 0, 0][..])
+        );
+        assert_eq!(tokens("U'😀'")[0].value, Some(0x1F600));
+        assert_eq!(tokens("L'\\u20AC'")[0].value, Some(0x20AC));
+        assert_eq!(tokens("u'€'")[0].value, Some(0x20AC));
+        assert_eq!(tokens("'\\u0040'")[0].value, Some(0x40));
+        assert!(err("'Ä'").contains("character too large"));
+        assert!(err("u'😀'").contains("character too large"));
+        assert!(err("L'\\u0041'").contains("invalid universal character name"));
+        assert!(err("L'\\uDC00'").contains("invalid universal character name"));
+        assert!(err("U'\\U00110000'").contains("invalid universal character name"));
+        assert!(err("L'\\u12'").contains("incomplete universal character name"));
+        assert!(err("\"\\x100\"").contains("hex escape sequence out of range"));
+        assert!(err("U'\\x100000000'").contains("hex escape sequence out of range"));
         assert!(err("int x = 1 $ 2;").contains("unexpected character '$'"));
     }
 

@@ -1960,17 +1960,10 @@ fn is_ident_text(text: &str) -> bool {
 }
 
 fn literal_val(tok: &PpToken) -> Result<Val, Diagnostic> {
-    // A wide or Unicode prefix does not change the value of a character
-    // constant in a preprocessor expression (`L'\0'` is 0). The phase-7
-    // lexer still rejects those prefixes in program text.
-    let spelling = tok
-        .spelling
-        .strip_prefix("u8")
-        .or_else(|| tok.spelling.strip_prefix('L'))
-        .or_else(|| tok.spelling.strip_prefix('u'))
-        .or_else(|| tok.spelling.strip_prefix('U'))
-        .unwrap_or(&tok.spelling);
-    match crate::lexer::lex(spelling, &tok.display) {
+    // A prefixed character constant has the value and type it has in
+    // program text (C11 6.10.1p4): `L'\400'` is the `wchar_t` 256, and
+    // `U'\xffffffff'` is an unsigned value.
+    match crate::lexer::lex(&tok.spelling, &tok.display) {
         Ok(mut tokens) => {
             tokens.pop();
             if tokens.len() == 1 && tokens[0].kind == TokenKind::Float {
@@ -2697,8 +2690,9 @@ impl Scanner<'_> {
         string: bool,
     ) -> Result<String, Diagnostic> {
         let closer = if string { b'"' } else { b'\'' };
-        let mut spelling = String::new();
-        spelling.push(self.next_logical().unwrap().0 as char);
+        // Bytes, not chars: a UTF-8 character inside the literal is copied
+        // unchanged and decoded by the phase-7 lexer (C11 5.2.1).
+        let mut spelling: Vec<u8> = vec![self.next_logical().unwrap().0];
         loop {
             let Some((byte, _, _)) = self.next_logical() else {
                 return self.fail(
@@ -2711,9 +2705,6 @@ impl Scanner<'_> {
                     },
                 );
             };
-            if byte >= 128 {
-                return self.fail(line, column, "non-ASCII characters are not supported");
-            }
             if byte == b'\n' || byte == b'\r' {
                 return self.fail(
                     line,
@@ -2725,7 +2716,7 @@ impl Scanner<'_> {
                     },
                 );
             }
-            spelling.push(byte as char);
+            spelling.push(byte);
             if byte == b'\\' {
                 let Some((next, _, _)) = self.next_logical() else {
                     return self.fail(
@@ -2738,27 +2729,26 @@ impl Scanner<'_> {
                         },
                     );
                 };
-                if next == b'\n' || next == b'\r' || next >= 128 {
+                if next == b'\n' || next == b'\r' {
                     return self.fail(
                         line,
                         column,
-                        if next >= 128 {
-                            "non-ASCII characters are not supported"
-                        } else if string {
+                        if string {
                             "unterminated string literal"
                         } else {
                             "unterminated character constant"
                         },
                     );
                 }
-                spelling.push(next as char);
+                spelling.push(next);
                 continue;
             }
             if byte == closer {
                 break;
             }
         }
-        Ok(spelling)
+        // The source is UTF-8 and only whole characters were copied.
+        Ok(String::from_utf8(spelling).expect("UTF-8 literal"))
     }
 
     fn match_punct(&self) -> Option<&'static str> {
@@ -3096,5 +3086,22 @@ mod tests {
         .unwrap();
         assert!(text.contains("int y = 1;"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prefixed_character_constants_in_if() {
+        // C11 6.10.1p4: the value and type of `L'\400'` and `U'...'` are those
+        // of the constant in program text.
+        let text = pp("#if L'\\400' == 256 && u'\\xffff' == 65535 && U'\\xffffffff' > 0\nint ok;\n#endif\n#if L'Ä' == 0xC4 && U'\\U0001F600' == 0x1F600\nint wide;\n#endif\n#if '\\377' < 0\nint neg;\n#endif\n");
+        assert_eq!(squash(&text), "int ok; int wide; int neg;");
+        assert!(pp_err("#if u'\\x10000'\n#endif\n").contains("out of range"));
+        assert!(pp_err("#if 'é'\n#endif\n").contains("character too large"));
+    }
+
+    #[test]
+    fn utf8_literals_pass_through() {
+        let text = pp("const char *s = \"Ä€\"; /* é */ int c = L'é';\n");
+        assert_eq!(squash(&text), "const char *s = \"Ä€\"; int c = L'é';");
+        assert!(pp_err("int café;\n").contains("non-ASCII"));
     }
 }
