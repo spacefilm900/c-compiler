@@ -640,16 +640,50 @@ impl Sema {
                 if at > 1_000_000 {
                     return self.err(*line, *column, "array designator is too large");
                 }
-                if designators.len() > 1 {
+                let Init::Designated { init: first, .. } = &items[pos] else {
+                    unreachable!("designated item");
+                };
+                let elided = designators.len() == 1
+                    && !elem.is_scalar()
+                    && matches!(first.as_ref(), Init::Expr(_))
+                    && !self.opens_subobject(elem, first)
+                    && !init_children(elem, false).is_empty();
+                if designators.len() > 1 || elided {
                     let rest = designators[1..].to_vec();
                     let dline = *dline;
                     let dcol = *dcol;
+                    let first = first.as_ref().clone();
                     let mut scratch = Vec::new();
-                    let (_child, mut frames) = self.seek_designator(elem, 0, &rest, dline, dcol)?;
-                    pos += 1;
-                    if !advance_frames(&mut frames) {
-                        frames.clear();
+                    let mut frames = if elided {
+                        Vec::new()
+                    } else {
+                        let (child, frames) = self.seek_designator(elem, 0, &rest, dline, dcol)?;
+                        let mut frames = frames;
+                        if self.elides_into(&child, &first) {
+                            let child_base =
+                                frames.last().map(|frame| frame.base).unwrap_or(0) + child.offset;
+                            frames.push(InitFrame {
+                                children: init_children(&child.ty, false),
+                                index: 0,
+                                base: child_base,
+                                is_union: child.ty.is_union(),
+                            });
+                            self.positional_one(&first, &mut frames, &mut scratch, elem)?;
+                        } else if !advance_frames(&mut frames) {
+                            frames.clear();
+                        }
+                        frames
+                    };
+                    if elided {
+                        frames.push(InitFrame {
+                            children: init_children(elem, false),
+                            index: 0,
+                            base: 0,
+                            is_union: elem.is_union(),
+                        });
+                        self.positional_one(&first, &mut frames, &mut scratch, elem)?;
                     }
+                    pos += 1;
                     while pos < items.len()
                         && !frames.is_empty()
                         && !matches!(items[pos], Init::Designated { .. })
@@ -1015,8 +1049,24 @@ impl Sema {
                 column,
             } = item
             {
-                let (child, frames_at) =
+                let (child, mut frames_at) =
                     self.seek_designator(ty, base, designators, *line, *column)?;
+                if self.elides_into(&child, init) {
+                    // C11 6.7.9p17, p20: a designated aggregate whose
+                    // initializer has no braces starts brace elision at its
+                    // first scalar; later positional items continue there.
+                    let child_base =
+                        frames_at.last().map(|frame| frame.base).unwrap_or(0) + child.offset;
+                    frames_at.push(InitFrame {
+                        children: init_children(&child.ty, false),
+                        index: 0,
+                        base: child_base,
+                        is_union: child.ty.is_union(),
+                    });
+                    self.positional_one(init, &mut frames_at, stores, ty)?;
+                    frames = frames_at;
+                    continue;
+                }
                 self.init_child(&child, &frames_at, init, stores)?;
                 frames = frames_at;
                 if !advance_frames(&mut frames) {
@@ -1029,6 +1079,20 @@ impl Sema {
             self.positional_one(item, &mut frames, stores, ty)?;
         }
         Ok(())
+    }
+
+    /// Whether a designated subobject is an aggregate initialized without
+    /// braces, by its first scalar (`{ .point = 1, 2 }`). A brace list, a
+    /// string for a character array, or an expression of the member's own
+    /// struct or union type initializes the whole subobject instead.
+    fn elides_into(&mut self, child: &InitChild, init: &Init) -> bool {
+        if child.ty.is_scalar() || child.field.as_ref().is_some_and(|f| f.is_bitfield()) {
+            return false;
+        }
+        if !matches!(init, Init::Expr(_)) || self.opens_subobject(&child.ty, init) {
+            return false;
+        }
+        !init_children(&child.ty, false).is_empty()
     }
 
     fn seek_designator(
@@ -1287,10 +1351,15 @@ impl Sema {
         if stores.iter().any(|store| store.bits.is_some()) || !nested.is_empty() {
             return self.fold_nested_bits(name, ty, stores);
         }
+        let mut unions = UnionImages::new(ty);
         let mut folded = Vec::new();
         for store in stores {
-            folded.push((store.offset, self.fold_one(name, &store.expr, &store.ty)?));
+            let value = self.fold_one(name, &store.expr, &store.ty)?;
+            if !unions.absorb(store, &value)? {
+                folded.push((store.offset, value));
+            }
         }
+        unions.finish(name, self, &mut folded)?;
         let value = assemble(ty, &folded, 0);
         if !union_bytes_ok(ty, &value) {
             return self.err(
@@ -1358,6 +1427,7 @@ impl Sema {
         let mut image = vec![0u8; size];
         let mut ranges = Vec::new();
         bit_record_ranges(ty, 0, &mut ranges);
+        let mut unions = UnionImages::new(ty);
         let mut folded = Vec::new();
         for store in stores {
             if let Some(bits) = &store.bits {
@@ -1392,11 +1462,12 @@ impl Sema {
                             ),
                         );
                     }
-                } else {
+                } else if !unions.absorb(store, &value)? {
                     folded.push((store.offset, value));
                 }
             }
         }
+        unions.finish(name, self, &mut folded)?;
         splice_bit_blobs(ty, 0, &image, &mut folded);
         let value = assemble(ty, &folded, 0);
         if !union_bytes_ok(ty, &value) {
@@ -4433,7 +4504,109 @@ fn const_has_no_address(value: &ConstInit) -> bool {
     }
 }
 
+/// Byte images of the plain unions nested in a static initializer.
+///
+/// Every member of a union shares its bytes, and the LLVM type of a union
+/// is its first member. A store to another member (`{ .u.d = 2.5 }`) is
+/// written into the union's object representation instead, the way a
+/// top-level union is folded. A bit-field union is already a byte image.
+struct UnionImages {
+    /// Sorted and disjoint.
+    ranges: Vec<(u64, u64)>,
+    /// An image is made when the first store lands in its union.
+    images: Vec<Option<Vec<u8>>>,
+    bad: Option<(usize, usize)>,
+}
+
+impl UnionImages {
+    fn new(ty: &CType) -> Self {
+        let mut ranges = Vec::new();
+        union_ranges(ty, 0, true, &mut ranges);
+        let images = vec![None; ranges.len()];
+        UnionImages {
+            ranges,
+            images,
+            bad: None,
+        }
+    }
+
+    /// Write a store that falls in a nested union. `false` means it is
+    /// outside every union and is assembled as usual.
+    fn absorb(&mut self, store: &ElemStore, value: &ConstInit) -> Result<bool, Diagnostic> {
+        let index = self
+            .ranges
+            .partition_point(|(start, _)| *start <= store.offset);
+        if index == 0 || store.offset >= self.ranges[index - 1].1 {
+            return Ok(false);
+        }
+        let (start, end) = self.ranges[index - 1];
+        let image = self.images[index - 1].get_or_insert_with(|| vec![0u8; (end - start) as usize]);
+        let at = (store.offset - start) as usize;
+        if !write_folded_bytes(&store.ty, value, image, at) && self.bad.is_none() {
+            self.bad = Some((store.expr.line(), store.expr.column()));
+        }
+        Ok(true)
+    }
+
+    fn finish(
+        self,
+        name: &str,
+        sema: &Sema,
+        folded: &mut Vec<(u64, ConstInit)>,
+    ) -> Result<(), Diagnostic> {
+        if let Some((line, column)) = self.bad {
+            return sema.err(
+                line,
+                column,
+                format!("initializer of '{name}' uses an address in a union"),
+            );
+        }
+        for ((start, _), image) in self.ranges.into_iter().zip(self.images) {
+            if let Some(image) = image {
+                folded.push((start, ConstInit::Bytes(image)));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Byte ranges of the outermost plain unions inside `ty`. `top` skips `ty`
+/// itself, which the caller folds on its own.
+fn union_ranges(ty: &CType, base: u64, top: bool, out: &mut Vec<(u64, u64)>) {
+    if is_bit_image(ty) {
+        return;
+    }
+    if ty.is_union() && !top {
+        out.push((base, base + ty.size().unwrap_or(0)));
+        return;
+    }
+    if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
+        for field in fields.iter().filter(|field| field.bit_width.is_none()) {
+            union_ranges(&field.ty, base + field.offset, false, out);
+        }
+        return;
+    }
+    if let (Some(elem), Some(len)) = (ty.array_elem(), ty.array_len()) {
+        let step = elem.size().unwrap_or(0);
+        if elem.is_scalar() {
+            return;
+        }
+        for index in 0..len {
+            union_ranges(elem, base + index * step, false, out);
+        }
+    }
+}
+
 fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
+    if ty.is_union() {
+        if let Some((_, value)) = stores
+            .iter()
+            .rev()
+            .find(|(offset, value)| *offset == base && matches!(value, ConstInit::Bytes(_)))
+        {
+            return value.clone();
+        }
+    }
     if is_bit_image(ty) {
         if let Some((_, value)) = stores
             .iter()
@@ -5564,6 +5737,31 @@ mod tests {
         let tokens = lex(source, "ok.c").unwrap();
         let mut unit = parse(&tokens, "ok.c").unwrap();
         analyze(&mut unit, "ok.c").unwrap();
+    }
+
+    #[test]
+    fn designated_aggregate_members_elide_braces() {
+        // C11 6.7.9p17, p20: `.m = 1, 2` starts at the first scalar of `m`.
+        sema_ok("struct I { int a, b; }; struct O { struct I in; int z; } o = { .in = 1, 2, 3 };");
+        sema_ok("struct I { int a, b; }; union V { int i; struct I in; } v = { .in = 1, 2 };");
+        sema_ok("struct I { int a, b; }; struct I a[] = { [1] = 3, 4, 5 };");
+        sema_ok("union V { int i; double d; }; struct O { int k; union V v; } o = { .v.d = 2.5 };");
+        assert!(sema_err(
+            "struct I { int a, b; }; union V { int i; struct I in; } v = { .in = 1, 2, 3 };"
+        )
+        .contains("excess elements in initializer"));
+        assert!(sema_err(
+            "struct I { int a, b; }; struct O { struct I in; } o = { .in = 1, 2, 3 };"
+        )
+        .contains("excess elements in initializer"));
+        assert!(sema_err(
+            "struct I { int a, b; }; struct O { struct I in; int z; } o = { .in = 1, 2, .nope = 3 };"
+        )
+        .contains("no member named 'nope'"));
+        assert!(sema_err(
+            "int x; union U { int i; int *p; }; struct S { union U u; } s = { .u.p = &x };"
+        )
+        .contains("uses an address in a union"));
     }
 
     #[test]
