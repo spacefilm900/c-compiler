@@ -1,10 +1,62 @@
 #!/bin/sh
-# Install CI packages. GitHub's ubuntu-24.04 runners list
-# azure.archive.ubuntu.com first in /etc/apt/apt-mirrors.txt; when that
-# name does not resolve, apt-get update and install fail with exit 100.
-# Prefer the public Ubuntu archive, keep the Azure mirror as a fallback,
-# and retry a few times.
+# Prefer tools already on the GitHub-hosted ubuntu-24.04 image
+# (Clang 16–18, make, python3, bison, g++). Only call apt-get for
+# something that is actually missing, so a broken apt mirror does
+# not fail the job. If apt is needed, prefer archive.ubuntu.com and
+# keep the Azure mirror as a fallback, and retry a few times.
 set -eu
+
+ensure_unversioned() {
+  cmd=$1
+  if command -v "$cmd" >/dev/null 2>&1; then
+    return 0
+  fi
+  # Runner images often ship only versioned names such as llvm-as-18.
+  latest=
+  for candidate in $(command -v "$cmd"-* 2>/dev/null | sort); do
+    latest=$candidate
+  done
+  if [ -n "$latest" ]; then
+    sudo ln -sf "$latest" /usr/local/bin/"$cmd"
+    return 0
+  fi
+  return 1
+}
+
+need=
+for pkg in "$@"; do
+  case "$pkg" in
+    clang)
+      command -v clang >/dev/null 2>&1 || need="$need clang"
+      ;;
+    llvm)
+      ensure_unversioned llvm-as || need="$need llvm"
+      ;;
+    make)
+      command -v make >/dev/null 2>&1 || need="$need make"
+      ;;
+    python3)
+      command -v python3 >/dev/null 2>&1 || need="$need python3"
+      ;;
+    bison)
+      command -v bison >/dev/null 2>&1 || need="$need bison"
+      ;;
+    g++)
+      command -v g++ >/dev/null 2>&1 || need="$need g++"
+      ;;
+    *)
+      need="$need $pkg"
+      ;;
+  esac
+done
+need=${need# }
+
+if [ -z "$need" ]; then
+  echo "All requested tools are already on the runner; skipping apt-get."
+  exit 0
+fi
+
+echo "Installing missing packages: $need"
 
 prefer_public_mirror() {
   if [ -f /etc/apt/apt-mirrors.txt ]; then
@@ -33,4 +85,5 @@ prefer_public_mirror
 # --error-on=any makes a partial index download a hard failure, so the
 # retry loop can try again instead of treating a warning as success.
 apt_retry update --error-on=any
-apt_retry install -y --no-install-recommends "$@"
+# shellcheck disable=SC2086
+apt_retry install -y --no-install-recommends $need
