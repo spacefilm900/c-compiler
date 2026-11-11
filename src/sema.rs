@@ -183,26 +183,6 @@ impl Sema {
     fn declare_global(&mut self, decl: &mut GlobalDecl) -> Result<(), Diagnostic> {
         let name = decl.name.clone();
         let mut ty = decl.ty.clone();
-        let shaped = if let Some(init) = &decl.init {
-            Some(self.shape_initializer(&ty, init, decl.line, decl.column)?)
-        } else {
-            None
-        };
-        if let Some((shaped_ty, _)) = &shaped {
-            ty = shaped_ty.clone();
-        }
-        decl.ty = ty.clone();
-        // `extern struct S x;` may name an object completed in another
-        // translation unit. A definition, including a tentative definition,
-        // needs a complete type (C11 6.9.2).
-        let extern_only = decl.init.is_none() && decl.storage == Storage::Extern;
-        if !ty.is_array() && !ty.is_complete() && !extern_only {
-            return self.err(
-                decl.line,
-                decl.column,
-                format!("variable '{name}' has incomplete type '{}'", ty.display()),
-            );
-        }
         let prior = self.file_get(&name);
         let prior_linkage = match &prior {
             None => None,
@@ -214,21 +194,15 @@ impl Sema {
                 );
             }
             Some(Symbol::Var(var)) => {
-                if !compatible(&var.ty, &ty) {
-                    return self.err(
-                        decl.line,
-                        decl.column,
-                        format!("conflicting types for '{name}'"),
-                    );
-                }
-                ty = composite(&var.ty, &ty);
-                decl.ty = ty.clone();
                 Some(var.global.as_ref().expect("file-scope variable").linkage)
             }
         };
         let linkage =
             self.object_linkage(decl.storage, prior_linkage, decl.line, decl.column, &name)?;
-        if prior.is_none() {
+        let prebound = prior.is_none();
+        if prebound {
+            // C11 6.2.1p7: the identifier is in scope after its declarator,
+            // including in the initializer.
             let state = if decl.init.is_none() && decl.storage == Storage::Extern {
                 GlobalState::Declared
             } else if decl.init.is_none() {
@@ -244,6 +218,41 @@ impl Sema {
                 global: Some(GlobalInfo { linkage, state }),
                 file_visible: true,
             }));
+        }
+        let shaped = if let Some(init) = &decl.init {
+            Some(self.shape_initializer(&ty, init, decl.line, decl.column)?)
+        } else {
+            None
+        };
+        if let Some((shaped_ty, _)) = &shaped {
+            ty = shaped_ty.clone();
+        }
+        if let Some(Symbol::Var(var)) = self.file_get(&name) {
+            if !prebound {
+                if !compatible(&var.ty, &ty) {
+                    return self.err(
+                        decl.line,
+                        decl.column,
+                        format!("conflicting types for '{name}'"),
+                    );
+                }
+                ty = composite(&var.ty, &ty);
+            }
+        }
+        decl.ty = ty.clone();
+        // `extern struct S x;` may name an object completed in another
+        // translation unit. A definition, including a tentative definition,
+        // needs a complete type (C11 6.9.2).
+        let extern_only = decl.init.is_none() && decl.storage == Storage::Extern;
+        if !ty.is_array() && !ty.is_complete() && !extern_only {
+            return self.err(
+                decl.line,
+                decl.column,
+                format!("variable '{name}' has incomplete type '{}'", ty.display()),
+            );
+        }
+        if prebound {
+            self.set_global_type(&name, ty.clone());
         } else {
             self.reveal_file(&name);
             self.set_global_type(&name, ty.clone());
@@ -1945,6 +1954,15 @@ impl Sema {
             };
             return self.err(decl.line, decl.column, message);
         }
+        // C11 6.2.1p7: the identifier is in scope after its declarator,
+        // including in the initializer.
+        self.insert(Symbol::Var(VarSym {
+            name: decl.name.clone(),
+            slot: decl.slot.clone(),
+            ty: decl.ty.clone(),
+            global: None,
+            file_visible: true,
+        }));
         let init = decl.init.clone();
         let (ty, stores) = if let Some(init) = &init {
             self.shape_initializer(&decl.ty, init, decl.line, decl.column)?
@@ -1955,14 +1973,7 @@ impl Sema {
             return self.err(decl.line, decl.column, incomplete_local(&decl.name, &ty));
         }
         decl.ty = ty.clone();
-        // The declarator is in scope for its initializer (C scope rules).
-        self.insert(Symbol::Var(VarSym {
-            name: decl.name.clone(),
-            slot: decl.slot.clone(),
-            ty: ty.clone(),
-            global: None,
-            file_visible: true,
-        }));
+        self.set_local_var_type(&decl.name, ty.clone());
         if decl.init.is_some() {
             let mut stores = stores;
             self.check_stores(&mut stores)?;
@@ -1982,6 +1993,19 @@ impl Sema {
                 format!("redefinition of '{}'", decl.name),
             );
         }
+        let symbol = self.fresh_static_name(&decl.name);
+        let slot = format!("@{symbol}");
+        decl.slot = slot.clone();
+        decl.checked = None;
+        // C11 6.2.1p7: the identifier is in scope after its declarator,
+        // including in the initializer.
+        self.insert(Symbol::Var(VarSym {
+            name: decl.name.clone(),
+            slot,
+            ty: decl.ty.clone(),
+            global: None,
+            file_visible: true,
+        }));
         let init = decl.init.clone();
         let (ty, stores) = if let Some(init) = &init {
             self.shape_initializer(&decl.ty, init, decl.line, decl.column)?
@@ -1991,18 +2015,8 @@ impl Sema {
         if !ty.is_complete() {
             return self.err(decl.line, decl.column, incomplete_local(&decl.name, &ty));
         }
-        let symbol = self.fresh_static_name(&decl.name);
-        let slot = format!("@{symbol}");
         decl.ty = ty.clone();
-        decl.slot = slot.clone();
-        decl.checked = None;
-        self.insert(Symbol::Var(VarSym {
-            name: decl.name.clone(),
-            slot,
-            ty: ty.clone(),
-            global: None,
-            file_visible: true,
-        }));
+        self.set_local_var_type(&decl.name, ty.clone());
         let value = if decl.init.is_some() {
             let mut stores = stores;
             self.check_stores(&mut stores)?;
@@ -2361,7 +2375,7 @@ impl Sema {
     }
 
     fn check_expr(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
-        if let Expr::Var {
+        let implicit_func_name = if let Expr::Var {
             name, line, column, ..
         } = expr
         {
@@ -2378,8 +2392,13 @@ impl Sema {
                 let line = *line;
                 let column = *column;
                 *expr = Expr::str_lit(bytes, StrEnc::Byte, line, column);
+                true
+            } else {
+                false
             }
-        }
+        } else {
+            false
+        };
         match expr {
             Expr::Int { value_ty, .. } => {
                 let value_ty = *value_ty;
@@ -2404,7 +2423,22 @@ impl Sema {
             Expr::Call { .. } => self.check_call(expr),
             Expr::Index { .. } => self.check_index(expr),
             Expr::Decay { .. } => Ok(()),
-            Expr::Str { .. } => self.check_str(expr),
+            Expr::Str { .. } => {
+                self.check_str(expr)?;
+                // C11 6.4.2.2: __func__ is `static const char [N]`, not an
+                // unqualified string literal (6.4.5p6).
+                if implicit_func_name {
+                    let ty = expr
+                        .ty()
+                        .expect("string literal is typed")
+                        .with_quals(Quals {
+                            is_const: true,
+                            ..Quals::default()
+                        });
+                    expr.set_ty(ty);
+                }
+                Ok(())
+            }
             Expr::Member { .. } => self.check_member(expr),
             Expr::VaArg { .. } => self.check_va_arg(expr),
             Expr::VaOp { .. } => self.check_va_op(expr),
@@ -5946,6 +5980,37 @@ mod tests {
         assert!(
             ir.contains("ret i32 3"),
             "unselected sizeof designator must not be evaluated: {ir}"
+        );
+
+        // ICE and runtime _Generic must agree on the const array type.
+        let ir = crate::compile_to_ir(
+            "int f(void) { enum { N = _Generic(&__func__, const char (*)[2]: 1, default: 0) }; return N != _Generic(&__func__, const char (*)[2]: 1, default: 0); }",
+            "generic-func-agree.c",
+        )
+        .unwrap();
+        assert!(
+            !ir.contains("icmp ne i32 1, 0"),
+            "ICE and runtime _Generic(&__func__) must agree: {ir}"
+        );
+
+        // The declared object is in scope in its initializer (C11 6.2.1p7).
+        let ir = crate::compile_to_ir(
+            "int main(void) { int a[1] = { [0 && sizeof a] = 7 }; return a[0]; }",
+            "designator-self.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("store i32 7"),
+            "designator may name the object being initialized: {ir}"
+        );
+        let ir = crate::compile_to_ir(
+            "int a[1] = { [0 && sizeof a] = 7 }; int main(void) { return a[0]; }",
+            "designator-self-global.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("store i32 7") || ir.contains("[1 x i32] [i32 7]"),
+            "file-scope designator may name the object: {ir}"
         );
 
         // An unselected file-scope compound literal must not leave a global.
