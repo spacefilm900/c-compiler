@@ -4959,7 +4959,8 @@ global int [] a =
         assert!(parse_err("int main(void) { return 1 }").contains("expected ';'"));
         assert!(parse_err("int main(void { return 0; }").contains("expected ')'"));
         assert!(parse_err("struct S { int x: 0; };").contains("zero width"));
-        assert!(parse_err("int a[n];").contains("variable-length arrays are not supported"));
+        assert!(parse_err("int a[n];").contains("undeclared identifier"));
+        assert!(parse_err("int n; int a[n];").contains("variable-length arrays are not supported"));
         assert!(parse_err("int a[0];").contains("array size must be positive"));
         // _Static_assert (C11 6.7.10) and _Alignof (6.5.3.4).
         assert!(parsed("_Static_assert(sizeof(int) == 4, \"ok\");\n").is_empty());
