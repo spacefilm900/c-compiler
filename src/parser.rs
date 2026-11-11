@@ -4381,13 +4381,12 @@ fn eval_ice_unary(op: UnaryOp, expr: &Expr, env: Env) -> Result<BVal, BoundErr> 
                 })
             }
         }
-        UnaryOp::Not => {
-            let zero = value.bits & value.ty.mask() == 0;
-            Ok(BVal {
-                bits: u64::from(!zero),
-                ty: TypeName::Int,
-            })
-        }
+        // C11 6.5.3.3p5: the result is 1 if the operand compares equal
+        // to 0, and 0 otherwise. The result has type `int`.
+        UnaryOp::Not => Ok(BVal {
+            bits: u64::from(value.bits & value.ty.mask() == 0),
+            ty: TypeName::Int,
+        }),
         UnaryOp::BitNot => Ok(BVal {
             bits: (!value.bits) & value.ty.mask(),
             ty: value.ty,
@@ -5527,6 +5526,72 @@ func int main
       sizeof unsigned long
 "
         );
+    }
+
+    #[test]
+    fn logical_not_in_integer_constant_expressions() {
+        // C11 6.5.3.3p5: the result of `!` is 1 if the operand compares
+        // equal to 0, and 0 otherwise. The result has type `int`. These
+        // cases are parse-time integer constant expressions (6.6p3, p6)
+        // used by `_Static_assert` (6.7.10), enumerators, and array bounds.
+        assert!(parsed("_Static_assert(!0, \"ok\");\n").is_empty());
+        assert!(
+            parse_err("_Static_assert(!1, \"error\");").contains("static assertion failed: error")
+        );
+        assert!(parsed("enum { E = !0 }; int x = E;\n").contains("global int x =\n  int 1\n"));
+        assert!(parsed("int a[!0 + 1];\n").contains("global int [2] a"));
+
+        // Short-circuit `&&` and `||` must not evaluate the unselected
+        // operand (6.5.13, 6.5.14), including after `!`.
+        assert!(parsed("enum { E = !(0 && (1 / 0)) }; int x = E;\n")
+            .contains("global int x =\n  int 1\n"));
+        assert!(parsed("enum { E = !(1 || (1 / 0)) }; int x = E;\n")
+            .contains("global int x =\n  int 0\n"));
+        assert!(parsed("int a[!(0 && (1 / 0)) + 1];\n").contains("global int [2] a"));
+        assert!(parsed("int a[!(1 || (1 / 0)) + 1];\n").contains("global int [1] a"));
+
+        // Repeated inversion, and a value other than 0 or 1.
+        assert!(parsed("int a[!!0 + 1];\n").contains("global int [1] a"));
+        assert!(parsed("int a[!!1 + 1];\n").contains("global int [2] a"));
+        assert!(parsed("int a[!!!0 + 1];\n").contains("global int [2] a"));
+        assert!(parsed("int a[!5 + 1];\n").contains("global int [1] a"));
+        assert!(parsed("int a[!!5 + 1];\n").contains("global int [2] a"));
+
+        // The same expressions at each ICE entry point, including nested
+        // and multiple `_Static_assert`.
+        assert!(parsed(
+            "_Static_assert(!0, \"a\"); _Static_assert(!!1, \"b\"); _Static_assert(!!!0, \"c\");\n"
+        )
+        .is_empty());
+        assert!(
+            parsed("int main(void) { _Static_assert(!0, \"b\"); return 0; }\n")
+                .contains("func int main")
+        );
+        assert!(
+            parsed("struct S { int x; _Static_assert(!0, \"m\"); } s;\n")
+                .contains("global struct S s")
+        );
+        assert!(parse_err("int main(void) { _Static_assert(!1, \"b\"); }")
+            .contains("static assertion failed: b"));
+        assert!(parse_err("struct S { int a; _Static_assert(!1, \"m\"); };")
+            .contains("static assertion failed: m"));
+        assert!(parsed(
+            "enum { A = !0, B = !!0, C = !!1, D = !!!0, E = !5, F = !!5 }; int x[A + C + D + F];\n"
+        )
+        .contains("global int [4] x"));
+        let arrays = parsed("int a[!0 + 1]; int b[!!1 + 1]; int c[!!!0 + 1];\n");
+        assert!(
+            arrays.contains("global int [2] a")
+                && arrays.contains("global int [2] b")
+                && arrays.contains("global int [2] c")
+        );
+        // `!1` is 0, so it is not a valid array bound.
+        assert!(parse_err("enum { E = !1 }; int a[E];").contains("array size must be positive"));
+
+        // Bit-field widths are also parse-time ICEs. `!0` is 1, so the
+        // field is valid; `!1` is 0, which is a diagnostic on a named field.
+        assert!(parsed("struct S { unsigned f : !0; } s;\n").contains("global struct S s"));
+        assert!(parse_err("struct S { unsigned f : !1; };").contains("zero width"));
     }
 
     #[test]
