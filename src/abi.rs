@@ -4,10 +4,10 @@
 //! split into eightbyte chunks. Integer and pointer chunks travel in general
 //! registers. An SSE chunk travels in an XMM register: one `float`, one
 //! `double`, or `<2 x float>` when two floats share the eightbyte. INTEGER
-//! wins over SSE in the same eightbyte. An x87 aggregate is passed in memory,
-//! and returning one is rejected because the value belongs in `%st0`. An
-//! aggregate larger than two eightbytes, or one with an unaligned field, is
-//! passed in memory.
+//! wins over SSE in the same eightbyte. An x87 aggregate is passed in memory.
+//! Returning one whose eightbytes are `X87` then `X87UP` uses `%st0`
+//! (`x86_fp80`). Any other x87 shape is memory. An aggregate larger than two
+//! eightbytes, or one with an unaligned field, is passed in memory.
 //!
 //! LLVM IR for this ABI does not pass the struct type itself. A register
 //! aggregate is coerced to integer pieces (or `ptr` when an eightbyte is
@@ -21,7 +21,8 @@ use crate::ast::{align_up, CType, FloatKind};
 pub enum AbiFail {
     /// The struct or union has not been completed, so it has no size.
     Incomplete,
-    /// An eightbyte would occupy an SSE or x87 register.
+    /// Kept so a future target can reject a class this one lowers. No
+    /// aggregate on x86_64 System V uses it: x87 returns are [`AggAbi::X87`].
     FloatReg,
 }
 
@@ -85,6 +86,10 @@ pub enum AggAbi {
     Direct(Vec<RegPiece>),
     /// The caller allocates memory. Parameters use `byval`; returns use `sret`.
     Memory,
+    /// Returned in `%st0` as `x86_fp80`. The psABI uses this when the
+    /// eightbytes are `X87` followed by `X87UP` (a `long double` aggregate).
+    /// The same class is passed in memory, so parameters never use this.
+    X87,
 }
 
 impl AggAbi {
@@ -144,9 +149,9 @@ pub struct FnSig {
 
 /// Whether the aggregate is a parameter or a return value.
 ///
-/// The psABI passes an `X87` / `X87UP` argument in memory, and returns it on
-/// the x87 stack. This compiler can copy the memory argument. It cannot yet
-/// return that value in `%st0`.
+/// The psABI passes an `X87` / `X87UP` argument in memory, and returns that
+/// pair on the x87 stack. A return whose eightbytes are `X87` then `X87UP`
+/// is [`AggAbi::X87`]. Every other x87 shape is [`AggAbi::Memory`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AggUse {
     Param,
@@ -256,6 +261,7 @@ fn lower_return(ty: &CType) -> Result<(String, String, Option<AggAbi>, Option<St
                 Some(format!("sret({}) align {}", ty.ir_type(), ty.align())),
             )),
             AggAbi::Direct(pieces) => Ok((pieces_type(pieces), String::new(), Some(agg), None)),
+            AggAbi::X87 => Ok(("x86_fp80".to_string(), String::new(), Some(agg), None)),
         };
     }
     let prefix = match ty.abi_attr() {
@@ -269,7 +275,7 @@ fn lower_param(ty: &CType) -> Result<Vec<Part>, AbiFail> {
     if ty.unqualified().is_record() {
         let agg = classify_for(ty, AggUse::Param)?;
         return Ok(match agg {
-            AggAbi::Memory => vec![memory_part(ty)],
+            AggAbi::Memory | AggAbi::X87 => vec![memory_part(ty)],
             AggAbi::Direct(pieces) => pieces
                 .into_iter()
                 .map(|piece| Part {
@@ -290,10 +296,9 @@ fn lower_param(ty: &CType) -> Result<Vec<Part>, AbiFail> {
 /// Classify a complete struct or union used as a parameter.
 ///
 /// Incomplete types fail. An SSE eightbyte is an XMM piece. An x87 aggregate
-/// is memory: the psABI passes that class on the stack. Returning an x87
-/// aggregate fails, because the value belongs in `%st0`. Memory aggregates
-/// succeed even when they contain a floating-point member, because those
-/// are a byte copy.
+/// is passed in memory. A return whose eightbytes are `X87` then `X87UP` is
+/// [`AggAbi::X87`] (`x86_fp80` in `%st0`). Any other x87 shape, including a
+/// larger aggregate, is memory.
 pub fn classify_aggregate(ty: &CType) -> Result<AggAbi, AbiFail> {
     classify_for(ty, AggUse::Param)
 }
@@ -344,7 +349,15 @@ pub fn classify_for(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
         .iter()
         .any(|class| matches!(class, Class::X87 | Class::X87Up));
     if x87 && use_as == AggUse::Return {
-        return Err(AbiFail::FloatReg);
+        // X87 followed by X87UP is one `long double`, returned in `%st0`.
+        // The argument side of that class is memory; see the branch below.
+        let x87_pair = classes.len() == 2
+            && classes.first() == Some(&Class::X87)
+            && classes.get(1) == Some(&Class::X87Up);
+        if x87_pair {
+            return Ok(AggAbi::X87);
+        }
+        return Ok(AggAbi::Memory);
     }
     if x87 {
         // The psABI passes X87 and X87UP arguments in memory.
@@ -722,7 +735,7 @@ mod tests {
     fn direct(ty: &CType) -> Vec<String> {
         match classify_aggregate(ty).unwrap() {
             AggAbi::Direct(pieces) => pieces.into_iter().map(|piece| piece.ir_type()).collect(),
-            AggAbi::Memory => panic!("expected registers"),
+            AggAbi::Memory | AggAbi::X87 => panic!("expected registers"),
         }
     }
 
@@ -1036,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn long_double_aggregate_is_memory_in_and_rejected_out() {
+    fn long_double_aggregate_is_memory_in_and_x87_out() {
         let ld = record(
             301,
             vec![field("x", CType::Float(FloatKind::LongDouble), 0)],
@@ -1048,7 +1061,10 @@ mod tests {
             classify_for(&ld, AggUse::Param).unwrap(),
             AggAbi::Memory
         ));
-        assert_eq!(classify_for(&ld, AggUse::Return), Err(AbiFail::FloatReg));
+        assert!(matches!(
+            classify_for(&ld, AggUse::Return).unwrap(),
+            AggAbi::X87
+        ));
 
         // X87UP not preceded by X87, because the long shares the first
         // eightbyte and INTEGER wins there. Both directions are memory.

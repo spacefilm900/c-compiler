@@ -14,8 +14,6 @@
 17 strict-pointer
 19 inconclusive
 20 strict-pointer
-21 bit-field
-22 bit-field
 24 strict-pointer
 28 strict-pointer
 29 strict-pointer

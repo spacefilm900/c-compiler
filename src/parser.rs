@@ -889,6 +889,7 @@ impl Parser<'_> {
         if fields.is_empty() {
             return Err(self.error_at(line, column, format!("{word} '{label}' has no members")));
         }
+        self.check_flexible_members(kind, &fields, line, column)?;
         let spec: Vec<LayoutMember> = fields
             .iter()
             .map(|field| LayoutMember {
@@ -1245,9 +1246,17 @@ impl Parser<'_> {
         if self.current().kind != TokenKind::String {
             return Err(self.error("expected a string after __asm__"));
         }
-        let mut bytes = self.advance().bytes.expect("string token");
+        let mut bytes = Vec::new();
         while self.current().kind == TokenKind::String {
-            bytes.extend(self.advance().bytes.expect("string token"));
+            let tok = self.advance();
+            if !matches!(lit_prefix(&tok.spelling), LitPrefix::None | LitPrefix::U8) {
+                return Err(self.error_at(
+                    tok.line,
+                    tok.column,
+                    "an __asm__ label must use a byte string literal",
+                ));
+            }
+            bytes.extend(tok.bytes.expect("string token"));
         }
         self.expect(TokenKind::RParen, "')'")?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())
@@ -1310,14 +1319,13 @@ impl Parser<'_> {
                     } else {
                         None
                     };
-                    if width.is_none() && ty.is_array() && ty.array_len().is_none() {
-                        return Err(self.error_at(
-                            named.line,
-                            named.column,
-                            "flexible array members are not supported",
-                        ));
-                    }
-                    if width.is_none() && !ty.is_complete() {
+                    // An incomplete array may be a flexible array member. The
+                    // constraint (last member, another named member, not a
+                    // union) is checked once the member list is finished.
+                    if width.is_none()
+                        && !(ty.is_array() && ty.array_len().is_none())
+                        && !ty.is_complete()
+                    {
                         return Err(self.error_at(
                             named.line,
                             named.column,
@@ -1572,7 +1580,7 @@ impl Parser<'_> {
             ),
             Layer::Object(_) => (Vec::new(), Vec::new()),
         };
-        let kind = self.layer_to_kind(layer)?;
+        let kind = self.layer_to_kind(layer, line, column)?;
         let symbol = self.parse_decl_suffix()?;
         Ok(NamedDecl {
             name,
@@ -1585,9 +1593,17 @@ impl Parser<'_> {
         })
     }
 
-    fn layer_to_kind(&self, layer: Layer) -> Result<DeclKind, Diagnostic> {
-        Ok(match layer {
-            Layer::Object(ty) => DeclKind::Object(ty),
+    fn layer_to_kind(
+        &self,
+        layer: Layer,
+        line: usize,
+        column: usize,
+    ) -> Result<DeclKind, Diagnostic> {
+        match layer {
+            Layer::Object(ty) => {
+                self.reject_flexible_array(&ty, line, column)?;
+                Ok(DeclKind::Object(ty))
+            }
             Layer::Function {
                 ret,
                 params,
@@ -1595,13 +1611,112 @@ impl Parser<'_> {
                 variadic,
                 introduced: _,
                 introduced_names: _,
-            } => DeclKind::Function {
-                ret,
-                params,
-                prototype,
-                variadic,
-            },
-        })
+            } => {
+                self.reject_flexible_array(&ret, line, column)?;
+                for param in &params {
+                    self.reject_flexible_array(&param.ty, param.line, param.column)?;
+                }
+                Ok(DeclKind::Function {
+                    ret,
+                    params,
+                    prototype,
+                    variadic,
+                })
+            }
+        }
+    }
+
+    /// C11 6.7.2.1: a struct with a flexible array member, and any union that
+    /// contains one, shall not be an element of an array. A parameter array
+    /// has already been adjusted to a pointer, so `void f(struct F a[])`
+    /// is a pointer and is allowed.
+    fn reject_flexible_array(
+        &self,
+        ty: &CType,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        if ty.contains_flexible_array() {
+            return Err(self.error_at(
+                line,
+                column,
+                "type with a flexible array member cannot be an array element",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Flexible array member constraints (C11 6.7.2.1).
+    ///
+    /// The member is the last one, the structure has another named member,
+    /// and the structure is not a union. The element type is complete (the
+    /// declarator already required that). Such a structure, and any union
+    /// that contains one, is not itself a member or an array element.
+    fn check_flexible_members(
+        &self,
+        kind: RecordKind,
+        fields: &[StructField],
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        let flexible: Vec<usize> = fields
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| field.is_flexible())
+            .map(|(index, _)| index)
+            .collect();
+        if kind == RecordKind::Union && !flexible.is_empty() {
+            return Err(self.error_at(
+                line,
+                column,
+                "flexible array member is not allowed in a union",
+            ));
+        }
+        if flexible.len() > 1
+            || flexible
+                .first()
+                .is_some_and(|index| index + 1 != fields.len())
+        {
+            return Err(self.error_at(
+                line,
+                column,
+                "flexible array member is not the last member",
+            ));
+        }
+        if flexible.len() == 1 && named_members_besides_flexible(fields) == 0 {
+            return Err(self.error_at(
+                line,
+                column,
+                "flexible array member requires another named member",
+            ));
+        }
+        for field in fields {
+            if field.is_flexible() {
+                if field.ty.array_elem().is_some_and(CType::flexible_carrier) {
+                    return Err(self.error_at(
+                        line,
+                        column,
+                        "type with a flexible array member cannot be an array element",
+                    ));
+                }
+                continue;
+            }
+            if kind == RecordKind::Struct && field.ty.flexible_carrier() {
+                return Err(self.error_at(
+                    line,
+                    column,
+                    "type with a flexible array member cannot be a struct member or array element",
+                ));
+            }
+            if field.ty.contains_flexible_array() {
+                return Err(self.error_at(
+                    line,
+                    column,
+                    "type with a flexible array member cannot be an array element",
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn parse_param_list(&mut self) -> Result<ParsedParams, Diagnostic> {
@@ -2840,19 +2955,21 @@ impl Parser<'_> {
             return Err(self.error_at(line, column, "type name cannot declare an identifier"));
         }
         let (line, column) = decl_pos(&raw);
-        match self.derive(base, &raw, line, column)? {
-            Layer::Object(ty) => Ok(ty),
+        let ty = match self.derive(base, &raw, line, column)? {
+            Layer::Object(ty) => ty,
             Layer::Function {
                 ret,
                 params,
                 variadic,
                 ..
-            } => Ok(CType::func(
+            } => CType::func(
                 ret,
                 params.iter().map(|param| param.ty.unqualified()).collect(),
                 variadic,
-            )),
-        }
+            ),
+        };
+        self.reject_flexible_array(&ty, line, column)?;
+        Ok(ty)
     }
 
     fn lookahead_is_type(&self) -> bool {
@@ -2996,32 +3113,27 @@ impl Parser<'_> {
             }
             TokenKind::String => {
                 self.advance();
-                let mut pieces = vec![(
-                    token.spelling.starts_with('L'),
-                    token.bytes.expect("string token"),
-                )];
-                // Translation phase 6 concatenates adjacent literals. If any
-                // piece has an `L` prefix, the result is a wide string
-                // (C11 6.4.5p5). `u`, `U`, and `u8` are rejected by the lexer.
+                // Translation phase 6 (C11 6.4.5). An unprefixed literal adopts
+                // the other prefix. Two different non-ordinary prefixes are a
+                // diagnostic. `u8` is a non-ordinary prefix; the result is
+                // still an array of `char`.
+                let mut prefix = lit_prefix(&token.spelling);
+                let mut bytes = token.bytes.expect("string token");
                 while self.current().kind == TokenKind::String {
                     let next = self.advance();
-                    pieces.push((
-                        next.spelling.starts_with('L'),
-                        next.bytes.expect("string token"),
-                    ));
+                    let next_prefix = lit_prefix(&next.spelling);
+                    let Some(merged) = merge_prefix(prefix, next_prefix) else {
+                        return Err(self.error_at(
+                            next.line,
+                            next.column,
+                            "cannot concatenate string literals with different encoding prefixes",
+                        ));
+                    };
+                    let next_bytes = next.bytes.expect("string token");
+                    bytes = concat_encoded(prefix, &bytes, next_prefix, &next_bytes, merged);
+                    prefix = merged;
                 }
-                let wide = pieces.iter().any(|(is_wide, _)| *is_wide);
-                let mut bytes = Vec::new();
-                for (piece_wide, piece) in pieces {
-                    if wide && !piece_wide {
-                        for byte in piece {
-                            bytes.extend_from_slice(&u32::from(byte).to_le_bytes());
-                        }
-                    } else {
-                        bytes.extend(piece);
-                    }
-                }
-                Ok(Expr::str_lit(bytes, wide, token.line, token.column))
+                Ok(Expr::str_lit(bytes, prefix.enc(), token.line, token.column))
             }
             TokenKind::LParen => {
                 self.advance();
@@ -3094,6 +3206,103 @@ impl Parser<'_> {
         }
         self.filename
     }
+}
+
+/// Encoding prefix of one string-literal token, taken from its spelling.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LitPrefix {
+    None,
+    U8,
+    U,
+    UU,
+    L,
+}
+
+impl LitPrefix {
+    fn unit(self) -> usize {
+        match self {
+            LitPrefix::None | LitPrefix::U8 => 1,
+            LitPrefix::U => 2,
+            LitPrefix::UU | LitPrefix::L => 4,
+        }
+    }
+
+    fn enc(self) -> StrEnc {
+        match self {
+            LitPrefix::None | LitPrefix::U8 => StrEnc::Byte,
+            LitPrefix::U => StrEnc::Utf16,
+            LitPrefix::L => StrEnc::Wchar,
+            LitPrefix::UU => StrEnc::Utf32,
+        }
+    }
+}
+
+fn lit_prefix(spelling: &str) -> LitPrefix {
+    if spelling.starts_with("u8") {
+        LitPrefix::U8
+    } else if spelling.starts_with('u') {
+        LitPrefix::U
+    } else if spelling.starts_with('U') {
+        LitPrefix::UU
+    } else if spelling.starts_with('L') {
+        LitPrefix::L
+    } else {
+        LitPrefix::None
+    }
+}
+
+/// An unprefixed literal adopts the other prefix. Different non-ordinary
+/// prefixes do not concatenate (C11 6.4.5).
+fn merge_prefix(left: LitPrefix, right: LitPrefix) -> Option<LitPrefix> {
+    match (left, right) {
+        (a, b) if a == b => Some(a),
+        (LitPrefix::None, other) | (other, LitPrefix::None) => Some(other),
+        _ => None,
+    }
+}
+
+fn concat_encoded(
+    left_prefix: LitPrefix,
+    left: &[u8],
+    right_prefix: LitPrefix,
+    right: &[u8],
+    merged: LitPrefix,
+) -> Vec<u8> {
+    let mut out = retarget(left_prefix, left, merged);
+    out.extend(retarget(right_prefix, right, merged));
+    out
+}
+
+/// Re-encode `bytes` from `from` into `dest`. A narrower literal is
+/// zero-extended one source byte at a time. Same-width pieces are copied.
+/// Named members other than a flexible array, including names promoted
+/// from an anonymous struct or union (C11 6.7.2.1).
+fn named_members_besides_flexible(fields: &[StructField]) -> usize {
+    let mut count = 0usize;
+    for field in fields {
+        if field.bit_width == Some(0) || field.is_flexible() {
+            continue;
+        }
+        if field.is_anonymous_record() {
+            if let Some(inner) = field.ty.struct_ref().and_then(|handle| handle.fields()) {
+                count += named_members_besides_flexible(&inner);
+            }
+        } else if !field.name.is_empty() {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn retarget(from: LitPrefix, bytes: &[u8], dest: LitPrefix) -> Vec<u8> {
+    if from.unit() == dest.unit() {
+        return bytes.to_vec();
+    }
+    let mut out = Vec::with_capacity(bytes.len().saturating_mul(dest.unit()));
+    for byte in bytes {
+        out.extend(dest.enc().widen_byte(*byte));
+    }
+    out
 }
 
 struct Specs {
@@ -3376,14 +3585,9 @@ fn type_only(expr: &Expr) -> Result<CType, BoundErr> {
     match expr {
         Expr::Int { value_ty, .. } => Ok(CType::from_name(*value_ty)),
         Expr::Float { kind, .. } => Ok(CType::Float(*kind)),
-        Expr::Str { bytes, wide, .. } => {
-            let elem = if *wide { TypeName::Int } else { TypeName::Char };
-            let len = if *wide {
-                bytes.len() as u64 / 4 + 1
-            } else {
-                bytes.len() as u64 + 1
-            };
-            Ok(CType::array(CType::from_name(elem), Some(len)))
+        Expr::Str { bytes, enc, .. } => {
+            let len = bytes.len() as u64 / enc.unit() as u64 + 1;
+            Ok(CType::array(CType::from_name(enc.elem()), Some(len)))
         }
         Expr::Sizeof { .. } => Ok(CType::from_name(TypeName::ULong)),
         Expr::Unary { op, expr, .. } => {

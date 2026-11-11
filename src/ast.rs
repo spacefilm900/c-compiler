@@ -264,6 +264,13 @@ impl StructField {
         self.bit_width.is_some()
     }
 
+    /// A flexible array member: an incomplete array that is not a bit-field
+    /// (C11 6.7.2.1). The array length is unknown and the element type is
+    /// complete.
+    pub fn is_flexible(&self) -> bool {
+        self.bit_width.is_none() && self.ty.is_array() && self.ty.array_len().is_none()
+    }
+
     /// An unnamed struct or union member that is not a bit-field. C11 calls
     /// it anonymous when its type specifier has no tag.
     pub fn is_anonymous_record(&self) -> bool {
@@ -474,6 +481,12 @@ impl StructRef {
     pub fn has_bitfield(&self) -> bool {
         self.fields()
             .is_some_and(|fields| fields.iter().any(StructField::is_bitfield))
+    }
+
+    /// The last member is a flexible array (C11 6.7.2.1). `sizeof` excludes it.
+    pub fn has_flexible_member(&self) -> bool {
+        self.fields()
+            .is_some_and(|fields| fields.last().is_some_and(StructField::is_flexible))
     }
 
     pub fn complete(&self, fields: Vec<StructField>, size: u64, align: u32, llvm_name: String) {
@@ -731,6 +744,58 @@ impl FloatKind {
     }
 }
 
+/// Encoding of a string literal after phase-6 concatenation (C11 6.4.5).
+///
+/// Ordinary and `u8` literals are [`StrEnc::Byte`]: a UTF-8 string is an
+/// array of `char`. `u` is `char16_t`, the target's unsigned 16-bit type.
+/// `U` is `char32_t`, the target's unsigned 32-bit type. `L` is `wchar_t`,
+/// which is `int` on this target. Code units are stored little-endian and
+/// do not include the terminating NUL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrEnc {
+    Byte,
+    Utf16,
+    Wchar,
+    Utf32,
+}
+
+impl StrEnc {
+    pub fn unit(self) -> usize {
+        match self {
+            StrEnc::Byte => 1,
+            StrEnc::Utf16 => 2,
+            StrEnc::Wchar | StrEnc::Utf32 => 4,
+        }
+    }
+
+    /// Element type of the array. `char16_t` and `char32_t` are the target's
+    /// unsigned 16-bit and 32-bit types. `wchar_t` is `int`.
+    pub fn elem(self) -> TypeName {
+        match self {
+            StrEnc::Byte => TypeName::Char,
+            StrEnc::Utf16 => TypeName::UShort,
+            StrEnc::Wchar => TypeName::Int,
+            StrEnc::Utf32 => TypeName::UInt,
+        }
+    }
+
+    pub fn align(self) -> u32 {
+        self.unit() as u32
+    }
+
+    /// Widen one source byte to this encoding's code unit, little-endian.
+    /// An unprefixed literal adopts a wider prefix by this rule.
+    pub fn widen_byte(self, byte: u8) -> Vec<u8> {
+        let mut value = u32::from(byte);
+        let mut out = Vec::with_capacity(self.unit());
+        for _ in 0..self.unit() {
+            out.push((value & 0xff) as u8);
+            value >>= 8;
+        }
+        out
+    }
+}
+
 /// A type this milestone can name: `void`, an integer (including `_Bool`), a
 /// floating type, a pointer, an array, a function, or a struct or union, each
 /// of which may be `const`, `volatile`, or `restrict`.
@@ -892,6 +957,44 @@ impl CType {
 
     pub fn record_has_bitfield(&self) -> bool {
         self.struct_ref().is_some_and(StructRef::has_bitfield)
+    }
+
+    /// A struct with a flexible array member, or a union that contains one
+    /// at any depth (C11 6.7.2.1p3). Pointers are not walked: a pointer to
+    /// such a struct is an ordinary pointer.
+    pub fn flexible_carrier(&self) -> bool {
+        match self.peel() {
+            CType::Array(elem, _) => elem.flexible_carrier(),
+            CType::Struct(handle) => {
+                if !handle.is_complete() {
+                    return false;
+                }
+                if handle.is_union() {
+                    handle
+                        .fields()
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|field| field.bit_width.is_none() && field.ty.flexible_carrier())
+                } else {
+                    handle.has_flexible_member()
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// An array whose element is a flexible-array carrier, including through
+    /// further arrays and through a pointer (`struct F (*)[2]`).
+    pub fn contains_flexible_array(&self) -> bool {
+        match self.peel() {
+            CType::Array(elem, _) => elem.flexible_carrier() || elem.contains_flexible_array(),
+            CType::Pointer(inner) => inner.contains_flexible_array(),
+            CType::Func(func) => {
+                func.ret.contains_flexible_array()
+                    || func.params.iter().any(CType::contains_flexible_array)
+            }
+            _ => false,
+        }
     }
 
     pub fn is_func(&self) -> bool {
@@ -1684,15 +1787,13 @@ pub enum Expr {
         column: usize,
         ty: Option<CType>,
     },
-    /// A string literal. `bytes` does not include the implicit NUL. An
-    /// ordinary literal has type `char[N]` with `N == bytes.len() + 1`. A
-    /// wide literal (`wide`) stores little-endian `wchar_t` code units and
-    /// has type `wchar_t[N]`, and `wchar_t` is `int` on this target.
+    /// A string literal. `bytes` does not include the implicit NUL. The
+    /// encoding selects the element type and the width of each code unit.
     /// `symbol` is the private global that holds the literal, filled in when
     /// the address is needed.
     Str {
         bytes: Vec<u8>,
-        wide: bool,
+        enc: StrEnc,
         line: usize,
         column: usize,
         symbol: Option<String>,
@@ -1957,10 +2058,10 @@ impl Expr {
         }
     }
 
-    pub fn str_lit(bytes: Vec<u8>, wide: bool, line: usize, column: usize) -> Self {
+    pub fn str_lit(bytes: Vec<u8>, enc: StrEnc, line: usize, column: usize) -> Self {
         Expr::Str {
             bytes,
-            wide,
+            enc,
             line,
             column,
             symbol: None,
@@ -2310,10 +2411,10 @@ pub struct IrFunc {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StrConst {
     pub name: String,
-    /// Includes the terminating NUL. A wide literal's units are little-endian
-    /// `wchar_t` values, four bytes each, including the wide NUL.
+    /// Includes the terminating NUL. Wider encodings store little-endian
+    /// code units, including the terminating wide NUL.
     pub bytes: Vec<u8>,
-    pub wide: bool,
+    pub enc: StrEnc,
 }
 
 #[derive(Debug, Clone)]

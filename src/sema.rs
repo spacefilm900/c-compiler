@@ -161,8 +161,9 @@ struct Sema {
     current_func: String,
     global_order: Vec<String>,
     func_order: Vec<String>,
-    /// String literals that need a private global, keyed by bytes including NUL.
-    strings: Vec<(Vec<u8>, String, bool)>,
+    /// String literals that need a private global, keyed by bytes including NUL
+    /// and the encoding. `u8` and ordinary literals share the byte encoding.
+    strings: Vec<(Vec<u8>, String, StrEnc)>,
     /// Block-scope `static` objects. They have no linkage, so they are not in
     /// the file-scope symbol table. The name is an LLVM symbol, not the C name.
     static_locals: Vec<IrGlobal>,
@@ -259,7 +260,7 @@ impl Sema {
 
     fn declare_func(&mut self, func: &mut FuncDef) -> Result<(), Diagnostic> {
         // A prototype may name an incomplete struct or union. A definition
-        // needs a complete type. Returning an x87 aggregate is rejected.
+        // needs a complete type. An x87 aggregate return uses `%st0`.
         if func.body.is_some() {
             self.require_passed_aggregate(&func.ret_type, func.line, func.column, true)?;
             for param in &func.params {
@@ -469,10 +470,10 @@ impl Sema {
         unit.strings = self
             .strings
             .iter()
-            .map(|(bytes, name, wide)| StrConst {
+            .map(|(bytes, name, enc)| StrConst {
                 name: name.clone(),
                 bytes: bytes.clone(),
-                wide: *wide,
+                enc: *enc,
             })
             .collect();
         Ok(())
@@ -547,11 +548,10 @@ impl Sema {
         let mut ty = ty.clone();
         if let CType::Array(elem, None) = &ty {
             let elem = (**elem).clone();
-            if let Some((bytes, wide)) = string_payload(init) {
-                if !wide && elem.is_character() {
-                    ty = CType::array(elem.clone(), Some(bytes.len() as u64 + 1));
-                } else if wide && elem.as_integer() == Some(TypeName::Int) {
-                    ty = CType::array(elem.clone(), Some(bytes.len() as u64 / 4 + 1));
+            if let Some((bytes, enc)) = string_payload(init) {
+                if string_elem_ok(&elem, enc) {
+                    let unit = enc.unit() as u64;
+                    ty = CType::array(elem.clone(), Some(bytes.len() as u64 / unit + 1));
                 } else if matches!(init, Init::Expr(_)) {
                     let (line, column) = init_pos(init);
                     return self.err(
@@ -712,10 +712,10 @@ impl Sema {
                 return Ok(());
             }
         }
-        if let Some((bytes, wide)) = string_payload(init) {
+        if let Some((bytes, enc)) = string_payload(init) {
             let bytes = bytes.to_vec();
-            if (!wide && is_char_array(ty)) || (wide && is_wchar_array(ty)) {
-                return self.fill_from_string(ty, &bytes, wide, base, stores, init);
+            if string_inits(ty, enc) {
+                return self.fill_from_string(ty, &bytes, enc, base, stores, init);
             }
             if matches!(init, Init::Expr(_)) {
                 let (line, column) = init_pos(init);
@@ -749,10 +749,10 @@ impl Sema {
                 return self.err(*line, *column, "excess elements in array initializer");
             }
             let off = base + index * elem_size;
-            if let Some((bytes, wide)) = string_payload(&items[pos]) {
+            if let Some((bytes, enc)) = string_payload(&items[pos]) {
                 let bytes = bytes.to_vec();
-                if (!wide && is_char_array(elem)) || (wide && is_wchar_array(elem)) {
-                    self.fill_from_string(elem, &bytes, wide, off, stores, &items[pos])?;
+                if string_inits(elem, enc) {
+                    self.fill_from_string(elem, &bytes, enc, off, stores, &items[pos])?;
                     pos += 1;
                     index += 1;
                     continue;
@@ -875,7 +875,12 @@ impl Sema {
             }
         }
         if pos < items.len() {
-            return self.err(*line, *column, "excess elements in struct initializer");
+            let message = if ty.struct_ref().is_some_and(StructRef::has_flexible_member) {
+                "initialization of a flexible array member"
+            } else {
+                "excess elements in struct initializer"
+            };
+            return self.err(*line, *column, message);
         }
         Ok(())
     }
@@ -1034,6 +1039,13 @@ impl Sema {
                     return self.err(*line, *column, "field designator on an array");
                 }
                 let Some(path) = field_designator_path(&current, name) else {
+                    if flexible_member_named(&current, name) {
+                        return self.err(
+                            *line,
+                            *column,
+                            "initialization of a flexible array member",
+                        );
+                    }
                     return self.err(*line, *column, format!("no member named '{name}'"));
                 };
                 let mut chosen = None;
@@ -1192,7 +1204,7 @@ impl Sema {
         &self,
         ty: &CType,
         bytes: &[u8],
-        wide: bool,
+        enc: StrEnc,
         base: u64,
         stores: &mut Vec<ElemStore>,
         init: &Init,
@@ -1201,20 +1213,17 @@ impl Sema {
         let Some(len) = ty.array_len() else {
             return self.err(line, column, "array size missing");
         };
-        let units: Vec<u64> = if wide {
-            bytes
-                .chunks(4)
-                .map(|chunk| {
-                    let mut acc = 0u64;
-                    for (index, byte) in chunk.iter().enumerate() {
-                        acc |= u64::from(*byte) << (8 * index);
-                    }
-                    acc
-                })
-                .collect()
-        } else {
-            bytes.iter().map(|byte| u64::from(*byte)).collect()
-        };
+        let unit = enc.unit();
+        let units: Vec<u64> = bytes
+            .chunks(unit)
+            .map(|chunk| {
+                let mut acc = 0u64;
+                for (index, byte) in chunk.iter().enumerate() {
+                    acc |= u64::from(*byte) << (8 * index);
+                }
+                acc
+            })
+            .collect();
         if units.len() as u64 > len {
             return self.err(line, column, "initializer string is too long for the array");
         }
@@ -1256,15 +1265,15 @@ impl Sema {
         if ty.is_union() || ty.record_has_bitfield() {
             return self.fold_bit_object(name, ty, stores);
         }
-        if stores.iter().any(|store| store.bits.is_some()) {
-            let first = &stores[0].expr;
-            return self.err(
-                first.line(),
-                first.column(),
-                format!(
-                    "constant initializer of '{name}' with a nested bit-field struct is not supported"
-                ),
-            );
+        // A plain member of a nested bit-field record has no bit store. The
+        // record is still a byte image, so that member has to be written into
+        // it. A bit store is also enough on its own: a union's range walk
+        // sees only the first member, and a later bit-field member would
+        // otherwise be missed.
+        let mut nested = Vec::new();
+        bit_record_ranges(ty, 0, &mut nested);
+        if stores.iter().any(|store| store.bits.is_some()) || !nested.is_empty() {
+            return self.fold_nested_bits(name, ty, stores);
         }
         let mut folded = Vec::new();
         for store in stores {
@@ -1322,6 +1331,70 @@ impl Sema {
             }
         }
         Ok(ConstInit::Bytes(bytes))
+    }
+
+    /// A file-scope initializer whose top type is an ordinary struct or array,
+    /// with a bit-field struct nested inside it. The bit-field subobjects
+    /// become raw bytes. A sibling field that is an address stays a relocation.
+    fn fold_nested_bits(
+        &self,
+        name: &str,
+        ty: &CType,
+        stores: &[ElemStore],
+    ) -> Result<ConstInit, Diagnostic> {
+        let size = ty.size().unwrap_or(0) as usize;
+        let mut image = vec![0u8; size];
+        let mut ranges = Vec::new();
+        bit_record_ranges(ty, 0, &mut ranges);
+        let mut folded = Vec::new();
+        for store in stores {
+            if let Some(bits) = &store.bits {
+                let fold_ty = if bits.declared == TypeName::Bool {
+                    CType::from_name(TypeName::Bool)
+                } else {
+                    store.ty.clone()
+                };
+                let value = self.fold_one(name, &store.expr, &fold_ty)?;
+                let ConstInit::Int(raw) = value else {
+                    return self.err(
+                        store.expr.line(),
+                        store.expr.column(),
+                        format!("initializer of '{name}' is not a constant expression"),
+                    );
+                };
+                pack_bits(&mut image, bits.abs_bit, bits.width, raw);
+            } else {
+                let value = self.fold_one(name, &store.expr, &store.ty)?;
+                let inside = ranges
+                    .iter()
+                    .any(|(start, end)| store.offset >= *start && store.offset < *end);
+                if inside {
+                    // The nested record is a byte image. A plain member shares
+                    // that image; a relocation cannot.
+                    if !write_folded_bytes(&store.ty, &value, &mut image, store.offset as usize) {
+                        return self.err(
+                            store.expr.line(),
+                            store.expr.column(),
+                            format!(
+                                "initializer of '{name}' uses an address in a bit-field struct"
+                            ),
+                        );
+                    }
+                } else {
+                    folded.push((store.offset, value));
+                }
+            }
+        }
+        splice_bit_blobs(ty, 0, &image, &mut folded);
+        let value = assemble(ty, &folded, 0);
+        if !union_bytes_ok(ty, &value) {
+            return self.err(
+                stores.first().map(|store| store.expr.line()).unwrap_or(1),
+                stores.first().map(|store| store.expr.column()).unwrap_or(1),
+                format!("initializer of '{name}' uses an address in a union"),
+            );
+        }
+        Ok(value)
     }
 
     fn fold_one(&self, name: &str, expr: &Expr, dest: &CType) -> Result<ConstInit, Diagnostic> {
@@ -2220,7 +2293,7 @@ impl Sema {
                 let bytes = self.fn_name.as_bytes().to_vec();
                 let line = *line;
                 let column = *column;
-                *expr = Expr::str_lit(bytes, false, line, column);
+                *expr = Expr::str_lit(bytes, StrEnc::Byte, line, column);
             }
         }
         match expr {
@@ -2260,10 +2333,10 @@ impl Sema {
     /// array.
     fn check_str(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
         let (len, elem) = match expr {
-            Expr::Str {
-                bytes, wide: true, ..
-            } => (bytes.len() as u64 / 4 + 1, TypeName::Int),
-            Expr::Str { bytes, .. } => (bytes.len() as u64 + 1, TypeName::Char),
+            Expr::Str { bytes, enc, .. } => {
+                let unit = enc.unit() as u64;
+                (bytes.len() as u64 / unit + 1, enc.elem())
+            }
             _ => unreachable!("string literal"),
         };
         expr.set_ty(CType::array(CType::from_name(elem), Some(len)));
@@ -2273,32 +2346,28 @@ impl Sema {
     /// Record a string literal the first time its address is needed. Identical
     /// contents share one private global.
     fn ensure_string(&mut self, expr: &mut Expr) {
-        let (bytes, wide) = match expr {
+        let (bytes, enc) = match expr {
             Expr::Str {
                 symbol: None,
                 bytes,
-                wide,
+                enc,
                 ..
-            } => (bytes.clone(), *wide),
+            } => (bytes.clone(), *enc),
             _ => return,
         };
-        let symbol = self.intern_string(&bytes, wide);
+        let symbol = self.intern_string(&bytes, enc);
         if let Expr::Str { symbol: slot, .. } = expr {
             *slot = Some(symbol);
         }
     }
 
-    fn intern_string(&mut self, bytes: &[u8], wide: bool) -> String {
+    fn intern_string(&mut self, bytes: &[u8], enc: StrEnc) -> String {
         let mut key = bytes.to_vec();
-        if wide {
-            key.extend_from_slice(&[0, 0, 0, 0]);
-        } else {
-            key.push(0);
-        }
+        key.extend(std::iter::repeat(0u8).take(enc.unit()));
         if let Some((_, name, _)) = self
             .strings
             .iter()
-            .find(|(stored, _, stored_wide)| stored == &key && *stored_wide == wide)
+            .find(|(stored, _, stored_enc)| stored == &key && *stored_enc == enc)
         {
             return name.clone();
         }
@@ -2307,7 +2376,7 @@ impl Sema {
         } else {
             format!(".str.{}", self.strings.len())
         };
-        self.strings.push((key, name.clone(), wide));
+        self.strings.push((key, name.clone(), enc));
         name
     }
 
@@ -3522,8 +3591,8 @@ impl Sema {
     }
 
     /// A struct or union passed or returned by value must be complete.
-    /// Returning an x87 aggregate is rejected. SSE eightbytes are passed
-    /// in XMM registers. Memory aggregates are a byte copy.
+    /// An x87 aggregate is passed in memory. A return whose class is `X87`
+    /// uses `%st0`. SSE eightbytes are passed in XMM registers.
     fn require_passed_aggregate(
         &self,
         ty: &CType,
@@ -3920,7 +3989,9 @@ fn initializable_fields(fields: Vec<StructField>, union_ty: bool) -> Vec<StructF
     let fields: Vec<_> = fields
         .into_iter()
         .filter(|field| {
-            field.bit_width != Some(0) && (!field.name.is_empty() || field.is_anonymous_record())
+            field.bit_width != Some(0)
+                && !field.is_flexible()
+                && (!field.name.is_empty() || field.is_anonymous_record())
         })
         .collect();
     if union_ty {
@@ -4074,27 +4145,43 @@ fn merge_pointers(left: &CType, right: &CType) -> Option<CType> {
     None
 }
 
-fn is_char_array(ty: &CType) -> bool {
-    ty.array_elem().is_some_and(CType::is_character)
-}
-
 /// Bytes of a string literal used as an initializer, including a single pair
 /// of braces around that literal (`char s[4] = {"hi"}`).
-fn string_payload(init: &Init) -> Option<(&[u8], bool)> {
+fn string_payload(init: &Init) -> Option<(&[u8], StrEnc)> {
     match init {
-        Init::Expr(Expr::Str { bytes, wide, .. }) => Some((bytes, *wide)),
+        Init::Expr(Expr::Str { bytes, enc, .. }) => Some((bytes, *enc)),
         Init::Designated { .. } => None,
         Init::List { items, .. } => match items.as_slice() {
-            [Init::Expr(Expr::Str { bytes, wide, .. })] => Some((bytes, *wide)),
+            [Init::Expr(Expr::Str { bytes, enc, .. })] => Some((bytes, *enc)),
             _ => None,
         },
         Init::Expr(_) => None,
     }
 }
 
-fn is_wchar_array(ty: &CType) -> bool {
+/// The element type is the one C11 6.7.9 allows for this encoding.
+fn string_elem_ok(elem: &CType, enc: StrEnc) -> bool {
+    match enc {
+        StrEnc::Byte => elem.is_character(),
+        StrEnc::Utf16 => elem.as_integer() == Some(TypeName::UShort),
+        StrEnc::Wchar => elem.as_integer() == Some(TypeName::Int),
+        StrEnc::Utf32 => elem.as_integer() == Some(TypeName::UInt),
+    }
+}
+
+fn string_inits(ty: &CType, enc: StrEnc) -> bool {
     ty.array_elem()
-        .is_some_and(|elem| elem.as_integer() == Some(TypeName::Int))
+        .is_some_and(|elem| string_elem_ok(elem, enc))
+}
+
+fn flexible_member_named(ty: &CType, name: &str) -> bool {
+    ty.struct_ref()
+        .and_then(StructRef::fields)
+        .is_some_and(|fields| {
+            fields
+                .iter()
+                .any(|field| field.name == name && field.is_flexible())
+        })
 }
 
 fn void_ptr_mix(left: &CType, right: &CType) -> bool {
@@ -4122,8 +4209,7 @@ fn takes_one_init(ty: &CType, init: &Init) -> bool {
     if matches!(init, Init::List { .. }) || ty.is_scalar() {
         return true;
     }
-    string_payload(init)
-        .is_some_and(|(_, wide)| (!wide && is_char_array(ty)) || (wide && is_wchar_array(ty)))
+    string_payload(init).is_some_and(|(_, enc)| string_inits(ty, enc))
 }
 
 fn classify_init(ty: &CType, mut stores: Vec<ElemStore>) -> CheckedInit {
@@ -4148,7 +4234,8 @@ fn union_bytes_ok(ty: &CType, value: &ConstInit) -> bool {
         // The address of an object needs a relocation.
         ConstInit::Ptr(PtrConst::Null | PtrConst::IntToPtr(_)) => true,
         ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => !ty.is_union(),
-        ConstInit::Bytes(_) => !ty.is_union(),
+        // Bytes are an object representation. A relocation cannot hide in them.
+        ConstInit::Bytes(_) => true,
         ConstInit::Aggregate(items) => {
             if ty.is_union() {
                 return items.first().is_none_or(const_has_no_address);
@@ -4178,6 +4265,17 @@ fn const_has_no_address(value: &ConstInit) -> bool {
 }
 
 fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
+    if is_bit_image(ty) {
+        if let Some((_, value)) = stores
+            .iter()
+            .rev()
+            .find(|(offset, value)| *offset == base && matches!(value, ConstInit::Bytes(_)))
+        {
+            return value.clone();
+        }
+        let size = ty.size().unwrap_or(0) as usize;
+        return ConstInit::Bytes(vec![0u8; size]);
+    }
     if ty.is_scalar() {
         return stores
             .iter()
@@ -4210,6 +4308,102 @@ fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
         items.push(assemble(elem, stores, base + index * elem_size));
     }
     ConstInit::Aggregate(items)
+}
+
+/// A bit-field record, or a union that contains one in any member.
+///
+/// Union members share one byte image. A bit-field in a member other than
+/// the first still occupies those bytes, so the whole union is one image.
+/// Each record is examined once: two members of the same union are one type,
+/// and searching both would walk that type's graph twice at every level.
+fn is_bit_image(ty: &CType) -> bool {
+    let mut seen = HashSet::new();
+    is_bit_image_seen(ty, &mut seen)
+}
+
+fn is_bit_image_seen(ty: &CType, seen: &mut HashSet<u32>) -> bool {
+    if ty.record_has_bitfield() {
+        return true;
+    }
+    let Some(handle) = ty.struct_ref() else {
+        return false;
+    };
+    if !handle.is_union() || !seen.insert(handle.id()) {
+        return false;
+    }
+    handle.fields().is_some_and(|fields| {
+        fields
+            .iter()
+            .any(|field| field.bit_width.is_some() || is_bit_image_seen(&field.ty, seen))
+    })
+}
+
+/// Byte ranges of nested records whose LLVM type is a byte image.
+fn bit_record_ranges(ty: &CType, base: u64, out: &mut Vec<(u64, u64)>) {
+    if is_bit_image(ty) {
+        out.push((base, base + ty.size().unwrap_or(0)));
+        return;
+    }
+    if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
+        let fields: Vec<_> = if ty.is_union() {
+            fields.into_iter().take(1).collect()
+        } else {
+            fields
+        };
+        for field in fields {
+            if field.bit_width.is_some() {
+                continue;
+            }
+            bit_record_ranges(&field.ty, base + field.offset, out);
+        }
+        return;
+    }
+    if let (Some(elem), Some(len)) = (ty.array_elem(), ty.array_len()) {
+        let step = elem.size().unwrap_or(0);
+        for index in 0..len {
+            bit_record_ranges(elem, base + index * step, out);
+        }
+    }
+}
+
+/// Replace each nested bit-field record, including a union that contains
+/// one in any member, with the bytes already packed into `image`.
+///
+/// C11 6.7.9 initializes the designated union member and leaves the rest of
+/// that union's object representation zero. Every member occupies the same
+/// bytes, so a bit-field in a member other than the first is still this image.
+fn splice_bit_blobs(ty: &CType, base: u64, image: &[u8], out: &mut Vec<(u64, ConstInit)>) {
+    if is_bit_image(ty) {
+        let size = ty.size().unwrap_or(0) as usize;
+        let start = base as usize;
+        let mut bytes = vec![0u8; size];
+        if start < image.len() {
+            let end = (start + size).min(image.len());
+            bytes[..end - start].copy_from_slice(&image[start..end]);
+        }
+        out.push((base, ConstInit::Bytes(bytes)));
+        return;
+    }
+    if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
+        let fields: Vec<_> = if ty.is_union() {
+            fields.into_iter().take(1).collect()
+        } else {
+            fields
+        };
+        for field in fields {
+            if field.bit_width.is_some() {
+                continue;
+            }
+            splice_bit_blobs(&field.ty, base + field.offset, image, out);
+        }
+        return;
+    }
+    if let (Some(elem), Some(len)) = (ty.array_elem(), ty.array_len()) {
+        let step = elem.size().unwrap_or(0);
+        for index in 0..len {
+            splice_bit_blobs(elem, base + index * step, image, out);
+        }
+    }
 }
 
 fn ptr_as_int(ptr: PtrConst, dest: TypeName) -> ConstInit {
@@ -5789,7 +5983,21 @@ struct Node n = {4, 0};
         assert!(sema_err("struct S { int x; }; struct S { int y; };")
             .contains("redefinition of struct 'S'"));
         assert!(sema_err("struct S { int x; int x; };").contains("duplicate member"));
-        assert!(sema_err("struct S { int n; int a[]; };").contains("flexible array"));
+        sema_ok("struct S { int n; int a[]; }; int main(void) { return (int)sizeof(struct S); }");
+        assert!(sema_err("struct S { int a[]; };").contains("another named member"));
+        assert!(sema_err("struct S { int a[]; int n; };").contains("not the last member"));
+        assert!(sema_err("union U { int n; int a[]; };").contains("not allowed in a union"));
+        assert!(
+            sema_err("struct F { int n; int a[]; }; struct F arr[2];").contains("array element")
+        );
+        assert!(
+            sema_err("struct F { int n; int a[]; }; struct O { struct F f; };")
+                .contains("struct member")
+        );
+        assert!(
+            sema_err("struct S { int n; int a[]; }; struct S s = {1, {2}};")
+                .contains("flexible array member")
+        );
         assert!(sema_err(
             "struct S { int x:3; }; int main(void) { struct S s; int *p = &s.x; return *p; }"
         )
@@ -5859,10 +6067,16 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
         sema_ok("struct S { double d; }; void f(struct S s) { (void)s; }");
         sema_ok("struct S { float a; float b; }; struct S f(struct S s) { return s; }");
         sema_ok("struct S { long double x; }; void f(struct S s) { (void)s; }");
-        assert!(sema_err(
-            "struct S { long double x; }; struct S f(void) { struct S s; return s; }"
+        sema_ok("struct S { long double x; }; struct S f(void) { struct S s; return s; }");
+        sema_ok("int f(void) __asm__(\"g\"); int f(void) { return 1; }");
+        sema_ok("int f(void) __asm__(u8\"g\"); int f(void) { return 1; }");
+        assert!(sema_err("int f(void) __asm__(u\"g\");").contains("byte string"));
+        let ir = crate::compile_to_ir(
+            "struct LD { long double x; }; volatile struct LD v; struct LD f(void) { return v; }\n",
+            "volld.c",
         )
-        .contains("x87"));
+        .unwrap();
+        assert!(ir.contains("load volatile x86_fp80"), "{ir}");
         assert!(
             sema_err("int f(int); int main(void) { int (*p)(char); p = f; return 0; }")
                 .contains("incompatible types")
@@ -5884,10 +6098,8 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
             .contains("address in a union"));
         assert!(sema_err("struct S { int *p : 3; };").contains("non-integral"));
         assert!(sema_err("struct S { int x : 4294967297L; };").contains("exceeds the width"));
-        assert!(
-            sema_err("struct A { int a : 3; }; struct O { struct A in; } g = {{1}};")
-                .contains("nested bit-field")
-        );
+        sema_ok("struct A { int a : 3; }; struct O { struct A in; } g = {{1}};");
+        sema_ok("struct A { int a : 3; int b : 5; }; struct A arr[2] = {{1, 2}, {3, 4}};");
         sema_ok("union U { char b; long a; } g = { .a = 0x1234 };");
         sema_ok("union U { double d; long l; } g = { 1.5 };");
         let ir = crate::compile_to_ir(
@@ -5912,6 +6124,25 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
         )
         .unwrap();
         assert!(ir.contains("phi ptr"), "{ir}");
+    }
+
+    #[test]
+    fn deep_union_diamond_still_initializes() {
+        // Each union has two members of the previous union. Searching both
+        // at every level is exponential; one visit per record stays linear.
+        let depth = 16;
+        let mut source = String::from("union U0 { int i; };\n");
+        for n in 1..=depth {
+            source.push_str(&format!(
+                "union U{n} {{ union U{} a; union U{} b; }};\n",
+                n - 1,
+                n - 1
+            ));
+        }
+        source.push_str(&format!(
+            "struct O {{ union U{depth} u; int n; }};\nstruct O g = {{ .n = 3 }};\nint main(void) {{ return g.n; }}\n"
+        ));
+        sema_ok(&source);
     }
 
     #[test]
