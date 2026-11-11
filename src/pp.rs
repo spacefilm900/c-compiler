@@ -2971,6 +2971,18 @@ mod tests {
         let text = pp("#if (1+2)*3 == 9 && 4 < 5\n#define P 1\n#else\n#define P 0\n#endif\n#if -1 < 1u\n#define Q 1\n#else\n#define Q 0\n#endif\n#if 0\n#error no\n#if 1\n#error still no\n#endif\n#elif 0\n#define S 0\n#else\n#define S 1\n#endif\nint x = P+Q+S;\n");
         assert!(text.contains("int x = 1+0+1;"), "{text}");
         assert!(!text.contains("error"), "{text}");
+        // Unary ! in a preprocessor expression (C11 6.10.1, 6.5.3.3p5).
+        let text = pp(
+            "#if !0\nint t;\n#else\nint f;\n#endif\n#if !1\nint u;\n#else\nint v;\n#endif\n#if !!0\nint w;\n#else\nint x;\n#endif\n#if !!!0\nint y;\n#else\nint z;\n#endif\n",
+        );
+        assert!(text.contains("int t;"), "{text}");
+        assert!(!text.contains("int f;"), "{text}");
+        assert!(text.contains("int v;"), "{text}");
+        assert!(!text.contains("int u;"), "{text}");
+        assert!(text.contains("int x;"), "{text}");
+        assert!(!text.contains("int w;"), "{text}");
+        assert!(text.contains("int y;"), "{text}");
+        assert!(!text.contains("int z;"), "{text}");
     }
 
     #[test]

@@ -1,16 +1,5 @@
 /* Unary ! in integer constant expressions (C11 6.5.3.3p5, 6.6, 6.7.10). */
 
-#if !0
-int pp_true = 1;
-#else
-int pp_true = 0;
-#endif
-#if !1
-int pp_false = 1;
-#else
-int pp_false = 0;
-#endif
-
 int init_not0 = !0;
 int init_not1 = !1;
 int init_notnot0 = !!0;
@@ -75,45 +64,43 @@ int main(void) {
     int sc[!(0 && (1 / 0)) + 1];
     struct Bits bits;
 
-    if (pp_true != 1 || pp_false != 0)
-        return 1;
     if (init_not0 != 1 || init_not1 != 0 || init_notnot0 != 0 || init_notnot1 != 1
         || init_notnotnot0 != 1 || init_not5 != 0 || init_notnot5 != 1
         || init_sc0 != 1 || init_sc1 != 0)
-        return 2;
+        return 1;
     if (E0 != 1 || E1 != 0 || EN0 != 0 || EN1 != 1 || ENN0 != 1 || E5 != 0
         || EN5 != 1 || ESC0 != 1 || ESC1 != 0)
-        return 3;
+        return 2;
     if (sizeof a != 2 * sizeof(int) || sizeof b != 2 * sizeof(int)
         || sizeof c != 2 * sizeof(int) || sizeof d != sizeof(int)
         || sizeof e != 2 * sizeof(int) || sizeof f != 2 * sizeof(int)
         || sizeof g != sizeof(int))
-        return 4;
+        return 3;
     if (L != 1 || M != 0 || N != 1 || SC != 1 || sizeof loc != 2 * sizeof(int)
         || sizeof sc != 2 * sizeof(int))
-        return 5;
+        return 4;
     /* A 2-bit field holds 3; a wrongly computed 1-bit width would truncate. */
     bits.u = 3;
     bits.v = 3;
     if (bits.u != 3 || bits.v != 3)
-        return 6;
+        return 5;
     switch (1) {
     case !0:
         break;
     default:
-        return 7;
+        return 6;
     }
     switch (0) {
     case !1:
         break;
     default:
-        return 8;
+        return 7;
     }
     switch (1) {
     case !!1:
         break;
     default:
-        return 9;
+        return 8;
     }
     s.x = 0;
     return s.x;
