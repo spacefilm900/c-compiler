@@ -4314,20 +4314,28 @@ fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
 ///
 /// Union members share one byte image. A bit-field in a member other than
 /// the first still occupies those bytes, so the whole union is one image.
+/// Each record is examined once: two members of the same union are one type,
+/// and searching both would walk that type's graph twice at every level.
 fn is_bit_image(ty: &CType) -> bool {
+    let mut seen = HashSet::new();
+    is_bit_image_seen(ty, &mut seen)
+}
+
+fn is_bit_image_seen(ty: &CType, seen: &mut HashSet<u32>) -> bool {
     if ty.record_has_bitfield() {
         return true;
     }
-    if !ty.is_union() {
+    let Some(handle) = ty.struct_ref() else {
+        return false;
+    };
+    if !handle.is_union() || !seen.insert(handle.id()) {
         return false;
     }
-    ty.struct_ref()
-        .and_then(StructRef::fields)
-        .is_some_and(|fields| {
-            fields
-                .iter()
-                .any(|field| field.bit_width.is_some() || is_bit_image(&field.ty))
-        })
+    handle.fields().is_some_and(|fields| {
+        fields
+            .iter()
+            .any(|field| field.bit_width.is_some() || is_bit_image_seen(&field.ty, seen))
+    })
 }
 
 /// Byte ranges of nested records whose LLVM type is a byte image.
@@ -6116,6 +6124,25 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
         )
         .unwrap();
         assert!(ir.contains("phi ptr"), "{ir}");
+    }
+
+    #[test]
+    fn deep_union_diamond_still_initializes() {
+        // Each union has two members of the previous union. Searching both
+        // at every level is exponential; one visit per record stays linear.
+        let depth = 16;
+        let mut source = String::from("union U0 { int i; };\n");
+        for n in 1..=depth {
+            source.push_str(&format!(
+                "union U{n} {{ union U{} a; union U{} b; }};\n",
+                n - 1,
+                n - 1
+            ));
+        }
+        source.push_str(&format!(
+            "struct O {{ union U{depth} u; int n; }};\nstruct O g = {{ .n = 3 }};\nint main(void) {{ return g.n; }}\n"
+        ));
+        sema_ok(&source);
     }
 
     #[test]

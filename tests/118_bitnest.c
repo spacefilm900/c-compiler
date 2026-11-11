@@ -85,6 +85,22 @@ struct Direct {
 
 struct Direct direct = {.v.a = 5, .p = &glob};
 
+union D0 {
+    int x : 3;
+};
+
+union D1 {
+    union D0 a;
+    union D0 b;
+};
+
+struct Diamond {
+    union D1 u;
+    int *p;
+};
+
+struct Diamond diamond = {.u.b.x = 1, .p = &glob};
+
 int main(void) {
     if (g.in.a != 1 || g.in.b != 2 || g.n != 9) {
         return 1;
@@ -122,6 +138,9 @@ int main(void) {
     }
     if (direct.v.a != 5 || *direct.p != 5) {
         return 12;
+    }
+    if (diamond.u.b.x != 1 || diamond.u.a.x != 1 || *diamond.p != 5) {
+        return 13;
     }
     return 0;
 }
