@@ -5791,6 +5791,53 @@ mod tests {
     }
 
     #[test]
+    fn generic_unselected_associations_are_checked() {
+        // C11 6.5.1.1p3 does not evaluate unselected associations, but they
+        // are still assignment-expressions and must satisfy constraints and
+        // name resolution (5.1.1.3).
+        assert!(sema_err(
+            "int main(void) { int n = 2; return _Generic(n, int: 0, default: undeclared_name); }"
+        )
+        .contains("undeclared identifier 'undeclared_name'"));
+        assert!(sema_err(
+            "int one(int); int main(void) { int n = 2; return _Generic(n, int: 0, default: one(1, 2)); }"
+        )
+        .contains("expects 1 argument, found 2"));
+        // Nested selection: the outer default is unselected, and its inner
+        // default names an undeclared identifier.
+        assert!(sema_err(
+            "int main(void) { int a = 1, b = 2; return _Generic(a, int: 0, default: _Generic(b, long: 1, default: missing_inner)); }"
+        )
+        .contains("undeclared identifier 'missing_inner'"));
+
+        // Valid unselected expressions may have a different type from the
+        // selected one.
+        sema_ok("int main(void) { int n = 1; return _Generic(n, int: 0, default: 3.0); }");
+        sema_ok("int main(void) { int n = 1; const char *p = _Generic(n, int: \"ok\", default: 0); return p != 0; }");
+        sema_ok("struct S { int m; }; int main(void) { int n = 1; struct S s; return _Generic(n, int: 0, struct S: s.m); }");
+
+        // Unselected side effects are not lowered to IR (C11 6.5.1.1p3).
+        let ir = crate::compile_to_ir(
+            "int bump(void); int main(void) { int n = 0; return _Generic(n, int: 1, default: bump()); }",
+            "generic-unselected.c",
+        )
+        .unwrap();
+        assert!(
+            !ir.contains("call") && ir.contains("ret i32 1"),
+            "unselected call must not be emitted: {ir}"
+        );
+        let ir = crate::compile_to_ir(
+            "int printf(const char *, ...); int main(void) { int n = 0; return _Generic(n, int: 1, default: printf(\"x\")); }",
+            "generic-unselected-printf.c",
+        )
+        .unwrap();
+        assert!(
+            !ir.contains("call") && ir.contains("ret i32 1"),
+            "unselected printf must not be emitted: {ir}"
+        );
+    }
+
+    #[test]
     fn non_prototype_declarations() {
         // C11 6.7.6.3p15: `int g();` is compatible with a prototype only if
         // no parameter type changes under the default argument promotions
