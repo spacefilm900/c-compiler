@@ -2518,11 +2518,30 @@ impl Gen {
         Some(dest)
     }
 
+    /// `__builtin_nan*` / `__builtin_nans*` / `__builtin_inf*` /
+    /// `__builtin_huge_val*` fold to an LLVM floating constant. `float` and
+    /// `double` use the 16-digit `0x` form; `long double` uses `0xK` and 20
+    /// hex digits (LLVM Language Reference, "Simple Constants").
+    fn gen_fp_format_builtin(&mut self, name: &str, args: &[Expr]) -> Option<String> {
+        let fp = crate::float::FpFormatBuiltin::from_name(name)?;
+        let bits = match fp {
+            crate::float::FpFormatBuiltin::Inf(kind) => crate::float::plus_inf(kind),
+            crate::float::FpFormatBuiltin::Nan { kind, signaling } => {
+                let tag = fp_nan_tag(&args[0]).unwrap_or(0);
+                crate::float::nan_bits(kind, tag, signaling)
+            }
+        };
+        Some(crate::float::llvm_const(fp.kind(), bits))
+    }
+
     fn gen_call(&mut self, callee: &Expr, args: &[Expr], resolved: &CallRes) -> Option<String> {
         if let Some(lowered) = self.gen_memory_builtin(&resolved.name, args) {
             return Some(lowered);
         }
         if let Some(lowered) = self.gen_signbit(&resolved.name, args) {
+            return Some(lowered);
+        }
+        if let Some(lowered) = self.gen_fp_format_builtin(&resolved.name, args) {
             return Some(lowered);
         }
         let sig =
@@ -3364,6 +3383,18 @@ fn is_unquoted_llvm_name(name: &str) -> bool {
         && bytes.all(|byte| {
             matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'$' | b'.' | b'_' | b'-')
         })
+}
+
+fn fp_nan_tag(expr: &Expr) -> Option<u128> {
+    match expr {
+        Expr::Str {
+            bytes,
+            enc: StrEnc::Byte,
+            ..
+        } => crate::float::parse_nan_tag(std::str::from_utf8(bytes).ok()?),
+        Expr::Decay { expr, .. } => fp_nan_tag(expr),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

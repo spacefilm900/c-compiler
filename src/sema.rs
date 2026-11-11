@@ -3332,6 +3332,10 @@ impl Sema {
                     let name = name.clone();
                     return self.check_signbit(expr, &name);
                 }
+                if crate::float::FpFormatBuiltin::from_name(name).is_some() {
+                    let name = name.clone();
+                    return self.check_fp_format_builtin(expr, &name);
+                }
             }
         }
         let direct = match expr {
@@ -3473,6 +3477,66 @@ impl Sema {
             });
         }
         expr.set_ty(CType::int_type());
+        Ok(())
+    }
+
+    /// `__builtin_nan*` / `__builtin_nans*` / `__builtin_inf*` /
+    /// `__builtin_huge_val*`.
+    ///
+    /// The result has the documented floating type and is a constant
+    /// expression when the argument, if any, is a string literal that
+    /// `strtol` would consume in full (GCC "Floating-Point Format
+    /// Builtins"). A non-literal argument is a diagnostic.
+    fn check_fp_format_builtin(&mut self, expr: &mut Expr, name: &str) -> Result<(), Diagnostic> {
+        let fp = crate::float::FpFormatBuiltin::from_name(name).expect("format builtin");
+        let (line, column) = (expr.line(), expr.column());
+        let Expr::Call { args, .. } = expr else {
+            unreachable!("format builtin");
+        };
+        if args.len() != fp.arity() {
+            return self.err(
+                line,
+                column,
+                format!(
+                    "{name} expects {} {}",
+                    fp.arity(),
+                    if fp.arity() == 1 {
+                        "argument"
+                    } else {
+                        "arguments"
+                    }
+                ),
+            );
+        }
+        if matches!(fp, crate::float::FpFormatBuiltin::Nan { .. }) {
+            match &args[0] {
+                Expr::Str {
+                    enc: StrEnc::Byte, ..
+                } => {}
+                other => {
+                    return self.err(
+                        other.line(),
+                        other.column(),
+                        format!("{name} requires a string literal argument"),
+                    );
+                }
+            }
+        }
+        for arg in args.iter_mut() {
+            self.check_expr(arg)?;
+            self.decay(arg)?;
+        }
+        let ret = CType::Float(fp.kind());
+        if let Expr::Call { resolved, .. } = expr {
+            *resolved = Some(CallRes {
+                name: name.to_string(),
+                ret: ret.clone(),
+                params: Vec::new(),
+                variadic: false,
+                indirect: false,
+            });
+        }
+        expr.set_ty(ret);
         Ok(())
     }
 
@@ -5235,6 +5299,10 @@ fn has_real(expr: &Expr) -> bool {
                 || has_real(else_expr)
         }
         Expr::Cast { ty_name, expr, .. } => ty_name.is_float() || has_real(expr),
+        Expr::Call { callee, .. } => matches!(
+            callee.as_ref(),
+            Expr::Var { name, .. } if crate::float::FpFormatBuiltin::from_name(name).is_some()
+        ),
         _ => false,
     }
 }
@@ -5293,7 +5361,40 @@ fn eval_num(expr: &Expr) -> Result<NumConst, ConstError> {
                 Err(ConstError::NotConst)
             }
         }
+        Expr::Call { callee, args, .. } => eval_fp_format_builtin(callee, args),
         _ => Err(ConstError::NotConst),
+    }
+}
+
+fn eval_fp_format_builtin(callee: &Expr, args: &[Expr]) -> Result<NumConst, ConstError> {
+    let Expr::Var { name, .. } = callee else {
+        return Err(ConstError::NotConst);
+    };
+    let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) else {
+        return Err(ConstError::NotConst);
+    };
+    let bits = match fp {
+        crate::float::FpFormatBuiltin::Inf(kind) => crate::float::plus_inf(kind),
+        crate::float::FpFormatBuiltin::Nan { kind, signaling } => {
+            let tag = nan_tag(&args[0]).ok_or(ConstError::NotConst)?;
+            crate::float::nan_bits(kind, tag, signaling)
+        }
+    };
+    Ok(NumConst::Real {
+        bits,
+        kind: fp.kind(),
+    })
+}
+
+fn nan_tag(expr: &Expr) -> Option<u128> {
+    match expr {
+        Expr::Str {
+            bytes,
+            enc: StrEnc::Byte,
+            ..
+        } => crate::float::parse_nan_tag(std::str::from_utf8(bytes).ok()?),
+        Expr::Decay { expr, .. } => nan_tag(expr),
+        _ => None,
     }
 }
 
@@ -7102,6 +7203,21 @@ int main(void) {
         assert!(
             ir.contains("0x7FF8000000000000") && ir.contains("0x7FF0000000000000"),
             "NAN and INFINITY / HUGE_VAL constants missing: {ir}"
+        );
+
+        assert!(
+            sema_err("float n = __builtin_nanf(0);").contains("requires a string literal argument")
+        );
+        assert!(sema_err("float n = __builtin_nanf();").contains("expects 1 argument"));
+        assert!(sema_err("float n = __builtin_inff(1);").contains("expects 0 arguments"));
+        assert!(
+            sema_err("const char *p = \"\"; float n = __builtin_nanf(p);")
+                .contains("requires a string literal argument")
+        );
+        // A string that strtol would not consume in full is not a constant
+        // (GCC "Floating-Point Format Builtins").
+        assert!(
+            sema_err("float n = __builtin_nanf(\"abc\");").contains("not a constant expression")
         );
     }
 }

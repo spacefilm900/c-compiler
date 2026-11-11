@@ -4063,6 +4063,9 @@ fn check_uneval_init(init: &Init, env: Env) -> Result<(), BoundErr> {
 }
 
 fn builtin_arity(name: &str) -> Option<usize> {
+    if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
+        return Some(fp.arity());
+    }
     match name {
         "__builtin_signbit" | "__builtin_signbitf" | "__builtin_signbitl" => Some(1),
         "__builtin_memcpy" | "__builtin_memmove" | "__builtin_memset" => Some(3),
@@ -4201,6 +4204,11 @@ fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
         | Expr::IncDec { target, .. } => Ok(type_only(target, env)?.unqualified()),
         Expr::Comma { right, .. } => rvalue_type(right, env),
         Expr::Call { callee, .. } => {
+            if let Expr::Var { name, .. } = callee.as_ref() {
+                if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
+                    return Ok(CType::Float(fp.kind()));
+                }
+            }
             let callee = rvalue_type(callee, env)?;
             let func = callee
                 .pointee()
