@@ -200,6 +200,10 @@ impl Sema {
         let linkage =
             self.object_linkage(decl.storage, prior_linkage, decl.line, decl.column, &name)?;
         let prebound = prior.is_none();
+        // A hidden file entity from a block-scope extern is not a visible
+        // prior declaration (C11 6.2.7p4), so it is not composed into this
+        // declarator's type before the initializer is checked.
+        let mut hidden_ty = None;
         if prebound {
             // C11 6.2.1p7: the identifier is in scope after its declarator,
             // including in the initializer.
@@ -220,10 +224,9 @@ impl Sema {
             }));
         } else if let Some(Symbol::Var(var)) = &prior {
             if !var.file_visible {
-                // A block-scope extern created this file entity and left it
-                // hidden. The file-scope declarator puts the name in scope
-                // with this declarator's type (C11 6.2.1p7) before the
-                // initializer is checked.
+                // Reveal the name with this declarator's type (C11 6.2.1p7)
+                // so an initializer such as `{ [0 && sizeof a] = 7 }` on
+                // `int a[]` sees an incomplete type (6.5.3.4p1).
                 if !compatible(&var.ty, &ty) {
                     return self.err(
                         decl.line,
@@ -231,7 +234,7 @@ impl Sema {
                         format!("conflicting types for '{name}'"),
                     );
                 }
-                ty = composite(&var.ty, &ty);
+                hidden_ty = Some(var.ty.clone());
                 self.reveal_file(&name);
                 self.set_global_type(&name, ty.clone());
             }
@@ -246,14 +249,24 @@ impl Sema {
         }
         if let Some(Symbol::Var(var)) = self.file_get(&name) {
             if !prebound {
-                if !compatible(&var.ty, &ty) {
+                if let Some(hidden) = hidden_ty {
+                    // Compatible hidden and later types still form a composite
+                    // for the file entity. An initializer that completes an
+                    // incomplete array to a different length is not a
+                    // same-scope constraint (6.7p4); 6.2.7p2 would make a
+                    // mismatch undefined, but the later type is kept.
+                    if compatible(&hidden, &ty) {
+                        ty = composite(&hidden, &ty);
+                    }
+                } else if !compatible(&var.ty, &ty) {
                     return self.err(
                         decl.line,
                         decl.column,
                         format!("conflicting types for '{name}'"),
                     );
+                } else {
+                    ty = composite(&var.ty, &ty);
                 }
-                ty = composite(&var.ty, &ty);
             }
         }
         decl.ty = ty.clone();
@@ -6040,6 +6053,49 @@ mod tests {
         assert!(
             ir.contains("store i32 7") || ir.contains("[1 x i32] [i32 7]"),
             "file-scope designator must see a previously hidden extern: {ir}"
+        );
+        // C11 6.2.7p4 forms a composite only when a prior declaration is
+        // visible. After a block-scope `extern int a[1];`, a later
+        // file-scope `int a[]` is visible in its initializer as `int[]`,
+        // so `sizeof a` is a diagnostic (6.5.3.4p1). Clang `-std=c11`
+        // rejects this the same way. The same designator is valid when
+        // the declarator itself is complete (`int a[1]` above).
+        assert!(sema_err(
+            "int f(void) { extern int a[1]; return 0; } int a[] = { [0 && sizeof a] = 7 };"
+        )
+        .contains("sizeof applied to incomplete type"));
+        // Plain `int a[]` with no prior declaration already diagnoses this.
+        assert!(sema_err("int a[] = { [0 && sizeof a] = 7 };")
+            .contains("sizeof applied to incomplete type"));
+        // The initializer may complete the incomplete declarator. A hidden
+        // `int[1]` does not shrink or reject a longer initializer, and a
+        // hidden `int[3]` does not enlarge a shorter one.
+        let ir = crate::compile_to_ir(
+            "int f(void) { extern int a[1]; return 0; } int a[] = {7}; int main(void) { return a[0]; }",
+            "hidden-extern-incomplete-init.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("[1 x i32] [i32 7]"),
+            "incomplete array is completed by its initializer: {ir}"
+        );
+        let ir = crate::compile_to_ir(
+            "int f(void) { extern int a[1]; return 0; } int a[] = {1, 2, 3}; int main(void) { return a[2]; }",
+            "hidden-extern-longer-init.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("[3 x i32]"),
+            "hidden int[1] must not bound a later int a[] initializer: {ir}"
+        );
+        let ir = crate::compile_to_ir(
+            "int f(void) { extern int a[3]; return 0; } int a[] = {1, 2}; int main(void) { return a[1]; }",
+            "hidden-extern-shorter-init.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("[2 x i32]"),
+            "hidden int[3] must not complete a later int a[] initializer: {ir}"
         );
 
         // An unselected file-scope compound literal must not leave a global.
