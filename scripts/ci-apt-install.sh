@@ -83,6 +83,30 @@ apt_retry() {
 prefer_public_mirror
 # --error-on=any makes a partial index download a hard failure, so the
 # retry loop can try again instead of treating a warning as success.
-apt_retry update --error-on=any
+# Restrict that strict update to Ubuntu archives. A failed third-party
+# repository on the runner must not block installing these packages.
+ubuntu_lists=$(mktemp -d)
+mkdir -p "$ubuntu_lists/sources.list.d"
+if [ -f /etc/apt/sources.list ]; then
+  grep -E '^[[:space:]]*(#|$)|ubuntu\.com' /etc/apt/sources.list >"$ubuntu_lists/sources.list" || :
+fi
+if [ ! -s "$ubuntu_lists/sources.list" ]; then
+  : >"$ubuntu_lists/sources.list"
+fi
+if [ -d /etc/apt/sources.list.d ]; then
+  for src in /etc/apt/sources.list.d/*; do
+    [ -f "$src" ] || continue
+    case "$(basename "$src")" in
+      ubuntu.sources|ubuntu.sources.*|ubuntu-*.sources|ubuntu.list|ubuntu-*.list)
+        cp "$src" "$ubuntu_lists/sources.list.d/"
+        ;;
+    esac
+  done
+fi
+# shellcheck disable=SC2064
+trap 'rm -rf "$ubuntu_lists"' EXIT
+apt_retry update --error-on=any \
+  -o Dir::Etc::sourcelist="$ubuntu_lists/sources.list" \
+  -o Dir::Etc::sourceparts="$ubuntu_lists/sources.list.d"
 # shellcheck disable=SC2086
 apt_retry install -y --no-install-recommends $need

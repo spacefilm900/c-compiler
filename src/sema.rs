@@ -218,6 +218,23 @@ impl Sema {
                 global: Some(GlobalInfo { linkage, state }),
                 file_visible: true,
             }));
+        } else if let Some(Symbol::Var(var)) = &prior {
+            if !var.file_visible {
+                // A block-scope extern created this file entity and left it
+                // hidden. The file-scope declarator puts the name in scope
+                // with this declarator's type (C11 6.2.1p7) before the
+                // initializer is checked.
+                if !compatible(&var.ty, &ty) {
+                    return self.err(
+                        decl.line,
+                        decl.column,
+                        format!("conflicting types for '{name}'"),
+                    );
+                }
+                ty = composite(&var.ty, &ty);
+                self.reveal_file(&name);
+                self.set_global_type(&name, ty.clone());
+            }
         }
         let shaped = if let Some(init) = &decl.init {
             Some(self.shape_initializer(&ty, init, decl.line, decl.column)?)
@@ -6011,6 +6028,18 @@ mod tests {
         assert!(
             ir.contains("store i32 7") || ir.contains("[1 x i32] [i32 7]"),
             "file-scope designator may name the object: {ir}"
+        );
+        // A block-scope extern may already have created the file symbol
+        // and left it hidden. The later file-scope declarator still puts
+        // the identifier in scope in its initializer (C11 6.2.1p7).
+        let ir = crate::compile_to_ir(
+            "int f(void) { extern int a[1]; return 0; } int a[1] = { [0 && sizeof a] = 7 }; int main(void) { return a[0]; }",
+            "designator-self-global-after-extern.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("store i32 7") || ir.contains("[1 x i32] [i32 7]"),
+            "file-scope designator must see a previously hidden extern: {ir}"
         );
 
         // An unselected file-scope compound literal must not leave a global.
