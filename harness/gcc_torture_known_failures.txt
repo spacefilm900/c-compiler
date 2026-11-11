@@ -5,6 +5,11 @@
 # A compiler panic fails the run even when the test is listed.
 # builtins/ is skipped: those tests are linked with a companion
 # and lib/main.c, and they target compiler builtins.
+# Categories after the floating-point format builtins (905 passed,
+# 841 known failures, 0 unexpected, 1746 executed, 144 builtins files
+# skipped): builtin 373, compile-error 357, old-style-decl 44, vla 21,
+# nested-function 14, runtime 13, asm 8, complex 7, flexible-array 3,
+# alignas 1.
 
 20000112-1.c old-style-decl
 20000223-1.c compile-error
@@ -328,7 +333,6 @@ ieee/20010114-2.c builtin
 ieee/20030331-1.c builtin
 ieee/920810-1.c old-style-decl
 ieee/acc2.c compile-error
-ieee/builtin-nan-1.c builtin
 ieee/cdivchkd.c complex
 ieee/cdivchkf.c complex
 ieee/cdivchkld.c complex
@@ -346,10 +350,6 @@ ieee/fp-cmp-8.c builtin
 ieee/fp-cmp-8f.c builtin
 ieee/fp-cmp-8l.c builtin
 ieee/fp-cmp-cond-1.c builtin
-ieee/hugeval.c builtin
-ieee/inf-1.c builtin
-ieee/inf-2.c builtin
-ieee/inf-3.c builtin
 ieee/inf-4.c builtin
 ieee/mzero2.c builtin
 ieee/mzero3.c builtin

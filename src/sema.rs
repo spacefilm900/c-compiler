@@ -3508,19 +3508,14 @@ impl Sema {
                 ),
             );
         }
-        if matches!(fp, crate::float::FpFormatBuiltin::Nan { .. }) {
-            match &args[0] {
-                Expr::Str {
-                    enc: StrEnc::Byte, ..
-                } => {}
-                other => {
-                    return self.err(
-                        other.line(),
-                        other.column(),
-                        format!("{name} requires a string literal argument"),
-                    );
-                }
-            }
+        if matches!(fp, crate::float::FpFormatBuiltin::Nan { .. })
+            && !crate::float::FpFormatBuiltin::is_string_literal_arg(&args[0])
+        {
+            return self.err(
+                args[0].line(),
+                args[0].column(),
+                format!("{name} requires a string literal argument"),
+            );
         }
         for arg in args.iter_mut() {
             self.check_expr(arg)?;
@@ -5376,7 +5371,7 @@ fn eval_fp_format_builtin(callee: &Expr, args: &[Expr]) -> Result<NumConst, Cons
     let bits = match fp {
         crate::float::FpFormatBuiltin::Inf(kind) => crate::float::plus_inf(kind),
         crate::float::FpFormatBuiltin::Nan { kind, signaling } => {
-            let tag = nan_tag(&args[0]).ok_or(ConstError::NotConst)?;
+            let tag = crate::float::nan_tag_from_expr(&args[0]).ok_or(ConstError::NotConst)?;
             crate::float::nan_bits(kind, tag, signaling)
         }
     };
@@ -5384,18 +5379,6 @@ fn eval_fp_format_builtin(callee: &Expr, args: &[Expr]) -> Result<NumConst, Cons
         bits,
         kind: fp.kind(),
     })
-}
-
-fn nan_tag(expr: &Expr) -> Option<u128> {
-    match expr {
-        Expr::Str {
-            bytes,
-            enc: StrEnc::Byte,
-            ..
-        } => crate::float::parse_nan_tag(std::str::from_utf8(bytes).ok()?),
-        Expr::Decay { expr, .. } => nan_tag(expr),
-        _ => None,
-    }
 }
 
 fn eval_real_unary(op: UnaryOp, expr: &Expr) -> Result<NumConst, ConstError> {
@@ -7186,6 +7169,7 @@ int main(void) {
         sema_ok("double i = __builtin_inf();");
         sema_ok("long double i = __builtin_infl();");
         sema_ok("float n = __builtin_nanf(\"1\");");
+        sema_ok("double n = __builtin_nan(\"1\0ignored\");");
         sema_ok("float n = __builtin_nansf(\"\");");
         sema_ok("double n = __builtin_nans(\"\");");
         sema_ok("long double n = __builtin_nansl(\"\");");

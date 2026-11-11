@@ -2527,7 +2527,7 @@ impl Gen {
         let bits = match fp {
             crate::float::FpFormatBuiltin::Inf(kind) => crate::float::plus_inf(kind),
             crate::float::FpFormatBuiltin::Nan { kind, signaling } => {
-                let tag = fp_nan_tag(&args[0]).unwrap_or(0);
+                let tag = crate::float::nan_tag_from_expr(&args[0]).unwrap_or(0);
                 crate::float::nan_bits(kind, tag, signaling)
             }
         };
@@ -3383,18 +3383,6 @@ fn is_unquoted_llvm_name(name: &str) -> bool {
         && bytes.all(|byte| {
             matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'$' | b'.' | b'_' | b'-')
         })
-}
-
-fn fp_nan_tag(expr: &Expr) -> Option<u128> {
-    match expr {
-        Expr::Str {
-            bytes,
-            enc: StrEnc::Byte,
-            ..
-        } => crate::float::parse_nan_tag(std::str::from_utf8(bytes).ok()?),
-        Expr::Decay { expr, .. } => fp_nan_tag(expr),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -4359,5 +4347,79 @@ int main(void) {
         let _ = std::fs::remove_file(&clang_main);
         let _ = std::fs::remove_file(&clang_obj_path);
         let _ = std::fs::remove_file(&bin2);
+    }
+    #[test]
+    fn signaling_nan_constants_keep_ieee_encoding() {
+        // GCC "Floating-Point Format Builtins": a default `__builtin_nans*`
+        // is a signaling NaN. LLVM hex constants for `float` use the
+        // widened IEEE-64 pattern (Language Reference, "Simple Constants").
+        let source = concat!(
+            "float f = __builtin_nansf(\"\");\n",
+            "double d = __builtin_nans(\"\");\n",
+            "long double l = __builtin_nansl(\"\");\n",
+        );
+        let ir = crate::compile_to_ir(source, "nans.c").unwrap();
+        assert!(
+            ir.contains("@f = global float 0x7FF4000000000000"),
+            "nansf encoding quieted or missing: {ir}"
+        );
+        assert!(
+            ir.contains("@d = global double 0x7FF4000000000000"),
+            "nans encoding missing: {ir}"
+        );
+        assert!(
+            ir.contains("@l = global x86_fp80 0xK7FFFA000000000000000"),
+            "nansl encoding missing: {ir}"
+        );
+
+        // Clang 19 as a black-box oracle: the same hex constants in its IR.
+        let cfile = temp_paths().0.with_extension("c");
+        std::fs::write(&cfile, source).unwrap();
+        let ll = cfile.with_extension("ll");
+        let compiled = Command::new("clang")
+            .args([
+                "-std=c11",
+                "-O0",
+                "-S",
+                "-emit-llvm",
+                "-o",
+                ll.to_str().unwrap(),
+                cfile.to_str().unwrap(),
+            ])
+            .output()
+            .expect("clang");
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let clang_ir = std::fs::read_to_string(&ll).unwrap();
+        assert!(
+            clang_ir.contains("float 0x7FF4000000000000"),
+            "clang nansf: {clang_ir}"
+        );
+        assert!(
+            clang_ir.contains("double 0x7FF4000000000000"),
+            "clang nans: {clang_ir}"
+        );
+        assert!(
+            clang_ir.contains("x86_fp80 0xK7FFFA000000000000000"),
+            "clang nansl: {clang_ir}"
+        );
+        let _ = std::fs::remove_file(&cfile);
+        let _ = std::fs::remove_file(&ll);
+
+        // C string semantics: bytes after the first NUL are not part of
+        // the payload, so "1\0ignored" matches "1".
+        let nul_ir = crate::compile_to_ir(
+            "double a = __builtin_nan(\"1\");\ndouble b = __builtin_nan(\"1\\0ignored\");\n",
+            "nan-nul.c",
+        )
+        .unwrap();
+        assert_eq!(
+            nul_ir.matches("0x7FF8000000000001").count(),
+            2,
+            "NUL payload should match \"1\": {nul_ir}"
+        );
     }
 }

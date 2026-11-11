@@ -3715,6 +3715,7 @@ enum BoundErr {
     NotConst,
     Undeclared,
     WrongArity,
+    NotStringLiteral,
     InvalidOperand,
     GenericDupDefault,
     GenericBadType,
@@ -3736,6 +3737,7 @@ fn bound_message(err: BoundErr) -> &'static str {
         BoundErr::NotConst => "array size is not an integer constant",
         BoundErr::Undeclared => "use of undeclared identifier",
         BoundErr::WrongArity => "wrong number of arguments in function call",
+        BoundErr::NotStringLiteral => "requires a string literal argument",
         BoundErr::InvalidOperand => "invalid operand",
         BoundErr::GenericDupDefault => "duplicate default generic association",
         BoundErr::GenericBadType => "type in generic association is not a complete object type",
@@ -3985,6 +3987,13 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
                     }
                     if args.len() != arity {
                         return Err(BoundErr::WrongArity);
+                    }
+                    if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
+                        if fp.requires_string_literal()
+                            && !crate::float::FpFormatBuiltin::is_string_literal_arg(&args[0])
+                        {
+                            return Err(BoundErr::NotStringLiteral);
+                        }
                     }
                     return Ok(());
                 }
@@ -5647,6 +5656,27 @@ func int main
         assert!(parsed("int a[sizeof(__builtin_nanf(\"\"))];\n").contains("global int [4] a"));
         assert!(parsed("int a[sizeof(__builtin_huge_val())];\n").contains("global int [8] a"));
         assert!(parsed("int a[sizeof(__builtin_huge_vall())];\n").contains("global int [16] a"));
+        // A non-literal nan argument is a diagnostic at every ICE entry
+        // point, not only in semantic analysis. sizeof / _Generic would
+        // otherwise see the result type and accept the program.
+        assert!(parse_err("_Static_assert(__builtin_nanf(0), \"x\");")
+            .contains("requires a string literal argument"));
+        assert!(parse_err(
+            "_Static_assert(_Generic(__builtin_nanf(0), float: 1, default: 0), \"x\");"
+        )
+        .contains("requires a string literal argument"));
+        assert!(parse_err("enum { E = sizeof(__builtin_nanf(0)) };")
+            .contains("requires a string literal argument"));
+        assert!(parse_err("int a[sizeof(__builtin_nanf(0))];")
+            .contains("requires a string literal argument"));
+        assert!(
+            parse_err("enum { E = _Generic(__builtin_nanf(0), float: 1, default: 0) };")
+                .contains("requires a string literal argument")
+        );
+        assert!(
+            parse_err("int a[_Generic(__builtin_nanf(0), float: 1, default: 0)];")
+                .contains("requires a string literal argument")
+        );
     }
 
     #[test]
