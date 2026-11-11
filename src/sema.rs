@@ -5867,6 +5867,23 @@ mod tests {
         sema_ok("int a[_Generic(1, int: 2, default: sizeof(int))];");
         sema_ok("int one(int); enum { N = _Generic(0, int: 1, default: one(1)) };");
         sema_ok("_Static_assert(_Generic(0, int: 1, default: 0), \"m\");");
+
+        // Constant expressions that short-circuit, or that would be folded
+        // away, still need their unselected associations checked.
+        assert!(
+            sema_err("enum { N = 1 || _Generic(0, int: 1, default: missing) };")
+                .contains("undeclared identifier")
+        );
+        assert!(sema_err("enum { N = _Generic(0, int: 1, int: 2) };")
+            .contains("compatible with a previously specified type"));
+        assert!(
+            sema_err("enum { N = _Generic(0, int: 1, default: *1) };").contains("invalid operand")
+        );
+        sema_ok("enum { N = _Generic(0, int: 1, default: __builtin_signbit(1.0)) };");
+        assert!(
+            sema_err("enum { N = _Generic(0, int: 1, default: (int[1]){[missing] = 0}) };")
+                .contains("undeclared identifier")
+        );
     }
 
     #[test]
