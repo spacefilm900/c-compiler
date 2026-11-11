@@ -4381,13 +4381,12 @@ fn eval_ice_unary(op: UnaryOp, expr: &Expr, env: Env) -> Result<BVal, BoundErr> 
                 })
             }
         }
-        UnaryOp::Not => {
-            let zero = value.bits & value.ty.mask() == 0;
-            Ok(BVal {
-                bits: u64::from(!zero),
-                ty: TypeName::Int,
-            })
-        }
+        // C11 6.5.3.3p5: the result is 1 if the operand compares equal
+        // to 0, and 0 otherwise. The result has type `int`.
+        UnaryOp::Not => Ok(BVal {
+            bits: u64::from(value.bits & value.ty.mask() == 0),
+            ty: TypeName::Int,
+        }),
         UnaryOp::BitNot => Ok(BVal {
             bits: (!value.bits) & value.ty.mask(),
             ty: value.ty,
