@@ -26,6 +26,17 @@ int main(void) {
     if (d != 1.5 || s[0] != 's') {
         return 3;
     }
+    /* C11 6.4.2.2: in main, __func__ is a static const char[5]. */
+    enum { FuncWrong = _Generic(&__func__, char (*)[99]: 1, default: 0) };
+    enum { FuncRight = _Generic(&__func__, const char (*)[5]: 1, default: 0) };
+    int desig = (int[1]){[sizeof 0 - sizeof 0] = 7}[0];
+    int unsel = _Generic(0, int: 3, default: (int[1]){[sizeof 0 - sizeof 0] = 0});
+    if (FuncWrong != 0 || FuncRight != 1) {
+        return 4;
+    }
+    if (desig != 7 || unsel != 3) {
+        return 5;
+    }
     printf("%d %d %d\n", chosen, bumped, y);
     return 0;
 }

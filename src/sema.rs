@@ -5911,6 +5911,48 @@ mod tests {
         )
         .contains("invalid operand"));
 
+        // C11 6.4.2.2: __func__ is `static const char [strlen(name)+1]`.
+        // An ICE _Generic on its address must use that complete type.
+        let ir = crate::compile_to_ir(
+            "int f(void) { enum { N = _Generic(&__func__, char (*)[99]: 1, default: 2) }; return N; }",
+            "generic-func-wrong.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("ret i32 2"),
+            "char (*)[99] must not match const char (*)[2]: {ir}"
+        );
+        let ir = crate::compile_to_ir(
+            "int f(void) { enum { N = _Generic(&__func__, const char (*)[2]: 1, default: 2) }; return N; }",
+            "generic-func-right.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("ret i32 1"),
+            "&__func__ in f must match const char (*)[2]: {ir}"
+        );
+
+        // Designator expressions must be typed before they are folded, so
+        // `sizeof` in a designator is valid (selected or unselected).
+        let ir = crate::compile_to_ir(
+            "int main(void) { return (int[1]){[sizeof 0 - sizeof 0] = 7}[0]; }",
+            "sizeof-designator.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("ret i32 7"),
+            "sizeof in a selected designator must fold: {ir}"
+        );
+        let ir = crate::compile_to_ir(
+            "int main(void) { return _Generic(0, int: 3, default: (int[1]){[sizeof 0 - sizeof 0] = 0}); }",
+            "generic-sizeof-designator.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("ret i32 3"),
+            "unselected sizeof designator must not be evaluated: {ir}"
+        );
+
         // An unselected file-scope compound literal must not leave a global.
         let ir = crate::compile_to_ir(
             "int x = _Generic(0, int: 1, default: (int){2});",
