@@ -3687,6 +3687,7 @@ enum BoundErr {
     Shift,
     NotConst,
     Undeclared,
+    WrongArity,
     SizeofFunction,
     SizeofBitField,
 }
@@ -3702,6 +3703,7 @@ fn bound_message(err: BoundErr) -> &'static str {
         BoundErr::Shift => "array size uses an undefined shift",
         BoundErr::NotConst => "array size is not an integer constant",
         BoundErr::Undeclared => "use of undeclared identifier",
+        BoundErr::WrongArity => "wrong number of arguments in function call",
         BoundErr::SizeofFunction => "invalid application of 'sizeof' to a function type",
         BoundErr::SizeofBitField => "invalid application of 'sizeof' to a bit-field",
     }
@@ -3835,13 +3837,128 @@ fn eval_ice(expr: &Expr, env: Env) -> Result<BVal, BoundErr> {
         Expr::CompoundLit { .. } => Err(BoundErr::NotConst),
         Expr::Generic {
             control, assocs, ..
-        } => eval_ice(select_generic(control, assocs, env)?, env),
+        } => {
+            check_generic_assocs(control, assocs, env)?;
+            eval_ice(select_generic(control, assocs, env)?, env)
+        }
+    }
+}
+
+/// Check every association expression of a generic selection, and the
+/// controlling expression, for constraints and name resolution. The
+/// expressions are not evaluated (C11 6.5.1.1p3). This runs in the parser
+/// because an integer constant expression is folded before semantic
+/// analysis sees the `_Generic` node.
+fn check_generic_assocs(control: &Expr, assocs: &[GenericAssoc], env: Env) -> Result<(), BoundErr> {
+    check_uneval(control, env)?;
+    for assoc in assocs {
+        check_uneval(&assoc.expr, env)?;
+    }
+    Ok(())
+}
+
+/// Name resolution and call-arity constraints in an expression that is not
+/// evaluated, including an unselected `_Generic` association.
+fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
+    match expr {
+        Expr::Int { .. } | Expr::Float { .. } | Expr::Str { .. } => Ok(()),
+        Expr::Var { name, .. } => {
+            if env_lookup(env, name).is_none() && name != "__func__" {
+                Err(BoundErr::Undeclared)
+            } else {
+                Ok(())
+            }
+        }
+        Expr::Bin { left, right, .. } | Expr::Comma { left, right, .. } => {
+            check_uneval(left, env)?;
+            check_uneval(right, env)
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } | Expr::Decay { expr, .. } => {
+            check_uneval(expr, env)
+        }
+        Expr::Assign { target, value, .. } | Expr::CompoundAssign { target, value, .. } => {
+            check_uneval(target, env)?;
+            check_uneval(value, env)
+        }
+        Expr::IncDec { target, .. } => check_uneval(target, env),
+        Expr::Cond {
+            cond,
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            check_uneval(cond, env)?;
+            check_uneval(then_expr, env)?;
+            check_uneval(else_expr, env)
+        }
+        Expr::Call { callee, args, .. } => {
+            check_uneval(callee, env)?;
+            for arg in args {
+                check_uneval(arg, env)?;
+            }
+            let callee_ty = rvalue_type(callee, env)?;
+            let func = callee_ty
+                .pointee()
+                .and_then(CType::func_ty)
+                .or_else(|| callee_ty.func_ty());
+            if let Some(func) = func {
+                if func.prototype {
+                    let argc = args.len();
+                    let arity = func.params.len();
+                    let bad = if func.variadic {
+                        argc < arity
+                    } else {
+                        argc != arity
+                    };
+                    if bad {
+                        return Err(BoundErr::WrongArity);
+                    }
+                }
+            }
+            Ok(())
+        }
+        Expr::Sizeof { operand, .. } => match operand {
+            SizeofOperand::Expr(inner) => check_uneval(inner, env),
+            SizeofOperand::Type(_) => Ok(()),
+        },
+        Expr::Index { base, index, .. } => {
+            check_uneval(base, env)?;
+            check_uneval(index, env)
+        }
+        Expr::Member { base, .. } => check_uneval(base, env),
+        Expr::VaArg { ap, .. } => check_uneval(ap, env),
+        Expr::VaOp { args, .. } => {
+            for arg in args {
+                check_uneval(arg, env)?;
+            }
+            Ok(())
+        }
+        Expr::Generic {
+            control, assocs, ..
+        } => check_generic_assocs(control, assocs, env),
+        Expr::CompoundLit { decl, .. } => match &decl.init {
+            Some(init) => check_uneval_init(init, env),
+            None => Ok(()),
+        },
+    }
+}
+
+fn check_uneval_init(init: &Init, env: Env) -> Result<(), BoundErr> {
+    match init {
+        Init::Expr(expr) => check_uneval(expr, env),
+        Init::List { items, .. } => {
+            for item in items {
+                check_uneval_init(item, env)?;
+            }
+            Ok(())
+        }
+        Init::Designated { init, .. } => check_uneval_init(init, env),
     }
 }
 
 /// The association a generic selection picks (C11 6.5.1.1p3): the one whose
 /// type is compatible with the controlling expression's type after lvalue
-/// conversion, else `default`. Semantic analysis checks the constraints.
+/// conversion, else `default`. Association expressions are checked first.
 fn select_generic<'e>(
     control: &Expr,
     assocs: &'e [GenericAssoc],
@@ -3986,7 +4103,10 @@ fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
         Expr::Decay { ty, .. } => ty.clone().ok_or(BoundErr::NotConst),
         Expr::Generic {
             control, assocs, ..
-        } => type_only(select_generic(control, assocs, env)?, env),
+        } => {
+            check_generic_assocs(control, assocs, env)?;
+            type_only(select_generic(control, assocs, env)?, env)
+        }
         Expr::CompoundLit { decl, .. } => match (&decl.ty, &decl.init) {
             (CType::Array(elem, None), Some(init)) => infer_init_len(elem, init, env)
                 .map(|len| CType::array((**elem).clone(), Some(len)))

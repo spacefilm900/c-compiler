@@ -5842,6 +5842,31 @@ mod tests {
             !ir.contains("call") && ir.contains("ret i32 1"),
             "unselected printf must not be emitted: {ir}"
         );
+
+        // The parser folds `_Generic` in an integer constant expression
+        // before semantic analysis, so these contexts must be checked there.
+        assert!(
+            sema_err("enum { N = _Generic(0, int: 1, default: missing) };")
+                .contains("undeclared identifier")
+        );
+        assert!(sema_err("int a[_Generic(1, int: 2, default: missing)];")
+            .contains("undeclared identifier"));
+        assert!(
+            sema_err("struct S { int x : _Generic(0, int: 3, default: missing); };")
+                .contains("undeclared identifier")
+        );
+        assert!(
+            sema_err("_Static_assert(_Generic(0, int: 1, default: missing), \"m\");")
+                .contains("undeclared identifier")
+        );
+        assert!(
+            sema_err("int one(int); enum { N = _Generic(0, int: 1, default: one(1, 2)) };")
+                .contains("argument")
+        );
+        sema_ok("enum { N = _Generic(0, int: 1, default: 2) };");
+        sema_ok("int a[_Generic(1, int: 2, default: sizeof(int))];");
+        sema_ok("int one(int); enum { N = _Generic(0, int: 1, default: one(1)) };");
+        sema_ok("_Static_assert(_Generic(0, int: 1, default: 0), \"m\");");
     }
 
     #[test]
