@@ -183,26 +183,6 @@ impl Sema {
     fn declare_global(&mut self, decl: &mut GlobalDecl) -> Result<(), Diagnostic> {
         let name = decl.name.clone();
         let mut ty = decl.ty.clone();
-        let shaped = if let Some(init) = &decl.init {
-            Some(self.shape_initializer(&ty, init, decl.line, decl.column)?)
-        } else {
-            None
-        };
-        if let Some((shaped_ty, _)) = &shaped {
-            ty = shaped_ty.clone();
-        }
-        decl.ty = ty.clone();
-        // `extern struct S x;` may name an object completed in another
-        // translation unit. A definition, including a tentative definition,
-        // needs a complete type (C11 6.9.2).
-        let extern_only = decl.init.is_none() && decl.storage == Storage::Extern;
-        if !ty.is_array() && !ty.is_complete() && !extern_only {
-            return self.err(
-                decl.line,
-                decl.column,
-                format!("variable '{name}' has incomplete type '{}'", ty.display()),
-            );
-        }
         let prior = self.file_get(&name);
         let prior_linkage = match &prior {
             None => None,
@@ -214,21 +194,15 @@ impl Sema {
                 );
             }
             Some(Symbol::Var(var)) => {
-                if !compatible(&var.ty, &ty) {
-                    return self.err(
-                        decl.line,
-                        decl.column,
-                        format!("conflicting types for '{name}'"),
-                    );
-                }
-                ty = composite(&var.ty, &ty);
-                decl.ty = ty.clone();
                 Some(var.global.as_ref().expect("file-scope variable").linkage)
             }
         };
         let linkage =
             self.object_linkage(decl.storage, prior_linkage, decl.line, decl.column, &name)?;
-        if prior.is_none() {
+        let prebound = prior.is_none();
+        if prebound {
+            // C11 6.2.1p7: the identifier is in scope after its declarator,
+            // including in the initializer.
             let state = if decl.init.is_none() && decl.storage == Storage::Extern {
                 GlobalState::Declared
             } else if decl.init.is_none() {
@@ -244,6 +218,58 @@ impl Sema {
                 global: Some(GlobalInfo { linkage, state }),
                 file_visible: true,
             }));
+        } else if let Some(Symbol::Var(var)) = &prior {
+            if !var.file_visible {
+                // A block-scope extern created this file entity and left it
+                // hidden. The file-scope declarator puts the name in scope
+                // with this declarator's type (C11 6.2.1p7) before the
+                // initializer is checked.
+                if !compatible(&var.ty, &ty) {
+                    return self.err(
+                        decl.line,
+                        decl.column,
+                        format!("conflicting types for '{name}'"),
+                    );
+                }
+                ty = composite(&var.ty, &ty);
+                self.reveal_file(&name);
+                self.set_global_type(&name, ty.clone());
+            }
+        }
+        let shaped = if let Some(init) = &decl.init {
+            Some(self.shape_initializer(&ty, init, decl.line, decl.column)?)
+        } else {
+            None
+        };
+        if let Some((shaped_ty, _)) = &shaped {
+            ty = shaped_ty.clone();
+        }
+        if let Some(Symbol::Var(var)) = self.file_get(&name) {
+            if !prebound {
+                if !compatible(&var.ty, &ty) {
+                    return self.err(
+                        decl.line,
+                        decl.column,
+                        format!("conflicting types for '{name}'"),
+                    );
+                }
+                ty = composite(&var.ty, &ty);
+            }
+        }
+        decl.ty = ty.clone();
+        // `extern struct S x;` may name an object completed in another
+        // translation unit. A definition, including a tentative definition,
+        // needs a complete type (C11 6.9.2).
+        let extern_only = decl.init.is_none() && decl.storage == Storage::Extern;
+        if !ty.is_array() && !ty.is_complete() && !extern_only {
+            return self.err(
+                decl.line,
+                decl.column,
+                format!("variable '{name}' has incomplete type '{}'", ty.display()),
+            );
+        }
+        if prebound {
+            self.set_global_type(&name, ty.clone());
         } else {
             self.reveal_file(&name);
             self.set_global_type(&name, ty.clone());
@@ -597,6 +623,33 @@ impl Sema {
         Ok((ty, stores))
     }
 
+    /// Fold an array designator after typing it, so `sizeof` operands are
+    /// typed before evaluation (C11 6.7.9p6, 6.5.3.4).
+    fn designator_index(
+        &mut self,
+        expr: &Expr,
+        line: usize,
+        column: usize,
+    ) -> Result<u64, Diagnostic> {
+        let mut expr = expr.clone();
+        self.check_expr(&mut expr)?;
+        let value = match eval_const_expr(&expr) {
+            Ok(value) if value.ty.is_integer() => value,
+            _ => {
+                return self.err(line, column, "designator is not an integer constant");
+            }
+        };
+        if value.ty.is_signed() {
+            let signed = sign_extend(value.bits, value.ty.width());
+            if signed < 0 {
+                return self.err(line, column, "array designator is negative");
+            }
+            Ok(signed as u64)
+        } else {
+            Ok(value.bits)
+        }
+    }
+
     fn infer_array_len(
         &mut self,
         elem: &CType,
@@ -622,21 +675,7 @@ impl Sema {
                 let Some(Designator::Index { expr, line, column }) = designators.first() else {
                     return self.err(*dline, *dcol, "array designator is required");
                 };
-                let value = match eval_const_expr(expr) {
-                    Ok(value) if value.ty.is_integer() => value,
-                    _ => {
-                        return self.err(*line, *column, "designator is not an integer constant");
-                    }
-                };
-                let at = if value.ty.is_signed() {
-                    let signed = sign_extend(value.bits, value.ty.width());
-                    if signed < 0 {
-                        return self.err(*line, *column, "array designator is negative");
-                    }
-                    signed as u64
-                } else {
-                    value.bits
-                };
+                let at = self.designator_index(expr, *line, *column)?;
                 if at > 1_000_000 {
                     return self.err(*line, *column, "array designator is too large");
                 }
@@ -1163,25 +1202,7 @@ impl Sema {
                     if !current.unqualified().is_array() {
                         return self.err(*line, *column, "array designator on a non-array");
                     }
-                    let value = match eval_const_expr(expr) {
-                        Ok(value) if value.ty.is_integer() => value,
-                        _ => {
-                            return self.err(
-                                *line,
-                                *column,
-                                "designator is not an integer constant",
-                            );
-                        }
-                    };
-                    let index = if value.ty.is_signed() {
-                        let signed = sign_extend(value.bits, value.ty.width());
-                        if signed < 0 {
-                            return self.err(*line, *column, "array designator is negative");
-                        }
-                        signed as u64
-                    } else {
-                        value.bits
-                    };
+                    let index = self.designator_index(expr, *line, *column)?;
                     if index as usize >= children.len() {
                         return self.err(*line, *column, "array designator is out of range");
                     }
@@ -1950,6 +1971,15 @@ impl Sema {
             };
             return self.err(decl.line, decl.column, message);
         }
+        // C11 6.2.1p7: the identifier is in scope after its declarator,
+        // including in the initializer.
+        self.insert(Symbol::Var(VarSym {
+            name: decl.name.clone(),
+            slot: decl.slot.clone(),
+            ty: decl.ty.clone(),
+            global: None,
+            file_visible: true,
+        }));
         let init = decl.init.clone();
         let (ty, stores) = if let Some(init) = &init {
             self.shape_initializer(&decl.ty, init, decl.line, decl.column)?
@@ -1960,14 +1990,7 @@ impl Sema {
             return self.err(decl.line, decl.column, incomplete_local(&decl.name, &ty));
         }
         decl.ty = ty.clone();
-        // The declarator is in scope for its initializer (C scope rules).
-        self.insert(Symbol::Var(VarSym {
-            name: decl.name.clone(),
-            slot: decl.slot.clone(),
-            ty: ty.clone(),
-            global: None,
-            file_visible: true,
-        }));
+        self.set_local_var_type(&decl.name, ty.clone());
         if decl.init.is_some() {
             let mut stores = stores;
             self.check_stores(&mut stores)?;
@@ -1987,6 +2010,19 @@ impl Sema {
                 format!("redefinition of '{}'", decl.name),
             );
         }
+        let symbol = self.fresh_static_name(&decl.name);
+        let slot = format!("@{symbol}");
+        decl.slot = slot.clone();
+        decl.checked = None;
+        // C11 6.2.1p7: the identifier is in scope after its declarator,
+        // including in the initializer.
+        self.insert(Symbol::Var(VarSym {
+            name: decl.name.clone(),
+            slot,
+            ty: decl.ty.clone(),
+            global: None,
+            file_visible: true,
+        }));
         let init = decl.init.clone();
         let (ty, stores) = if let Some(init) = &init {
             self.shape_initializer(&decl.ty, init, decl.line, decl.column)?
@@ -1996,18 +2032,8 @@ impl Sema {
         if !ty.is_complete() {
             return self.err(decl.line, decl.column, incomplete_local(&decl.name, &ty));
         }
-        let symbol = self.fresh_static_name(&decl.name);
-        let slot = format!("@{symbol}");
         decl.ty = ty.clone();
-        decl.slot = slot.clone();
-        decl.checked = None;
-        self.insert(Symbol::Var(VarSym {
-            name: decl.name.clone(),
-            slot,
-            ty: ty.clone(),
-            global: None,
-            file_visible: true,
-        }));
+        self.set_local_var_type(&decl.name, ty.clone());
         let value = if decl.init.is_some() {
             let mut stores = stores;
             self.check_stores(&mut stores)?;
@@ -2366,7 +2392,7 @@ impl Sema {
     }
 
     fn check_expr(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
-        if let Expr::Var {
+        let implicit_func_name = if let Expr::Var {
             name, line, column, ..
         } = expr
         {
@@ -2383,8 +2409,13 @@ impl Sema {
                 let line = *line;
                 let column = *column;
                 *expr = Expr::str_lit(bytes, StrEnc::Byte, line, column);
+                true
+            } else {
+                false
             }
-        }
+        } else {
+            false
+        };
         match expr {
             Expr::Int { value_ty, .. } => {
                 let value_ty = *value_ty;
@@ -2409,7 +2440,22 @@ impl Sema {
             Expr::Call { .. } => self.check_call(expr),
             Expr::Index { .. } => self.check_index(expr),
             Expr::Decay { .. } => Ok(()),
-            Expr::Str { .. } => self.check_str(expr),
+            Expr::Str { .. } => {
+                self.check_str(expr)?;
+                // C11 6.4.2.2: __func__ is `static const char [N]`, not an
+                // unqualified string literal (6.4.5p6).
+                if implicit_func_name {
+                    let ty = expr
+                        .ty()
+                        .expect("string literal is typed")
+                        .with_quals(Quals {
+                            is_const: true,
+                            ..Quals::default()
+                        });
+                    expr.set_ty(ty);
+                }
+                Ok(())
+            }
             Expr::Member { .. } => self.check_member(expr),
             Expr::VaArg { .. } => self.check_va_arg(expr),
             Expr::VaOp { .. } => self.check_va_op(expr),
@@ -2421,9 +2467,11 @@ impl Sema {
     /// A generic selection (C11 6.5.1.1). The controlling expression is not
     /// evaluated; its type after lvalue conversion (qualifiers dropped, an
     /// array or function becomes a pointer) picks the association whose type
-    /// is compatible with it, or `default`. The node is replaced by the
-    /// chosen expression, which keeps its type and whether it is an lvalue.
-    /// The associations that are not chosen are not analyzed.
+    /// is compatible with it, or `default`. Every association expression is
+    /// analyzed for constraints and name resolution. The node is then
+    /// replaced by the chosen expression, which keeps its type and whether
+    /// it is an lvalue, so unselected expressions are not evaluated and
+    /// emit no IR.
     fn check_generic(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
         let Expr::Generic {
             control,
@@ -2495,6 +2543,20 @@ impl Sema {
                 ),
             );
         };
+        for (i, assoc) in assocs.iter_mut().enumerate() {
+            if i != index {
+                // Constraints are checked, but unselected associations are
+                // not evaluated and must not leave IR artifacts behind
+                // (C11 6.5.1.1p3).
+                let locals = self.static_locals.len();
+                let strings = self.strings.len();
+                let seq = self.static_seq;
+                self.check_expr(&mut assoc.expr)?;
+                self.static_locals.truncate(locals);
+                self.strings.truncate(strings);
+                self.static_seq = seq;
+            }
+        }
         *expr = assocs.swap_remove(index).expr;
         self.check_expr(expr)
     }
@@ -5787,6 +5849,208 @@ mod tests {
             .contains("compound literal has incomplete type"));
         assert!(
             sema_err("int main(void) { int (*f)(void) = &(int(void)){0}; }").contains("function")
+        );
+    }
+
+    #[test]
+    fn generic_unselected_associations_are_checked() {
+        // C11 6.5.1.1p3 does not evaluate unselected associations, but they
+        // are still assignment-expressions and must satisfy constraints and
+        // name resolution (5.1.1.3).
+        assert!(sema_err(
+            "int main(void) { int n = 2; return _Generic(n, int: 0, default: undeclared_name); }"
+        )
+        .contains("undeclared identifier 'undeclared_name'"));
+        assert!(sema_err(
+            "int one(int); int main(void) { int n = 2; return _Generic(n, int: 0, default: one(1, 2)); }"
+        )
+        .contains("expects 1 argument, found 2"));
+        // Nested selection: the outer default is unselected, and its inner
+        // default names an undeclared identifier.
+        assert!(sema_err(
+            "int main(void) { int a = 1, b = 2; return _Generic(a, int: 0, default: _Generic(b, long: 1, default: missing_inner)); }"
+        )
+        .contains("undeclared identifier 'missing_inner'"));
+
+        // Valid unselected expressions may have a different type from the
+        // selected one.
+        sema_ok("int main(void) { int n = 1; return _Generic(n, int: 0, default: 3.0); }");
+        sema_ok("int main(void) { int n = 1; const char *p = _Generic(n, int: \"ok\", default: 0); return p != 0; }");
+        sema_ok("struct S { int m; }; int main(void) { int n = 1; struct S s; return _Generic(n, int: 0, struct S: s.m); }");
+
+        // Unselected side effects are not lowered to IR (C11 6.5.1.1p3).
+        let ir = crate::compile_to_ir(
+            "int bump(void); int main(void) { int n = 0; return _Generic(n, int: 1, default: bump()); }",
+            "generic-unselected.c",
+        )
+        .unwrap();
+        assert!(
+            !ir.contains("call") && ir.contains("ret i32 1"),
+            "unselected call must not be emitted: {ir}"
+        );
+        let ir = crate::compile_to_ir(
+            "int printf(const char *, ...); int main(void) { int n = 0; return _Generic(n, int: 1, default: printf(\"x\")); }",
+            "generic-unselected-printf.c",
+        )
+        .unwrap();
+        assert!(
+            !ir.contains("call") && ir.contains("ret i32 1"),
+            "unselected printf must not be emitted: {ir}"
+        );
+
+        // The parser folds `_Generic` in an integer constant expression
+        // before semantic analysis, so these contexts must be checked there.
+        assert!(
+            sema_err("enum { N = _Generic(0, int: 1, default: missing) };")
+                .contains("undeclared identifier")
+        );
+        assert!(sema_err("int a[_Generic(1, int: 2, default: missing)];")
+            .contains("undeclared identifier"));
+        assert!(
+            sema_err("struct S { int x : _Generic(0, int: 3, default: missing); };")
+                .contains("undeclared identifier")
+        );
+        assert!(
+            sema_err("_Static_assert(_Generic(0, int: 1, default: missing), \"m\");")
+                .contains("undeclared identifier")
+        );
+        assert!(
+            sema_err("int one(int); enum { N = _Generic(0, int: 1, default: one(1, 2)) };")
+                .contains("argument")
+        );
+        sema_ok("enum { N = _Generic(0, int: 1, default: 2) };");
+        sema_ok("int a[_Generic(1, int: 2, default: sizeof(int))];");
+        sema_ok("int one(int); enum { N = _Generic(0, int: 1, default: one(1)) };");
+        sema_ok("_Static_assert(_Generic(0, int: 1, default: 0), \"m\");");
+
+        // Constant expressions that short-circuit, or that would be folded
+        // away, still need their unselected associations checked.
+        assert!(
+            sema_err("enum { N = 1 || _Generic(0, int: 1, default: missing) };")
+                .contains("undeclared identifier")
+        );
+        assert!(sema_err("enum { N = _Generic(0, int: 1, int: 2) };")
+            .contains("compatible with a previously specified type"));
+        assert!(
+            sema_err("enum { N = _Generic(0, int: 1, default: *1) };").contains("invalid operand")
+        );
+        sema_ok("enum { N = _Generic(0, int: 1, default: __builtin_signbit(1.0)) };");
+        assert!(
+            sema_err("enum { N = _Generic(0, int: 1, default: (int[1]){[missing] = 0}) };",)
+                .contains("undeclared identifier")
+        );
+
+        // __func__ is implicit only in a function (C11 6.4.2.2). A bare
+        // supported builtin is not an ordinary identifier.
+        assert!(
+            sema_err("enum { N = _Generic(0, int: 1, default: __func__) };")
+                .contains("undeclared identifier")
+        );
+        sema_ok("int f(void) { enum { N = _Generic(0, int: 1, default: __func__) }; return 0; }");
+        assert!(
+            sema_err("enum { N = _Generic(0, int: 1, default: __builtin_signbit) };")
+                .contains("undeclared identifier")
+        );
+        sema_ok("int x; enum { N = _Generic(0, int: 1, default: ++_Generic(0, int: x)) };");
+        assert!(sema_err(
+            "int y; enum { N = _Generic(0, int: 1, default: ++_Generic(0, int: 1)) };"
+        )
+        .contains("invalid operand"));
+
+        // C11 6.4.2.2: __func__ is `static const char [strlen(name)+1]`.
+        // An ICE _Generic on its address must use that complete type.
+        let ir = crate::compile_to_ir(
+            "int f(void) { enum { N = _Generic(&__func__, char (*)[99]: 1, default: 2) }; return N; }",
+            "generic-func-wrong.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("ret i32 2"),
+            "char (*)[99] must not match const char (*)[2]: {ir}"
+        );
+        let ir = crate::compile_to_ir(
+            "int f(void) { enum { N = _Generic(&__func__, const char (*)[2]: 1, default: 2) }; return N; }",
+            "generic-func-right.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("ret i32 1"),
+            "&__func__ in f must match const char (*)[2]: {ir}"
+        );
+
+        // Designator expressions must be typed before they are folded, so
+        // `sizeof` in a designator is valid (selected or unselected).
+        let ir = crate::compile_to_ir(
+            "int main(void) { return (int[1]){[sizeof 0 - sizeof 0] = 7}[0]; }",
+            "sizeof-designator.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("store i32 7"),
+            "sizeof in a selected designator must fold: {ir}"
+        );
+        let ir = crate::compile_to_ir(
+            "int main(void) { return _Generic(0, int: 3, default: (int[1]){[sizeof 0 - sizeof 0] = 0}); }",
+            "generic-sizeof-designator.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("ret i32 3"),
+            "unselected sizeof designator must not be evaluated: {ir}"
+        );
+
+        // ICE and runtime _Generic must agree on the const array type.
+        let ir = crate::compile_to_ir(
+            "int f(void) { enum { N = _Generic(&__func__, const char (*)[2]: 1, default: 0) }; return N != _Generic(&__func__, const char (*)[2]: 1, default: 0); }",
+            "generic-func-agree.c",
+        )
+        .unwrap();
+        assert!(
+            !ir.contains("icmp ne i32 1, 0"),
+            "ICE and runtime _Generic(&__func__) must agree: {ir}"
+        );
+
+        // The declared object is in scope in its initializer (C11 6.2.1p7).
+        let ir = crate::compile_to_ir(
+            "int main(void) { int a[1] = { [0 && sizeof a] = 7 }; return a[0]; }",
+            "designator-self.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("store i32 7"),
+            "designator may name the object being initialized: {ir}"
+        );
+        let ir = crate::compile_to_ir(
+            "int a[1] = { [0 && sizeof a] = 7 }; int main(void) { return a[0]; }",
+            "designator-self-global.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("store i32 7") || ir.contains("[1 x i32] [i32 7]"),
+            "file-scope designator may name the object: {ir}"
+        );
+        // A block-scope extern may already have created the file symbol
+        // and left it hidden. The later file-scope declarator still puts
+        // the identifier in scope in its initializer (C11 6.2.1p7).
+        let ir = crate::compile_to_ir(
+            "int f(void) { extern int a[1]; return 0; } int a[1] = { [0 && sizeof a] = 7 }; int main(void) { return a[0]; }",
+            "designator-self-global-after-extern.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("store i32 7") || ir.contains("[1 x i32] [i32 7]"),
+            "file-scope designator must see a previously hidden extern: {ir}"
+        );
+
+        // An unselected file-scope compound literal must not leave a global.
+        let ir = crate::compile_to_ir(
+            "int x = _Generic(0, int: 1, default: (int){2});",
+            "generic-unselected-compound.c",
+        )
+        .unwrap();
+        assert!(
+            !ir.contains("compoundliteral") && ir.contains("@x = global i32 1"),
+            "unselected compound literal must not be emitted: {ir}"
         );
     }
 

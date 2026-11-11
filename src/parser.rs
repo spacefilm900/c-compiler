@@ -174,8 +174,29 @@ impl Parser<'_> {
                 .expect("function scope")
                 .insert(name, binding);
         }
+        // C11 6.4.2.2: static const char __func__[] = "function-name";
+        {
+            let scope = self.names.last_mut().expect("function scope");
+            let func_ty = CType::array(
+                CType::from_name(TypeName::Char),
+                Some(declarator.name.len() as u64 + 1),
+            )
+            .with_quals(Quals {
+                is_const: true,
+                ..Quals::default()
+            });
+            scope.insert(
+                "__func__".to_string(),
+                NameBinding::Ordinary(Some(func_ty.clone())),
+            );
+            scope.insert(
+                "__PRETTY_FUNCTION__".to_string(),
+                NameBinding::Ordinary(Some(func_ty)),
+            );
+        }
         let body = self.parse_compound_scoped(false)?;
         self.pop_tags();
+
         let symbol = declarator.symbol.unwrap_or_else(|| declarator.name.clone());
         Ok(TopDecl::Func(FuncDef {
             ret_type: ret,
@@ -999,6 +1020,8 @@ impl Parser<'_> {
             let name = self.advance();
             let value = if self.match_kind(TokenKind::Assign) {
                 let expr = self.parse_assignment()?;
+                check_uneval(&expr, &self.names)
+                    .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
                 let folded = eval_ice(&expr, &self.names)
                     .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
                 enum_int(folded).map_err(|_| {
@@ -1315,6 +1338,8 @@ impl Parser<'_> {
         self.advance();
         self.expect(TokenKind::LParen, "'('")?;
         let expr = self.parse_conditional()?;
+        check_uneval(&expr, &self.names)
+            .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
         let value = eval_ice(&expr, &self.names)
             .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
         self.expect(TokenKind::Comma, "','")?;
@@ -1489,6 +1514,8 @@ impl Parser<'_> {
             ));
         };
         let expr = self.parse_conditional()?;
+        check_uneval(&expr, &self.names)
+            .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
         let value = eval_ice(&expr, &self.names)
             .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
         let signed = if value.ty.is_signed() {
@@ -3687,6 +3714,12 @@ enum BoundErr {
     Shift,
     NotConst,
     Undeclared,
+    WrongArity,
+    InvalidOperand,
+    GenericDupDefault,
+    GenericBadType,
+    GenericDupType,
+    GenericNoMatch,
     SizeofFunction,
     SizeofBitField,
 }
@@ -3702,6 +3735,16 @@ fn bound_message(err: BoundErr) -> &'static str {
         BoundErr::Shift => "array size uses an undefined shift",
         BoundErr::NotConst => "array size is not an integer constant",
         BoundErr::Undeclared => "use of undeclared identifier",
+        BoundErr::WrongArity => "wrong number of arguments in function call",
+        BoundErr::InvalidOperand => "invalid operand",
+        BoundErr::GenericDupDefault => "duplicate default generic association",
+        BoundErr::GenericBadType => "type in generic association is not a complete object type",
+        BoundErr::GenericDupType => {
+            "type in generic association compatible with a previously specified type"
+        }
+        BoundErr::GenericNoMatch => {
+            "controlling expression type not compatible with any generic association type"
+        }
         BoundErr::SizeofFunction => "invalid application of 'sizeof' to a function type",
         BoundErr::SizeofBitField => "invalid application of 'sizeof' to a bit-field",
     }
@@ -3727,6 +3770,7 @@ struct BVal {
 /// Integer constant expression used as an array bound. An identifier, a call,
 /// or an assignment is reported as a variable-length array.
 fn fold_array_bound(expr: &Expr, env: Env) -> Result<u64, BoundErr> {
+    check_uneval(expr, env)?;
     let value = eval_ice(expr, env)?;
     let count = if value.ty.is_signed() {
         let signed = sign_extend(value.bits, value.ty.width());
@@ -3835,13 +3879,219 @@ fn eval_ice(expr: &Expr, env: Env) -> Result<BVal, BoundErr> {
         Expr::CompoundLit { .. } => Err(BoundErr::NotConst),
         Expr::Generic {
             control, assocs, ..
-        } => eval_ice(select_generic(control, assocs, env)?, env),
+        } => {
+            check_generic_assocs(control, assocs, env)?;
+            eval_ice(select_generic(control, assocs, env)?, env)
+        }
+    }
+}
+
+/// Check every association expression of a generic selection, and the
+/// controlling expression, for constraints and name resolution. The
+/// expressions are not evaluated (C11 6.5.1.1p3). This runs in the parser
+/// because an integer constant expression is folded before semantic
+/// analysis sees the `_Generic` node.
+fn check_generic_assocs(control: &Expr, assocs: &[GenericAssoc], env: Env) -> Result<(), BoundErr> {
+    check_uneval(control, env)?;
+    let ty = rvalue_type(control, env)?;
+    let mut default = false;
+    let mut chosen = None;
+    for (index, assoc) in assocs.iter().enumerate() {
+        let Some(assoc_ty) = &assoc.ty else {
+            if default {
+                return Err(BoundErr::GenericDupDefault);
+            }
+            default = true;
+            continue;
+        };
+        if assoc_ty.is_func() || !assoc_ty.is_complete() {
+            return Err(BoundErr::GenericBadType);
+        }
+        for earlier in assocs[..index].iter().filter_map(|a| a.ty.as_ref()) {
+            if compatible(earlier, assoc_ty) {
+                return Err(BoundErr::GenericDupType);
+            }
+        }
+        if chosen.is_none() && compatible(assoc_ty, &ty) {
+            chosen = Some(index);
+        }
+    }
+    if chosen.is_none() && !default {
+        return Err(BoundErr::GenericNoMatch);
+    }
+    for assoc in assocs {
+        check_uneval(&assoc.expr, env)?;
+    }
+    Ok(())
+}
+
+/// Name resolution and call-arity constraints in an expression that is not
+/// evaluated, including an unselected `_Generic` association.
+fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
+    match expr {
+        Expr::Int { .. } | Expr::Float { .. } | Expr::Str { .. } => Ok(()),
+        Expr::Var { name, .. } => {
+            if env_lookup(env, name).is_some() {
+                Ok(())
+            } else {
+                Err(BoundErr::Undeclared)
+            }
+        }
+        Expr::Bin { left, right, .. } | Expr::Comma { left, right, .. } => {
+            check_uneval(left, env)?;
+            check_uneval(right, env)
+        }
+        Expr::Unary { op, expr, .. } => {
+            check_uneval(expr, env)?;
+            if *op == UnaryOp::Deref && !rvalue_type(expr, env)?.is_pointer() {
+                return Err(BoundErr::InvalidOperand);
+            }
+            Ok(())
+        }
+        Expr::Cast { expr, .. } | Expr::Decay { expr, .. } => check_uneval(expr, env),
+        Expr::Assign { target, value, .. } | Expr::CompoundAssign { target, value, .. } => {
+            check_uneval(target, env)?;
+            check_uneval(value, env)?;
+            if !uneval_lvalue(target, env) {
+                return Err(BoundErr::InvalidOperand);
+            }
+            Ok(())
+        }
+        Expr::IncDec { target, .. } => {
+            check_uneval(target, env)?;
+            if uneval_lvalue(target, env) {
+                Ok(())
+            } else {
+                Err(BoundErr::InvalidOperand)
+            }
+        }
+        Expr::Cond {
+            cond,
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            check_uneval(cond, env)?;
+            check_uneval(then_expr, env)?;
+            check_uneval(else_expr, env)
+        }
+        Expr::Call { callee, args, .. } => {
+            // A supported builtin is recognized only as a call, not as a bare
+            // identifier, so it is accepted here before ordinary lookup.
+            if let Expr::Var { name, .. } = callee.as_ref() {
+                if let Some(arity) = builtin_arity(name) {
+                    for arg in args {
+                        check_uneval(arg, env)?;
+                    }
+                    if args.len() != arity {
+                        return Err(BoundErr::WrongArity);
+                    }
+                    return Ok(());
+                }
+            }
+            check_uneval(callee, env)?;
+            for arg in args {
+                check_uneval(arg, env)?;
+            }
+            let callee_ty = rvalue_type(callee, env)?;
+            let func = callee_ty
+                .pointee()
+                .and_then(CType::func_ty)
+                .or_else(|| callee_ty.func_ty());
+            if let Some(func) = func {
+                if func.prototype {
+                    let argc = args.len();
+                    let arity = func.params.len();
+                    let bad = if func.variadic {
+                        argc < arity
+                    } else {
+                        argc != arity
+                    };
+                    if bad {
+                        return Err(BoundErr::WrongArity);
+                    }
+                }
+            }
+            Ok(())
+        }
+        Expr::Sizeof { operand, .. } => match operand {
+            SizeofOperand::Expr(inner) => check_uneval(inner, env),
+            SizeofOperand::Type(_) => Ok(()),
+        },
+        Expr::Index { base, index, .. } => {
+            check_uneval(base, env)?;
+            check_uneval(index, env)
+        }
+        Expr::Member { base, .. } => check_uneval(base, env),
+        Expr::VaArg { ap, .. } => check_uneval(ap, env),
+        Expr::VaOp { args, .. } => {
+            for arg in args {
+                check_uneval(arg, env)?;
+            }
+            Ok(())
+        }
+        Expr::Generic {
+            control, assocs, ..
+        } => check_generic_assocs(control, assocs, env),
+        Expr::CompoundLit { decl, .. } => match &decl.init {
+            Some(init) => check_uneval_init(init, env),
+            None => Ok(()),
+        },
+    }
+}
+
+fn check_uneval_init(init: &Init, env: Env) -> Result<(), BoundErr> {
+    match init {
+        Init::Expr(expr) => check_uneval(expr, env),
+        Init::List { items, .. } => {
+            for item in items {
+                check_uneval_init(item, env)?;
+            }
+            Ok(())
+        }
+        Init::Designated {
+            designators, init, ..
+        } => {
+            for designator in designators {
+                if let Designator::Index { expr, .. } = designator {
+                    check_uneval(expr, env)?;
+                }
+            }
+            check_uneval_init(init, env)
+        }
+    }
+}
+
+fn builtin_arity(name: &str) -> Option<usize> {
+    match name {
+        "__builtin_signbit" | "__builtin_signbitf" | "__builtin_signbitl" => Some(1),
+        "__builtin_memcpy" | "__builtin_memmove" | "__builtin_memset" => Some(3),
+        _ => None,
+    }
+}
+
+fn uneval_lvalue(expr: &Expr, env: Env) -> bool {
+    match expr {
+        Expr::Var { .. }
+        | Expr::Index { .. }
+        | Expr::Member { .. }
+        | Expr::CompoundLit { .. }
+        | Expr::Str { .. }
+        | Expr::Unary {
+            op: UnaryOp::Deref, ..
+        } => true,
+        Expr::Generic {
+            control, assocs, ..
+        } => select_generic(control, assocs, env)
+            .ok()
+            .is_some_and(|selected| uneval_lvalue(selected, env)),
+        _ => false,
     }
 }
 
 /// The association a generic selection picks (C11 6.5.1.1p3): the one whose
 /// type is compatible with the controlling expression's type after lvalue
-/// conversion, else `default`. Semantic analysis checks the constraints.
+/// conversion, else `default`. Association expressions are checked first.
 fn select_generic<'e>(
     control: &Expr,
     assocs: &'e [GenericAssoc],
@@ -3986,7 +4236,10 @@ fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
         Expr::Decay { ty, .. } => ty.clone().ok_or(BoundErr::NotConst),
         Expr::Generic {
             control, assocs, ..
-        } => type_only(select_generic(control, assocs, env)?, env),
+        } => {
+            check_generic_assocs(control, assocs, env)?;
+            type_only(select_generic(control, assocs, env)?, env)
+        }
         Expr::CompoundLit { decl, .. } => match (&decl.ty, &decl.init) {
             (CType::Array(elem, None), Some(init)) => infer_init_len(elem, init, env)
                 .map(|len| CType::array((**elem).clone(), Some(len)))
@@ -4733,7 +4986,8 @@ global int [] a =
         assert!(parse_err("int main(void) { return 1 }").contains("expected ';'"));
         assert!(parse_err("int main(void { return 0; }").contains("expected ')'"));
         assert!(parse_err("struct S { int x: 0; };").contains("zero width"));
-        assert!(parse_err("int a[n];").contains("variable-length arrays are not supported"));
+        assert!(parse_err("int a[n];").contains("undeclared identifier"));
+        assert!(parse_err("int n; int a[n];").contains("variable-length arrays are not supported"));
         assert!(parse_err("int a[0];").contains("array size must be positive"));
         // _Static_assert (C11 6.7.10) and _Alignof (6.5.3.4).
         assert!(parsed("_Static_assert(sizeof(int) == 4, \"ok\");\n").is_empty());
