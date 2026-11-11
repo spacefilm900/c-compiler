@@ -47,6 +47,44 @@ struct R {
 
 struct R designated = {.in.c = 'z', .p = &glob};
 
+struct B2 {
+    int a : 3;
+    char c;
+};
+
+union U {
+    int i;
+    struct B2 b;
+};
+
+struct Later {
+    union U u;
+    int n;
+};
+
+struct Later later = {.u.b.a = 1, .u.b.c = 'x', .n = 9};
+
+struct LaterP {
+    union U u;
+    int *p;
+};
+
+struct LaterP laterp = {.u.b.a = 2, .u.b.c = 'y', .p = &glob};
+
+struct Later firstmem = {.u.i = 42, .n = 7};
+
+union V {
+    int i;
+    unsigned a : 3;
+};
+
+struct Direct {
+    union V v;
+    int *p;
+};
+
+struct Direct direct = {.v.a = 5, .p = &glob};
+
 int main(void) {
     if (g.in.a != 1 || g.in.b != 2 || g.n != 9) {
         return 1;
@@ -72,6 +110,18 @@ int main(void) {
     }
     if (designated.in.a != 0 || designated.in.c != 'z' || *designated.p != 5) {
         return 8;
+    }
+    if (later.u.b.a != 1 || later.u.b.c != 'x' || later.n != 9) {
+        return 9;
+    }
+    if (laterp.u.b.a != 2 || laterp.u.b.c != 'y' || *laterp.p != 5) {
+        return 10;
+    }
+    if (firstmem.u.i != 42 || firstmem.n != 7) {
+        return 11;
+    }
+    if (direct.v.a != 5 || *direct.p != 5) {
+        return 12;
     }
     return 0;
 }

@@ -4265,7 +4265,7 @@ fn const_has_no_address(value: &ConstInit) -> bool {
 }
 
 fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
-    if ty.record_has_bitfield() {
+    if is_bit_image(ty) {
         if let Some((_, value)) = stores
             .iter()
             .rev()
@@ -4310,9 +4310,29 @@ fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
     ConstInit::Aggregate(items)
 }
 
+/// A bit-field record, or a union that contains one in any member.
+///
+/// Union members share one byte image. A bit-field in a member other than
+/// the first still occupies those bytes, so the whole union is one image.
+fn is_bit_image(ty: &CType) -> bool {
+    if ty.record_has_bitfield() {
+        return true;
+    }
+    if !ty.is_union() {
+        return false;
+    }
+    ty.struct_ref()
+        .and_then(StructRef::fields)
+        .is_some_and(|fields| {
+            fields
+                .iter()
+                .any(|field| field.bit_width.is_some() || is_bit_image(&field.ty))
+        })
+}
+
 /// Byte ranges of nested records whose LLVM type is a byte image.
 fn bit_record_ranges(ty: &CType, base: u64, out: &mut Vec<(u64, u64)>) {
-    if ty.record_has_bitfield() {
+    if is_bit_image(ty) {
         out.push((base, base + ty.size().unwrap_or(0)));
         return;
     }
@@ -4338,10 +4358,14 @@ fn bit_record_ranges(ty: &CType, base: u64, out: &mut Vec<(u64, u64)>) {
     }
 }
 
-/// Replace each nested bit-field struct (or union that has a bit-field)
-/// with the bytes already packed into `image`.
+/// Replace each nested bit-field record, including a union that contains
+/// one in any member, with the bytes already packed into `image`.
+///
+/// C11 6.7.9 initializes the designated union member and leaves the rest of
+/// that union's object representation zero. Every member occupies the same
+/// bytes, so a bit-field in a member other than the first is still this image.
 fn splice_bit_blobs(ty: &CType, base: u64, image: &[u8], out: &mut Vec<(u64, ConstInit)>) {
-    if ty.record_has_bitfield() {
+    if is_bit_image(ty) {
         let size = ty.size().unwrap_or(0) as usize;
         let start = base as usize;
         let mut bytes = vec![0u8; size];
