@@ -1849,7 +1849,7 @@ impl Parser<'_> {
         // An identifier list (C11 6.7.6.3p3) belongs to a K&R function
         // definition, which is not supported. `int f();` is handled above.
         if self.current().kind == TokenKind::Ident
-            && !self.is_typedef(&self.current().spelling)
+            && !self.at_type_specifier(self.current())
             && matches!(self.lookahead(), TokenKind::Comma | TokenKind::RParen)
         {
             return Err(self.error("old-style function declarations are not supported"));
@@ -4764,6 +4764,9 @@ global int [] a =
         assert!(parse_err("int main(void) { return a ? b; }").contains("expected ':'"));
         assert!(parsed("int add();\n").contains("add"));
         assert!(parse_err("int add(a, b);").contains("old-style function declarations"));
+        assert!(
+            parsed("void f(__builtin_va_list);\nvoid g(__builtin_va_list, int);\n").contains("g")
+        );
         assert!(
             parse_err("int main(void) { int inner(void) { return 1; } }")
                 .contains("nested functions")

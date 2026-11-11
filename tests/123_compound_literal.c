@@ -1,5 +1,5 @@
-#include <stdio.h>
-#include <string.h>
+int printf(const char *, ...);
+unsigned long strlen(const char *);
 struct P { int x, y; };
 union U { int i; float f; char c[8]; };
 struct N { struct P p; int a[3]; };

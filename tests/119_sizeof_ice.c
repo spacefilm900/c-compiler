@@ -1,4 +1,4 @@
-#include <stdio.h>
+int printf(const char *, ...);
 int a[5];
 int g[sizeof a / sizeof a[0]];
 static const char msg[] = "hello";

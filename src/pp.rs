@@ -2008,8 +2008,8 @@ fn val_from_compiler(tok: &Token) -> Val {
     // not fit in signed `intmax_t`, stays unsigned. A character constant is
     // not scanned for a suffix.
     let spelling = tok.spelling.as_str();
-    let u_suffix =
-        !spelling.starts_with('\'') && spelling.bytes().any(|byte| byte == b'u' || byte == b'U');
+    let number = spelling.as_bytes().first().is_some_and(u8::is_ascii_digit);
+    let u_suffix = number && spelling.bytes().any(|byte| byte == b'u' || byte == b'U');
     let too_big = !ty.is_signed() && ty.width() == 64 && bits > i64::MAX as u64;
     Val {
         bits,
@@ -3028,6 +3028,22 @@ mod tests {
     }
 
     #[test]
+    fn compiler_headers_provide_stdalign_and_max_align_t() {
+        let options = PpOptions {
+            system_dirs: vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("include")],
+            ..PpOptions::default()
+        };
+        let source = "#include <stdalign.h>\n#include <stddef.h>\n\
+            int a = alignof(max_align_t) + __alignas_is_defined + __alignof_is_defined;\n";
+        let text = preprocess(source, "t.c", &options).unwrap();
+        assert!(text.contains("} max_align_t;"), "{text}");
+        assert!(
+            squash(&text).contains("int a = _Alignof(max_align_t) + 1 + 1;"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn command_line_defines_and_angle_include() {
         let dir = std::env::temp_dir().join(format!("cc-pp-inc-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3100,6 +3116,9 @@ mod tests {
         let text = pp("#if L'\\400' == 256 && u'\\xffff' == 65535 && U'\\xffffffff' > 0\nint ok;\n#endif\n#if L'Ä' == 0xC4 && U'\\U0001F600' == 0x1F600\nint wide;\n#endif\n#if '\\377' < 0\nint neg;\n#endif\n");
         assert_eq!(squash(&text), "int ok; int wide; int neg;");
         assert!(pp_err("#if u'\\x10000'\n#endif\n").contains("out of range"));
+        // The character `u` is not an unsigned suffix: `L'u'` is a signed int.
+        let text = pp("#if L'u' - 118 < 0 && L'\\u00c4' - 200 < 0\nint signed_wide;\n#endif\n");
+        assert_eq!(squash(&text), "int signed_wide;");
         assert!(pp_err("#if 'é'\n#endif\n").contains("character too large"));
     }
 

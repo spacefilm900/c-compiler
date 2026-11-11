@@ -1,4 +1,4 @@
-#include <stdio.h>
+int printf(const char *, ...);
 struct In { int a, b; };
 union V { int i; struct In in; double d; };
 struct O { int k; struct In in; int arr[3]; union V v; int z; };

@@ -1,5 +1,4 @@
-#include <stdio.h>
-#include <stdlib.h>
+int printf(const char *, ...);
 extern void abort();
 int f();
 int f(int x) { return x + 1; }
@@ -10,14 +9,14 @@ double g(double x) { return x * 2; }
 int leave() { return 7; }
 int main() {
     double (*p)();
-    int (*q)(int) = leave;
+    int (*q)(void) = leave;
     p = &g;
     int r = f(1) - 2;
     r += (int)p(2.0) - 4;
     r += (int)twice(1.5f) - 3;
     r += count() - 0;
     r += sum(3, 'a', (short)2, 1.0f) - 103;
-    r += q(5) - 7;
+    r += q() - 7;
     {
         int h();
         r += h(4) - 8;

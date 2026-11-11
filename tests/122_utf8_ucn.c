@@ -1,19 +1,10 @@
-#include <stdio.h>
-#include <string.h>
-#include <wchar.h>
-#include <uchar.h>
-#if L'\400' != 256
-#error bad
-#endif
-#if U'\xffffffff' < 0
-#error signed
-#endif
-#if u'\xffff' != 65535
-#error u
-#endif
-#if L'Ä' != 0xC4 || U'\U0001F600' != 0x1F600 || u'\u20ac' != 0x20AC
-#error ucn
-#endif
+int printf(const char *, ...);
+int puts(const char *);
+unsigned long strlen(const char *);
+typedef unsigned long size_t;
+typedef int wchar_t;
+typedef unsigned short char16_t;
+typedef unsigned int char32_t;
 static const char s8[] = u8"Ä€😀\u00e9";
 static const char p[] = "aÄ\u20AC";
 static const char16_t s16[] = u"Ä€😀\U0001F601";

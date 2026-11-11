@@ -5797,7 +5797,13 @@ mod tests {
         // and there is no ellipsis.
         sema_ok("int g(); int g(int, double); int main(void) { return g(1, 2.0f); }");
         sema_ok("int g(); int main(void) { return g('a', (short)1, 1.0f); }");
+        // C11 6.7.6.3p15 makes a parameter-count mismatch with a `()`
+        // definition incompatible. Clang accepts the conversion without a
+        // diagnostic, and this compiler has no warnings, so it follows Clang
+        // for pointers. A redeclaration with parameters is still rejected.
         sema_ok("int h() { return 1; } int (*p)(int) = h;");
+        sema_ok("int d(); int (*q)(int) = d;");
+        assert!(sema_err("int h() { return 1; } int h(int);").contains("conflicting types"));
         sema_ok("int k(int); int k(); int main(void) { return k(3); }");
         assert!(sema_err("int g(); int g(char);").contains("conflicting types for 'g'"));
         assert!(sema_err("int g(); int g(float);").contains("conflicting types for 'g'"));
