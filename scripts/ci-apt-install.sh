@@ -6,20 +6,19 @@
 # keep the Azure mirror as a fallback, and retry a few times.
 set -eu
 
-ensure_unversioned() {
+# Link a versioned tool (clang-18, llvm-as-18, ...) to the unversioned name.
+find_tool() {
   cmd=$1
   if command -v "$cmd" >/dev/null 2>&1; then
     return 0
   fi
-  # Runner images often ship only versioned names such as llvm-as-18.
-  latest=
-  for candidate in $(command -v "$cmd"-* 2>/dev/null | sort); do
-    latest=$candidate
+  ver=
+  for ver in 18 17 16 19 15; do
+    if command -v "$cmd-$ver" >/dev/null 2>&1; then
+      sudo ln -sf "$(command -v "$cmd-$ver")" /usr/local/bin/"$cmd"
+      return 0
+    fi
   done
-  if [ -n "$latest" ]; then
-    sudo ln -sf "$latest" /usr/local/bin/"$cmd"
-    return 0
-  fi
   return 1
 }
 
@@ -27,10 +26,10 @@ need=
 for pkg in "$@"; do
   case "$pkg" in
     clang)
-      command -v clang >/dev/null 2>&1 || need="$need clang"
+      find_tool clang || need="$need clang"
       ;;
     llvm)
-      ensure_unversioned llvm-as || need="$need llvm"
+      find_tool llvm-as || need="$need llvm"
       ;;
     make)
       command -v make >/dev/null 2>&1 || need="$need make"
