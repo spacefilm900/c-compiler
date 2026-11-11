@@ -615,8 +615,17 @@ impl Gen {
                         continue;
                     }
                     if store.ty.is_record() {
-                        let src = self.record_ptr(&store.expr);
-                        let src_volatile = store.expr.ty().is_some_and(|ty| ty.is_volatile());
+                        let mut src = self.record_ptr(&store.expr);
+                        let mut src_volatile = store.expr.ty().is_some_and(|ty| ty.is_volatile());
+                        if stores.len() > 1 {
+                            // The source may be an object that a later
+                            // initializer changes (`.a = (s = x), .b = (s = y)`).
+                            // Its value is taken now, into a temporary.
+                            let tmp = self.entry_alloca(&store.ty.unqualified());
+                            self.copy_struct(&store.ty.unqualified(), &src, &tmp, src_volatile);
+                            src = tmp;
+                            src_volatile = false;
+                        }
                         pending.push(PendingStore::Record(
                             store.offset,
                             store.ty.clone(),
