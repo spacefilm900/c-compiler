@@ -174,8 +174,22 @@ impl Parser<'_> {
                 .expect("function scope")
                 .insert(name, binding);
         }
+        // C11 6.4.2.2: __func__ is implicitly declared at the start of the body.
+        {
+            let scope = self.names.last_mut().expect("function scope");
+            let ty = CType::array(CType::from_name(TypeName::Char), None);
+            scope.insert(
+                "__func__".to_string(),
+                NameBinding::Ordinary(Some(ty.clone())),
+            );
+            scope.insert(
+                "__PRETTY_FUNCTION__".to_string(),
+                NameBinding::Ordinary(Some(ty)),
+            );
+        }
         let body = self.parse_compound_scoped(false)?;
         self.pop_tags();
+
         let symbol = declarator.symbol.unwrap_or_else(|| declarator.name.clone());
         Ok(TopDecl::Func(FuncDef {
             ret_type: ret,
@@ -3910,10 +3924,7 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
     match expr {
         Expr::Int { .. } | Expr::Float { .. } | Expr::Str { .. } => Ok(()),
         Expr::Var { name, .. } => {
-            if builtin_arity(name).is_some()
-                || name == "__func__"
-                || env_lookup(env, name).is_some()
-            {
+            if env_lookup(env, name).is_some() {
                 Ok(())
             } else {
                 Err(BoundErr::Undeclared)
@@ -3934,14 +3945,14 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
         Expr::Assign { target, value, .. } | Expr::CompoundAssign { target, value, .. } => {
             check_uneval(target, env)?;
             check_uneval(value, env)?;
-            if !uneval_lvalue(target) {
+            if !uneval_lvalue(target, env) {
                 return Err(BoundErr::InvalidOperand);
             }
             Ok(())
         }
         Expr::IncDec { target, .. } => {
             check_uneval(target, env)?;
-            if uneval_lvalue(target) {
+            if uneval_lvalue(target, env) {
                 Ok(())
             } else {
                 Err(BoundErr::InvalidOperand)
@@ -3958,17 +3969,22 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
             check_uneval(else_expr, env)
         }
         Expr::Call { callee, args, .. } => {
-            check_uneval(callee, env)?;
-            for arg in args {
-                check_uneval(arg, env)?;
-            }
+            // A supported builtin is recognized only as a call, not as a bare
+            // identifier, so it is accepted here before ordinary lookup.
             if let Expr::Var { name, .. } = callee.as_ref() {
                 if let Some(arity) = builtin_arity(name) {
+                    for arg in args {
+                        check_uneval(arg, env)?;
+                    }
                     if args.len() != arity {
                         return Err(BoundErr::WrongArity);
                     }
                     return Ok(());
                 }
+            }
+            check_uneval(callee, env)?;
+            for arg in args {
+                check_uneval(arg, env)?;
             }
             let callee_ty = rvalue_type(callee, env)?;
             let func = callee_ty
@@ -4047,19 +4063,23 @@ fn builtin_arity(name: &str) -> Option<usize> {
     }
 }
 
-fn uneval_lvalue(expr: &Expr) -> bool {
-    matches!(
-        expr,
+fn uneval_lvalue(expr: &Expr, env: Env) -> bool {
+    match expr {
         Expr::Var { .. }
-            | Expr::Index { .. }
-            | Expr::Member { .. }
-            | Expr::CompoundLit { .. }
-            | Expr::Str { .. }
-            | Expr::Unary {
-                op: UnaryOp::Deref,
-                ..
-            }
-    )
+        | Expr::Index { .. }
+        | Expr::Member { .. }
+        | Expr::CompoundLit { .. }
+        | Expr::Str { .. }
+        | Expr::Unary {
+            op: UnaryOp::Deref, ..
+        } => true,
+        Expr::Generic {
+            control, assocs, ..
+        } => select_generic(control, assocs, env)
+            .ok()
+            .is_some_and(|selected| uneval_lvalue(selected, env)),
+        _ => false,
+    }
 }
 
 /// The association a generic selection picks (C11 6.5.1.1p3): the one whose

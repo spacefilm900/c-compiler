@@ -2499,7 +2499,16 @@ impl Sema {
         };
         for (i, assoc) in assocs.iter_mut().enumerate() {
             if i != index {
+                // Constraints are checked, but unselected associations are
+                // not evaluated and must not leave IR artifacts behind
+                // (C11 6.5.1.1p3).
+                let locals = self.static_locals.len();
+                let strings = self.strings.len();
+                let seq = self.static_seq;
                 self.check_expr(&mut assoc.expr)?;
+                self.static_locals.truncate(locals);
+                self.strings.truncate(strings);
+                self.static_seq = seq;
             }
         }
         *expr = assocs.swap_remove(index).expr;
@@ -5881,8 +5890,36 @@ mod tests {
         );
         sema_ok("enum { N = _Generic(0, int: 1, default: __builtin_signbit(1.0)) };");
         assert!(
-            sema_err("enum { N = _Generic(0, int: 1, default: (int[1]){[missing] = 0}) };")
+            sema_err("enum { N = _Generic(0, int: 1, default: (int[1]){[missing] = 0}) };",)
                 .contains("undeclared identifier")
+        );
+
+        // __func__ is implicit only in a function (C11 6.4.2.2). A bare
+        // supported builtin is not an ordinary identifier.
+        assert!(
+            sema_err("enum { N = _Generic(0, int: 1, default: __func__) };")
+                .contains("undeclared identifier")
+        );
+        sema_ok("int f(void) { enum { N = _Generic(0, int: 1, default: __func__) }; return 0; }");
+        assert!(
+            sema_err("enum { N = _Generic(0, int: 1, default: __builtin_signbit) };")
+                .contains("undeclared identifier")
+        );
+        sema_ok("int x; enum { N = _Generic(0, int: 1, default: ++_Generic(0, int: x)) };");
+        assert!(sema_err(
+            "int y; enum { N = _Generic(0, int: 1, default: ++_Generic(0, int: 1)) };"
+        )
+        .contains("invalid operand"));
+
+        // An unselected file-scope compound literal must not leave a global.
+        let ir = crate::compile_to_ir(
+            "int x = _Generic(0, int: 1, default: (int){2});",
+            "generic-unselected-compound.c",
+        )
+        .unwrap();
+        assert!(
+            !ir.contains("compoundliteral") && ir.contains("@x = global i32 1"),
+            "unselected compound literal must not be emitted: {ir}"
         );
     }
 
