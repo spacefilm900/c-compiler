@@ -693,11 +693,17 @@ fn layout_fields(fields: &[(u64, u32)], union_layout: bool) -> Option<(Vec<u64>,
 /// adjusted to a pointer, and a typedef of a function type names a function
 /// designator. `params` are the adjusted parameter types with top-level
 /// qualifiers removed.
+///
+/// `prototype` is false for a function type written with an empty `()`
+/// (C11 6.7.6.3p14): the type supplies no information about the number or
+/// types of the parameters, so `params` is empty and `variadic` is false.
+/// A call through such a type applies the default argument promotions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FuncTy {
     pub ret: CType,
     pub params: Vec<CType>,
     pub variadic: bool,
+    pub prototype: bool,
 }
 
 /// `float`, `double`, and `long double` on this target.
@@ -846,10 +852,16 @@ impl CType {
     }
 
     pub fn func(ret: CType, params: Vec<CType>, variadic: bool) -> Self {
+        CType::func_with(ret, params, variadic, true)
+    }
+
+    /// A function type that may lack a prototype (`int ()`).
+    pub fn func_with(ret: CType, params: Vec<CType>, variadic: bool, prototype: bool) -> Self {
         CType::Func(Box::new(FuncTy {
             ret,
             params,
             variadic,
+            prototype,
         }))
     }
 
@@ -1242,6 +1254,9 @@ fn record_spelling(handle: &StructRef) -> String {
 }
 
 fn render_params(func: &FuncTy) -> String {
+    if !func.prototype {
+        return String::new();
+    }
     let mut parts: Vec<String> = func.params.iter().map(|ty| ty.display()).collect();
     if func.variadic {
         parts.push("...".to_string());
@@ -1334,15 +1349,7 @@ pub fn compatible(left: &CType, right: &CType) -> bool {
         (CType::Int(a), CType::Int(b)) => a == b,
         (CType::Float(a), CType::Float(b)) => a == b,
         (CType::Pointer(a), CType::Pointer(b)) => compatible(a, b),
-        (CType::Func(a), CType::Func(b)) => {
-            a.variadic == b.variadic
-                && a.params.len() == b.params.len()
-                && compatible(&a.ret, &b.ret)
-                && a.params
-                    .iter()
-                    .zip(b.params.iter())
-                    .all(|(left, right)| compatible(left, right))
-        }
+        (CType::Func(a), CType::Func(b)) => compatible_funcs(a, b),
         (CType::Array(a, la), CType::Array(b, lb)) => {
             (la.is_none() || lb.is_none() || la == lb) && compatible(a, b)
         }
@@ -1351,9 +1358,81 @@ pub fn compatible(left: &CType, right: &CType) -> bool {
     }
 }
 
+/// Function type compatibility (C11 6.7.6.3p15).
+///
+/// Two prototypes agree in the number of parameters, in `...`, and in each
+/// parameter type. A type without a prototype (`()`) is compatible with a
+/// prototype that has no `...` and whose parameter types are each compatible
+/// with their default argument promotion, so `int f();` matches
+/// `int f(int)` and `int f(double)` but not `int f(char)` or `int f(float)`.
+/// Two types without prototypes need only compatible return types.
+pub fn compatible_funcs(a: &FuncTy, b: &FuncTy) -> bool {
+    if !compatible(&a.ret, &b.ret) {
+        return false;
+    }
+    match (a.prototype, b.prototype) {
+        (true, true) => {
+            a.variadic == b.variadic
+                && a.params.len() == b.params.len()
+                && a.params
+                    .iter()
+                    .zip(b.params.iter())
+                    .all(|(left, right)| compatible(left, right))
+        }
+        (false, false) => true,
+        (true, false) => prototype_matches_promotions(a),
+        (false, true) => prototype_matches_promotions(b),
+    }
+}
+
+/// A prototype is compatible with a non-prototype function type only if it
+/// has no `...` and every parameter survives the default argument
+/// promotions unchanged (C11 6.7.6.3p15, 6.5.2.2p6).
+pub fn prototype_matches_promotions(func: &FuncTy) -> bool {
+    !func.variadic
+        && func
+            .params
+            .iter()
+            .all(|param| compatible(param, &default_promoted(param)))
+}
+
+/// The default argument promotions (C11 6.5.2.2p6): the integer promotions,
+/// and `float` to `double`. Other types are unchanged, without qualifiers.
+pub fn default_promoted(ty: &CType) -> CType {
+    match ty.peel() {
+        CType::Int(name) => CType::Int(name.promote()),
+        CType::Float(FloatKind::Float) => CType::Float(FloatKind::Double),
+        other => other.clone(),
+    }
+}
+
 /// Composite type of two compatible types. A known array length wins.
 pub fn composite(left: &CType, right: &CType) -> CType {
     let base = match (left.peel(), right.peel()) {
+        (CType::Func(a), CType::Func(b)) => {
+            // A prototype wins over a type without one (C11 6.2.7p3).
+            let (proto, other) = if a.prototype || !b.prototype {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            let params = if proto.prototype && other.prototype {
+                proto
+                    .params
+                    .iter()
+                    .zip(other.params.iter())
+                    .map(|(left, right)| composite(left, right))
+                    .collect()
+            } else {
+                proto.params.clone()
+            };
+            CType::func_with(
+                composite(&a.ret, &b.ret),
+                params,
+                proto.variadic,
+                proto.prototype,
+            )
+        }
         (CType::Array(a, la), CType::Array(b, lb)) => CType::array(composite(a, b), la.or(*lb)),
         (CType::Pointer(a), CType::Pointer(b)) => CType::pointer(composite(a, b)),
         _ => left.peel().clone(),
@@ -2342,7 +2421,11 @@ pub struct FuncDef {
     /// body may use `<stdarg.h>`. A declaration with no body is an LLVM
     /// `declare`, so another translation unit can provide it.
     pub variadic: bool,
-    /// `None` is a prototype. `Some` is a definition.
+    /// `false` for an empty `()` list, which declares a function type with
+    /// no prototype (C11 6.7.6.3p14). A definition written `f()` has no
+    /// parameters, and its type still has no prototype.
+    pub prototype: bool,
+    /// `None` is a declaration. `Some` is a definition.
     pub body: Option<Compound>,
     pub storage: Storage,
     /// Filled in by semantic analysis. The parser sets [`Linkage::External`].

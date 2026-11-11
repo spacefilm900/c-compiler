@@ -117,6 +117,9 @@ struct FuncSym {
     ret: CType,
     params: Vec<CType>,
     variadic: bool,
+    /// `false` for `int f();` (C11 6.7.6.3p14). A call then applies the
+    /// default argument promotions and checks no argument count.
+    prototype: bool,
     linkage: Linkage,
     defined: bool,
     used: bool,
@@ -314,6 +317,7 @@ impl Sema {
                     ret: func.ret_type.clone(),
                     params: params.clone(),
                     variadic: func.variadic,
+                    prototype: func.prototype,
                     linkage,
                     defined: is_def,
                     used: false,
@@ -324,15 +328,8 @@ impl Sema {
             }
             Some(Symbol::Func(existing)) => {
                 self.reveal_file(&name);
-                if !compatible(&existing.ret, &func.ret_type)
-                    || existing.variadic != func.variadic
-                    || existing.params.len() != params.len()
-                    || existing
-                        .params
-                        .iter()
-                        .zip(&params)
-                        .any(|(old, new)| !compatible(old, new))
-                {
+                let new_ty = def_func_ty(func, &params);
+                if !function_types_match(&existing, &new_ty, is_def) {
                     return self.err(
                         func.line,
                         func.column,
@@ -344,6 +341,9 @@ impl Sema {
                 }
                 if is_def {
                     self.mark_defined(&name);
+                }
+                if let Some(Symbol::Func(entry)) = self.file_get_mut(&name) {
+                    entry.absorb(&new_ty);
                 }
                 if func.symbol != func.name {
                     if let Some(Symbol::Func(existing)) = self.file_get_mut(&name) {
@@ -395,6 +395,18 @@ impl Sema {
         let mut globals = Vec::new();
         {
             let file = self.scopes.first().expect("file scope");
+            // Two C names may share one linker name through `__asm__`
+            // labels: glibc declares `signal` with the label `__sysv_signal`
+            // and also declares `__sysv_signal` itself. The module gets one
+            // `declare` per symbol, and none for a symbol defined here.
+            let mut declared: HashSet<String> = self
+                .func_order
+                .iter()
+                .filter_map(|name| match file.get(name) {
+                    Some(Symbol::Func(func)) if func.defined => Some(func.symbol.clone()),
+                    _ => None,
+                })
+                .collect();
             for name in &self.func_order {
                 let Some(Symbol::Func(func)) = file.get(name) else {
                     continue;
@@ -407,7 +419,7 @@ impl Sema {
                         missing_static = Some((func.use_line, func.use_column, name.clone()));
                         break;
                     }
-                } else {
+                } else if declared.insert(func.symbol.clone()) {
                     func_decls.push(IrFunc {
                         name: func.symbol.clone(),
                         ret: func.ret.clone(),
@@ -2071,6 +2083,7 @@ impl Sema {
             ret: func.ret_type.clone(),
             params,
             variadic: func.variadic,
+            prototype: func.prototype,
             linkage,
             defined,
             used: false,
@@ -2095,7 +2108,7 @@ impl Sema {
                 format!("redefinition of '{name}' as different kind of symbol"),
             );
         };
-        if !function_types_match(&prior, &func.ret_type, params, func.variadic) {
+        if !function_types_match(&prior, &def_func_ty(func, params), false) {
             return self.err(
                 func.line,
                 func.column,
@@ -2228,12 +2241,16 @@ impl Sema {
                     func.column,
                     name,
                 )?;
-                if !function_types_match(&existing, &func.ret_type, params, func.variadic) {
+                let new_ty = def_func_ty(func, params);
+                if !function_types_match(&existing, &new_ty, false) {
                     return self.err(
                         func.line,
                         func.column,
                         format!("conflicting types for '{name}'"),
                     );
+                }
+                if let Some(Symbol::Func(entry)) = self.file_get_mut(name) {
+                    entry.absorb(&new_ty);
                 }
                 Ok(())
             }
@@ -2245,6 +2262,7 @@ impl Sema {
                     ret: func.ret_type.clone(),
                     params: params.to_vec(),
                     variadic: func.variadic,
+                    prototype: func.prototype,
                     linkage,
                     defined: false,
                     used: false,
@@ -2453,7 +2471,7 @@ impl Sema {
                 self.note_use(&name, line, column);
                 (
                     format!("@{}", func.symbol),
-                    CType::func(func.ret, func.params, func.variadic),
+                    CType::func_with(func.ret, func.params, func.variadic, func.prototype),
                 )
             }
         };
@@ -3073,6 +3091,10 @@ impl Sema {
             }
         };
         let (fname, ret, params, variadic) = match sym {
+            // Without a prototype every argument gets the default argument
+            // promotions (C11 6.5.2.2p6), and the call is lowered like a
+            // call to a variadic function with no fixed parameters.
+            Symbol::Func(func) if !func.prototype => (func.symbol, func.ret, Vec::new(), true),
             Symbol::Func(func) => (func.symbol, func.ret, func.params, func.variadic),
             Symbol::Var(_) => unreachable!("direct call is a function"),
         };
@@ -3246,7 +3268,7 @@ impl Sema {
         self.require_passed_aggregate(&func.ret, line, column, true)?;
         let argc = args.len();
         let arity = func.params.len();
-        if func.variadic {
+        if func.variadic || !func.prototype {
             if argc < arity {
                 return self.err(
                     line,
@@ -3269,7 +3291,7 @@ impl Sema {
         }
         let params = func.params.clone();
         let ret = func.ret.clone();
-        let variadic = func.variadic;
+        let variadic = func.variadic || !func.prototype;
         if let Expr::Call { args, .. } = expr {
             for (index, arg) in args.iter_mut().enumerate() {
                 self.check_expr(arg)?;
@@ -4678,15 +4700,54 @@ fn duplicate_param(func: &FuncDef) -> Option<&Param> {
     None
 }
 
-fn function_types_match(existing: &FuncSym, ret: &CType, params: &[CType], variadic: bool) -> bool {
-    compatible(&existing.ret, ret)
-        && existing.variadic == variadic
-        && existing.params.len() == params.len()
-        && existing
-            .params
-            .iter()
-            .zip(params)
-            .all(|(old, new)| compatible(old, new))
+impl FuncSym {
+    fn func_ty(&self) -> FuncTy {
+        FuncTy {
+            ret: self.ret.clone(),
+            params: self.params.clone(),
+            variadic: self.variadic,
+            prototype: self.prototype,
+        }
+    }
+
+    /// Take the composite type with a compatible later declaration (C11
+    /// 6.2.7p4): a prototype replaces a declaration that had none.
+    fn absorb(&mut self, new: &FuncTy) {
+        if !self.prototype && new.prototype {
+            self.params = new.params.clone();
+            self.variadic = new.variadic;
+            self.prototype = true;
+        }
+    }
+}
+
+fn def_func_ty(func: &FuncDef, params: &[CType]) -> FuncTy {
+    FuncTy {
+        ret: func.ret_type.clone(),
+        params: params.to_vec(),
+        variadic: func.variadic,
+        prototype: func.prototype,
+    }
+}
+
+/// A redeclaration agrees with what is already known (C11 6.7.6.3p15).
+///
+/// A definition written `f()` has no parameters, so it does not match a
+/// prototype that has any, in either order. A declaration `f()` says nothing
+/// about the parameters and matches any prototype whose parameters survive
+/// the default argument promotions.
+fn function_types_match(existing: &FuncSym, new: &FuncTy, new_is_def: bool) -> bool {
+    let old = existing.func_ty();
+    if !compatible_funcs(&old, new) {
+        return false;
+    }
+    if existing.defined && !old.prototype && new.prototype && !new.params.is_empty() {
+        return false;
+    }
+    if new_is_def && !new.prototype && old.prototype && !old.params.is_empty() {
+        return false;
+    }
+    true
 }
 
 enum ConstError {
@@ -5354,6 +5415,28 @@ mod tests {
         let tokens = lex(source, "ok.c").unwrap();
         let mut unit = parse(&tokens, "ok.c").unwrap();
         analyze(&mut unit, "ok.c").unwrap();
+    }
+
+    #[test]
+    fn non_prototype_declarations() {
+        // C11 6.7.6.3p15: `int g();` is compatible with a prototype only if
+        // no parameter type changes under the default argument promotions
+        // and there is no ellipsis.
+        sema_ok("int g(); int g(int, double); int main(void) { return g(1, 2.0f); }");
+        sema_ok("int g(); int main(void) { return g('a', (short)1, 1.0f); }");
+        sema_ok("int h() { return 1; } int (*p)(int) = h;");
+        sema_ok("int k(int); int k(); int main(void) { return k(3); }");
+        assert!(sema_err("int g(); int g(char);").contains("conflicting types for 'g'"));
+        assert!(sema_err("int g(); int g(float);").contains("conflicting types for 'g'"));
+        assert!(sema_err("int g(); int g(int, ...);").contains("conflicting types for 'g'"));
+        assert!(sema_err("int g() { return 0; } int g(int);").contains("conflicting types"));
+        assert!(sema_err("int g(); long g();").contains("conflicting types for 'g'"));
+        // A prototype still checks its arguments after a non-prototype
+        // declaration.
+        assert!(
+            sema_err("int k(); int k(int); int main(void) { return k(); }")
+                .contains("expects 1 argument")
+        );
     }
 
     #[test]
