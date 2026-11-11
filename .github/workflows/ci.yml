@@ -33,8 +33,7 @@ jobs:
       - name: Install Clang, LLVM, make, and Python
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang llvm make python3
+          scripts/ci-apt-install.sh clang llvm make python3
           echo "rustc $(rustc --version)"
           echo "cargo $(cargo --version)"
           clang --version
@@ -81,8 +80,7 @@ jobs:
       - name: Install Clang, LLVM, make, and Python
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang llvm make python3
+          scripts/ci-apt-install.sh clang llvm make python3
           echo "rustc $(rustc --version)"
           echo "cargo $(cargo --version)"
           clang --version
@@ -127,8 +125,7 @@ jobs:
       - name: Install Clang, LLVM, make, Python, and a C++ compiler
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang llvm make python3 g++
+          scripts/ci-apt-install.sh clang llvm make python3 g++
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
           if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
             echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
@@ -167,8 +164,7 @@ jobs:
       - name: Install Clang, LLVM, make, Python, and bison
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang llvm make python3 bison
+          scripts/ci-apt-install.sh clang llvm make python3 bison
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
           if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
             echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
@@ -226,8 +222,7 @@ jobs:
       - name: Install Clang, LLVM, make, and Python
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang llvm make python3
+          scripts/ci-apt-install.sh clang llvm make python3
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
           if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
             echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
@@ -269,8 +264,7 @@ jobs:
       - name: Install Clang, LLVM, make, Python, and bison
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang llvm make python3 bison
+          scripts/ci-apt-install.sh clang llvm make python3 bison
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
           if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
             echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
