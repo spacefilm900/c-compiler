@@ -117,6 +117,9 @@ struct FuncSym {
     ret: CType,
     params: Vec<CType>,
     variadic: bool,
+    /// `false` for `int f();` (C11 6.7.6.3p14). A call then applies the
+    /// default argument promotions and checks no argument count.
+    prototype: bool,
     linkage: Linkage,
     defined: bool,
     used: bool,
@@ -314,6 +317,7 @@ impl Sema {
                     ret: func.ret_type.clone(),
                     params: params.clone(),
                     variadic: func.variadic,
+                    prototype: func.prototype,
                     linkage,
                     defined: is_def,
                     used: false,
@@ -324,15 +328,8 @@ impl Sema {
             }
             Some(Symbol::Func(existing)) => {
                 self.reveal_file(&name);
-                if !compatible(&existing.ret, &func.ret_type)
-                    || existing.variadic != func.variadic
-                    || existing.params.len() != params.len()
-                    || existing
-                        .params
-                        .iter()
-                        .zip(&params)
-                        .any(|(old, new)| !compatible(old, new))
-                {
+                let new_ty = def_func_ty(func, &params);
+                if !function_types_match(&existing, &new_ty, is_def) {
                     return self.err(
                         func.line,
                         func.column,
@@ -344,6 +341,9 @@ impl Sema {
                 }
                 if is_def {
                     self.mark_defined(&name);
+                }
+                if let Some(Symbol::Func(entry)) = self.file_get_mut(&name) {
+                    entry.absorb(&new_ty);
                 }
                 if func.symbol != func.name {
                     if let Some(Symbol::Func(existing)) = self.file_get_mut(&name) {
@@ -395,6 +395,18 @@ impl Sema {
         let mut globals = Vec::new();
         {
             let file = self.scopes.first().expect("file scope");
+            // Two C names may share one linker name through `__asm__`
+            // labels: glibc declares `signal` with the label `__sysv_signal`
+            // and also declares `__sysv_signal` itself. The module gets one
+            // `declare` per symbol, and none for a symbol defined here.
+            let mut declared: HashSet<String> = self
+                .func_order
+                .iter()
+                .filter_map(|name| match file.get(name) {
+                    Some(Symbol::Func(func)) if func.defined => Some(func.symbol.clone()),
+                    _ => None,
+                })
+                .collect();
             for name in &self.func_order {
                 let Some(Symbol::Func(func)) = file.get(name) else {
                     continue;
@@ -407,7 +419,7 @@ impl Sema {
                         missing_static = Some((func.use_line, func.use_column, name.clone()));
                         break;
                     }
-                } else {
+                } else if declared.insert(func.symbol.clone()) {
                     func_decls.push(IrFunc {
                         name: func.symbol.clone(),
                         ret: func.ret.clone(),
@@ -628,16 +640,50 @@ impl Sema {
                 if at > 1_000_000 {
                     return self.err(*line, *column, "array designator is too large");
                 }
-                if designators.len() > 1 {
+                let Init::Designated { init: first, .. } = &items[pos] else {
+                    unreachable!("designated item");
+                };
+                let elided = designators.len() == 1
+                    && !elem.is_scalar()
+                    && matches!(first.as_ref(), Init::Expr(_))
+                    && !self.opens_subobject(elem, first)
+                    && !init_children(elem, false).is_empty();
+                if designators.len() > 1 || elided {
                     let rest = designators[1..].to_vec();
                     let dline = *dline;
                     let dcol = *dcol;
+                    let first = first.as_ref().clone();
                     let mut scratch = Vec::new();
-                    let (_child, mut frames) = self.seek_designator(elem, 0, &rest, dline, dcol)?;
-                    pos += 1;
-                    if !advance_frames(&mut frames) {
-                        frames.clear();
+                    let mut frames = if elided {
+                        Vec::new()
+                    } else {
+                        let (child, frames) = self.seek_designator(elem, 0, &rest, dline, dcol)?;
+                        let mut frames = frames;
+                        if self.elides_into(&child, &first) {
+                            let child_base =
+                                frames.last().map(|frame| frame.base).unwrap_or(0) + child.offset;
+                            frames.push(InitFrame {
+                                children: init_children(&child.ty, false),
+                                index: 0,
+                                base: child_base,
+                                is_union: child.ty.is_union(),
+                            });
+                            self.positional_one(&first, &mut frames, &mut scratch, elem)?;
+                        } else if !advance_frames(&mut frames) {
+                            frames.clear();
+                        }
+                        frames
+                    };
+                    if elided {
+                        frames.push(InitFrame {
+                            children: init_children(elem, false),
+                            index: 0,
+                            base: 0,
+                            is_union: elem.is_union(),
+                        });
+                        self.positional_one(&first, &mut frames, &mut scratch, elem)?;
                     }
+                    pos += 1;
                     while pos < items.len()
                         && !frames.is_empty()
                         && !matches!(items[pos], Init::Designated { .. })
@@ -1003,8 +1049,24 @@ impl Sema {
                 column,
             } = item
             {
-                let (child, frames_at) =
+                let (child, mut frames_at) =
                     self.seek_designator(ty, base, designators, *line, *column)?;
+                if self.elides_into(&child, init) {
+                    // C11 6.7.9p17, p20: a designated aggregate whose
+                    // initializer has no braces starts brace elision at its
+                    // first scalar; later positional items continue there.
+                    let child_base =
+                        frames_at.last().map(|frame| frame.base).unwrap_or(0) + child.offset;
+                    frames_at.push(InitFrame {
+                        children: init_children(&child.ty, false),
+                        index: 0,
+                        base: child_base,
+                        is_union: child.ty.is_union(),
+                    });
+                    self.positional_one(init, &mut frames_at, stores, ty)?;
+                    frames = frames_at;
+                    continue;
+                }
                 self.init_child(&child, &frames_at, init, stores)?;
                 frames = frames_at;
                 if !advance_frames(&mut frames) {
@@ -1017,6 +1079,20 @@ impl Sema {
             self.positional_one(item, &mut frames, stores, ty)?;
         }
         Ok(())
+    }
+
+    /// Whether a designated subobject is an aggregate initialized without
+    /// braces, by its first scalar (`{ .point = 1, 2 }`). A brace list, a
+    /// string for a character array, or an expression of the member's own
+    /// struct or union type initializes the whole subobject instead.
+    fn elides_into(&mut self, child: &InitChild, init: &Init) -> bool {
+        if child.ty.is_scalar() || child.field.as_ref().is_some_and(|f| f.is_bitfield()) {
+            return false;
+        }
+        if !matches!(init, Init::Expr(_)) || self.opens_subobject(&child.ty, init) {
+            return false;
+        }
+        !init_children(&child.ty, false).is_empty()
     }
 
     fn seek_designator(
@@ -1275,10 +1351,15 @@ impl Sema {
         if stores.iter().any(|store| store.bits.is_some()) || !nested.is_empty() {
             return self.fold_nested_bits(name, ty, stores);
         }
+        let mut unions = UnionImages::new(ty);
         let mut folded = Vec::new();
         for store in stores {
-            folded.push((store.offset, self.fold_one(name, &store.expr, &store.ty)?));
+            let value = self.fold_one(name, &store.expr, &store.ty)?;
+            if !unions.absorb(store, &value)? {
+                folded.push((store.offset, value));
+            }
         }
+        unions.finish(name, self, &mut folded)?;
         let value = assemble(ty, &folded, 0);
         if !union_bytes_ok(ty, &value) {
             return self.err(
@@ -1346,6 +1427,7 @@ impl Sema {
         let mut image = vec![0u8; size];
         let mut ranges = Vec::new();
         bit_record_ranges(ty, 0, &mut ranges);
+        let mut unions = UnionImages::new(ty);
         let mut folded = Vec::new();
         for store in stores {
             if let Some(bits) = &store.bits {
@@ -1380,11 +1462,12 @@ impl Sema {
                             ),
                         );
                     }
-                } else {
+                } else if !unions.absorb(store, &value)? {
                     folded.push((store.offset, value));
                 }
             }
         }
+        unions.finish(name, self, &mut folded)?;
         splice_bit_blobs(ty, 0, &image, &mut folded);
         let value = assemble(ty, &folded, 0);
         if !union_bytes_ok(ty, &value) {
@@ -2071,6 +2154,7 @@ impl Sema {
             ret: func.ret_type.clone(),
             params,
             variadic: func.variadic,
+            prototype: func.prototype,
             linkage,
             defined,
             used: false,
@@ -2095,7 +2179,7 @@ impl Sema {
                 format!("redefinition of '{name}' as different kind of symbol"),
             );
         };
-        if !function_types_match(&prior, &func.ret_type, params, func.variadic) {
+        if !function_types_match(&prior, &def_func_ty(func, params), false) {
             return self.err(
                 func.line,
                 func.column,
@@ -2228,12 +2312,16 @@ impl Sema {
                     func.column,
                     name,
                 )?;
-                if !function_types_match(&existing, &func.ret_type, params, func.variadic) {
+                let new_ty = def_func_ty(func, params);
+                if !function_types_match(&existing, &new_ty, false) {
                     return self.err(
                         func.line,
                         func.column,
                         format!("conflicting types for '{name}'"),
                     );
+                }
+                if let Some(Symbol::Func(entry)) = self.file_get_mut(name) {
+                    entry.absorb(&new_ty);
                 }
                 Ok(())
             }
@@ -2245,6 +2333,7 @@ impl Sema {
                     ret: func.ret_type.clone(),
                     params: params.to_vec(),
                     variadic: func.variadic,
+                    prototype: func.prototype,
                     linkage,
                     defined: false,
                     used: false,
@@ -2324,7 +2413,147 @@ impl Sema {
             Expr::Member { .. } => self.check_member(expr),
             Expr::VaArg { .. } => self.check_va_arg(expr),
             Expr::VaOp { .. } => self.check_va_op(expr),
+            Expr::Generic { .. } => self.check_generic(expr),
+            Expr::CompoundLit { .. } => self.check_compound_lit(expr),
         }
+    }
+
+    /// A generic selection (C11 6.5.1.1). The controlling expression is not
+    /// evaluated; its type after lvalue conversion (qualifiers dropped, an
+    /// array or function becomes a pointer) picks the association whose type
+    /// is compatible with it, or `default`. The node is replaced by the
+    /// chosen expression, which keeps its type and whether it is an lvalue.
+    /// The associations that are not chosen are not analyzed.
+    fn check_generic(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        let Expr::Generic {
+            control,
+            assocs,
+            line,
+            column,
+            ..
+        } = expr
+        else {
+            unreachable!("generic selection");
+        };
+        let (line, column) = (*line, *column);
+        let mut assocs = std::mem::take(assocs);
+        self.check_expr(control)?;
+        let raw = control.ty().expect("typed");
+        let ty = match raw.peel() {
+            CType::Array(elem, _) => CType::pointer((**elem).clone()),
+            CType::Func(_) => CType::pointer(raw.clone()),
+            _ => raw.unqualified(),
+        };
+        let mut default = None;
+        let mut chosen = None;
+        for (index, assoc) in assocs.iter().enumerate() {
+            let Some(assoc_ty) = &assoc.ty else {
+                if default.is_some() {
+                    return self.err(
+                        assoc.line,
+                        assoc.column,
+                        "duplicate default generic association",
+                    );
+                }
+                default = Some(index);
+                continue;
+            };
+            if assoc_ty.is_func() || !assoc_ty.is_complete() {
+                return self.err(
+                    assoc.line,
+                    assoc.column,
+                    format!(
+                        "type '{}' in generic association is not a complete object type",
+                        assoc_ty.display()
+                    ),
+                );
+            }
+            for earlier in assocs[..index].iter().filter_map(|a| a.ty.as_ref()) {
+                if compatible(earlier, assoc_ty) {
+                    return self.err(
+                        assoc.line,
+                        assoc.column,
+                        format!(
+                            "type '{}' in generic association compatible with previously specified type '{}'",
+                            assoc_ty.display(),
+                            earlier.display()
+                        ),
+                    );
+                }
+            }
+            if chosen.is_none() && compatible(assoc_ty, &ty) {
+                chosen = Some(index);
+            }
+        }
+        let Some(index) = chosen.or(default) else {
+            return self.err(
+                line,
+                column,
+                format!(
+                    "controlling expression type '{}' not compatible with any generic association type",
+                    ty.display()
+                ),
+            );
+        };
+        *expr = assocs.swap_remove(index).expr;
+        self.check_expr(expr)
+    }
+
+    /// A compound literal (C11 6.5.2.5). The type is a complete object type
+    /// or an array of unknown size, completed by the initializer. Inside a
+    /// function the object is automatic and initialized where the literal is
+    /// evaluated. Outside one it has static storage, the initializer must be
+    /// constant, and the node becomes a reference to a private global.
+    fn check_compound_lit(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        let Expr::CompoundLit {
+            decl, line, column, ..
+        } = expr
+        else {
+            unreachable!("compound literal");
+        };
+        let (line, column) = (*line, *column);
+        if decl.ty.is_func() {
+            return self.err(line, column, "compound literal has function type");
+        }
+        let unknown_array = matches!(decl.ty.peel(), CType::Array(_, None));
+        if !decl.ty.is_complete() && !unknown_array {
+            return self.err(
+                line,
+                column,
+                format!(
+                    "compound literal has incomplete type '{}'",
+                    decl.ty.display()
+                ),
+            );
+        }
+        let init = decl.init.clone().expect("compound literal initializer");
+        let (ty, mut stores) = self.shape_initializer(&decl.ty, &init, line, column)?;
+        decl.ty = ty.clone();
+        self.check_stores(&mut stores)?;
+        if !self.fn_name.is_empty() {
+            decl.checked = Some(classify_init(&ty, stores));
+            expr.set_ty(ty);
+            return Ok(());
+        }
+        let value = self.fold_stores("compound literal", &ty, &stores)?;
+        self.static_seq += 1;
+        let symbol = format!(".compoundliteral.{}", self.static_seq);
+        self.static_locals.push(IrGlobal {
+            name: symbol.clone(),
+            ty: ty.clone(),
+            linkage: Linkage::Internal,
+            init: Some(value),
+        });
+        *expr = Expr::Var {
+            name: String::new(),
+            line,
+            column,
+            resolved: Some(VarRes {
+                slot: format!("@{symbol}"),
+            }),
+            ty: Some(ty),
+        };
+        Ok(())
     }
 
     /// A string literal has type `char[N]` or `wchar_t[N]`, counting the
@@ -2453,7 +2682,7 @@ impl Sema {
                 self.note_use(&name, line, column);
                 (
                     format!("@{}", func.symbol),
-                    CType::func(func.ret, func.params, func.variadic),
+                    CType::func_with(func.ret, func.params, func.variadic, func.prototype),
                 )
             }
         };
@@ -3073,6 +3302,10 @@ impl Sema {
             }
         };
         let (fname, ret, params, variadic) = match sym {
+            // Without a prototype every argument gets the default argument
+            // promotions (C11 6.5.2.2p6), and the call is lowered like a
+            // call to a variadic function with no fixed parameters.
+            Symbol::Func(func) if !func.prototype => (func.symbol, func.ret, Vec::new(), true),
             Symbol::Func(func) => (func.symbol, func.ret, func.params, func.variadic),
             Symbol::Var(_) => unreachable!("direct call is a function"),
         };
@@ -3246,7 +3479,7 @@ impl Sema {
         self.require_passed_aggregate(&func.ret, line, column, true)?;
         let argc = args.len();
         let arity = func.params.len();
-        if func.variadic {
+        if func.variadic || !func.prototype {
             if argc < arity {
                 return self.err(
                     line,
@@ -3269,7 +3502,7 @@ impl Sema {
         }
         let params = func.params.clone();
         let ret = func.ret.clone();
-        let variadic = func.variadic;
+        let variadic = func.variadic || !func.prototype;
         if let Expr::Call { args, .. } = expr {
             for (index, arg) in args.iter_mut().enumerate() {
                 self.check_expr(arg)?;
@@ -3579,6 +3812,13 @@ impl Sema {
                 op: UnaryOp::Deref, ..
             } => self.check_unary(expr),
             Expr::Str { .. } => self.check_str(expr),
+            Expr::Generic { .. } | Expr::CompoundLit { .. } => {
+                self.check_expr(expr)?;
+                if !expr.is_lvalue() {
+                    return self.err(expr.line(), expr.column(), "expression is not assignable");
+                }
+                Ok(())
+            }
             Expr::Member { .. } => {
                 self.check_member(expr)?;
                 if !expr.is_lvalue() {
@@ -4264,7 +4504,109 @@ fn const_has_no_address(value: &ConstInit) -> bool {
     }
 }
 
+/// Byte images of the plain unions nested in a static initializer.
+///
+/// Every member of a union shares its bytes, and the LLVM type of a union
+/// is its first member. A store to another member (`{ .u.d = 2.5 }`) is
+/// written into the union's object representation instead, the way a
+/// top-level union is folded. A bit-field union is already a byte image.
+struct UnionImages {
+    /// Sorted and disjoint.
+    ranges: Vec<(u64, u64)>,
+    /// An image is made when the first store lands in its union.
+    images: Vec<Option<Vec<u8>>>,
+    bad: Option<(usize, usize)>,
+}
+
+impl UnionImages {
+    fn new(ty: &CType) -> Self {
+        let mut ranges = Vec::new();
+        union_ranges(ty, 0, true, &mut ranges);
+        let images = vec![None; ranges.len()];
+        UnionImages {
+            ranges,
+            images,
+            bad: None,
+        }
+    }
+
+    /// Write a store that falls in a nested union. `false` means it is
+    /// outside every union and is assembled as usual.
+    fn absorb(&mut self, store: &ElemStore, value: &ConstInit) -> Result<bool, Diagnostic> {
+        let index = self
+            .ranges
+            .partition_point(|(start, _)| *start <= store.offset);
+        if index == 0 || store.offset >= self.ranges[index - 1].1 {
+            return Ok(false);
+        }
+        let (start, end) = self.ranges[index - 1];
+        let image = self.images[index - 1].get_or_insert_with(|| vec![0u8; (end - start) as usize]);
+        let at = (store.offset - start) as usize;
+        if !write_folded_bytes(&store.ty, value, image, at) && self.bad.is_none() {
+            self.bad = Some((store.expr.line(), store.expr.column()));
+        }
+        Ok(true)
+    }
+
+    fn finish(
+        self,
+        name: &str,
+        sema: &Sema,
+        folded: &mut Vec<(u64, ConstInit)>,
+    ) -> Result<(), Diagnostic> {
+        if let Some((line, column)) = self.bad {
+            return sema.err(
+                line,
+                column,
+                format!("initializer of '{name}' uses an address in a union"),
+            );
+        }
+        for ((start, _), image) in self.ranges.into_iter().zip(self.images) {
+            if let Some(image) = image {
+                folded.push((start, ConstInit::Bytes(image)));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Byte ranges of the outermost plain unions inside `ty`. `top` skips `ty`
+/// itself, which the caller folds on its own.
+fn union_ranges(ty: &CType, base: u64, top: bool, out: &mut Vec<(u64, u64)>) {
+    if is_bit_image(ty) {
+        return;
+    }
+    if ty.is_union() && !top {
+        out.push((base, base + ty.size().unwrap_or(0)));
+        return;
+    }
+    if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
+        for field in fields.iter().filter(|field| field.bit_width.is_none()) {
+            union_ranges(&field.ty, base + field.offset, false, out);
+        }
+        return;
+    }
+    if let (Some(elem), Some(len)) = (ty.array_elem(), ty.array_len()) {
+        let step = elem.size().unwrap_or(0);
+        if elem.is_scalar() {
+            return;
+        }
+        for index in 0..len {
+            union_ranges(elem, base + index * step, false, out);
+        }
+    }
+}
+
 fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
+    if ty.is_union() {
+        if let Some((_, value)) = stores
+            .iter()
+            .rev()
+            .find(|(offset, value)| *offset == base && matches!(value, ConstInit::Bytes(_)))
+        {
+            return value.clone();
+        }
+    }
     if is_bit_image(ty) {
         if let Some((_, value)) = stores
             .iter()
@@ -4678,15 +5020,54 @@ fn duplicate_param(func: &FuncDef) -> Option<&Param> {
     None
 }
 
-fn function_types_match(existing: &FuncSym, ret: &CType, params: &[CType], variadic: bool) -> bool {
-    compatible(&existing.ret, ret)
-        && existing.variadic == variadic
-        && existing.params.len() == params.len()
-        && existing
-            .params
-            .iter()
-            .zip(params)
-            .all(|(old, new)| compatible(old, new))
+impl FuncSym {
+    fn func_ty(&self) -> FuncTy {
+        FuncTy {
+            ret: self.ret.clone(),
+            params: self.params.clone(),
+            variadic: self.variadic,
+            prototype: self.prototype,
+        }
+    }
+
+    /// Take the composite type with a compatible later declaration (C11
+    /// 6.2.7p4): a prototype replaces a declaration that had none.
+    fn absorb(&mut self, new: &FuncTy) {
+        if !self.prototype && new.prototype {
+            self.params = new.params.clone();
+            self.variadic = new.variadic;
+            self.prototype = true;
+        }
+    }
+}
+
+fn def_func_ty(func: &FuncDef, params: &[CType]) -> FuncTy {
+    FuncTy {
+        ret: func.ret_type.clone(),
+        params: params.to_vec(),
+        variadic: func.variadic,
+        prototype: func.prototype,
+    }
+}
+
+/// A redeclaration agrees with what is already known (C11 6.7.6.3p15).
+///
+/// A definition written `f()` has no parameters, so it does not match a
+/// prototype that has any, in either order. A declaration `f()` says nothing
+/// about the parameters and matches any prototype whose parameters survive
+/// the default argument promotions.
+fn function_types_match(existing: &FuncSym, new: &FuncTy, new_is_def: bool) -> bool {
+    let old = existing.func_ty();
+    if !compatible_funcs(&old, new) {
+        return false;
+    }
+    if existing.defined && !old.prototype && new.prototype && !new.params.is_empty() {
+        return false;
+    }
+    if new_is_def && !new.prototype && old.prototype && !old.params.is_empty() {
+        return false;
+    }
+    true
 }
 
 enum ConstError {
@@ -5029,7 +5410,9 @@ fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
         | Expr::Str { .. }
         | Expr::Member { .. }
         | Expr::VaArg { .. }
-        | Expr::VaOp { .. } => Err(ConstError::NotConst),
+        | Expr::VaOp { .. }
+        | Expr::Generic { .. }
+        | Expr::CompoundLit { .. } => Err(ConstError::NotConst),
     }
 }
 
@@ -5354,6 +5737,85 @@ mod tests {
         let tokens = lex(source, "ok.c").unwrap();
         let mut unit = parse(&tokens, "ok.c").unwrap();
         analyze(&mut unit, "ok.c").unwrap();
+    }
+
+    #[test]
+    fn designated_aggregate_members_elide_braces() {
+        // C11 6.7.9p17, p20: `.m = 1, 2` starts at the first scalar of `m`.
+        sema_ok("struct I { int a, b; }; struct O { struct I in; int z; } o = { .in = 1, 2, 3 };");
+        sema_ok("struct I { int a, b; }; union V { int i; struct I in; } v = { .in = 1, 2 };");
+        sema_ok("struct I { int a, b; }; struct I a[] = { [1] = 3, 4, 5 };");
+        sema_ok("union V { int i; double d; }; struct O { int k; union V v; } o = { .v.d = 2.5 };");
+        assert!(sema_err(
+            "struct I { int a, b; }; union V { int i; struct I in; } v = { .in = 1, 2, 3 };"
+        )
+        .contains("excess elements in initializer"));
+        assert!(sema_err(
+            "struct I { int a, b; }; struct O { struct I in; } o = { .in = 1, 2, 3 };"
+        )
+        .contains("excess elements in initializer"));
+        assert!(sema_err(
+            "struct I { int a, b; }; struct O { struct I in; int z; } o = { .in = 1, 2, .nope = 3 };"
+        )
+        .contains("no member named 'nope'"));
+        assert!(sema_err(
+            "int x; union U { int i; int *p; }; struct S { union U u; } s = { .u.p = &x };"
+        )
+        .contains("uses an address in a union"));
+    }
+
+    #[test]
+    fn generic_selection_and_compound_literals() {
+        sema_ok("int main(void) { const int c = 1; return _Generic(c, int: 0, default: 1); }");
+        sema_ok("int main(void) { int x; _Generic(x, int: x) = 1; return x; }");
+        sema_ok("int *p = (int[]){1, 2}; struct P { int x; } *q = &(struct P){1};");
+        sema_ok("int main(void) { int *p = &(int){1}; (int){2} = 3; return *p; }");
+        assert!(sema_err("int a = _Generic(1, long: 1);")
+            .contains("not compatible with any generic association type"));
+        assert!(sema_err("int a = _Generic(1, int: 1, signed int: 2);")
+            .contains("compatible with previously specified type"));
+        assert!(sema_err("int a = _Generic(1, default: 1, default: 2);")
+            .contains("duplicate default generic association"));
+        assert!(sema_err("int a = _Generic(1, void: 1, default: 2);")
+            .contains("not a complete object type"));
+        assert!(sema_err("int x; int *p = (int[]){x};").contains("not a constant expression"));
+        assert!(
+            sema_err("int main(void) { static int *q = &(int){2}; return 0; }")
+                .contains("not a constant expression")
+        );
+        assert!(sema_err("struct Q; int a = sizeof((struct Q){0});")
+            .contains("compound literal has incomplete type"));
+        assert!(
+            sema_err("int main(void) { int (*f)(void) = &(int(void)){0}; }").contains("function")
+        );
+    }
+
+    #[test]
+    fn non_prototype_declarations() {
+        // C11 6.7.6.3p15: `int g();` is compatible with a prototype only if
+        // no parameter type changes under the default argument promotions
+        // and there is no ellipsis.
+        sema_ok("int g(); int g(int, double); int main(void) { return g(1, 2.0f); }");
+        sema_ok("int g(); int main(void) { return g('a', (short)1, 1.0f); }");
+        // C11 6.7.6.3p15 makes a parameter-count mismatch with a `()`
+        // definition incompatible. Clang accepts the conversion without a
+        // diagnostic, and this compiler has no warnings, so it follows Clang
+        // for pointers. A redeclaration with parameters is still rejected.
+        sema_ok("int h() { return 1; } int (*p)(int) = h;");
+        sema_ok("int d(); int (*q)(int) = d;");
+        assert!(sema_err("int h() { return 1; } int h(int);").contains("conflicting types"));
+        sema_ok("int k(int); int k(); int main(void) { return k(3); }");
+        assert!(sema_err("int g(); int g(char);").contains("conflicting types for 'g'"));
+        assert!(sema_err("int g(); int g(float);").contains("conflicting types for 'g'"));
+        assert!(sema_err("int g(); int g(int, ...);").contains("conflicting types for 'g'"));
+        assert!(sema_err("int g() { return 0; } int g(int);").contains("conflicting types"));
+        assert!(sema_err("int g(); long g();").contains("conflicting types for 'g'"));
+        // A prototype still checks its arguments after a non-prototype
+        // declaration.
+        assert!(
+            sema_err("int k(); int k(int); int main(void) { return k(); }")
+                .contains("expects 1 argument")
+        );
     }
 
     #[test]

@@ -44,6 +44,16 @@ typedef __WCHAR_TYPE__ wchar_t;
 #undef __need_NULL
 #endif
 
+#if defined(__CC_STDDEF_H) && !defined(__CC_MAX_ALIGN_T)
+#define __CC_MAX_ALIGN_T
+/* C11 7.19p2: an object type whose alignment is the greatest fundamental
+ * alignment, 16 on x86_64 System V (long double). */
+typedef struct {
+    long long __max_align_ll;
+    long double __max_align_ld;
+} max_align_t;
+#endif
+
 #if defined(__CC_STDDEF_H)
 #define offsetof(type, member) ((size_t)((char *)&((type *)0)->member - (char *)0))
 #endif

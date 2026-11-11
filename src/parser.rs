@@ -70,8 +70,10 @@ enum NameBinding {
     /// Value of an enumeration constant, representable as `int`.
     EnumConst(i32),
     /// An ordinary identifier in this scope. It hides an outer typedef or
-    /// enumeration constant.
-    Ordinary,
+    /// enumeration constant. The declared type is kept so `sizeof` of an
+    /// object can be folded where an integer constant expression is needed
+    /// (an array bound, an enumeration value, a bit-field width).
+    Ordinary(Option<CType>),
 }
 
 impl Parser<'_> {
@@ -99,6 +101,10 @@ impl Parser<'_> {
     /// declarator list with another declarator. Pointer stars bind to each
     /// declarator, so `int *a, b;` declares one pointer and one `int`.
     fn parse_external(&mut self) -> Result<Vec<TopDecl>, Diagnostic> {
+        if self.current().kind == TokenKind::KwStaticAssert {
+            self.parse_static_assert()?;
+            return Ok(Vec::new());
+        }
         let specs = self.parse_specs(SpecPlace::Declaration)?;
         self.apply_shadow(&specs)?;
         if self.current().kind == TokenKind::Semi {
@@ -112,7 +118,8 @@ impl Parser<'_> {
             return self.finish_typedefs(specs, first);
         }
         if first.is_function() && self.current().kind == TokenKind::LBrace {
-            self.bind_ordinary(&first.name, first.line, first.column)?;
+            let ty = decl_kind_type(&first.kind);
+            self.bind_ordinary(&first.name, Some(ty), first.line, first.column)?;
             return Ok(vec![self.finish_definition(specs, first)?]);
         }
         let mut decls = vec![self.finish_file_decl(&specs, first)?];
@@ -135,7 +142,7 @@ impl Parser<'_> {
         let DeclKind::Function {
             ret,
             params,
-            prototype: _,
+            prototype,
             variadic,
         } = declarator.kind
         else {
@@ -175,6 +182,7 @@ impl Parser<'_> {
             name: declarator.name,
             params,
             variadic,
+            prototype,
             body: Some(body),
             storage: specs.storage,
             linkage: Linkage::External,
@@ -189,20 +197,17 @@ impl Parser<'_> {
         specs: &Specs,
         declarator: NamedDecl,
     ) -> Result<TopDecl, Diagnostic> {
-        if let DeclKind::Function {
-            ret,
-            params,
-            prototype,
-            variadic,
-        } = declarator.kind
-        {
-            if !prototype {
-                return Err(self.error_at(
-                    declarator.line,
-                    declarator.column,
-                    "old-style function declarations are not supported",
-                ));
-            }
+        if declarator.is_function() {
+            let ty = decl_kind_type(&declarator.kind);
+            let DeclKind::Function {
+                ret,
+                params,
+                prototype,
+                variadic,
+            } = declarator.kind
+            else {
+                unreachable!("function declarator");
+            };
             if self.current().kind == TokenKind::Assign {
                 return Err(self.error("function declarations cannot have an initializer"));
             }
@@ -210,12 +215,18 @@ impl Parser<'_> {
                 .symbol
                 .clone()
                 .unwrap_or_else(|| declarator.name.clone());
-            self.bind_ordinary(&declarator.name, declarator.line, declarator.column)?;
+            self.bind_ordinary(
+                &declarator.name,
+                Some(ty),
+                declarator.line,
+                declarator.column,
+            )?;
             return Ok(TopDecl::Func(FuncDef {
                 ret_type: ret,
                 name: declarator.name,
                 params,
                 variadic,
+                prototype,
                 body: None,
                 storage: specs.storage,
                 linkage: Linkage::External,
@@ -234,6 +245,14 @@ impl Parser<'_> {
                 "void variables are not supported",
             ));
         }
+        // The identifier's scope starts after its declarator (C11 6.2.1p7),
+        // so the initializer already sees it.
+        self.bind_ordinary(
+            &declarator.name,
+            Some(ty.clone()),
+            declarator.line,
+            declarator.column,
+        )?;
         let init = if self.match_kind(TokenKind::Assign) {
             Some(self.parse_initializer()?)
         } else {
@@ -248,7 +267,7 @@ impl Parser<'_> {
             declarator.line,
             declarator.column,
         )?;
-        self.bind_ordinary(&declarator.name, declarator.line, declarator.column)?;
+        self.bind_completed(&declarator.name, &ty, init.as_ref());
         self.reject_bad_restrict(&ty, declarator.line, declarator.column)?;
         Ok(TopDecl::Global(GlobalDecl {
             name: declarator.name,
@@ -980,7 +999,7 @@ impl Parser<'_> {
             let name = self.advance();
             let value = if self.match_kind(TokenKind::Assign) {
                 let expr = self.parse_assignment()?;
-                let folded = eval_ice(&expr)
+                let folded = eval_ice(&expr, &self.names)
                     .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
                 enum_int(folded).map_err(|_| {
                     self.error_at(
@@ -1050,16 +1069,7 @@ impl Parser<'_> {
         }
         let ty = match &declarator.kind {
             DeclKind::Object(ty) => ty.clone(),
-            DeclKind::Function {
-                ret,
-                params,
-                variadic,
-                ..
-            } => CType::func(
-                ret.clone(),
-                params.iter().map(|param| param.ty.unqualified()).collect(),
-                *variadic,
-            ),
+            DeclKind::Function { .. } => decl_kind_type(&declarator.kind),
         };
         self.reject_bad_restrict(&ty, declarator.line, declarator.column)?;
         self.bind_typedef(&declarator.name, ty, declarator.line, declarator.column)
@@ -1085,15 +1095,50 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn bind_ordinary(&mut self, name: &str, line: usize, column: usize) -> Result<(), Diagnostic> {
+    fn bind_ordinary(
+        &mut self,
+        name: &str,
+        ty: Option<CType>,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
         let scope = self.names.last_mut().expect("name scope");
         match scope.get(name) {
-            Some(NameBinding::Ordinary) | None => {
-                scope.insert(name.to_string(), NameBinding::Ordinary);
+            Some(NameBinding::Ordinary(old)) => {
+                // A redeclaration in the same scope keeps a known array
+                // length: `extern int a[]; int a[4];` and the reverse.
+                let ty = match (old, ty) {
+                    (Some(old), Some(new)) if compatible(old, &new) => Some(composite(&new, old)),
+                    (_, new) => new,
+                };
+                scope.insert(name.to_string(), NameBinding::Ordinary(ty));
+                Ok(())
+            }
+            None => {
+                scope.insert(name.to_string(), NameBinding::Ordinary(ty));
                 Ok(())
             }
             Some(NameBinding::Typedef(_) | NameBinding::EnumConst(_)) => {
                 Err(self.error_at(line, column, format!("redefinition of '{name}'")))
+            }
+        }
+    }
+
+    /// After an initializer, record the length it gives an array of unknown
+    /// size (`int a[] = {1, 2, 3}`), so a later `sizeof a` is a constant.
+    /// Semantic analysis computes the authoritative length; this mirror only
+    /// handles the shapes whose length does not depend on expression types,
+    /// and otherwise leaves the array incomplete for `sizeof`.
+    fn bind_completed(&mut self, name: &str, ty: &CType, init: Option<&Init>) {
+        let (Some(init), CType::Array(elem, None)) = (init, ty) else {
+            return;
+        };
+        let Some(len) = infer_init_len(elem, init, &self.names) else {
+            return;
+        };
+        if let Some(scope) = self.names.last_mut() {
+            if let Some(NameBinding::Ordinary(slot)) = scope.get_mut(name) {
+                *slot = Some(CType::array((**elem).clone(), Some(len)));
             }
         }
     }
@@ -1262,6 +1307,47 @@ impl Parser<'_> {
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
+    /// `_Static_assert ( constant-expression , string-literal ) ;`
+    /// (C11 6.7.10). It may appear at file scope, in a block, and in a
+    /// member list. The expression is an integer constant expression; when
+    /// it is 0 the message is reported.
+    fn parse_static_assert(&mut self) -> Result<(), Diagnostic> {
+        self.advance();
+        self.expect(TokenKind::LParen, "'('")?;
+        let expr = self.parse_conditional()?;
+        let value = eval_ice(&expr, &self.names)
+            .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
+        self.expect(TokenKind::Comma, "','")?;
+        if self.current().kind != TokenKind::String {
+            return Err(self.error(format!(
+                "expected a string literal, found {}",
+                found(self.current())
+            )));
+        }
+        let mut message = String::new();
+        while self.current().kind == TokenKind::String {
+            let tok = self.advance();
+            match lit_prefix(&tok.spelling) {
+                LitPrefix::None | LitPrefix::U8 => {
+                    message.push_str(&String::from_utf8_lossy(
+                        tok.bytes.as_deref().expect("string token"),
+                    ));
+                }
+                _ => message.push_str(&tok.spelling),
+            }
+        }
+        self.expect(TokenKind::RParen, "')'")?;
+        self.expect(TokenKind::Semi, "';'")?;
+        if value.bits & value.ty.mask() == 0 {
+            return Err(self.error_at(
+                expr.line(),
+                expr.column(),
+                format!("static assertion failed: {message}"),
+            ));
+        }
+        Ok(())
+    }
+
     fn parse_member_list(&mut self) -> Result<Vec<StructField>, Diagnostic> {
         let mut fields = Vec::new();
         let mut names = HashSet::new();
@@ -1269,6 +1355,10 @@ impl Parser<'_> {
             return Ok(fields);
         }
         while !matches!(self.current().kind, TokenKind::RBrace | TokenKind::Eof) {
+            if self.current().kind == TokenKind::KwStaticAssert {
+                self.parse_static_assert()?;
+                continue;
+            }
             if self.current().kind == TokenKind::Colon {
                 return Err(self.error("expected a type before ':'"));
             }
@@ -1399,7 +1489,7 @@ impl Parser<'_> {
             ));
         };
         let expr = self.parse_conditional()?;
-        let value = eval_ice(&expr)
+        let value = eval_ice(&expr, &self.names)
             .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
         let signed = if value.ty.is_signed() {
             sign_extend(value.bits, value.ty.width())
@@ -1756,6 +1846,14 @@ impl Parser<'_> {
                 introduced_names: HashMap::new(),
             });
         }
+        // An identifier list (C11 6.7.6.3p3) belongs to a K&R function
+        // definition, which is not supported. `int f();` is handled above.
+        if self.current().kind == TokenKind::Ident
+            && !self.at_type_specifier(self.current())
+            && matches!(self.lookahead(), TokenKind::Comma | TokenKind::RParen)
+        {
+            return Err(self.error("old-style function declarations are not supported"));
+        }
         let mut params = Vec::new();
         let mut variadic = false;
         loop {
@@ -1822,24 +1920,10 @@ impl Parser<'_> {
             .as_ref()
             .map(|(_, line, column)| (*line, *column))
             .unwrap_or_else(|| decl_pos(&raw));
-        let ty = match self.derive(base, &raw, line, column)? {
-            Layer::Object(ty) => self.adjust_parameter(ty, line, column)?,
-            Layer::Function {
-                ret,
-                params,
-                variadic,
-                ..
-            } => {
-                let func = CType::func(
-                    ret,
-                    params.iter().map(|param| param.ty.unqualified()).collect(),
-                    variadic,
-                );
-                self.adjust_parameter(func, line, column)?
-            }
-        };
+        let ty = layer_type(self.derive(base, &raw, line, column)?);
+        let ty = self.adjust_parameter(ty, line, column)?;
         if let Some((name, line, column)) = &named {
-            self.bind_ordinary(name, *line, *column)?;
+            self.bind_ordinary(name, Some(ty.clone()), *line, *column)?;
         }
         Ok(Param {
             name: named.map(|(name, _, _)| name),
@@ -2021,7 +2105,7 @@ impl Parser<'_> {
             return Ok(None);
         }
         let expr = self.parse_assignment()?;
-        match fold_array_bound(&expr) {
+        match fold_array_bound(&expr, &self.names) {
             Ok(len) => Ok(Some(len)),
             Err(err) => Err(self.error_at(expr.line(), expr.column(), bound_message(err))),
         }
@@ -2051,7 +2135,7 @@ impl Parser<'_> {
                         arg_reg: String::new(),
                     })
                     .collect(),
-                prototype: true,
+                prototype: func.prototype,
                 variadic: func.variadic,
                 introduced: HashMap::new(),
                 introduced_names: HashMap::new(),
@@ -2076,17 +2160,8 @@ impl Parser<'_> {
                     let ptr = CType::pointer(ty).with_quals(*quals);
                     self.derive_layer(Layer::Object(ptr), inner, line, column)
                 }
-                Layer::Function {
-                    ret,
-                    params,
-                    variadic,
-                    ..
-                } => {
-                    let func = CType::func(
-                        ret.clone(),
-                        params.iter().map(|param| param.ty.unqualified()).collect(),
-                        variadic,
-                    );
+                layer @ Layer::Function { .. } => {
+                    let func = layer_type(layer);
                     let ptr = CType::pointer(func).with_quals(*quals);
                     self.derive_layer(Layer::Object(ptr), inner, line, column)
                 }
@@ -2189,7 +2264,9 @@ impl Parser<'_> {
             // test would consume `T` as the type and then reject the colon.
             let is_label =
                 self.current().kind == TokenKind::Ident && self.lookahead() == TokenKind::Colon;
-            if !is_label && self.starts_declaration() {
+            if self.current().kind == TokenKind::KwStaticAssert {
+                self.parse_static_assert()?;
+            } else if !is_label && self.starts_declaration() {
                 items.extend(self.parse_block_declaration(false)?);
             } else if let Some(message) = unsupported(self.current().kind) {
                 return Err(self.error(message));
@@ -2289,6 +2366,7 @@ impl Parser<'_> {
         specs: &Specs,
         declarator: NamedDecl,
     ) -> Result<FuncDef, Diagnostic> {
+        let ty = decl_kind_type(&declarator.kind);
         let DeclKind::Function {
             ret,
             params,
@@ -2298,13 +2376,6 @@ impl Parser<'_> {
         else {
             unreachable!("function declarator");
         };
-        if !prototype {
-            return Err(self.error_at(
-                declarator.line,
-                declarator.column,
-                "old-style function declarations are not supported",
-            ));
-        }
         if self.current().kind == TokenKind::Assign {
             return Err(self.error("function declarations cannot have an initializer"));
         }
@@ -2312,12 +2383,18 @@ impl Parser<'_> {
             .symbol
             .clone()
             .unwrap_or_else(|| declarator.name.clone());
-        self.bind_ordinary(&declarator.name, declarator.line, declarator.column)?;
+        self.bind_ordinary(
+            &declarator.name,
+            Some(ty),
+            declarator.line,
+            declarator.column,
+        )?;
         Ok(FuncDef {
             ret_type: ret,
             name: declarator.name,
             params,
             variadic,
+            prototype,
             body: None,
             storage: specs.storage,
             linkage: Linkage::External,
@@ -2342,6 +2419,12 @@ impl Parser<'_> {
                 "void variables are not supported",
             ));
         }
+        self.bind_ordinary(
+            &declarator.name,
+            Some(ty.clone()),
+            declarator.line,
+            declarator.column,
+        )?;
         let init = if self.match_kind(TokenKind::Assign) {
             Some(self.parse_initializer()?)
         } else {
@@ -2354,7 +2437,7 @@ impl Parser<'_> {
             declarator.column,
         )?;
         self.reject_bad_restrict(&ty, declarator.line, declarator.column)?;
-        self.bind_ordinary(&declarator.name, declarator.line, declarator.column)?;
+        self.bind_completed(&declarator.name, &ty, init.as_ref());
         Ok(VarDecl {
             name: declarator.name,
             ty,
@@ -2830,6 +2913,7 @@ impl Parser<'_> {
                 Ok(Expr::incdec(op, expr, token.line, token.column))
             }
             TokenKind::KwSizeof => self.parse_sizeof(token.line, token.column),
+            TokenKind::KwAlignof => self.parse_alignof(token.line, token.column),
             TokenKind::Amp => {
                 self.advance();
                 let expr = self.parse_unary()?;
@@ -2924,21 +3008,131 @@ impl Parser<'_> {
     fn parse_sizeof(&mut self, line: usize, column: usize) -> Result<Expr, Diagnostic> {
         self.advance();
         if self.current().kind == TokenKind::LParen && self.lookahead_is_type() {
-            self.advance();
+            let lparen = self.advance();
             let ty = self.parse_type_name()?;
             self.expect(TokenKind::RParen, "')'")?;
+            if self.current().kind == TokenKind::LBrace {
+                // `sizeof (T){...}` is `sizeof` of a compound literal.
+                let literal = self.parse_compound_literal(ty, lparen.line, lparen.column)?;
+                let expr = self.parse_postfix_tail(literal)?;
+                return Ok(Expr::sizeof_expr(expr, line, column));
+            }
             return Ok(Expr::sizeof_type(ty, line, column));
         }
         let expr = self.parse_unary()?;
         Ok(Expr::sizeof_expr(expr, line, column))
     }
 
+    /// `_Alignof ( type-name )` (C11 6.5.3.4) is an integer constant of type
+    /// `size_t`. The type shall not be a function type or incomplete. For an
+    /// array type the result is the element type's alignment, which is the
+    /// alignment a member of that type gets (the ABI's 16-byte rule for
+    /// large array objects is not a property of the type).
+    fn parse_alignof(&mut self, line: usize, column: usize) -> Result<Expr, Diagnostic> {
+        self.advance();
+        if self.current().kind != TokenKind::LParen || !self.lookahead_is_type() {
+            return Err(self.error("_Alignof requires a parenthesized type name"));
+        }
+        self.advance();
+        let ty = self.parse_type_name()?;
+        self.expect(TokenKind::RParen, "')'")?;
+        if ty.is_func() {
+            return Err(self.error_at(
+                line,
+                column,
+                "invalid application of '_Alignof' to a function type",
+            ));
+        }
+        if ty.size().is_none() || ty.is_void() {
+            return Err(self.error_at(
+                line,
+                column,
+                "invalid application of '_Alignof' to an incomplete type",
+            ));
+        }
+        Ok(Expr::int(
+            u64::from(ty.member_align()),
+            TypeName::ULong,
+            line,
+            column,
+        ))
+    }
+
     fn parse_cast(&mut self) -> Result<Expr, Diagnostic> {
         let lparen = self.advance();
         let ty = self.parse_type_name()?;
         self.expect(TokenKind::RParen, "')'")?;
+        if self.current().kind == TokenKind::LBrace {
+            let literal = self.parse_compound_literal(ty, lparen.line, lparen.column)?;
+            return self.parse_postfix_tail(literal);
+        }
         let expr = self.parse_unary()?;
         Ok(Expr::cast(ty, expr, lparen.line, lparen.column))
+    }
+
+    /// `( type-name ) { initializer-list }` after the `)` (C11 6.5.2.5).
+    /// The literal is an unnamed object of that type; an array of unknown
+    /// size takes its length from the initializer.
+    fn parse_compound_literal(
+        &mut self,
+        ty: CType,
+        line: usize,
+        column: usize,
+    ) -> Result<Expr, Diagnostic> {
+        let init = self.parse_initializer()?;
+        Ok(Expr::CompoundLit {
+            decl: Box::new(VarDecl {
+                name: String::new(),
+                ty,
+                storage: Storage::None,
+                init: Some(init),
+                checked: None,
+                line,
+                column,
+                slot: String::new(),
+            }),
+            line,
+            column,
+            ty: None,
+        })
+    }
+
+    /// `_Generic ( assignment-expression , generic-assoc-list )`
+    /// (C11 6.5.1.1). Each association is `type-name : expr` or
+    /// `default : expr`.
+    fn parse_generic(&mut self) -> Result<Expr, Diagnostic> {
+        let keyword = self.advance();
+        self.expect(TokenKind::LParen, "'('")?;
+        let control = self.parse_assignment()?;
+        self.expect(TokenKind::Comma, "','")?;
+        let mut assocs = Vec::new();
+        loop {
+            let token = self.current().clone();
+            let ty = if self.match_kind(TokenKind::KwDefault) {
+                None
+            } else {
+                Some(self.parse_type_name()?)
+            };
+            self.expect(TokenKind::Colon, "':'")?;
+            let expr = self.parse_assignment()?;
+            assocs.push(GenericAssoc {
+                ty,
+                expr,
+                line: token.line,
+                column: token.column,
+            });
+            if !self.match_kind(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen, "')'")?;
+        Ok(Expr::Generic {
+            control: Box::new(control),
+            assocs,
+            line: keyword.line,
+            column: keyword.column,
+            ty: None,
+        })
     }
 
     /// A type name is specifiers plus an optional abstract declarator.
@@ -2955,19 +3149,7 @@ impl Parser<'_> {
             return Err(self.error_at(line, column, "type name cannot declare an identifier"));
         }
         let (line, column) = decl_pos(&raw);
-        let ty = match self.derive(base, &raw, line, column)? {
-            Layer::Object(ty) => ty,
-            Layer::Function {
-                ret,
-                params,
-                variadic,
-                ..
-            } => CType::func(
-                ret,
-                params.iter().map(|param| param.ty.unqualified()).collect(),
-                variadic,
-            ),
-        };
+        let ty = layer_type(self.derive(base, &raw, line, column)?);
         self.reject_flexible_array(&ty, line, column)?;
         Ok(ty)
     }
@@ -2990,7 +3172,13 @@ impl Parser<'_> {
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, Diagnostic> {
-        let mut expr = self.parse_primary()?;
+        let expr = self.parse_primary()?;
+        self.parse_postfix_tail(expr)
+    }
+
+    /// Postfix operators applied to `expr`, which is a primary expression
+    /// or a compound literal (C11 6.5.2).
+    fn parse_postfix_tail(&mut self, mut expr: Expr) -> Result<Expr, Diagnostic> {
         loop {
             match self.current().kind {
                 TokenKind::LParen => {
@@ -3073,6 +3261,7 @@ impl Parser<'_> {
     fn parse_primary(&mut self) -> Result<Expr, Diagnostic> {
         let token = self.current().clone();
         match token.kind {
+            TokenKind::KwGeneric => self.parse_generic(),
             TokenKind::Float => {
                 self.advance();
                 Ok(Expr::float_lit(
@@ -3431,6 +3620,44 @@ struct ParsedParams {
     introduced_names: HashMap<String, NameBinding>,
 }
 
+/// The C type a function layer describes, with top-level parameter
+/// qualifiers removed (C11 6.7.6.3p15).
+fn layer_type(layer: Layer) -> CType {
+    match layer {
+        Layer::Object(ty) => ty,
+        Layer::Function {
+            ret,
+            params,
+            prototype,
+            variadic,
+            ..
+        } => CType::func_with(
+            ret,
+            params.iter().map(|param| param.ty.unqualified()).collect(),
+            variadic,
+            prototype,
+        ),
+    }
+}
+
+/// The type a declarator declares: the object type, or the function type.
+fn decl_kind_type(kind: &DeclKind) -> CType {
+    match kind {
+        DeclKind::Object(ty) => ty.clone(),
+        DeclKind::Function {
+            ret,
+            params,
+            prototype,
+            variadic,
+        } => CType::func_with(
+            ret.clone(),
+            params.iter().map(|param| param.ty.unqualified()).collect(),
+            *variadic,
+            *prototype,
+        ),
+    }
+}
+
 fn decl_name(raw: &RawDecl) -> Option<(String, usize, usize)> {
     match raw {
         RawDecl::Named(name, line, column) => Some((name.clone(), *line, *column)),
@@ -3459,18 +3686,36 @@ enum BoundErr {
     Overflow,
     Shift,
     NotConst,
+    Undeclared,
+    SizeofFunction,
+    SizeofBitField,
 }
 
 fn bound_message(err: BoundErr) -> &'static str {
     match err {
         BoundErr::Vla => "variable-length arrays are not supported",
-        BoundErr::Incomplete => "array size uses an incomplete type",
+        BoundErr::Incomplete => "invalid application of 'sizeof' to an incomplete type",
         BoundErr::NonPositive => "array size must be positive",
         BoundErr::TooBig => "array is too large",
         BoundErr::DivZero => "array size divides by zero",
         BoundErr::Overflow => "array size overflows",
         BoundErr::Shift => "array size uses an undefined shift",
         BoundErr::NotConst => "array size is not an integer constant",
+        BoundErr::Undeclared => "use of undeclared identifier",
+        BoundErr::SizeofFunction => "invalid application of 'sizeof' to a function type",
+        BoundErr::SizeofBitField => "invalid application of 'sizeof' to a bit-field",
+    }
+}
+
+/// The diagnostic for an expression that must be an integer constant
+/// expression but is not a bound, a width, or an enumeration value.
+fn ice_message(err: BoundErr) -> &'static str {
+    match err {
+        BoundErr::Vla | BoundErr::NotConst => "expression is not an integer constant expression",
+        BoundErr::DivZero => "division by zero in a constant expression",
+        BoundErr::Overflow => "constant expression overflows",
+        BoundErr::Shift => "constant expression uses an undefined shift",
+        other => bound_message(other),
     }
 }
 
@@ -3481,8 +3726,8 @@ struct BVal {
 
 /// Integer constant expression used as an array bound. An identifier, a call,
 /// or an assignment is reported as a variable-length array.
-fn fold_array_bound(expr: &Expr) -> Result<u64, BoundErr> {
-    let value = eval_ice(expr)?;
+fn fold_array_bound(expr: &Expr, env: Env) -> Result<u64, BoundErr> {
+    let value = eval_ice(expr, env)?;
     let count = if value.ty.is_signed() {
         let signed = sign_extend(value.bits, value.ty.width());
         if signed <= 0 {
@@ -3502,7 +3747,7 @@ fn fold_array_bound(expr: &Expr) -> Result<u64, BoundErr> {
     Ok(count)
 }
 
-fn eval_ice(expr: &Expr) -> Result<BVal, BoundErr> {
+fn eval_ice(expr: &Expr, env: Env) -> Result<BVal, BoundErr> {
     match expr {
         Expr::Int { bits, value_ty, .. } => Ok(BVal {
             bits: *bits & value_ty.mask(),
@@ -3510,35 +3755,44 @@ fn eval_ice(expr: &Expr) -> Result<BVal, BoundErr> {
         }),
         Expr::Float { .. } => Err(BoundErr::NotConst),
         Expr::Sizeof { operand, .. } => {
-            let size = match operand {
-                SizeofOperand::Type(ty) => ty.size().ok_or(BoundErr::Incomplete)?,
+            // C11 6.5.3.4p1: not a function type, an incomplete type, or
+            // a bit-field member.
+            let ty = match operand {
+                SizeofOperand::Type(ty) => ty.clone(),
                 SizeofOperand::Expr(inner) => {
-                    type_only(inner)?.size().ok_or(BoundErr::Incomplete)?
+                    if is_bitfield_member(inner, env) {
+                        return Err(BoundErr::SizeofBitField);
+                    }
+                    type_only(inner, env)?
                 }
             };
+            if ty.is_func() {
+                return Err(BoundErr::SizeofFunction);
+            }
+            let size = ty.size().ok_or(BoundErr::Incomplete)?;
             Ok(BVal {
                 bits: size,
                 ty: TypeName::ULong,
             })
         }
-        Expr::Unary { op, expr, .. } => eval_ice_unary(*op, expr),
+        Expr::Unary { op, expr, .. } => eval_ice_unary(*op, expr, env),
         Expr::Bin {
             op, left, right, ..
-        } => eval_ice_bin(*op, left, right),
+        } => eval_ice_bin(*op, left, right, env),
         Expr::Cond {
             cond,
             then_expr,
             else_expr,
             ..
         } => {
-            let cond = eval_ice(cond)?;
+            let cond = eval_ice(cond, env)?;
             let chosen = if cond.bits & cond.ty.mask() == 0 {
                 else_expr
             } else {
                 then_expr
             };
-            let value = eval_ice(chosen)?;
-            let result = match (type_only(then_expr)?, type_only(else_expr)?) {
+            let value = eval_ice(chosen, env)?;
+            let result = match (type_only(then_expr, env)?, type_only(else_expr, env)?) {
                 (left, right) if left.is_integer() && right.is_integer() => left
                     .as_integer()
                     .unwrap()
@@ -3560,7 +3814,7 @@ fn eval_ice(expr: &Expr) -> Result<BVal, BoundErr> {
                     crate::float::real_to_int(*bits, *kind, dest).ok_or(BoundErr::Overflow)?;
                 return Ok(BVal { bits, ty: dest });
             }
-            let value = eval_ice(expr)?;
+            let value = eval_ice(expr, env)?;
             Ok(BVal {
                 bits: convert_bits(value.bits, value.ty, dest),
                 ty: dest,
@@ -3578,10 +3832,48 @@ fn eval_ice(expr: &Expr) -> Result<BVal, BoundErr> {
         | Expr::Member { .. }
         | Expr::VaArg { .. }
         | Expr::VaOp { .. } => Err(BoundErr::Vla),
+        Expr::CompoundLit { .. } => Err(BoundErr::NotConst),
+        Expr::Generic {
+            control, assocs, ..
+        } => eval_ice(select_generic(control, assocs, env)?, env),
     }
 }
 
-fn type_only(expr: &Expr) -> Result<CType, BoundErr> {
+/// The association a generic selection picks (C11 6.5.1.1p3): the one whose
+/// type is compatible with the controlling expression's type after lvalue
+/// conversion, else `default`. Semantic analysis checks the constraints.
+fn select_generic<'e>(
+    control: &Expr,
+    assocs: &'e [GenericAssoc],
+    env: Env,
+) -> Result<&'e Expr, BoundErr> {
+    let ty = rvalue_type(control, env)?;
+    assocs
+        .iter()
+        .find(|assoc| assoc.ty.as_ref().is_some_and(|t| compatible(t, &ty)))
+        .or_else(|| assocs.iter().find(|assoc| assoc.ty.is_none()))
+        .map(|assoc| &assoc.expr)
+        .ok_or(BoundErr::NotConst)
+}
+
+/// Ordinary-identifier scopes, innermost last, as the parser sees them.
+type Env<'a> = &'a [HashMap<String, NameBinding>];
+
+fn env_lookup<'a>(env: Env<'a>, name: &str) -> Option<&'a NameBinding> {
+    env.iter().rev().find_map(|scope| scope.get(name))
+}
+
+/// Type of an expression, computed from declarations the parser has seen.
+///
+/// This is only used where C requires an integer constant expression before
+/// semantic analysis runs: an array bound, an enumeration value, a bit-field
+/// width, or `_Static_assert`. There the only operands whose type matters
+/// without their value are those of `sizeof` (C11 6.6p6), and the operand of
+/// `sizeof` is not evaluated (C11 6.5.3.4p2), so it may name any object. The
+/// result is the type before lvalue conversion: an array stays an array and
+/// a string literal is `char[N]`. Anything this cannot type is reported as
+/// not constant rather than guessed.
+fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
     match expr {
         Expr::Int { value_ty, .. } => Ok(CType::from_name(*value_ty)),
         Expr::Float { kind, .. } => Ok(CType::Float(*kind)),
@@ -3590,51 +3882,239 @@ fn type_only(expr: &Expr) -> Result<CType, BoundErr> {
             Ok(CType::array(CType::from_name(enc.elem()), Some(len)))
         }
         Expr::Sizeof { .. } => Ok(CType::from_name(TypeName::ULong)),
-        Expr::Unary { op, expr, .. } => {
-            let inner = type_only(expr)?.as_integer().ok_or(BoundErr::Vla)?;
-            let ty = match op {
-                UnaryOp::Not => TypeName::Int,
-                UnaryOp::Plus | UnaryOp::Minus | UnaryOp::BitNot => inner.promote(),
-                UnaryOp::Addr | UnaryOp::Deref => return Err(BoundErr::Vla),
-            };
-            Ok(CType::from_name(ty))
-        }
+        Expr::Var { name, .. } => match env_lookup(env, name) {
+            Some(NameBinding::Ordinary(Some(ty))) => Ok(ty.clone()),
+            // An object's scope starts after its declarator (C11 6.2.1p7),
+            // so `int x[sizeof x];` names nothing. `__func__` is implicit.
+            None if name != "__func__" => Err(BoundErr::Undeclared),
+            _ => Err(BoundErr::Vla),
+        },
+        Expr::Unary { op, expr, .. } => match op {
+            UnaryOp::Deref => {
+                let inner = rvalue_type(expr, env)?;
+                inner.pointee().cloned().ok_or(BoundErr::NotConst)
+            }
+            UnaryOp::Addr => Ok(CType::pointer(type_only(expr, env)?)),
+            UnaryOp::Not => Ok(CType::int_type()),
+            UnaryOp::Plus | UnaryOp::Minus | UnaryOp::BitNot => {
+                let inner = rvalue_type(expr, env)?;
+                match inner.as_integer() {
+                    Some(name) => Ok(CType::from_name(name.promote())),
+                    None if inner.is_float() && *op != UnaryOp::BitNot => Ok(inner),
+                    None => Err(BoundErr::NotConst),
+                }
+            }
+        },
         Expr::Bin {
             op, left, right, ..
         } => {
-            let left = type_only(left)?.as_integer().ok_or(BoundErr::Vla)?;
-            let right = type_only(right)?.as_integer().ok_or(BoundErr::Vla)?;
-            let ty = if op.is_cmp() || matches!(op, BinOp::And | BinOp::Or) {
-                TypeName::Int
-            } else if matches!(op, BinOp::Shl | BinOp::Shr) {
-                left.promote()
-            } else {
-                left.usual(right)
-            };
-            Ok(CType::from_name(ty))
-        }
-        Expr::Cast { ty_name, .. } => {
-            if ty_name.is_integer() {
-                Ok(ty_name.clone())
-            } else {
-                Err(BoundErr::Vla)
+            let left = rvalue_type(left, env)?;
+            let right = rvalue_type(right, env)?;
+            if op.is_cmp() || matches!(op, BinOp::And | BinOp::Or) {
+                return Ok(CType::int_type());
+            }
+            match op {
+                BinOp::Add | BinOp::Sub if left.is_pointer() && right.is_pointer() => {
+                    Ok(CType::from_name(TypeName::Long))
+                }
+                BinOp::Add | BinOp::Sub if left.is_pointer() => Ok(left),
+                BinOp::Add if right.is_pointer() => Ok(right),
+                BinOp::Shl | BinOp::Shr => left
+                    .as_integer()
+                    .map(|name| CType::from_name(name.promote()))
+                    .ok_or(BoundErr::NotConst),
+                _ => arith_common(&left, &right),
             }
         }
+        Expr::Cast { ty_name, .. } => Ok(ty_name.unqualified()),
         Expr::Cond {
             then_expr,
             else_expr,
             ..
         } => {
-            let left = type_only(then_expr)?.as_integer().ok_or(BoundErr::Vla)?;
-            let right = type_only(else_expr)?.as_integer().ok_or(BoundErr::Vla)?;
-            Ok(CType::from_name(left.usual(right)))
+            let left = rvalue_type(then_expr, env)?;
+            let right = rvalue_type(else_expr, env)?;
+            if left.is_arithmetic() && right.is_arithmetic() {
+                arith_common(&left, &right)
+            } else if left.is_void() || right.is_void() {
+                Ok(CType::Void)
+            } else if left.is_pointer() || right.is_pointer() {
+                // Every object pointer has the same size; `sizeof` is all
+                // that asks for this type here.
+                Ok(if left.is_pointer() { left } else { right })
+            } else {
+                Ok(left)
+            }
         }
-        _ => Err(BoundErr::Vla),
+        Expr::Assign { target, .. }
+        | Expr::CompoundAssign { target, .. }
+        | Expr::IncDec { target, .. } => Ok(type_only(target, env)?.unqualified()),
+        Expr::Comma { right, .. } => rvalue_type(right, env),
+        Expr::Call { callee, .. } => {
+            let callee = rvalue_type(callee, env)?;
+            let func = callee
+                .pointee()
+                .and_then(CType::func_ty)
+                .ok_or(BoundErr::NotConst)?;
+            Ok(func.ret.unqualified())
+        }
+        Expr::Index { base, index, .. } => {
+            let base = rvalue_type(base, env)?;
+            let index = rvalue_type(index, env)?;
+            base.pointee()
+                .or_else(|| index.pointee())
+                .cloned()
+                .ok_or(BoundErr::NotConst)
+        }
+        Expr::Member {
+            base, field, arrow, ..
+        } => {
+            let base_ty = if *arrow {
+                rvalue_type(base, env)?
+                    .pointee()
+                    .cloned()
+                    .ok_or(BoundErr::NotConst)?
+            } else {
+                type_only(base, env)?
+            };
+            let handle = base_ty.struct_ref().ok_or(BoundErr::NotConst)?;
+            let hit = handle.lookup_member(field).ok_or(BoundErr::NotConst)?;
+            Ok(hit.field.ty.with_quals(base_ty.quals()))
+        }
+        Expr::VaArg { type_arg, .. } => Ok(type_arg.clone()),
+        Expr::VaOp { .. } => Ok(CType::Void),
+        Expr::Decay { ty, .. } => ty.clone().ok_or(BoundErr::NotConst),
+        Expr::Generic {
+            control, assocs, ..
+        } => type_only(select_generic(control, assocs, env)?, env),
+        Expr::CompoundLit { decl, .. } => match (&decl.ty, &decl.init) {
+            (CType::Array(elem, None), Some(init)) => infer_init_len(elem, init, env)
+                .map(|len| CType::array((**elem).clone(), Some(len)))
+                .ok_or(BoundErr::NotConst),
+            (ty, _) => Ok(ty.clone()),
+        },
     }
 }
 
-fn eval_ice_unary(op: UnaryOp, expr: &Expr) -> Result<BVal, BoundErr> {
-    let value = promote_ice(eval_ice(expr)?);
+/// Whether `expr`, ignoring parentheses, designates a bit-field member.
+fn is_bitfield_member(expr: &Expr, env: Env) -> bool {
+    let Expr::Member {
+        base, field, arrow, ..
+    } = expr
+    else {
+        return false;
+    };
+    let base_ty = if *arrow {
+        rvalue_type(base, env)
+            .ok()
+            .and_then(|ty| ty.pointee().cloned())
+    } else {
+        type_only(base, env).ok()
+    };
+    base_ty
+        .as_ref()
+        .and_then(CType::struct_ref)
+        .and_then(|handle| handle.lookup_member(field))
+        .is_some_and(|hit| hit.field.is_bitfield())
+}
+
+/// Type after lvalue conversion: arrays and functions become pointers and
+/// qualifiers are dropped (C11 6.3.2.1).
+fn rvalue_type(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
+    let ty = type_only(expr, env)?;
+    Ok(match ty.peel() {
+        CType::Array(elem, _) => CType::pointer((**elem).clone()),
+        CType::Func(_) => CType::pointer(ty.clone()),
+        _ => ty.unqualified(),
+    })
+}
+
+/// The usual arithmetic conversions (C11 6.3.1.8) on two types.
+fn arith_common(left: &CType, right: &CType) -> Result<CType, BoundErr> {
+    match (left.peel(), right.peel()) {
+        (CType::Int(a), CType::Int(b)) => Ok(CType::from_name(a.usual(*b))),
+        (CType::Float(a), CType::Float(b)) => {
+            Ok(CType::Float(if float_rank(*a) >= float_rank(*b) {
+                *a
+            } else {
+                *b
+            }))
+        }
+        (CType::Float(a), CType::Int(_)) | (CType::Int(_), CType::Float(a)) => Ok(CType::Float(*a)),
+        _ => Err(BoundErr::NotConst),
+    }
+}
+
+fn float_rank(kind: FloatKind) -> u8 {
+    match kind {
+        FloatKind::Float => 0,
+        FloatKind::Double => 1,
+        FloatKind::LongDouble => 2,
+    }
+}
+
+/// Length that an initializer gives an array of unknown size, for the
+/// shapes whose answer follows from the braces alone (C11 6.7.9p22): a
+/// string for a character array, a list of scalars, a list in which every
+/// element of an aggregate type has its own braces, and `[N]` designators.
+/// `None` means the parser does not know; semantic analysis still does.
+fn infer_init_len(elem: &CType, init: &Init, env: Env) -> Option<u64> {
+    if let Init::Expr(Expr::Str { bytes, enc, .. }) = init {
+        if elem.is_integer() && elem.size() == Some(enc.unit() as u64) {
+            return Some(bytes.len() as u64 / enc.unit() as u64 + 1);
+        }
+        return None;
+    }
+    let Init::List { items, .. } = init else {
+        return None;
+    };
+    if let [Init::Expr(Expr::Str { bytes, enc, .. })] = items.as_slice() {
+        if elem.is_integer() && elem.size() == Some(enc.unit() as u64) {
+            return Some(bytes.len() as u64 / enc.unit() as u64 + 1);
+        }
+    }
+    let scalar = elem.is_scalar();
+    let char_array = elem
+        .array_elem()
+        .is_some_and(|inner| inner.is_integer() && elem.array_len().is_some());
+    let mut index = 0u64;
+    let mut count = 0u64;
+    for item in items {
+        let value = match item {
+            Init::Designated {
+                designators, init, ..
+            } => {
+                let Some(Designator::Index { expr, .. }) = designators.first() else {
+                    return None;
+                };
+                let at = eval_ice(expr, env).ok()?;
+                if at.ty.is_signed() && sign_extend(at.bits, at.ty.width()) < 0 {
+                    return None;
+                }
+                index = at.bits & at.ty.mask();
+                if designators.len() == 1 && !scalar && !matches!(**init, Init::List { .. }) {
+                    // `[2] = x` for an aggregate element may start brace
+                    // elision; the next positional items could belong to it.
+                    return None;
+                }
+                init.as_ref()
+            }
+            other => other,
+        };
+        let one = scalar
+            || matches!(value, Init::List { .. })
+            || (char_array && matches!(value, Init::Expr(Expr::Str { .. })));
+        if !one {
+            return None;
+        }
+        index = index.checked_add(1)?;
+        count = count.max(index);
+    }
+    (count > 0).then_some(count)
+}
+
+fn eval_ice_unary(op: UnaryOp, expr: &Expr, env: Env) -> Result<BVal, BoundErr> {
+    let value = promote_ice(eval_ice(expr, env)?);
     match op {
         UnaryOp::Plus => Ok(value),
         UnaryOp::Minus => {
@@ -3684,39 +4164,39 @@ fn bits_ice(value: i128, ty: TypeName) -> Result<BVal, BoundErr> {
     })
 }
 
-fn eval_ice_bin(op: BinOp, left: &Expr, right: &Expr) -> Result<BVal, BoundErr> {
+fn eval_ice_bin(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Result<BVal, BoundErr> {
     match op {
         BinOp::And => {
-            let left = eval_ice(left)?;
+            let left = eval_ice(left, env)?;
             if left.bits & left.ty.mask() == 0 {
                 return Ok(BVal {
                     bits: 0,
                     ty: TypeName::Int,
                 });
             }
-            let right = eval_ice(right)?;
+            let right = eval_ice(right, env)?;
             Ok(BVal {
                 bits: u64::from(right.bits & right.ty.mask() != 0),
                 ty: TypeName::Int,
             })
         }
         BinOp::Or => {
-            let left = eval_ice(left)?;
+            let left = eval_ice(left, env)?;
             if left.bits & left.ty.mask() != 0 {
                 return Ok(BVal {
                     bits: 1,
                     ty: TypeName::Int,
                 });
             }
-            let right = eval_ice(right)?;
+            let right = eval_ice(right, env)?;
             Ok(BVal {
                 bits: u64::from(right.bits & right.ty.mask() != 0),
                 ty: TypeName::Int,
             })
         }
         BinOp::Shl | BinOp::Shr => {
-            let left = promote_ice(eval_ice(left)?);
-            let right = promote_ice(eval_ice(right)?);
+            let left = promote_ice(eval_ice(left, env)?);
+            let right = promote_ice(eval_ice(right, env)?);
             let count = ice_shift_count(&right, left.ty.width())?;
             if op == BinOp::Shr {
                 let bits = if left.ty.is_signed() {
@@ -3740,8 +4220,8 @@ fn eval_ice_bin(op: BinOp, left: &Expr, right: &Expr) -> Result<BVal, BoundErr> 
             }
         }
         _ => {
-            let left = eval_ice(left)?;
-            let right = eval_ice(right)?;
+            let left = eval_ice(left, env)?;
+            let right = eval_ice(right, env)?;
             let ty = left.ty.usual(right.ty);
             let left = convert_bits(left.bits, left.ty, ty);
             let right = convert_bits(right.bits, right.ty, ty);
@@ -3917,12 +4397,10 @@ fn found(token: &Token) -> String {
 
 fn unsupported(kind: TokenKind) -> Option<&'static str> {
     Some(match kind {
-        TokenKind::KwAlignas | TokenKind::KwAlignof => "alignment specifiers are not supported",
+        TokenKind::KwAlignas => "alignment specifiers are not supported",
         TokenKind::KwAtomic => "atomic types are not supported",
         TokenKind::KwComplex | TokenKind::KwImaginary => "complex types are not supported",
-        TokenKind::KwGeneric => "_Generic is not supported",
         TokenKind::KwNoreturn => "_Noreturn is not supported",
-        TokenKind::KwStaticAssert => "_Static_assert is not supported",
         TokenKind::KwThreadLocal => "thread-local storage is not supported",
         _ => return None,
     })
@@ -4257,9 +4735,38 @@ global int [] a =
         assert!(parse_err("struct S { int x: 0; };").contains("zero width"));
         assert!(parse_err("int a[n];").contains("variable-length arrays are not supported"));
         assert!(parse_err("int a[0];").contains("array size must be positive"));
+        // _Static_assert (C11 6.7.10) and _Alignof (6.5.3.4).
+        assert!(parsed("_Static_assert(sizeof(int) == 4, \"ok\");\n").is_empty());
+        assert!(parse_err("_Static_assert(sizeof(int) == 8, \"int is 8\");")
+            .contains("static assertion failed: int is 8"));
+        assert!(parse_err("_Static_assert(1);").contains("expected ','"));
+        assert!(parse_err("int x; _Static_assert(x, \"a\");")
+            .contains("not an integer constant expression"));
+        assert!(parse_err("struct S { int a; _Static_assert(0, \"m\"); };")
+            .contains("static assertion failed: m"));
+        assert!(parse_err("int main(void) { _Static_assert(0, \"b\"); }")
+            .contains("static assertion failed: b"));
+        assert!(parsed("int a[_Alignof(double)];\n").contains("global int [8] a"));
+        assert!(parse_err("int a = _Alignof(void);").contains("incomplete type"));
+        assert!(parse_err("int a = _Alignof(1);").contains("parenthesized type name"));
+        assert!(parse_err("struct Q; int a = _Alignof(struct Q);").contains("incomplete type"));
+        assert!(parse_err("int a = _Alignof(int(void));").contains("function type"));
+        assert!(parse_err("_Alignas(8) int a;").contains("alignment specifiers"));
+        // sizeof in integer constant expressions (C11 6.6p6, 6.5.3.4p1).
+        assert!(parsed("int a[4]; int b[sizeof a / sizeof a[0]];\n").contains("global int [4] b"));
+        assert!(parse_err("int x[sizeof x];").contains("undeclared identifier"));
+        assert!(parse_err("int n; int a[sizeof n * n];").contains("variable-length arrays"));
+        assert!(parse_err("int f(void); int a[sizeof f];").contains("to a function type"));
+        assert!(parse_err("struct S { int b : 3; } s; int a[sizeof s.b];").contains("bit-field"));
+        assert!(parse_err("enum { E = sizeof(struct Q) };").contains("incomplete type"));
+        assert!(parse_err("int a[sizeof(int) - 5];").contains("array is too large"));
         assert!(parse_err("\"hi\";").contains("expected a type"));
         assert!(parse_err("int main(void) { return a ? b; }").contains("expected ':'"));
-        assert!(parse_err("int add();").contains("old-style function declarations"));
+        assert!(parsed("int add();\n").contains("add"));
+        assert!(parse_err("int add(a, b);").contains("old-style function declarations"));
+        assert!(
+            parsed("void f(__builtin_va_list);\nvoid g(__builtin_va_list, int);\n").contains("g")
+        );
         assert!(
             parse_err("int main(void) { int inner(void) { return 1; } }")
                 .contains("nested functions")
@@ -4293,7 +4800,7 @@ global int [] a =
             parse_err("int main(void) { for (int f(void); ; ) return 0; }")
                 .contains("function declaration is not allowed in a for loop")
         );
-        assert!(parse_err("int main(void) { int f(); }").contains("old-style function"));
+        assert!(parse_err("int main(void) { int f(a); }").contains("old-style function"));
         assert!(parse_err("int main(void) { do { } while (0) return 0; }").contains("expected ';'"));
         assert!(parse_err("int main(void) { do { }; while (0); }").contains("expected 'while'"));
         assert!(parse_err("short long x;").contains("invalid combination of type specifiers"));

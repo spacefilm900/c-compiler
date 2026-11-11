@@ -403,6 +403,15 @@ struct Gen {
     ret_agg: Option<AggAbi>,
 }
 
+/// One store of an automatic aggregate initializer, evaluated and waiting
+/// for the zero fill: a scalar, a record copy from a source address, or a
+/// bit-field write.
+enum PendingStore {
+    Scalar(u64, CType, String),
+    Record(u64, CType, String, bool),
+    Bits(u64, BitStore, CType, String),
+}
+
 impl Gen {
     fn new(ret_ty: CType, ret_agg: Option<AggAbi>) -> Self {
         Self {
@@ -589,9 +598,10 @@ impl Gen {
                 self.store(&decl.ty, &value, &decl.slot);
             }
             CheckedInit::Aggregate(stores) => {
-                let mut ready = Vec::new();
-                let mut records = Vec::new();
-                let mut bits = Vec::new();
+                // Values are evaluated in initializer order. The stores
+                // follow the zero fill in that same order, so a later
+                // designator overrides part of an earlier record copy.
+                let mut pending = Vec::new();
                 for store in stores {
                     if let Some(info) = &store.bits {
                         let value = self.gen_val(&store.expr);
@@ -601,18 +611,32 @@ impl Gen {
                             store.ty.clone()
                         };
                         let value = self.convert(&value, &store.expr.ty().expect("typed"), &dest);
-                        bits.push((store.offset, info.clone(), dest, value));
+                        pending.push(PendingStore::Bits(store.offset, info.clone(), dest, value));
                         continue;
                     }
                     if store.ty.is_record() {
-                        let src = self.record_ptr(&store.expr);
-                        let src_volatile = store.expr.ty().is_some_and(|ty| ty.is_volatile());
-                        records.push((store.offset, store.ty.clone(), src, src_volatile));
+                        let mut src = self.record_ptr(&store.expr);
+                        let mut src_volatile = store.expr.ty().is_some_and(|ty| ty.is_volatile());
+                        if stores.len() > 1 {
+                            // The source may be an object that a later
+                            // initializer changes (`.a = (s = x), .b = (s = y)`).
+                            // Its value is taken now, into a temporary.
+                            let tmp = self.entry_alloca(&store.ty.unqualified());
+                            self.copy_struct(&store.ty.unqualified(), &src, &tmp, src_volatile);
+                            src = tmp;
+                            src_volatile = false;
+                        }
+                        pending.push(PendingStore::Record(
+                            store.offset,
+                            store.ty.clone(),
+                            src,
+                            src_volatile,
+                        ));
                         continue;
                     }
                     let value = self.gen_val(&store.expr);
                     let value = self.convert(&value, &store.expr.ty().expect("typed"), &store.ty);
-                    ready.push((store.offset, store.ty.clone(), value));
+                    pending.push(PendingStore::Scalar(store.offset, store.ty.clone(), value));
                 }
                 self.emit(&format!(
                     "  store {} zeroinitializer, ptr {}, align {}",
@@ -620,17 +644,21 @@ impl Gen {
                     decl.slot,
                     decl.ty.align()
                 ));
-                for (offset, ty, value) in ready {
-                    let addr = self.offset_ptr(&decl.slot, offset);
-                    self.store(&ty, &value, &addr);
-                }
-                for (offset, ty, src, src_volatile) in records {
-                    let addr = self.offset_ptr(&decl.slot, offset);
-                    self.copy_struct(&ty, &src, &addr, src_volatile);
-                }
-                for (offset, info, ty, value) in bits {
-                    let addr = self.offset_ptr(&decl.slot, offset);
-                    self.write_bits(&addr, &info, &ty, &value);
+                for store in pending {
+                    match store {
+                        PendingStore::Scalar(offset, ty, value) => {
+                            let addr = self.offset_ptr(&decl.slot, offset);
+                            self.store(&ty, &value, &addr);
+                        }
+                        PendingStore::Record(offset, ty, src, src_volatile) => {
+                            let addr = self.offset_ptr(&decl.slot, offset);
+                            self.copy_struct(&ty, &src, &addr, src_volatile);
+                        }
+                        PendingStore::Bits(offset, info, ty, value) => {
+                            let addr = self.offset_ptr(&decl.slot, offset);
+                            self.write_bits(&addr, &info, &ty, &value);
+                        }
+                    }
                 }
             }
         }
@@ -665,7 +693,8 @@ impl Gen {
             | Expr::Unary {
                 op: UnaryOp::Deref, ..
             }
-            | Expr::Member { .. } => self.gen_addr(expr),
+            | Expr::Member { .. }
+            | Expr::CompoundLit { .. } => self.gen_addr(expr),
             Expr::VaArg { .. } => self.gen_va_record(expr),
             Expr::Assign { target, value, .. } => {
                 // The right-hand side is evaluated before the destination is
@@ -2040,6 +2069,17 @@ impl Gen {
                 self.gen_va_op(*op, args);
                 None
             }
+            Expr::CompoundLit { decl, .. } => {
+                let slot = self.gen_compound_lit(decl);
+                if decl.ty.is_array() {
+                    Some(slot)
+                } else {
+                    Some(self.load(&decl.ty, &slot))
+                }
+            }
+            Expr::Generic { .. } => {
+                unreachable!("semantic analysis replaces a generic selection")
+            }
         }
     }
 
@@ -2097,8 +2137,20 @@ impl Gen {
                 }
                 tmp
             }
+            Expr::CompoundLit { decl, .. } => self.gen_compound_lit(decl),
             _ => panic!("internal compiler error: address of a non-lvalue"),
         }
+    }
+
+    /// The object of a block-scope compound literal (C11 6.5.2.5p5). It is
+    /// an entry-block alloca, initialized here each time the literal is
+    /// evaluated.
+    fn gen_compound_lit(&mut self, decl: &VarDecl) -> String {
+        let slot = self.entry_alloca(&decl.ty);
+        let mut object = decl.clone();
+        object.slot = slot.clone();
+        self.gen_decl(&object);
+        slot
     }
 
     /// Materialize a struct rvalue so a member can be addressed.
