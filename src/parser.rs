@@ -101,6 +101,10 @@ impl Parser<'_> {
     /// declarator list with another declarator. Pointer stars bind to each
     /// declarator, so `int *a, b;` declares one pointer and one `int`.
     fn parse_external(&mut self) -> Result<Vec<TopDecl>, Diagnostic> {
+        if self.current().kind == TokenKind::KwStaticAssert {
+            self.parse_static_assert()?;
+            return Ok(Vec::new());
+        }
         let specs = self.parse_specs(SpecPlace::Declaration)?;
         self.apply_shadow(&specs)?;
         if self.current().kind == TokenKind::Semi {
@@ -1303,6 +1307,47 @@ impl Parser<'_> {
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
+    /// `_Static_assert ( constant-expression , string-literal ) ;`
+    /// (C11 6.7.10). It may appear at file scope, in a block, and in a
+    /// member list. The expression is an integer constant expression; when
+    /// it is 0 the message is reported.
+    fn parse_static_assert(&mut self) -> Result<(), Diagnostic> {
+        self.advance();
+        self.expect(TokenKind::LParen, "'('")?;
+        let expr = self.parse_conditional()?;
+        let value = eval_ice(&expr, &self.names)
+            .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
+        self.expect(TokenKind::Comma, "','")?;
+        if self.current().kind != TokenKind::String {
+            return Err(self.error(format!(
+                "expected a string literal, found {}",
+                found(self.current())
+            )));
+        }
+        let mut message = String::new();
+        while self.current().kind == TokenKind::String {
+            let tok = self.advance();
+            match lit_prefix(&tok.spelling) {
+                LitPrefix::None | LitPrefix::U8 => {
+                    message.push_str(&String::from_utf8_lossy(
+                        tok.bytes.as_deref().expect("string token"),
+                    ));
+                }
+                _ => message.push_str(&tok.spelling),
+            }
+        }
+        self.expect(TokenKind::RParen, "')'")?;
+        self.expect(TokenKind::Semi, "';'")?;
+        if value.bits & value.ty.mask() == 0 {
+            return Err(self.error_at(
+                expr.line(),
+                expr.column(),
+                format!("static assertion failed: {message}"),
+            ));
+        }
+        Ok(())
+    }
+
     fn parse_member_list(&mut self) -> Result<Vec<StructField>, Diagnostic> {
         let mut fields = Vec::new();
         let mut names = HashSet::new();
@@ -1310,6 +1355,10 @@ impl Parser<'_> {
             return Ok(fields);
         }
         while !matches!(self.current().kind, TokenKind::RBrace | TokenKind::Eof) {
+            if self.current().kind == TokenKind::KwStaticAssert {
+                self.parse_static_assert()?;
+                continue;
+            }
             if self.current().kind == TokenKind::Colon {
                 return Err(self.error("expected a type before ':'"));
             }
@@ -2215,7 +2264,9 @@ impl Parser<'_> {
             // test would consume `T` as the type and then reject the colon.
             let is_label =
                 self.current().kind == TokenKind::Ident && self.lookahead() == TokenKind::Colon;
-            if !is_label && self.starts_declaration() {
+            if self.current().kind == TokenKind::KwStaticAssert {
+                self.parse_static_assert()?;
+            } else if !is_label && self.starts_declaration() {
                 items.extend(self.parse_block_declaration(false)?);
             } else if let Some(message) = unsupported(self.current().kind) {
                 return Err(self.error(message));
@@ -2862,6 +2913,7 @@ impl Parser<'_> {
                 Ok(Expr::incdec(op, expr, token.line, token.column))
             }
             TokenKind::KwSizeof => self.parse_sizeof(token.line, token.column),
+            TokenKind::KwAlignof => self.parse_alignof(token.line, token.column),
             TokenKind::Amp => {
                 self.advance();
                 let expr = self.parse_unary()?;
@@ -2956,21 +3008,131 @@ impl Parser<'_> {
     fn parse_sizeof(&mut self, line: usize, column: usize) -> Result<Expr, Diagnostic> {
         self.advance();
         if self.current().kind == TokenKind::LParen && self.lookahead_is_type() {
-            self.advance();
+            let lparen = self.advance();
             let ty = self.parse_type_name()?;
             self.expect(TokenKind::RParen, "')'")?;
+            if self.current().kind == TokenKind::LBrace {
+                // `sizeof (T){...}` is `sizeof` of a compound literal.
+                let literal = self.parse_compound_literal(ty, lparen.line, lparen.column)?;
+                let expr = self.parse_postfix_tail(literal)?;
+                return Ok(Expr::sizeof_expr(expr, line, column));
+            }
             return Ok(Expr::sizeof_type(ty, line, column));
         }
         let expr = self.parse_unary()?;
         Ok(Expr::sizeof_expr(expr, line, column))
     }
 
+    /// `_Alignof ( type-name )` (C11 6.5.3.4) is an integer constant of type
+    /// `size_t`. The type shall not be a function type or incomplete. For an
+    /// array type the result is the element type's alignment, which is the
+    /// alignment a member of that type gets (the ABI's 16-byte rule for
+    /// large array objects is not a property of the type).
+    fn parse_alignof(&mut self, line: usize, column: usize) -> Result<Expr, Diagnostic> {
+        self.advance();
+        if self.current().kind != TokenKind::LParen || !self.lookahead_is_type() {
+            return Err(self.error("_Alignof requires a parenthesized type name"));
+        }
+        self.advance();
+        let ty = self.parse_type_name()?;
+        self.expect(TokenKind::RParen, "')'")?;
+        if ty.is_func() {
+            return Err(self.error_at(
+                line,
+                column,
+                "invalid application of '_Alignof' to a function type",
+            ));
+        }
+        if ty.size().is_none() || ty.is_void() {
+            return Err(self.error_at(
+                line,
+                column,
+                "invalid application of '_Alignof' to an incomplete type",
+            ));
+        }
+        Ok(Expr::int(
+            u64::from(ty.member_align()),
+            TypeName::ULong,
+            line,
+            column,
+        ))
+    }
+
     fn parse_cast(&mut self) -> Result<Expr, Diagnostic> {
         let lparen = self.advance();
         let ty = self.parse_type_name()?;
         self.expect(TokenKind::RParen, "')'")?;
+        if self.current().kind == TokenKind::LBrace {
+            let literal = self.parse_compound_literal(ty, lparen.line, lparen.column)?;
+            return self.parse_postfix_tail(literal);
+        }
         let expr = self.parse_unary()?;
         Ok(Expr::cast(ty, expr, lparen.line, lparen.column))
+    }
+
+    /// `( type-name ) { initializer-list }` after the `)` (C11 6.5.2.5).
+    /// The literal is an unnamed object of that type; an array of unknown
+    /// size takes its length from the initializer.
+    fn parse_compound_literal(
+        &mut self,
+        ty: CType,
+        line: usize,
+        column: usize,
+    ) -> Result<Expr, Diagnostic> {
+        let init = self.parse_initializer()?;
+        Ok(Expr::CompoundLit {
+            decl: Box::new(VarDecl {
+                name: String::new(),
+                ty,
+                storage: Storage::None,
+                init: Some(init),
+                checked: None,
+                line,
+                column,
+                slot: String::new(),
+            }),
+            line,
+            column,
+            ty: None,
+        })
+    }
+
+    /// `_Generic ( assignment-expression , generic-assoc-list )`
+    /// (C11 6.5.1.1). Each association is `type-name : expr` or
+    /// `default : expr`.
+    fn parse_generic(&mut self) -> Result<Expr, Diagnostic> {
+        let keyword = self.advance();
+        self.expect(TokenKind::LParen, "'('")?;
+        let control = self.parse_assignment()?;
+        self.expect(TokenKind::Comma, "','")?;
+        let mut assocs = Vec::new();
+        loop {
+            let token = self.current().clone();
+            let ty = if self.match_kind(TokenKind::KwDefault) {
+                None
+            } else {
+                Some(self.parse_type_name()?)
+            };
+            self.expect(TokenKind::Colon, "':'")?;
+            let expr = self.parse_assignment()?;
+            assocs.push(GenericAssoc {
+                ty,
+                expr,
+                line: token.line,
+                column: token.column,
+            });
+            if !self.match_kind(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen, "')'")?;
+        Ok(Expr::Generic {
+            control: Box::new(control),
+            assocs,
+            line: keyword.line,
+            column: keyword.column,
+            ty: None,
+        })
     }
 
     /// A type name is specifiers plus an optional abstract declarator.
@@ -3010,7 +3172,13 @@ impl Parser<'_> {
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, Diagnostic> {
-        let mut expr = self.parse_primary()?;
+        let expr = self.parse_primary()?;
+        self.parse_postfix_tail(expr)
+    }
+
+    /// Postfix operators applied to `expr`, which is a primary expression
+    /// or a compound literal (C11 6.5.2).
+    fn parse_postfix_tail(&mut self, mut expr: Expr) -> Result<Expr, Diagnostic> {
         loop {
             match self.current().kind {
                 TokenKind::LParen => {
@@ -3093,6 +3261,7 @@ impl Parser<'_> {
     fn parse_primary(&mut self) -> Result<Expr, Diagnostic> {
         let token = self.current().clone();
         match token.kind {
+            TokenKind::KwGeneric => self.parse_generic(),
             TokenKind::Float => {
                 self.advance();
                 Ok(Expr::float_lit(
@@ -3538,6 +3707,18 @@ fn bound_message(err: BoundErr) -> &'static str {
     }
 }
 
+/// The diagnostic for an expression that must be an integer constant
+/// expression but is not a bound, a width, or an enumeration value.
+fn ice_message(err: BoundErr) -> &'static str {
+    match err {
+        BoundErr::Vla | BoundErr::NotConst => "expression is not an integer constant expression",
+        BoundErr::DivZero => "division by zero in a constant expression",
+        BoundErr::Overflow => "constant expression overflows",
+        BoundErr::Shift => "constant expression uses an undefined shift",
+        other => bound_message(other),
+    }
+}
+
 struct BVal {
     bits: u64,
     ty: TypeName,
@@ -3651,7 +3832,28 @@ fn eval_ice(expr: &Expr, env: Env) -> Result<BVal, BoundErr> {
         | Expr::Member { .. }
         | Expr::VaArg { .. }
         | Expr::VaOp { .. } => Err(BoundErr::Vla),
+        Expr::CompoundLit { .. } => Err(BoundErr::NotConst),
+        Expr::Generic {
+            control, assocs, ..
+        } => eval_ice(select_generic(control, assocs, env)?, env),
     }
+}
+
+/// The association a generic selection picks (C11 6.5.1.1p3): the one whose
+/// type is compatible with the controlling expression's type after lvalue
+/// conversion, else `default`. Semantic analysis checks the constraints.
+fn select_generic<'e>(
+    control: &Expr,
+    assocs: &'e [GenericAssoc],
+    env: Env,
+) -> Result<&'e Expr, BoundErr> {
+    let ty = rvalue_type(control, env)?;
+    assocs
+        .iter()
+        .find(|assoc| assoc.ty.as_ref().is_some_and(|t| compatible(t, &ty)))
+        .or_else(|| assocs.iter().find(|assoc| assoc.ty.is_none()))
+        .map(|assoc| &assoc.expr)
+        .ok_or(BoundErr::NotConst)
 }
 
 /// Ordinary-identifier scopes, innermost last, as the parser sees them.
@@ -3782,6 +3984,15 @@ fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
         Expr::VaArg { type_arg, .. } => Ok(type_arg.clone()),
         Expr::VaOp { .. } => Ok(CType::Void),
         Expr::Decay { ty, .. } => ty.clone().ok_or(BoundErr::NotConst),
+        Expr::Generic {
+            control, assocs, ..
+        } => type_only(select_generic(control, assocs, env)?, env),
+        Expr::CompoundLit { decl, .. } => match (&decl.ty, &decl.init) {
+            (CType::Array(elem, None), Some(init)) => infer_init_len(elem, init, env)
+                .map(|len| CType::array((**elem).clone(), Some(len)))
+                .ok_or(BoundErr::NotConst),
+            (ty, _) => Ok(ty.clone()),
+        },
     }
 }
 
@@ -4186,12 +4397,10 @@ fn found(token: &Token) -> String {
 
 fn unsupported(kind: TokenKind) -> Option<&'static str> {
     Some(match kind {
-        TokenKind::KwAlignas | TokenKind::KwAlignof => "alignment specifiers are not supported",
+        TokenKind::KwAlignas => "alignment specifiers are not supported",
         TokenKind::KwAtomic => "atomic types are not supported",
         TokenKind::KwComplex | TokenKind::KwImaginary => "complex types are not supported",
-        TokenKind::KwGeneric => "_Generic is not supported",
         TokenKind::KwNoreturn => "_Noreturn is not supported",
-        TokenKind::KwStaticAssert => "_Static_assert is not supported",
         TokenKind::KwThreadLocal => "thread-local storage is not supported",
         _ => return None,
     })
@@ -4526,6 +4735,23 @@ global int [] a =
         assert!(parse_err("struct S { int x: 0; };").contains("zero width"));
         assert!(parse_err("int a[n];").contains("variable-length arrays are not supported"));
         assert!(parse_err("int a[0];").contains("array size must be positive"));
+        // _Static_assert (C11 6.7.10) and _Alignof (6.5.3.4).
+        assert!(parsed("_Static_assert(sizeof(int) == 4, \"ok\");\n").is_empty());
+        assert!(parse_err("_Static_assert(sizeof(int) == 8, \"int is 8\");")
+            .contains("static assertion failed: int is 8"));
+        assert!(parse_err("_Static_assert(1);").contains("expected ','"));
+        assert!(parse_err("int x; _Static_assert(x, \"a\");")
+            .contains("not an integer constant expression"));
+        assert!(parse_err("struct S { int a; _Static_assert(0, \"m\"); };")
+            .contains("static assertion failed: m"));
+        assert!(parse_err("int main(void) { _Static_assert(0, \"b\"); }")
+            .contains("static assertion failed: b"));
+        assert!(parsed("int a[_Alignof(double)];\n").contains("global int [8] a"));
+        assert!(parse_err("int a = _Alignof(void);").contains("incomplete type"));
+        assert!(parse_err("int a = _Alignof(1);").contains("parenthesized type name"));
+        assert!(parse_err("struct Q; int a = _Alignof(struct Q);").contains("incomplete type"));
+        assert!(parse_err("int a = _Alignof(int(void));").contains("function type"));
+        assert!(parse_err("_Alignas(8) int a;").contains("alignment specifiers"));
         // sizeof in integer constant expressions (C11 6.6p6, 6.5.3.4p1).
         assert!(parsed("int a[4]; int b[sizeof a / sizeof a[0]];\n").contains("global int [4] b"));
         assert!(parse_err("int x[sizeof x];").contains("undeclared identifier"));

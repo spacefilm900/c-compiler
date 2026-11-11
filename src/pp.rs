@@ -406,6 +406,11 @@ impl Processor {
             ("__STDC_VERSION__", "201112L"),
             ("__STDC_UTF_16__", "1"),
             ("__STDC_UTF_32__", "1"),
+            // C11 6.10.8.3: features this implementation does not provide.
+            ("__STDC_NO_ATOMICS__", "1"),
+            ("__STDC_NO_COMPLEX__", "1"),
+            ("__STDC_NO_THREADS__", "1"),
+            ("__STDC_NO_VLA__", "1"),
             ("__STRICT_ANSI__", "1"),
             ("__x86_64__", "1"),
             ("__x86_64", "1"),
@@ -3103,5 +3108,11 @@ mod tests {
         let text = pp("const char *s = \"Ä€\"; /* é */ int c = L'é';\n");
         assert_eq!(squash(&text), "const char *s = \"Ä€\"; int c = L'é';");
         assert!(pp_err("int café;\n").contains("non-ASCII"));
+    }
+
+    #[test]
+    fn conditional_feature_macros() {
+        let text = pp("#if __STDC_NO_ATOMICS__ && __STDC_NO_COMPLEX__ && __STDC_NO_THREADS__ && __STDC_NO_VLA__ && __STDC_UTF_16__ && __STDC_UTF_32__\nint ok;\n#endif\n");
+        assert_eq!(squash(&text), "int ok;");
     }
 }

@@ -1924,6 +1924,37 @@ pub enum Expr {
         column: usize,
         ty: Option<CType>,
     },
+    /// `_Generic ( assignment-expression , generic-assoc-list )`
+    /// (C11 6.5.1.1). Semantic analysis replaces the node with the selected
+    /// association's expression, so later passes never see it.
+    Generic {
+        control: Box<Expr>,
+        assocs: Vec<GenericAssoc>,
+        line: usize,
+        column: usize,
+        ty: Option<CType>,
+    },
+    /// A compound literal `( type-name ) { initializer-list }` (C11 6.5.2.5).
+    /// `decl` is the unnamed object it creates. In a function body the
+    /// object is automatic and is initialized each time the literal is
+    /// evaluated; semantic analysis fills `decl.checked`. Outside a function
+    /// it has static storage: semantic analysis makes it a private global
+    /// and replaces the node with a reference to that object.
+    CompoundLit {
+        decl: Box<VarDecl>,
+        line: usize,
+        column: usize,
+        ty: Option<CType>,
+    },
+}
+
+/// One association of a generic selection. `ty` is `None` for `default`.
+#[derive(Debug, Clone)]
+pub struct GenericAssoc {
+    pub ty: Option<CType>,
+    pub expr: Expr,
+    pub line: usize,
+    pub column: usize,
 }
 
 /// Which `<stdarg.h>` operation a [`Expr::VaOp`] performs.
@@ -2168,7 +2199,9 @@ impl Expr {
             | Expr::Str { line, .. }
             | Expr::Member { line, .. }
             | Expr::VaArg { line, .. }
-            | Expr::VaOp { line, .. } => *line,
+            | Expr::VaOp { line, .. }
+            | Expr::Generic { line, .. }
+            | Expr::CompoundLit { line, .. } => *line,
         }
     }
 
@@ -2192,7 +2225,9 @@ impl Expr {
             | Expr::Str { column, .. }
             | Expr::Member { column, .. }
             | Expr::VaArg { column, .. }
-            | Expr::VaOp { column, .. } => *column,
+            | Expr::VaOp { column, .. }
+            | Expr::Generic { column, .. }
+            | Expr::CompoundLit { column, .. } => *column,
         }
     }
 
@@ -2216,7 +2251,9 @@ impl Expr {
             | Expr::Str { ty, .. }
             | Expr::Member { ty, .. }
             | Expr::VaArg { ty, .. }
-            | Expr::VaOp { ty, .. } => ty.clone(),
+            | Expr::VaOp { ty, .. }
+            | Expr::Generic { ty, .. }
+            | Expr::CompoundLit { ty, .. } => ty.clone(),
         }
     }
 
@@ -2240,7 +2277,9 @@ impl Expr {
             | Expr::Str { ty: slot, .. }
             | Expr::Member { ty: slot, .. }
             | Expr::VaArg { ty: slot, .. }
-            | Expr::VaOp { ty: slot, .. } => *slot = Some(ty),
+            | Expr::VaOp { ty: slot, .. }
+            | Expr::Generic { ty: slot, .. }
+            | Expr::CompoundLit { ty: slot, .. } => *slot = Some(ty),
         }
     }
 
@@ -2250,7 +2289,7 @@ impl Expr {
     pub fn is_lvalue(&self) -> bool {
         match self {
             Expr::Var { ty, .. } => ty.as_ref().is_none_or(|ty| !ty.is_func()),
-            Expr::Index { .. } | Expr::Str { .. } => true,
+            Expr::Index { .. } | Expr::Str { .. } | Expr::CompoundLit { .. } => true,
             Expr::Unary {
                 op: UnaryOp::Deref,
                 ty,
@@ -2814,6 +2853,30 @@ fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
         Expr::VaArg { ap, .. } => {
             put(out, indent, "va_arg");
             dump_expr(out, ap, indent + 1);
+        }
+        Expr::Generic {
+            control, assocs, ..
+        } => {
+            put(out, indent, "generic");
+            dump_expr(out, control, indent + 1);
+            for assoc in assocs {
+                let label = match &assoc.ty {
+                    Some(ty) => format!("assoc {}", ty.display()),
+                    None => "default".to_string(),
+                };
+                put(out, indent + 1, &label);
+                dump_expr(out, &assoc.expr, indent + 2);
+            }
+        }
+        Expr::CompoundLit { decl, .. } => {
+            put(
+                out,
+                indent,
+                &format!("compound literal {}", decl.ty.display()),
+            );
+            if let Some(init) = &decl.init {
+                dump_init(out, init, indent + 1);
+            }
         }
         Expr::VaOp { op, args, .. } => {
             let name = match op {

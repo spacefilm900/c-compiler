@@ -665,7 +665,8 @@ impl Gen {
             | Expr::Unary {
                 op: UnaryOp::Deref, ..
             }
-            | Expr::Member { .. } => self.gen_addr(expr),
+            | Expr::Member { .. }
+            | Expr::CompoundLit { .. } => self.gen_addr(expr),
             Expr::VaArg { .. } => self.gen_va_record(expr),
             Expr::Assign { target, value, .. } => {
                 // The right-hand side is evaluated before the destination is
@@ -2040,6 +2041,17 @@ impl Gen {
                 self.gen_va_op(*op, args);
                 None
             }
+            Expr::CompoundLit { decl, .. } => {
+                let slot = self.gen_compound_lit(decl);
+                if decl.ty.is_array() {
+                    Some(slot)
+                } else {
+                    Some(self.load(&decl.ty, &slot))
+                }
+            }
+            Expr::Generic { .. } => {
+                unreachable!("semantic analysis replaces a generic selection")
+            }
         }
     }
 
@@ -2097,8 +2109,20 @@ impl Gen {
                 }
                 tmp
             }
+            Expr::CompoundLit { decl, .. } => self.gen_compound_lit(decl),
             _ => panic!("internal compiler error: address of a non-lvalue"),
         }
+    }
+
+    /// The object of a block-scope compound literal (C11 6.5.2.5p5). It is
+    /// an entry-block alloca, initialized here each time the literal is
+    /// evaluated.
+    fn gen_compound_lit(&mut self, decl: &VarDecl) -> String {
+        let slot = self.entry_alloca(&decl.ty);
+        let mut object = decl.clone();
+        object.slot = slot.clone();
+        self.gen_decl(&object);
+        slot
     }
 
     /// Materialize a struct rvalue so a member can be addressed.

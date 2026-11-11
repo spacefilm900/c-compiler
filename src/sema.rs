@@ -2342,7 +2342,147 @@ impl Sema {
             Expr::Member { .. } => self.check_member(expr),
             Expr::VaArg { .. } => self.check_va_arg(expr),
             Expr::VaOp { .. } => self.check_va_op(expr),
+            Expr::Generic { .. } => self.check_generic(expr),
+            Expr::CompoundLit { .. } => self.check_compound_lit(expr),
         }
+    }
+
+    /// A generic selection (C11 6.5.1.1). The controlling expression is not
+    /// evaluated; its type after lvalue conversion (qualifiers dropped, an
+    /// array or function becomes a pointer) picks the association whose type
+    /// is compatible with it, or `default`. The node is replaced by the
+    /// chosen expression, which keeps its type and whether it is an lvalue.
+    /// The associations that are not chosen are not analyzed.
+    fn check_generic(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        let Expr::Generic {
+            control,
+            assocs,
+            line,
+            column,
+            ..
+        } = expr
+        else {
+            unreachable!("generic selection");
+        };
+        let (line, column) = (*line, *column);
+        let mut assocs = std::mem::take(assocs);
+        self.check_expr(control)?;
+        let raw = control.ty().expect("typed");
+        let ty = match raw.peel() {
+            CType::Array(elem, _) => CType::pointer((**elem).clone()),
+            CType::Func(_) => CType::pointer(raw.clone()),
+            _ => raw.unqualified(),
+        };
+        let mut default = None;
+        let mut chosen = None;
+        for (index, assoc) in assocs.iter().enumerate() {
+            let Some(assoc_ty) = &assoc.ty else {
+                if default.is_some() {
+                    return self.err(
+                        assoc.line,
+                        assoc.column,
+                        "duplicate default generic association",
+                    );
+                }
+                default = Some(index);
+                continue;
+            };
+            if assoc_ty.is_func() || !assoc_ty.is_complete() {
+                return self.err(
+                    assoc.line,
+                    assoc.column,
+                    format!(
+                        "type '{}' in generic association is not a complete object type",
+                        assoc_ty.display()
+                    ),
+                );
+            }
+            for earlier in assocs[..index].iter().filter_map(|a| a.ty.as_ref()) {
+                if compatible(earlier, assoc_ty) {
+                    return self.err(
+                        assoc.line,
+                        assoc.column,
+                        format!(
+                            "type '{}' in generic association compatible with previously specified type '{}'",
+                            assoc_ty.display(),
+                            earlier.display()
+                        ),
+                    );
+                }
+            }
+            if chosen.is_none() && compatible(assoc_ty, &ty) {
+                chosen = Some(index);
+            }
+        }
+        let Some(index) = chosen.or(default) else {
+            return self.err(
+                line,
+                column,
+                format!(
+                    "controlling expression type '{}' not compatible with any generic association type",
+                    ty.display()
+                ),
+            );
+        };
+        *expr = assocs.swap_remove(index).expr;
+        self.check_expr(expr)
+    }
+
+    /// A compound literal (C11 6.5.2.5). The type is a complete object type
+    /// or an array of unknown size, completed by the initializer. Inside a
+    /// function the object is automatic and initialized where the literal is
+    /// evaluated. Outside one it has static storage, the initializer must be
+    /// constant, and the node becomes a reference to a private global.
+    fn check_compound_lit(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        let Expr::CompoundLit {
+            decl, line, column, ..
+        } = expr
+        else {
+            unreachable!("compound literal");
+        };
+        let (line, column) = (*line, *column);
+        if decl.ty.is_func() {
+            return self.err(line, column, "compound literal has function type");
+        }
+        let unknown_array = matches!(decl.ty.peel(), CType::Array(_, None));
+        if !decl.ty.is_complete() && !unknown_array {
+            return self.err(
+                line,
+                column,
+                format!(
+                    "compound literal has incomplete type '{}'",
+                    decl.ty.display()
+                ),
+            );
+        }
+        let init = decl.init.clone().expect("compound literal initializer");
+        let (ty, mut stores) = self.shape_initializer(&decl.ty, &init, line, column)?;
+        decl.ty = ty.clone();
+        self.check_stores(&mut stores)?;
+        if !self.fn_name.is_empty() {
+            decl.checked = Some(classify_init(&ty, stores));
+            expr.set_ty(ty);
+            return Ok(());
+        }
+        let value = self.fold_stores("compound literal", &ty, &stores)?;
+        self.static_seq += 1;
+        let symbol = format!(".compoundliteral.{}", self.static_seq);
+        self.static_locals.push(IrGlobal {
+            name: symbol.clone(),
+            ty: ty.clone(),
+            linkage: Linkage::Internal,
+            init: Some(value),
+        });
+        *expr = Expr::Var {
+            name: String::new(),
+            line,
+            column,
+            resolved: Some(VarRes {
+                slot: format!("@{symbol}"),
+            }),
+            ty: Some(ty),
+        };
+        Ok(())
     }
 
     /// A string literal has type `char[N]` or `wchar_t[N]`, counting the
@@ -3601,6 +3741,13 @@ impl Sema {
                 op: UnaryOp::Deref, ..
             } => self.check_unary(expr),
             Expr::Str { .. } => self.check_str(expr),
+            Expr::Generic { .. } | Expr::CompoundLit { .. } => {
+                self.check_expr(expr)?;
+                if !expr.is_lvalue() {
+                    return self.err(expr.line(), expr.column(), "expression is not assignable");
+                }
+                Ok(())
+            }
             Expr::Member { .. } => {
                 self.check_member(expr)?;
                 if !expr.is_lvalue() {
@@ -5090,7 +5237,9 @@ fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
         | Expr::Str { .. }
         | Expr::Member { .. }
         | Expr::VaArg { .. }
-        | Expr::VaOp { .. } => Err(ConstError::NotConst),
+        | Expr::VaOp { .. }
+        | Expr::Generic { .. }
+        | Expr::CompoundLit { .. } => Err(ConstError::NotConst),
     }
 }
 
@@ -5415,6 +5564,32 @@ mod tests {
         let tokens = lex(source, "ok.c").unwrap();
         let mut unit = parse(&tokens, "ok.c").unwrap();
         analyze(&mut unit, "ok.c").unwrap();
+    }
+
+    #[test]
+    fn generic_selection_and_compound_literals() {
+        sema_ok("int main(void) { const int c = 1; return _Generic(c, int: 0, default: 1); }");
+        sema_ok("int main(void) { int x; _Generic(x, int: x) = 1; return x; }");
+        sema_ok("int *p = (int[]){1, 2}; struct P { int x; } *q = &(struct P){1};");
+        sema_ok("int main(void) { int *p = &(int){1}; (int){2} = 3; return *p; }");
+        assert!(sema_err("int a = _Generic(1, long: 1);")
+            .contains("not compatible with any generic association type"));
+        assert!(sema_err("int a = _Generic(1, int: 1, signed int: 2);")
+            .contains("compatible with previously specified type"));
+        assert!(sema_err("int a = _Generic(1, default: 1, default: 2);")
+            .contains("duplicate default generic association"));
+        assert!(sema_err("int a = _Generic(1, void: 1, default: 2);")
+            .contains("not a complete object type"));
+        assert!(sema_err("int x; int *p = (int[]){x};").contains("not a constant expression"));
+        assert!(
+            sema_err("int main(void) { static int *q = &(int){2}; return 0; }")
+                .contains("not a constant expression")
+        );
+        assert!(sema_err("struct Q; int a = sizeof((struct Q){0});")
+            .contains("compound literal has incomplete type"));
+        assert!(
+            sema_err("int main(void) { int (*f)(void) = &(int(void)){0}; }").contains("function")
+        );
     }
 
     #[test]
