@@ -206,6 +206,27 @@ impl FpFormatBuiltin {
         matches!(self, Self::Nan { .. })
     }
 
+    /// C library function (C11 7.12.11.2) used when a quiet
+    /// `__builtin_nan*` tag is not a compile-time constant. There is no
+    /// library equivalent for `__builtin_nans*`.
+    pub fn libm_nan(self) -> Option<&'static str> {
+        match self {
+            Self::Nan {
+                kind: FloatKind::Float,
+                signaling: false,
+            } => Some("nanf"),
+            Self::Nan {
+                kind: FloatKind::Double,
+                signaling: false,
+            } => Some("nan"),
+            Self::Nan {
+                kind: FloatKind::LongDouble,
+                signaling: false,
+            } => Some("nanl"),
+            _ => None,
+        }
+    }
+
     /// An ordinary (`""` / `u8""`) string literal, possibly after array
     /// decay. Wide literals are not accepted.
     pub fn is_string_literal_arg(expr: &Expr) -> bool {
@@ -268,8 +289,20 @@ fn ieee_nan_bits(payload: u128, signaling: bool, is_f32: bool) -> u128 {
 }
 
 /// Payload of a `__builtin_nan*` / `__builtin_nans*` string-literal
-/// argument. Only the bytes before the first NUL are parsed, as in a
-/// C string passed to `strtol`.
+/// argument if the tag is a compile-time constant.
+///
+/// The GCC manual ("Floating-Point Format Builtins") says the string is
+/// parsed as by `strtol` (a leading `0` or `0x`/`0X` selects the base)
+/// and that a string literal all of which would have been consumed by
+/// `strtol` is a compile-time constant. An empty string is payload 0.
+/// Only the bytes before the first NUL are parsed (C string semantics).
+///
+/// A constant also requires that those bytes are a (possibly empty)
+/// unsigned integer literal with no sign and no leading or trailing
+/// whitespace, consumed in full. That is the rule used by both constant
+/// evaluation and IR lowering, and it matches Clang 19 as a black-box
+/// oracle: `""`, `"0"`, `"1"`, `"0x10"`, and `"010"` (octal 8) fold to a
+/// floating constant, while `" 1"`, `"1xyz"`, and `"-1"` do not.
 pub fn nan_tag_from_expr(expr: &Expr) -> Option<u128> {
     match expr {
         Expr::Str {
@@ -282,13 +315,10 @@ pub fn nan_tag_from_expr(expr: &Expr) -> Option<u128> {
     }
 }
 
-/// Parse a `__builtin_nan` / `__builtin_nans` string as `strtol` would
-/// with base 0: a leading `0x`/`0X` is hexadecimal, a leading `0` is
-/// octal, otherwise decimal. An empty string is 0. `None` if the text
-/// is not a (possibly empty) integer literal consumed in full, without
-/// a sign or leading whitespace. A compile-time constant requires that
-/// complete consumption, as the GCC manual describes. Bytes after the
-/// first NUL are ignored (C string semantics).
+/// Parse the text of a `__builtin_nan` / `__builtin_nans` tag.
+///
+/// See [`nan_tag_from_expr`] for the GCC-manual wording and the
+/// whole-tag consumption rule. Bytes after the first NUL are ignored.
 pub fn parse_nan_tag(tag: &str) -> Option<u128> {
     parse_nan_tag_bytes(tag.as_bytes())
 }
@@ -901,9 +931,13 @@ mod tests {
 
     #[test]
     fn parse_nan_tag_is_strtol_base_zero() {
+        // GCC "Floating-Point Format Builtins": parsed as by strtol, and
+        // a literal consumed in full is a constant. Clang 19 black-box:
+        // these tags fold; " 1", "1xyz", and "-1" do not.
         assert_eq!(parse_nan_tag(""), Some(0));
         assert_eq!(parse_nan_tag("0"), Some(0));
         assert_eq!(parse_nan_tag("1"), Some(1));
+        assert_eq!(parse_nan_tag("0x10"), Some(0x10));
         assert_eq!(parse_nan_tag("123"), Some(123));
         assert_eq!(parse_nan_tag("010"), Some(8));
         assert_eq!(parse_nan_tag("0x1"), Some(1));
@@ -916,11 +950,57 @@ mod tests {
         assert_eq!(parse_nan_tag("-1"), None);
         assert_eq!(parse_nan_tag("08"), None);
         assert_eq!(parse_nan_tag("0x"), None);
+        assert_eq!(parse_nan_tag("0 "), None);
+        assert_eq!(parse_nan_tag("1 "), None);
         // C string semantics: only the bytes before the first NUL count.
         assert_eq!(parse_nan_tag("1\0ignored"), Some(1));
         assert_eq!(parse_nan_tag_bytes(b"1\0ignored"), Some(1));
         assert_eq!(parse_nan_tag_bytes(b"\0ignored"), Some(0));
         assert_eq!(parse_nan_tag_bytes(b"1xyz\0ok"), None);
+        // The same helper is what constant evaluation and IR lowering use.
+        use crate::ast::{Expr, StrEnc};
+        let literal = |bytes: &[u8]| Expr::Str {
+            bytes: bytes.to_vec(),
+            enc: StrEnc::Byte,
+            ty: None,
+            symbol: None,
+            line: 1,
+            column: 1,
+        };
+        assert_eq!(nan_tag_from_expr(&literal(b"1")), Some(1));
+        assert_eq!(nan_tag_from_expr(&literal(b"1xyz")), None);
+        assert_eq!(nan_tag_from_expr(&literal(b"1\0ignored")), Some(1));
+        let decayed = Expr::Decay {
+            expr: Box::new(literal(b"0x10")),
+            line: 1,
+            column: 1,
+            ty: None,
+        };
+        assert_eq!(nan_tag_from_expr(&decayed), Some(0x10));
+        assert_eq!(
+            crate::float::FpFormatBuiltin::from_name("__builtin_nan")
+                .unwrap()
+                .libm_nan(),
+            Some("nan")
+        );
+        assert_eq!(
+            crate::float::FpFormatBuiltin::from_name("__builtin_nanf")
+                .unwrap()
+                .libm_nan(),
+            Some("nanf")
+        );
+        assert_eq!(
+            crate::float::FpFormatBuiltin::from_name("__builtin_nanl")
+                .unwrap()
+                .libm_nan(),
+            Some("nanl")
+        );
+        assert_eq!(
+            crate::float::FpFormatBuiltin::from_name("__builtin_nans")
+                .unwrap()
+                .libm_nan(),
+            None
+        );
     }
 
     #[test]

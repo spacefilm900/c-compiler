@@ -3521,6 +3521,23 @@ impl Sema {
             self.check_expr(arg)?;
             self.decay(arg)?;
         }
+        // A malformed quiet tag is left to constant evaluation in an
+        // ICE or static initializer, and to IR lowering in a runtime
+        // context (a call of nan/nanf/nanl). __builtin_nans* has no
+        // library equivalent, so a tag that is not consumed in full
+        // is always a diagnostic.
+        if let crate::float::FpFormatBuiltin::Nan {
+            signaling: true, ..
+        } = fp
+        {
+            if crate::float::nan_tag_from_expr(&args[0]).is_none() {
+                return self.err(
+                    args[0].line(),
+                    args[0].column(),
+                    format!("{name} requires a string literal that strtol would consume in full"),
+                );
+            }
+        }
         let ret = CType::Float(fp.kind());
         if let Expr::Call { resolved, .. } = expr {
             *resolved = Some(CallRes {
@@ -7199,9 +7216,24 @@ int main(void) {
                 .contains("requires a string literal argument")
         );
         // A string that strtol would not consume in full is not a constant
-        // (GCC "Floating-Point Format Builtins").
+        // (GCC "Floating-Point Format Builtins"). A static initializer
+        // and an ICE keep diagnosing. A runtime __builtin_nans* with a
+        // malformed tag is also a diagnostic: there is no library nans.
         assert!(
             sema_err("float n = __builtin_nanf(\"abc\");").contains("not a constant expression")
         );
+        assert!(
+            sema_err("double x = __builtin_nan(\"1xyz\");").contains("not a constant expression")
+        );
+        assert!(sema_err(
+            "int main(void) { static double x = __builtin_nan(\"1xyz\"); return 0; }"
+        )
+        .contains("not a constant expression"));
+        assert!(
+            sema_err("int main(void) { return (int)__builtin_nans(\"1xyz\"); }")
+                .contains("strtol would consume in full")
+        );
+        // A runtime quiet malformed tag is accepted; IR lowering calls nan().
+        sema_ok("int main(void) { return __builtin_nan(\"1xyz\") != 0.0; }");
     }
 }
