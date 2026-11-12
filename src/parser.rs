@@ -4302,9 +4302,23 @@ fn check_uneval_compare(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Resul
     }
 }
 
-/// An integer constant expression with the value 0 (C11 6.3.2.3p3). A
-/// pointer-typed null pointer constant is handled as a pointer operand.
+/// A null pointer constant (C11 6.3.2.3p3): an integer constant expression
+/// with the value 0, or such an expression cast to `void *`.
 fn uneval_null_constant(expr: &Expr, ty: &CType, env: Env) -> bool {
+    if let Expr::Cast {
+        ty_name,
+        expr: inner,
+        ..
+    } = expr
+    {
+        if ty_name
+            .pointee()
+            .is_some_and(|pointee| pointee.is_void() && pointee.quals().is_empty())
+        {
+            return rvalue_type(inner, env)
+                .is_ok_and(|inner_ty| uneval_null_constant(inner, &inner_ty, env));
+        }
+    }
     ty.is_integer() && eval_ice(expr, env).is_ok_and(|value| value.bits & value.ty.mask() == 0)
 }
 
