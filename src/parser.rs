@@ -1236,27 +1236,33 @@ impl Parser<'_> {
                 && token.kind == TokenKind::Ident
     }
 
-    /// `restrict` only qualifies a pointer (C11 6.7.3p2).
+    /// `restrict` only qualifies a pointer whose referenced type is an
+    /// object type (C11 6.7.3p2).
     fn reject_bad_restrict(
         &self,
         ty: &CType,
         line: usize,
         column: usize,
     ) -> Result<(), Diagnostic> {
-        fn walk(ty: &CType) -> bool {
-            if ty.quals().is_restrict && !ty.unqualified().is_pointer() {
-                return true;
+        fn walk(ty: &CType) -> Option<&'static str> {
+            if ty.quals().is_restrict {
+                match ty.unqualified().pointee() {
+                    None => return Some("restrict requires a pointer type"),
+                    Some(pointee) if pointee.is_func() => {
+                        return Some("restrict requires a pointer to an object type");
+                    }
+                    Some(_) => {}
+                }
             }
             match ty.peel() {
                 CType::Pointer(inner) | CType::Array(inner, _) => walk(inner),
-                CType::Func(func) => walk(&func.ret) || func.params.iter().any(walk),
-                _ => false,
+                CType::Func(func) => walk(&func.ret).or_else(|| func.params.iter().find_map(walk)),
+                _ => None,
             }
         }
-        if walk(ty) {
-            Err(self.error_at(line, column, "restrict requires a pointer type"))
-        } else {
-            Ok(())
+        match walk(ty) {
+            Some(message) => Err(self.error_at(line, column, message)),
+            None => Ok(()),
         }
     }
 
