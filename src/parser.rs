@@ -6226,4 +6226,33 @@ func int main
         );
         parsed("_Static_assert(sizeof(__builtin_signbitf(1.0f)) == sizeof(int), \"\");");
     }
+
+    #[test]
+    fn restrict_requires_pointer_to_object_type() {
+        // C11 6.7.3p2: the referenced type of a restrict-qualified pointer
+        // is an object type, so a pointer to a function may not be
+        // restrict-qualified, whether it is an object, a parameter, a
+        // typedef, or a function return type.
+        for source in [
+            "int (*restrict pick(void))(void);",
+            "int (*restrict fp)(void);",
+            "void g(void) { int (*restrict fp)(void); }",
+            "void h(int (*restrict p)(void));",
+            "typedef int (*restrict F)(void);",
+            "int (*restrict *pfp)(void);",
+        ] {
+            let err = parse_err(source);
+            assert!(
+                err.contains("restrict requires a pointer to an object type"),
+                "{source}: {err}"
+            );
+        }
+        // A restrict-qualified pointer to a pointer to a function, to an
+        // array, to void, or to a pointer stays valid.
+        parsed(
+            "int (**restrict fpp)(void); int **restrict pp; int (*restrict ap)[4];\n\
+             void *restrict v; int *restrict *restrict q;\n\
+             int (**restrict pick(void))(void);",
+        );
+    }
 }
