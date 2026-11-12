@@ -74,8 +74,16 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
         out.push('\n');
         wrote_prelude = true;
     }
+    // Function bodies are rendered first because they decide which library
+    // functions IR lowering calls. An internal object that shares such a
+    // name is then given a private symbol and the bodies are rendered again.
+    let (mut functions, mut needs) = render_functions(unit, &Renames::new());
+    let renames = library_renames(unit, &needs);
+    if !renames.is_empty() {
+        (functions, needs) = render_functions(unit, &renames);
+    }
     for global in &unit.globals {
-        out.push_str(&render_global(global));
+        out.push_str(&render_global(global, &renames));
         out.push('\n');
         wrote_prelude = true;
     }
@@ -83,17 +91,6 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
         out.push_str(&render_declare(decl));
         out.push('\n');
         wrote_prelude = true;
-    }
-    let mut functions = Vec::new();
-    let mut needs = LowerNeeds::default();
-    for decl in &unit.decls {
-        if let TopDecl::Func(func) = decl {
-            if func.body.is_some() {
-                let (text, fn_needs) = render_function(func);
-                needs.merge(fn_needs);
-                functions.push(text);
-            }
-        }
     }
     if needs.va {
         out.push_str("declare void @llvm.va_start(ptr)\n");
@@ -140,8 +137,104 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
     out
 }
 
-fn render_global(global: &IrGlobal) -> String {
-    let name = llvm_global(&global.name);
+/// LLVM symbol replacements: C linker name to the private name used in IR.
+type Renames = std::collections::HashMap<String, String>;
+
+/// Library functions that IR lowering calls although the source does not
+/// name them. LLVM may lower `llvm.memcpy`, `llvm.memmove`, and
+/// `llvm.memset` to calls of the C library functions, and its optimizer
+/// may introduce such calls too (LLVM LangRef), so those three are always
+/// reserved. `nan`, `nanf`, and `nanl` are called for a malformed quiet
+/// `__builtin_nan*` tag.
+const MEMORY_LIBCALLS: [&str; 3] = ["memcpy", "memmove", "memset"];
+
+fn render_functions(unit: &TranslationUnit, renames: &Renames) -> (Vec<String>, LowerNeeds) {
+    let mut functions = Vec::new();
+    let mut needs = LowerNeeds::default();
+    for decl in &unit.decls {
+        if let TopDecl::Func(func) = decl {
+            if func.body.is_some() {
+                let (text, fn_needs) = render_function(func, renames);
+                needs.merge(fn_needs);
+                functions.push(text);
+            }
+        }
+    }
+    (functions, needs)
+}
+
+/// Private LLVM names for internal-linkage entities whose C name is a
+/// library function that the generated code calls.
+///
+/// LLVM IR has one namespace for globals and functions, and an internal
+/// symbol in the object file would also capture a call the backend
+/// emits. Internal linkage means the name is not visible outside this
+/// translation unit (C11 6.2.2p3), so renaming it in IR does not change
+/// the program. Objects named `nan`, `nanf`, or `nanl` are renamed only
+/// when that call is emitted. Objects and defined functions named
+/// `memcpy`, `memmove`, or `memset` are always renamed. A user-defined
+/// `nan` function stays the call target, as it is when declared.
+fn library_renames(unit: &TranslationUnit, needs: &LowerNeeds) -> Renames {
+    let mut taken: std::collections::HashSet<&str> = unit
+        .globals
+        .iter()
+        .map(|global| global.name.as_str())
+        .chain(unit.func_decls.iter().map(|decl| decl.name.as_str()))
+        .collect();
+    for decl in &unit.decls {
+        if let TopDecl::Func(func) = decl {
+            taken.insert(func.symbol.as_str());
+        }
+    }
+    let nan_calls = [
+        (needs.nan, "nan"),
+        (needs.nanf, "nanf"),
+        (needs.nanl, "nanl"),
+    ];
+    let clashes = |name: &str, objects: bool| {
+        MEMORY_LIBCALLS.contains(&name)
+            || (objects && nan_calls.iter().any(|(used, lib)| *used && *lib == name))
+    };
+    let mut wanted = Vec::new();
+    for global in &unit.globals {
+        if global.linkage == Linkage::Internal && clashes(&global.name, true) {
+            wanted.push(global.name.clone());
+        }
+    }
+    for decl in &unit.decls {
+        if let TopDecl::Func(func) = decl {
+            if func.body.is_some()
+                && func.linkage == Linkage::Internal
+                && clashes(&func.symbol, false)
+            {
+                wanted.push(func.symbol.clone());
+            }
+        }
+    }
+    let mut renames = Renames::new();
+    for name in wanted {
+        let mut n = 1u32;
+        let fresh = loop {
+            let candidate = format!("{name}.{n}");
+            if !taken.contains(candidate.as_str())
+                && !renames.values().any(|used| *used == candidate)
+            {
+                break candidate;
+            }
+            n += 1;
+        };
+        renames.insert(name, fresh);
+    }
+    renames
+}
+
+/// The IR name of a global or function symbol after [`library_renames`].
+fn renamed<'a>(name: &'a str, renames: &'a Renames) -> &'a str {
+    renames.get(name).map_or(name, String::as_str)
+}
+
+fn render_global(global: &IrGlobal, renames: &Renames) -> String {
+    let name = llvm_global(renamed(&global.name, renames));
     let ir = global.ty.ir_type();
     let align = global.ty.align();
     // A const object is an LLVM `constant`. `const int *` is not const; the
@@ -156,7 +249,7 @@ fn render_global(global: &IrGlobal) -> String {
             Linkage::Internal => "internal ",
             Linkage::External => "",
         };
-        let spelled = render_const(&global.ty, value);
+        let spelled = render_const(&global.ty, value, renames);
         format!("{name} = {linkage}{kind} {ir} {spelled}, align {align}")
     } else {
         format!("{name} = external {kind} {ir}, align {align}")
@@ -265,7 +358,7 @@ fn param_ir(ty: &CType, name: Option<&str>) -> String {
     }
 }
 
-fn render_function(func: &FuncDef) -> (String, LowerNeeds) {
+fn render_function(func: &FuncDef, renames: &Renames) -> (String, LowerNeeds) {
     let body = func.body.as_ref().expect("defined function");
     let param_tys: Vec<CType> = func.params.iter().map(|param| param.ty.clone()).collect();
     // Semantic analysis rejects a definition whose aggregate needs an SSE
@@ -279,6 +372,7 @@ fn render_function(func: &FuncDef) -> (String, LowerNeeds) {
         .map(|(index, group)| arg_names(index, group.len()))
         .collect();
     let mut gen = Gen::new(func.ret_type.clone(), sig.ret_agg.clone());
+    gen.renames = renames.clone();
     let linkage = match func.linkage {
         Linkage::Internal => "internal ",
         Linkage::External => "",
@@ -288,7 +382,7 @@ fn render_function(func: &FuncDef) -> (String, LowerNeeds) {
         "define {linkage}{}{} {}({params}) {{",
         sig.ret_prefix,
         sig.ret_type,
-        llvm_global(&func.symbol)
+        llvm_global(renamed(&func.symbol, renames))
     ));
     gen.emit("entry:");
     gen.cur = "entry".to_string();
@@ -453,6 +547,8 @@ struct Gen {
     alloca_at: usize,
     /// Set when the C return type is a struct or union.
     ret_agg: Option<AggAbi>,
+    /// Private IR names of globals and functions (see [`library_renames`]).
+    renames: Renames,
 }
 
 /// One store of an automatic aggregate initializer, evaluated and waiting
@@ -486,6 +582,7 @@ impl Gen {
             needs_nanl: false,
             alloca_at: 0,
             ret_agg,
+            renames: Renames::new(),
         }
     }
 }
@@ -493,6 +590,18 @@ impl Gen {
 impl Gen {
     fn emit(&mut self, line: &str) {
         self.lines.push(line.to_string());
+    }
+
+    /// The IR operand for a variable's slot. A global slot `@name` follows
+    /// [`library_renames`]; a local slot is unchanged.
+    fn var_slot(&self, slot: &str) -> String {
+        match slot
+            .strip_prefix('@')
+            .and_then(|name| self.renames.get(name))
+        {
+            Some(fresh) => llvm_global(fresh),
+            None => slot.to_string(),
+        }
     }
 
     fn fresh(&mut self) -> String {
@@ -950,7 +1059,7 @@ impl Gen {
         let callee = if resolved.indirect {
             self.gen_val(callee)
         } else {
-            llvm_global(&resolved.name)
+            llvm_global(renamed(&resolved.name, &self.renames))
         };
         // A variadic call names the function type, including `...`
         // (`call i32 (ptr, ...) @printf(...)`). Other calls name only the
@@ -1961,7 +2070,7 @@ impl Gen {
             Expr::Int { bits, value_ty, .. } => Some(value_ty.format_bits(*bits)),
             Expr::Float { bits, kind, .. } => Some(crate::float::llvm_const(*kind, *bits)),
             Expr::Var { resolved, ty, .. } => {
-                let slot = &resolved.as_ref().expect("resolved variable").slot;
+                let slot = &self.var_slot(&resolved.as_ref().expect("resolved variable").slot);
                 let ty = ty.clone().expect("typed variable");
                 if ty.is_array() || ty.is_func() {
                     Some(slot.clone())
@@ -2141,7 +2250,7 @@ impl Gen {
     fn gen_addr(&mut self, expr: &Expr) -> String {
         match expr {
             Expr::Var { resolved, .. } => {
-                resolved.as_ref().expect("resolved variable").slot.clone()
+                self.var_slot(&resolved.as_ref().expect("resolved variable").slot)
             }
             Expr::Unary {
                 op: UnaryOp::Deref,
@@ -3330,7 +3439,7 @@ fn write_const_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: us
     }
 }
 
-fn render_const(ty: &CType, value: &ConstInit) -> String {
+fn render_const(ty: &CType, value: &ConstInit, renames: &Renames) -> String {
     if ty.is_union() || ty.record_has_bitfield() {
         return render_union_const(ty, value);
     }
@@ -3343,7 +3452,7 @@ fn render_const(ty: &CType, value: &ConstInit) -> String {
         ConstInit::Float(bits) => {
             crate::float::llvm_const(ty.float_kind().expect("float constant"), *bits)
         }
-        ConstInit::Ptr(ptr) => render_ptr(ptr),
+        ConstInit::Ptr(ptr) => render_ptr(ptr, renames),
         ConstInit::PtrToInt { ptr, width } => {
             let ir = match width {
                 8 => "i8",
@@ -3351,7 +3460,7 @@ fn render_const(ty: &CType, value: &ConstInit) -> String {
                 32 => "i32",
                 _ => "i64",
             };
-            format!("ptrtoint ({} to {ir})", render_ptr_operand(ptr))
+            format!("ptrtoint ({} to {ir})", render_ptr_operand(ptr, renames))
         }
         ConstInit::Bytes(raw) => render_byte_blob(ty, raw),
         ConstInit::Aggregate(items) => {
@@ -3363,7 +3472,11 @@ fn render_const(ty: &CType, value: &ConstInit) -> String {
                     .iter()
                     .zip(fields.iter())
                     .map(|(item, field)| {
-                        format!("{} {}", field.ty.ir_type(), render_const(&field.ty, item))
+                        format!(
+                            "{} {}",
+                            field.ty.ir_type(),
+                            render_const(&field.ty, item, renames)
+                        )
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -3377,7 +3490,7 @@ fn render_const(ty: &CType, value: &ConstInit) -> String {
             }
             let parts = items
                 .iter()
-                .map(|item| format!("{} {}", elem.ir_type(), render_const(elem, item)))
+                .map(|item| format!("{} {}", elem.ir_type(), render_const(elem, item, renames)))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("[{parts}]")
@@ -3416,25 +3529,22 @@ fn zero_const_spelling(ty: &CType) -> String {
     }
 }
 
-fn render_ptr(ptr: &PtrConst) -> String {
+fn render_ptr(ptr: &PtrConst, renames: &Renames) -> String {
     match ptr {
         PtrConst::Null => "null".to_string(),
         PtrConst::IntToPtr(bits) => format!("inttoptr (i64 {} to ptr)", i64_literal(*bits)),
-        PtrConst::Addr { name, offset } if *offset == 0 => llvm_global(name),
+        PtrConst::Addr { name, offset } if *offset == 0 => llvm_global(renamed(name, renames)),
         PtrConst::Addr { name, offset } => {
             format!(
                 "getelementptr (i8, ptr {}, i64 {offset})",
-                llvm_global(name)
+                llvm_global(renamed(name, renames))
             )
         }
     }
 }
 
-fn render_ptr_operand(ptr: &PtrConst) -> String {
-    match ptr {
-        PtrConst::Addr { name, offset } if *offset == 0 => format!("ptr {}", llvm_global(name)),
-        other => format!("ptr {}", render_ptr(other)),
-    }
+fn render_ptr_operand(ptr: &PtrConst, renames: &Renames) -> String {
+    format!("ptr {}", render_ptr(ptr, renames))
 }
 
 fn i64_literal(bits: u64) -> String {

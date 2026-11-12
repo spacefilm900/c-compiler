@@ -60,6 +60,9 @@ pub fn analyze_tokens(
         strings: Vec::new(),
         static_locals: Vec::new(),
         static_seq: 0,
+        library_nan_calls: Vec::new(),
+        object_decls: HashMap::new(),
+        sizeof_depth: 0,
         labels: HashMap::new(),
         variadic_fn: false,
         last_param: None,
@@ -171,6 +174,15 @@ struct Sema {
     /// the file-scope symbol table. The name is an LLVM symbol, not the C name.
     static_locals: Vec<IrGlobal>,
     static_seq: u32,
+    /// Runtime calls of the C library `nan`, `nanf`, or `nanl` that IR
+    /// lowering emits for a malformed quiet `__builtin_nan*` tag: the
+    /// library name, the builtin name, and the call position.
+    library_nan_calls: Vec<(String, String, usize, usize)>,
+    /// Where each file-scope object, or block-scope `extern` object, was
+    /// first declared.
+    object_decls: HashMap<String, (usize, usize)>,
+    /// Nesting depth of `sizeof` operands, which are not evaluated.
+    sizeof_depth: u32,
     /// Labels defined in the function being checked. A `goto` names one of them.
     labels: HashMap<String, (usize, usize)>,
     /// The function being checked is variadic. `va_start` requires that.
@@ -215,6 +227,9 @@ impl Sema {
                 GlobalState::Declared
             };
             self.global_order.push(name.clone());
+            self.object_decls
+                .entry(name.clone())
+                .or_insert((decl.line, decl.column));
             self.insert_file(Symbol::Var(VarSym {
                 name: name.clone(),
                 slot: format!("@{name}"),
@@ -428,6 +443,7 @@ impl Sema {
     }
 
     fn finish(&mut self, unit: &mut TranslationUnit) -> Result<(), Diagnostic> {
+        self.check_library_nan_clash()?;
         let mut missing_static = None;
         let mut incomplete_array = None;
         let mut func_decls = Vec::new();
@@ -527,6 +543,44 @@ impl Sema {
                 enc: *enc,
             })
             .collect();
+        Ok(())
+    }
+
+    /// A runtime call of `nan`, `nanf`, or `nanl` from a malformed
+    /// `__builtin_nan*` tag must reach the C library. An object with
+    /// external linkage and the same name, declared anywhere in the
+    /// translation unit, is undefined behaviour (C11 7.1.3p1-p2) and would
+    /// take the call, so it is reported at the builtin call. An object with
+    /// internal linkage gets a private symbol in IR lowering instead.
+    fn check_library_nan_clash(&self) -> Result<(), Diagnostic> {
+        let file = self.scopes.first().expect("file scope");
+        for (lib, builtin, line, column) in &self.library_nan_calls {
+            let Some(Symbol::Var(var)) = file.get(lib) else {
+                continue;
+            };
+            let external = var
+                .global
+                .as_ref()
+                .is_some_and(|info| info.linkage == Linkage::External);
+            if !external {
+                continue;
+            }
+            let (decl_line, decl_column) = self
+                .object_decls
+                .get(lib)
+                .copied()
+                .unwrap_or((*line, *column));
+            return self.err(
+                *line,
+                *column,
+                format!(
+                    "{builtin} with a tag that is not a constant calls the C library function \
+                     '{lib}', which conflicts with the object '{lib}' of type '{}' declared with \
+                     external linkage at {decl_line}:{decl_column} (C11 7.1.3)",
+                    var.ty.display()
+                ),
+            );
+        }
         Ok(())
     }
 
@@ -2313,6 +2367,9 @@ impl Sema {
             None => {
                 let slot = format!("@{name}");
                 self.global_order.push(name.to_string());
+                self.object_decls
+                    .entry(name.to_string())
+                    .or_insert((line, column));
                 self.insert_file(Symbol::Var(VarSym {
                     name: name.to_string(),
                     slot: slot.clone(),
@@ -2564,10 +2621,12 @@ impl Sema {
                 let locals = self.static_locals.len();
                 let strings = self.strings.len();
                 let seq = self.static_seq;
+                let nan_calls = self.library_nan_calls.len();
                 self.check_expr(&mut assoc.expr)?;
                 self.static_locals.truncate(locals);
                 self.strings.truncate(strings);
                 self.static_seq = seq;
+                self.library_nan_calls.truncate(nan_calls);
             }
         }
         *expr = assocs.swap_remove(index).expr;
@@ -3251,7 +3310,10 @@ impl Sema {
             let sized = match operand {
                 SizeofOperand::Type(ty) => ty.clone(),
                 SizeofOperand::Expr(inner) => {
-                    self.check_expr(inner)?;
+                    self.sizeof_depth += 1;
+                    let checked = self.check_expr(inner);
+                    self.sizeof_depth -= 1;
+                    checked?;
                     if is_bitfield(inner) {
                         return self.err(line, column, "sizeof applied to a bit-field");
                     }
@@ -3588,6 +3650,18 @@ impl Sema {
                     args[0].column(),
                     format!("{name} requires a string literal that strtol would consume in full"),
                 );
+            }
+        }
+        // A malformed quiet tag in a function body that is evaluated
+        // becomes a call of the C library function (IR lowering). A file
+        // object with that name is checked once the whole unit is seen.
+        if let Some(lib) = fp.libm_nan() {
+            if self.sizeof_depth == 0
+                && !self.current_func.is_empty()
+                && crate::float::nan_tag_from_expr(&args[0]).is_none()
+            {
+                self.library_nan_calls
+                    .push((lib.to_string(), name.to_string(), line, column));
             }
         }
         let ret = CType::Float(fp.kind());
