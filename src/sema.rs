@@ -7308,4 +7308,56 @@ int typed = _Generic(__builtin_offsetof(struct In, c), unsigned long: 1, default
         )
         .contains("not a structure or union"));
     }
+
+    #[test]
+    fn floating_comparison_builtins() {
+        // GCC "Other Builtins": __builtin_isgreater and the rest are the
+        // C11 7.12.14 comparison macros. Two real floating operands
+        // (one may be an integer) are converted by the usual arithmetic
+        // conversions; the result is int.
+        for name in [
+            "__builtin_isgreater",
+            "__builtin_isgreaterequal",
+            "__builtin_isless",
+            "__builtin_islessequal",
+            "__builtin_islessgreater",
+            "__builtin_isunordered",
+        ] {
+            sema_ok(&format!(
+                "int f(double a, double b) {{ return {name}(a, b); }}"
+            ));
+            sema_ok(&format!(
+                "int f(float a, long double b) {{ return {name}(a, b); }}"
+            ));
+            sema_ok(&format!(
+                "int f(int a, double b) {{ return {name}(a, b) + {name}(b, 2u); }}"
+            ));
+            sema_ok(&format!(
+                "int f(float a, float b) {{ return _Generic({name}(a, b), int: 1, default: 0); }}"
+            ));
+            sema_ok(&format!(
+                "unsigned long n = sizeof({name}(1.0, 2.0)); int a[sizeof {name}(1.0f, 2)];"
+            ));
+            assert!(
+                sema_err(&format!("int f(int a, int b) {{ return {name}(a, b); }}"))
+                    .contains("non-floating-point arguments")
+            );
+            assert!(
+                sema_err(&format!("int f(double *p) {{ return {name}(p, 1.0); }}"))
+                    .contains("non-floating-point arguments")
+            );
+            assert!(sema_err(&format!(
+                "struct S {{ double d; }}; int f(struct S s) {{ return {name}(s, 1.0); }}"
+            ))
+            .contains("non-floating-point arguments"));
+            assert!(
+                sema_err(&format!("int f(double a) {{ return {name}(a); }}"))
+                    .contains("expects 2 arguments")
+            );
+            assert!(
+                sema_err(&format!("int f(double a) {{ return {name}(a, a, a); }}"))
+                    .contains("expects 2 arguments")
+            );
+        }
+    }
 }

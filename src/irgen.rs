@@ -4589,4 +4589,63 @@ int main(void) {
             err.message
         );
     }
+
+    #[test]
+    fn floating_comparison_builtins_use_quiet_fcmp() {
+        // LLVM LangRef: fcmp is not signalling, and the `o` predicates are
+        // false when either operand is a NaN while `uno` is true. That is
+        // the C11 7.12.14 macro behaviour.
+        let cases = [
+            ("__builtin_isgreater", "ogt"),
+            ("__builtin_isgreaterequal", "oge"),
+            ("__builtin_isless", "olt"),
+            ("__builtin_islessequal", "ole"),
+            ("__builtin_islessgreater", "one"),
+            ("__builtin_isunordered", "uno"),
+        ];
+        for (name, pred) in cases {
+            let ir = crate::compile_to_ir(
+                &format!("int f(double a, double b) {{ return {name}(a, b); }}\n"),
+                "fpcmp.c",
+            )
+            .unwrap();
+            assert!(ir.contains(&format!("fcmp {pred} double")), "{name}: {ir}");
+            assert!(
+                !ir.contains(&format!("@{name}")),
+                "{name} is not a call: {ir}"
+            );
+        }
+        // Usual arithmetic conversions: float and long double compare
+        // as x86_fp80; int and float compare as float.
+        let ir = crate::compile_to_ir(
+            "int f(float a, long double b) { return __builtin_isless(a, b); }\n",
+            "fpcmp-mixed.c",
+        )
+        .unwrap();
+        assert!(ir.contains("fpext float"), "{ir}");
+        assert!(ir.contains("fcmp olt x86_fp80"), "{ir}");
+        let ir = crate::compile_to_ir(
+            "int f(int a, float b) { return __builtin_isunordered(a, b); }\n",
+            "fpcmp-int.c",
+        )
+        .unwrap();
+        assert!(ir.contains("sitofp i32"), "{ir}");
+        assert!(ir.contains("fcmp uno float"), "{ir}");
+
+        let source = "\
+int main(void) {
+    volatile double n = __builtin_nan(\"\"), one = 1.0;
+    volatile long double l = 2.0L;
+    volatile float f = -0.0f;
+    if (__builtin_isless(n, one) || __builtin_isgreater(one, n)) return 1;
+    if (!__builtin_isunordered(n, l) || __builtin_islessgreater(n, f)) return 2;
+    if (!__builtin_isgreaterequal(l, one) || !__builtin_islessequal(f, 0.0)) return 3;
+    if (__builtin_islessgreater(f, 0) || !__builtin_islessgreater(l, one)) return 4;
+    return __builtin_isgreater(l, f) + __builtin_isunordered(one, l) * 4;
+}
+";
+        let ir = crate::compile_to_ir(source, "fpcmp-run.c").unwrap();
+        assert_eq!(run_binary(&ir), run_reference(source));
+        assert_eq!(run_binary(&ir).0, 1);
+    }
 }
