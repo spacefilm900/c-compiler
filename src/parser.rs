@@ -6031,4 +6031,39 @@ func int main
         parsed("typedef int *restrict (*fp)(int *restrict);");
         parsed("unsigned long s = sizeof(int *restrict (*)(void));");
     }
+
+    #[test]
+    fn constant_contexts_check_comparison_pointer_compatibility() {
+        // C11 6.5.9p2: two pointer operands of an equality operator point
+        // to compatible types (ignoring qualifiers), or one of them points
+        // to void. C11 6.5.8p2: two pointer operands of a relational
+        // operator point to compatible object types. These constraints
+        // hold in an unevaluated sizeof operand that the parser folds.
+        for source in [
+            "enum { N = sizeof((int *)0 == (double *)0) };",
+            "int a[sizeof((int *)0 != (long *)0)];",
+            "_Static_assert(sizeof((int *)0 < (double *)0), \"\");",
+            "struct B { int x : sizeof((char *)0 >= (unsigned char *)0); };",
+            "int *p; double *q; enum { N = sizeof(p == q) };",
+            "enum { N = sizeof((char **)0 == (const char **)0) };",
+            "enum { N = sizeof((int *)0 <= (void *)0) };",
+            "int x[2]; long y[2]; enum { N = sizeof(x == y) };",
+            "struct S { int a[8]; };\n\
+             enum { N = __builtin_offsetof(struct S, a[sizeof((int *)0 == (float *)0)]) };",
+        ] {
+            let err = parse_err(source);
+            assert!(
+                err.contains("invalid operands to a comparison"),
+                "{source}: {err}"
+            );
+        }
+        // Compatible pointees, differing qualifiers, void pointers in an
+        // equality, and null pointer constants still fold.
+        parsed(
+            "int *p; const int *cp; void *v; int x[2];\n\
+             enum { A = sizeof(p == cp), B = sizeof(p < cp), C = sizeof(p == v),\n\
+             D = sizeof(v != cp), E = sizeof(p == 0), F = sizeof(x == p),\n\
+             G = sizeof((int (*)[2])0 == (int (*)[])0), H = sizeof((char *)0 > (volatile char *)0) };",
+        );
+    }
 }
