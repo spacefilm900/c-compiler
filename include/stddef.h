@@ -55,7 +55,8 @@ typedef struct {
 #endif
 
 #if defined(__CC_STDDEF_H)
-#define offsetof(type, member) ((size_t)((char *)&((type *)0)->member - (char *)0))
+/* C11 7.19p3: an integer constant expression of type size_t. */
+#define offsetof(type, member) __builtin_offsetof(type, member)
 #endif
 
 #endif

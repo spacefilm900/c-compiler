@@ -3198,6 +3198,170 @@ impl Parser<'_> {
         Ok(Expr::va_arg(ap, type_arg, line, column))
     }
 
+    /// `__builtin_offsetof ( type-name , member-designator )`, which is what
+    /// `<stddef.h>` expands `offsetof` to (C11 7.19p3). The designator is an
+    /// identifier followed by any number of `.identifier` and
+    /// `[expression]`.
+    ///
+    /// When every subscript is an integer constant expression the result
+    /// is an integer constant of type `size_t`, folded from the record
+    /// layout, so it may appear wherever C11 6.6p6 requires an integer
+    /// constant expression. A subscript that is not constant (a GNU
+    /// extension) leaves an address difference from a null base,
+    /// evaluated at run time and not a constant expression.
+    fn parse_builtin_offsetof(&mut self, line: usize, column: usize) -> Result<Expr, Diagnostic> {
+        self.advance();
+        let ty = self.parse_type_name()?;
+        self.expect(TokenKind::Comma, "','")?;
+        let first = self.expect(TokenKind::Ident, "a member name")?;
+        let mut steps = vec![OffsetStep::Member(first)];
+        loop {
+            match self.current().kind {
+                TokenKind::Dot => {
+                    self.advance();
+                    let name = self.expect(TokenKind::Ident, "a member name")?;
+                    steps.push(OffsetStep::Member(name));
+                }
+                TokenKind::LBrack => {
+                    let bracket = self.advance();
+                    let index = self.parse_expression()?;
+                    self.expect(TokenKind::RBrack, "']'")?;
+                    steps.push(OffsetStep::Index(index, bracket));
+                }
+                _ => break,
+            }
+        }
+        self.expect(TokenKind::RParen, "')'")?;
+
+        let mut cur = ty.clone();
+        let mut offset: u64 = 0;
+        let mut constant = true;
+        for (position, step) in steps.iter().enumerate() {
+            match step {
+                OffsetStep::Member(name) => {
+                    let Some(handle) = cur.struct_ref() else {
+                        let message = if position == 0 {
+                            format!(
+                                "offsetof requires a structure or union type, not '{}'",
+                                cur.display()
+                            )
+                        } else {
+                            format!(
+                                "member reference base type '{}' is not a structure or union",
+                                cur.display()
+                            )
+                        };
+                        return Err(self.error_at(name.line, name.column, message));
+                    };
+                    if !handle.is_complete() {
+                        return Err(self.error_at(
+                            name.line,
+                            name.column,
+                            format!("offsetof of incomplete type '{}'", cur.display()),
+                        ));
+                    }
+                    let Some(hit) = handle.lookup_member(&name.spelling) else {
+                        return Err(self.error_at(
+                            name.line,
+                            name.column,
+                            format!("no member named '{}' in '{}'", name.spelling, cur.display()),
+                        ));
+                    };
+                    if hit.field.is_bitfield() {
+                        return Err(self.error_at(
+                            name.line,
+                            name.column,
+                            format!("cannot compute offset of bit-field '{}'", name.spelling),
+                        ));
+                    }
+                    offset = offset.wrapping_add(hit.field.offset);
+                    cur = hit.field.ty;
+                }
+                OffsetStep::Index(index, bracket) => {
+                    let Some(elem) = cur.array_elem().cloned() else {
+                        return Err(self.error_at(
+                            bracket.line,
+                            bracket.column,
+                            "subscripted value is not an array",
+                        ));
+                    };
+                    let Some(size) = elem.size() else {
+                        return Err(self.error_at(
+                            bracket.line,
+                            bracket.column,
+                            format!("array has incomplete element type '{}'", elem.display()),
+                        ));
+                    };
+                    check_uneval(index, &self.names).map_err(|err| {
+                        self.error_at(index.line(), index.column(), ice_message(err))
+                    })?;
+                    if let Ok(index_ty) = rvalue_type(index, &self.names) {
+                        if !index_ty.is_integer() {
+                            return Err(self.error_at(
+                                index.line(),
+                                index.column(),
+                                "array subscript is not an integer",
+                            ));
+                        }
+                    }
+                    match eval_ice(index, &self.names) {
+                        Ok(value) => {
+                            let scaled = if value.ty.is_signed() {
+                                (sign_extend(value.bits, value.ty.width()) as u64)
+                                    .wrapping_mul(size)
+                            } else {
+                                (value.bits & value.ty.mask()).wrapping_mul(size)
+                            };
+                            offset = offset.wrapping_add(scaled);
+                        }
+                        Err(_) => constant = false,
+                    }
+                    cur = elem;
+                }
+            }
+        }
+        if constant {
+            return Ok(Expr::int(offset, TypeName::ULong, line, column));
+        }
+        // (size_t)((char *)&((type *)0)->designator - (char *)0)
+        let null_base = Expr::cast(
+            CType::pointer(ty),
+            Expr::int(0, TypeName::Int, line, column),
+            line,
+            column,
+        );
+        let mut place = null_base;
+        for (position, step) in steps.into_iter().enumerate() {
+            place = match step {
+                OffsetStep::Member(name) => {
+                    Expr::member(place, name.spelling, position == 0, name.line, name.column)
+                }
+                OffsetStep::Index(index, bracket) => {
+                    Expr::index(place, index, bracket.line, bracket.column)
+                }
+            };
+        }
+        let char_ptr = CType::pointer(CType::from_name(TypeName::Char));
+        let addr = Expr::cast(
+            char_ptr.clone(),
+            Expr::unary(UnaryOp::Addr, place, line, column),
+            line,
+            column,
+        );
+        let null = Expr::cast(
+            char_ptr,
+            Expr::int(0, TypeName::Int, line, column),
+            line,
+            column,
+        );
+        Ok(Expr::cast(
+            CType::from_name(TypeName::ULong),
+            Expr::bin(BinOp::Sub, addr, null, line, column),
+            line,
+            column,
+        ))
+    }
+
     fn parse_postfix(&mut self) -> Result<Expr, Diagnostic> {
         let expr = self.parse_primary()?;
         self.parse_postfix_tail(expr)
@@ -3217,6 +3381,12 @@ impl Parser<'_> {
                             let line = *line;
                             let column = *column;
                             expr = self.parse_builtin_va_arg(line, column)?;
+                            continue;
+                        }
+                        if name == "__builtin_offsetof" {
+                            let line = *line;
+                            let column = *column;
+                            expr = self.parse_builtin_offsetof(line, column)?;
                             continue;
                         }
                     }
@@ -3702,6 +3872,12 @@ fn decl_pos(raw: &RawDecl) -> (usize, usize) {
             decl_pos(inner)
         }
     }
+}
+
+/// One step of an `offsetof` member designator after the type name.
+enum OffsetStep {
+    Member(Token),
+    Index(Expr, Token),
 }
 
 enum BoundErr {
