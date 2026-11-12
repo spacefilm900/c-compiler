@@ -3893,6 +3893,8 @@ enum BoundErr {
     WrongArity,
     NotStringLiteral,
     InvalidOperand,
+    InvalidCompare,
+    FpCompareOperands,
     GenericDupDefault,
     GenericBadType,
     GenericDupType,
@@ -3915,6 +3917,10 @@ fn bound_message(err: BoundErr) -> &'static str {
         BoundErr::WrongArity => "wrong number of arguments in function call",
         BoundErr::NotStringLiteral => "requires a string literal argument",
         BoundErr::InvalidOperand => "invalid operand",
+        BoundErr::InvalidCompare => "invalid operands to a comparison",
+        BoundErr::FpCompareOperands => {
+            "non-floating-point arguments in call to a floating-point comparison builtin"
+        }
         BoundErr::GenericDupDefault => "duplicate default generic association",
         BoundErr::GenericBadType => "type in generic association is not a complete object type",
         BoundErr::GenericDupType => {
@@ -4115,7 +4121,17 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
                 Err(BoundErr::Undeclared)
             }
         }
-        Expr::Bin { left, right, .. } | Expr::Comma { left, right, .. } => {
+        Expr::Bin {
+            op, left, right, ..
+        } => {
+            check_uneval(left, env)?;
+            check_uneval(right, env)?;
+            if op.is_cmp() {
+                check_uneval_compare(*op, left, right, env)?;
+            }
+            Ok(())
+        }
+        Expr::Comma { left, right, .. } => {
             check_uneval(left, env)?;
             check_uneval(right, env)
         }
@@ -4163,6 +4179,9 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
                     }
                     if args.len() != arity {
                         return Err(BoundErr::WrongArity);
+                    }
+                    if crate::float::is_fp_compare_builtin(name) {
+                        check_uneval_fp_compare(&args[0], &args[1], env)?;
                     }
                     if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
                         if fp.requires_string_literal()
@@ -4222,6 +4241,58 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
             Some(init) => check_uneval_init(init, env),
             None => Ok(()),
         },
+    }
+}
+
+/// The operand constraints of the relational and equality operators
+/// (C11 6.5.8p2, 6.5.9p2), as semantic analysis applies them: two
+/// arithmetic operands; for a relational operator two object pointers;
+/// for an equality operator two pointers, or a pointer and a null
+/// pointer constant. An operand whose type the parser cannot work out is
+/// left to semantic analysis.
+fn check_uneval_compare(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Result<(), BoundErr> {
+    let (Ok(left_ty), Ok(right_ty)) = (rvalue_type(left, env), rvalue_type(right, env)) else {
+        return Ok(());
+    };
+    if left_ty.is_arithmetic() && right_ty.is_arithmetic() {
+        return Ok(());
+    }
+    let ok = if matches!(op, BinOp::Eq | BinOp::Ne) {
+        (left_ty.is_pointer() && right_ty.is_pointer())
+            || (left_ty.is_pointer() && uneval_null_constant(right, &right_ty, env))
+            || (right_ty.is_pointer() && uneval_null_constant(left, &left_ty, env))
+    } else {
+        let function = |ty: &CType| ty.pointee().is_some_and(CType::is_func);
+        left_ty.is_pointer() && right_ty.is_pointer() && !function(&left_ty) && !function(&right_ty)
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(BoundErr::InvalidCompare)
+    }
+}
+
+/// An integer constant expression with the value 0 (C11 6.3.2.3p3). A
+/// pointer-typed null pointer constant is handled as a pointer operand.
+fn uneval_null_constant(expr: &Expr, ty: &CType, env: Env) -> bool {
+    ty.is_integer() && eval_ice(expr, env).is_ok_and(|value| value.bits & value.ty.mask() == 0)
+}
+
+/// The operands of `__builtin_isgreater` and its companions: both
+/// arithmetic and at least one real floating, the rule semantic analysis
+/// applies. An operand whose type the parser cannot work out is left to
+/// semantic analysis.
+fn check_uneval_fp_compare(left: &Expr, right: &Expr, env: Env) -> Result<(), BoundErr> {
+    let (Ok(left_ty), Ok(right_ty)) = (rvalue_type(left, env), rvalue_type(right, env)) else {
+        return Ok(());
+    };
+    if left_ty.is_arithmetic()
+        && right_ty.is_arithmetic()
+        && (left_ty.is_float() || right_ty.is_float())
+    {
+        Ok(())
+    } else {
+        Err(BoundErr::FpCompareOperands)
     }
 }
 
