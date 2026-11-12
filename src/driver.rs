@@ -3,12 +3,15 @@
 //! `compiler INPUT.c -o OUTPUT.ll` writes textual LLVM IR.
 //! `-E` writes the preprocessed text instead. `-I`, `-D`, and `-U` are
 //! passed to the preprocessor. A bare `-D NAME` defines `NAME` as `1`.
+//! `-std=c11` (the default) is strict ISO C11; `-std=gnu11` enables the GNU
+//! extensions listed in [`crate::dialect`]. The last `-std` wins.
 
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use crate::compile_with;
+use crate::compile_dialect;
+use crate::dialect::Dialect;
 use crate::pp::{preprocess, CliMacro, PpOptions};
 
 const USAGE: &str = "\
@@ -19,6 +22,8 @@ options:
   -D NAME[=text]  define NAME as text, or as 1 if text is omitted
   -U NAME         undefine NAME
   -E              preprocess only
+  -std=c11        strict ISO C11 (the default)
+  -std=gnu11      C11 plus the GNU extensions this compiler supports
   -h, --help      show this help
 Compile a C subset to textual LLVM IR.";
 
@@ -27,6 +32,7 @@ struct Options {
     output: Option<String>,
     preprocess_only: bool,
     pp: PpOptions,
+    dialect: Dialect,
 }
 
 pub fn run(args: &[String]) -> i32 {
@@ -65,14 +71,19 @@ pub fn run(args: &[String]) -> i32 {
         let _ = writeln!(io::stderr(), "{USAGE}");
         return 2;
     };
-    match compile_with(&source, &options.input, &options.pp) {
-        Ok(ir) => match fs::write(output, ir) {
-            Ok(()) => 0,
-            Err(err) => {
-                let _ = writeln!(io::stderr(), "{output}: error: {err}");
-                1
+    match compile_dialect(&source, &options.input, &options.pp, options.dialect) {
+        Ok(compiled) => {
+            for warning in &compiled.warnings {
+                let _ = writeln!(io::stderr(), "{warning}");
             }
-        },
+            match fs::write(output, compiled.ir) {
+                Ok(()) => 0,
+                Err(err) => {
+                    let _ = writeln!(io::stderr(), "{output}: error: {err}");
+                    1
+                }
+            }
+        }
         Err(diag) => {
             let _ = writeln!(io::stderr(), "{diag}");
             1
@@ -109,6 +120,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut output = None;
     let mut preprocess_only = false;
     let mut pp = PpOptions::default();
+    let mut dialect = Dialect::default();
     let mut index = 1;
     while index < args.len() {
         let arg = &args[index];
@@ -123,6 +135,12 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                 return Err(USAGE.to_string());
             };
             output = Some(path.clone());
+            index += 1;
+            continue;
+        }
+        if let Some(name) = arg.strip_prefix("-std=") {
+            dialect = Dialect::from_std(name)
+                .ok_or_else(|| format!("unsupported -std value '{name}'; use c11 or gnu11"))?;
             index += 1;
             continue;
         }
@@ -161,6 +179,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         output,
         preprocess_only,
         pp,
+        dialect,
     })
 }
 

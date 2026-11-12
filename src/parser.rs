@@ -9,11 +9,23 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diag::Diagnostic;
+use crate::dialect::Dialect;
 use crate::token::{Token, TokenKind};
 
 pub fn parse(tokens: &[Token], filename: &str) -> Result<TranslationUnit, Diagnostic> {
+    parse_dialect(tokens, filename, Dialect::C11)
+}
+
+/// Like [`parse`], in the given dialect. The dialect affects only the
+/// constraints checked in folded integer constant expressions.
+pub fn parse_dialect(
+    tokens: &[Token],
+    filename: &str,
+    dialect: Dialect,
+) -> Result<TranslationUnit, Diagnostic> {
     Parser {
         tokens,
+        dialect,
         index: 0,
         filename,
         tags: Vec::new(),
@@ -30,6 +42,7 @@ pub fn parse(tokens: &[Token], filename: &str) -> Result<TranslationUnit, Diagno
 
 struct Parser<'a> {
     tokens: &'a [Token],
+    dialect: Dialect,
     index: usize,
     filename: &'a str,
     /// Tag namespace, innermost scope last. Ordinary identifiers are not here.
@@ -77,6 +90,14 @@ enum NameBinding {
 }
 
 impl Parser<'_> {
+    /// The names in scope and the dialect, for folding constants.
+    fn env(&self) -> Env<'_> {
+        Env {
+            names: &self.names,
+            dialect: self.dialect,
+        }
+    }
+
     fn parse_translation_unit(&mut self) -> Result<TranslationUnit, Diagnostic> {
         self.push_tags();
         let mut decls = Vec::new();
@@ -1020,9 +1041,9 @@ impl Parser<'_> {
             let name = self.advance();
             let value = if self.match_kind(TokenKind::Assign) {
                 let expr = self.parse_assignment()?;
-                check_uneval(&expr, &self.names)
+                check_uneval(&expr, self.env())
                     .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
-                let folded = eval_ice(&expr, &self.names)
+                let folded = eval_ice(&expr, self.env())
                     .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
                 enum_int(folded).map_err(|_| {
                     self.error_at(
@@ -1156,7 +1177,7 @@ impl Parser<'_> {
         let (Some(init), CType::Array(elem, None)) = (init, ty) else {
             return;
         };
-        let Some(len) = infer_init_len(elem, init, &self.names) else {
+        let Some(len) = infer_init_len(elem, init, self.env()) else {
             return;
         };
         if let Some(scope) = self.names.last_mut() {
@@ -1344,9 +1365,9 @@ impl Parser<'_> {
         self.advance();
         self.expect(TokenKind::LParen, "'('")?;
         let expr = self.parse_conditional()?;
-        check_uneval(&expr, &self.names)
+        check_uneval(&expr, self.env())
             .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
-        let value = eval_ice(&expr, &self.names)
+        let value = eval_ice(&expr, self.env())
             .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
         self.expect(TokenKind::Comma, "','")?;
         if self.current().kind != TokenKind::String {
@@ -1520,9 +1541,9 @@ impl Parser<'_> {
             ));
         };
         let expr = self.parse_conditional()?;
-        check_uneval(&expr, &self.names)
+        check_uneval(&expr, self.env())
             .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
-        let value = eval_ice(&expr, &self.names)
+        let value = eval_ice(&expr, self.env())
             .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
         let signed = if value.ty.is_signed() {
             sign_extend(value.bits, value.ty.width())
@@ -2138,7 +2159,7 @@ impl Parser<'_> {
             return Ok(None);
         }
         let expr = self.parse_assignment()?;
-        match fold_array_bound(&expr, &self.names) {
+        match fold_array_bound(&expr, self.env()) {
             Ok(len) => Ok(Some(len)),
             Err(err) => Err(self.error_at(expr.line(), expr.column(), bound_message(err))),
         }
@@ -3307,10 +3328,10 @@ impl Parser<'_> {
                             format!("array has incomplete element type '{}'", elem.display()),
                         ));
                     };
-                    check_uneval(&index, &self.names).map_err(|err| {
+                    check_uneval(&index, self.env()).map_err(|err| {
                         self.error_at(index.line(), index.column(), ice_message(err))
                     })?;
-                    let index_ty = rvalue_type(&index, &self.names).ok();
+                    let index_ty = rvalue_type(&index, self.env()).ok();
                     if let Some(index_ty) = &index_ty {
                         if !index_ty.is_integer() {
                             return Err(self.error_at(
@@ -3320,7 +3341,7 @@ impl Parser<'_> {
                             ));
                         }
                     }
-                    match eval_ice(&index, &self.names) {
+                    match eval_ice(&index, self.env()) {
                         Ok(value) => {
                             let scaled = if value.ty.is_signed() {
                                 (sign_extend(value.bits, value.ty.width()) as u64)
@@ -4285,6 +4306,7 @@ fn check_uneval_compare(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Resul
     let ok = if matches!(op, BinOp::Eq | BinOp::Ne) {
         loose_pointers(&left_ty, &right_ty)
             || void_ptr_mix(&left_ty, &right_ty)
+            || (env.dialect.gnu() && void_function_ptr_mix(&left_ty, &right_ty))
             || (left_ty.is_pointer() && uneval_null_constant(right, &right_ty, env))
             || (right_ty.is_pointer() && uneval_null_constant(left, &left_ty, env))
     } else {
@@ -4474,11 +4496,16 @@ fn select_generic<'e>(
         .ok_or(BoundErr::NotConst)
 }
 
-/// Ordinary-identifier scopes, innermost last, as the parser sees them.
-type Env<'a> = &'a [HashMap<String, NameBinding>];
+/// What constant folding needs from the parser: the ordinary-identifier
+/// scopes, innermost last, and the dialect.
+#[derive(Clone, Copy)]
+struct Env<'a> {
+    names: &'a [HashMap<String, NameBinding>],
+    dialect: Dialect,
+}
 
 fn env_lookup<'a>(env: Env<'a>, name: &str) -> Option<&'a NameBinding> {
-    env.iter().rev().find_map(|scope| scope.get(name))
+    env.names.iter().rev().find_map(|scope| scope.get(name))
 }
 
 /// Type of an expression, computed from declarations the parser has seen.

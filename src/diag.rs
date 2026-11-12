@@ -1,4 +1,5 @@
 //! Source diagnostics. The compiler reports the first error and stops.
+//! Warnings, which only `-std=gnu11` extensions produce, are collected.
 
 use std::fmt;
 
@@ -41,3 +42,22 @@ impl fmt::Display for Diagnostic {
 }
 
 impl std::error::Error for Diagnostic {}
+
+/// A diagnostic that does not stop compilation.
+#[derive(Debug, Clone)]
+pub struct Warning(pub Diagnostic);
+
+impl fmt::Display for Warning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let diag = &self.0;
+        if diag.line == 0 {
+            write!(f, "{}: warning: {}", diag.filename, diag.message)
+        } else {
+            write!(
+                f,
+                "{}:{}:{}: warning: {}",
+                diag.filename, diag.line, diag.column, diag.message
+            )
+        }
+    }
+}

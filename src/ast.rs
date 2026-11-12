@@ -1357,6 +1357,16 @@ pub fn void_ptr_mix(left: &CType, right: &CType) -> bool {
         && (left.is_void_pointer() || right.is_void_pointer())
 }
 
+/// A void pointer and a pointer to a function, in either order. C11 6.5.9p2
+/// does not allow them as operands of an equality operator; `-std=gnu11`
+/// accepts them as an extension. A null pointer constant is handled
+/// separately and is valid in both modes.
+pub fn void_function_ptr_mix(left: &CType, right: &CType) -> bool {
+    let function_pointer = |ty: &CType| ty.pointee().is_some_and(CType::is_func);
+    (left.is_void_pointer() && function_pointer(right))
+        || (right.is_void_pointer() && function_pointer(left))
+}
+
 /// Two types are compatible (C11 6.2.7, 6.7.6, 6.7.3).
 ///
 /// Qualifiers must match at every level. Arrays are compatible when their

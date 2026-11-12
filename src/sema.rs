@@ -19,10 +19,12 @@
 //! when they sit in an evaluated operand. An unevaluated operand (`sizeof`,
 //! or the skipped arm of `&&`, `||`, or `?:`) may contain them.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::diag::Diagnostic;
+use crate::diag::{Diagnostic, Warning};
+use crate::dialect::Dialect;
 
 pub fn analyze(unit: &mut TranslationUnit, filename: &str) -> Result<(), Diagnostic> {
     analyze_tokens(unit, filename, &[])
@@ -35,6 +37,17 @@ pub fn analyze_tokens(
     filename: &str,
     tokens: &[crate::token::Token],
 ) -> Result<(), Diagnostic> {
+    analyze_dialect(unit, filename, tokens, Dialect::C11).map(|_| ())
+}
+
+/// Like [`analyze_tokens`], in the given dialect. Returns the warnings, in
+/// source order; only GNU extensions produce them.
+pub fn analyze_dialect(
+    unit: &mut TranslationUnit,
+    filename: &str,
+    tokens: &[crate::token::Token],
+    dialect: Dialect,
+) -> Result<Vec<Warning>, Diagnostic> {
     for decl in &mut unit.decls {
         if let TopDecl::Func(func) = decl {
             assign_slots(func);
@@ -48,6 +61,8 @@ pub fn analyze_tokens(
     }
     let mut sema = Sema {
         filename: filename.to_string(),
+        dialect,
+        warnings: RefCell::new(Vec::new()),
         locs,
         scopes: vec![HashMap::new()],
         loop_depth: 0,
@@ -78,7 +93,8 @@ pub fn analyze_tokens(
             }
         }
     }
-    sema.finish(unit)
+    sema.finish(unit)?;
+    Ok(sema.warnings.into_inner())
 }
 
 #[derive(Clone)]
@@ -148,6 +164,9 @@ struct SwitchCtx {
 
 struct Sema {
     filename: String,
+    dialect: Dialect,
+    /// Warnings for accepted GNU extensions, in the order they were found.
+    warnings: RefCell<Vec<Warning>>,
     /// Last token at each line and column. Included files override the main
     /// file when they share a coordinate; parser diagnostics resolve this
     /// more precisely from the token cursor.
@@ -2967,6 +2986,20 @@ impl Sema {
         if pointers_ok {
             return Ok(CType::int_type());
         }
+        if equality && self.dialect.gnu() && void_function_ptr_mix(&left_ty, &right_ty) {
+            self.warn(
+                line,
+                column,
+                format!(
+                    "'{}' compares a void pointer with a function pointer ({} and {}); \
+                     C11 6.5.9p2 does not allow this; accepted as a GNU extension (-std=gnu11)",
+                    op.as_str(),
+                    left_ty.display(),
+                    right_ty.display()
+                ),
+            );
+            return Ok(CType::int_type());
+        }
         self.err(
             line,
             column,
@@ -4360,6 +4393,17 @@ impl Sema {
 
     fn lookup_local(&self, name: &str) -> Option<&Symbol> {
         self.scopes.last().and_then(|scope| scope.get(name))
+    }
+
+    fn warn(&self, line: usize, column: usize, message: impl Into<String>) {
+        let file = self
+            .locs
+            .get(&(line, column))
+            .map(String::as_str)
+            .unwrap_or(self.filename.as_str());
+        self.warnings
+            .borrow_mut()
+            .push(Warning(Diagnostic::new(file, line, column, message)));
     }
 
     fn err<T>(
