@@ -1333,6 +1333,25 @@ fn join_spec(spec: &str, name: &str) -> String {
     }
 }
 
+/// Pointers to qualified or unqualified versions of compatible types
+/// (C11 6.5.8, 6.5.9). One level of pointee qualifiers is ignored.
+/// `const int *` may be compared with `int *`. `char **` may not be compared
+/// with `const char **`, because `char *` and `const char *` are not
+/// compatible. Semantic analysis and the parser's folding of constant
+/// expressions share this rule.
+pub fn loose_pointers(left: &CType, right: &CType) -> bool {
+    match (left.pointee(), right.pointee()) {
+        (Some(a), Some(b)) => compatible(&a.unqualified(), &b.unqualified()),
+        _ => false,
+    }
+}
+
+/// Two pointers of which at least one is `void *` (possibly qualified), the
+/// other pointer case an equality operator allows (C11 6.5.9p2).
+pub fn void_ptr_mix(left: &CType, right: &CType) -> bool {
+    left.is_pointer() && right.is_pointer() && (left.is_void_pointer() || right.is_void_pointer())
+}
+
 /// Two types are compatible (C11 6.2.7, 6.7.6, 6.7.3).
 ///
 /// Qualifiers must match at every level. Arrays are compatible when their

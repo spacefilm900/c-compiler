@@ -4623,18 +4623,6 @@ fn pointer_plus_int(left: &CType, right: &CType) -> Option<CType> {
     }
 }
 
-/// Pointers to qualified or unqualified versions of compatible types
-/// (C11 6.5.8, 6.5.9). One level of pointee qualifiers is ignored.
-/// `const int *` may be compared with `int *`. `char **` may not be compared
-/// with `const char **`, because `char *` and `const char *` are not
-/// compatible.
-fn loose_pointers(left: &CType, right: &CType) -> bool {
-    match (left.pointee(), right.pointee()) {
-        (Some(a), Some(b)) => compatible(&a.unqualified(), &b.unqualified()),
-        _ => false,
-    }
-}
-
 /// Assignment between pointers (C11 6.5.16.1). The destination pointee must
 /// have every qualifier of the source pointee. `char *` converts to
 /// `const char *`. `char **` does not convert to `const char **`.
@@ -4703,10 +4691,6 @@ fn flexible_member_named(ty: &CType, name: &str) -> bool {
                 .iter()
                 .any(|field| field.name == name && field.is_flexible())
         })
-}
-
-fn void_ptr_mix(left: &CType, right: &CType) -> bool {
-    left.is_pointer() && right.is_pointer() && (left.is_void_pointer() || right.is_void_pointer())
 }
 
 /// An integer constant expression with value 0, or that expression cast to `void *`.

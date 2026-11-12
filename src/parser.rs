@@ -4248,9 +4248,10 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
 
 /// The operand constraints of the relational and equality operators
 /// (C11 6.5.8p2, 6.5.9p2), as semantic analysis applies them: two
-/// arithmetic operands; for a relational operator two object pointers;
-/// for an equality operator two pointers, or a pointer and a null
-/// pointer constant. An operand whose type the parser cannot work out is
+/// arithmetic operands; for a relational operator two pointers to
+/// compatible object types; for an equality operator two pointers to
+/// compatible types or one `void *`, or a pointer and a null pointer
+/// constant. An operand whose type the parser cannot work out is
 /// left to semantic analysis.
 fn check_uneval_compare(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Result<(), BoundErr> {
     let (Ok(left_ty), Ok(right_ty)) = (rvalue_type(left, env), rvalue_type(right, env)) else {
@@ -4260,12 +4261,17 @@ fn check_uneval_compare(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Resul
         return Ok(());
     }
     let ok = if matches!(op, BinOp::Eq | BinOp::Ne) {
-        (left_ty.is_pointer() && right_ty.is_pointer())
+        loose_pointers(&left_ty, &right_ty)
+            || void_ptr_mix(&left_ty, &right_ty)
             || (left_ty.is_pointer() && uneval_null_constant(right, &right_ty, env))
             || (right_ty.is_pointer() && uneval_null_constant(left, &left_ty, env))
     } else {
         let function = |ty: &CType| ty.pointee().is_some_and(CType::is_func);
-        left_ty.is_pointer() && right_ty.is_pointer() && !function(&left_ty) && !function(&right_ty)
+        left_ty.is_pointer()
+            && right_ty.is_pointer()
+            && !function(&left_ty)
+            && !function(&right_ty)
+            && loose_pointers(&left_ty, &right_ty)
     };
     if ok {
         Ok(())
