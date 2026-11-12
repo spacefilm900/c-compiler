@@ -2555,7 +2555,11 @@ impl Sema {
         };
         let (line, column) = (*line, *column);
         let mut assocs = std::mem::take(assocs);
+        // The controlling expression is not evaluated (C11 6.5.1.1p3), so
+        // a malformed __builtin_nan tag there makes no library call.
+        let control_nan_calls = self.library_nan_calls.len();
         self.check_expr(control)?;
+        self.library_nan_calls.truncate(control_nan_calls);
         let raw = control.ty().expect("typed");
         let ty = match raw.peel() {
             CType::Array(elem, _) => CType::pointer((**elem).clone()),
