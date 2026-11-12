@@ -1236,27 +1236,33 @@ impl Parser<'_> {
                 && token.kind == TokenKind::Ident
     }
 
-    /// `restrict` only qualifies a pointer (C11 6.7.3p2).
+    /// `restrict` only qualifies a pointer whose referenced type is an
+    /// object type (C11 6.7.3p2).
     fn reject_bad_restrict(
         &self,
         ty: &CType,
         line: usize,
         column: usize,
     ) -> Result<(), Diagnostic> {
-        fn walk(ty: &CType) -> bool {
-            if ty.quals().is_restrict && !ty.unqualified().is_pointer() {
-                return true;
+        fn walk(ty: &CType) -> Option<&'static str> {
+            if ty.quals().is_restrict {
+                match ty.unqualified().pointee() {
+                    None => return Some("restrict requires a pointer type"),
+                    Some(pointee) if pointee.is_func() => {
+                        return Some("restrict requires a pointer to an object type");
+                    }
+                    Some(_) => {}
+                }
             }
             match ty.peel() {
                 CType::Pointer(inner) | CType::Array(inner, _) => walk(inner),
-                CType::Func(func) => walk(&func.ret) || func.params.iter().any(walk),
-                _ => false,
+                CType::Func(func) => walk(&func.ret).or_else(|| func.params.iter().find_map(walk)),
+                _ => None,
             }
         }
-        if walk(ty) {
-            Err(self.error_at(line, column, "restrict requires a pointer type"))
-        } else {
-            Ok(())
+        match walk(ty) {
+            Some(message) => Err(self.error_at(line, column, message)),
+            None => Ok(()),
         }
     }
 
@@ -2214,6 +2220,10 @@ impl Parser<'_> {
                             "function cannot return a function",
                         ));
                     }
+                    // C11 6.7.3p2 applies to a return type as to any other
+                    // type: `int restrict f(void)` is a constraint violation
+                    // wherever the declarator appears.
+                    self.reject_bad_restrict(&ret, line, column)?;
                     if !params.prototype && !params.params.is_empty() {
                         return Err(self.error_at(
                             line,
@@ -3893,6 +3903,11 @@ enum BoundErr {
     InvalidOperand,
     InvalidCompare,
     FpCompareOperands,
+    SignbitOperand,
+    MemoryDest,
+    MemorySource,
+    MemsetValue,
+    MemorySize,
     GenericDupDefault,
     GenericBadType,
     GenericDupType,
@@ -3919,6 +3934,11 @@ fn bound_message(err: BoundErr) -> &'static str {
         BoundErr::FpCompareOperands => {
             "non-floating-point arguments in call to a floating-point comparison builtin"
         }
+        BoundErr::SignbitOperand => "__builtin_signbit requires an arithmetic argument",
+        BoundErr::MemoryDest => "memory builtin destination must be a pointer",
+        BoundErr::MemorySource => "memory builtin source must be a pointer",
+        BoundErr::MemsetValue => "__builtin_memset value must be an integer",
+        BoundErr::MemorySize => "memory builtin size must be an integer",
         BoundErr::GenericDupDefault => "duplicate default generic association",
         BoundErr::GenericBadType => "type in generic association is not a complete object type",
         BoundErr::GenericDupType => {
@@ -4181,6 +4201,12 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
                     if crate::float::is_fp_compare_builtin(name) {
                         check_uneval_fp_compare(&args[0], &args[1], env)?;
                     }
+                    if is_signbit_builtin(name) {
+                        check_uneval_signbit(&args[0], env)?;
+                    }
+                    if is_memory_builtin(name) {
+                        check_uneval_memory_builtin(name, args, env)?;
+                    }
                     if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
                         if fp.requires_string_literal()
                             && !crate::float::FpFormatBuiltin::is_string_literal_arg(&args[0])
@@ -4244,9 +4270,10 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
 
 /// The operand constraints of the relational and equality operators
 /// (C11 6.5.8p2, 6.5.9p2), as semantic analysis applies them: two
-/// arithmetic operands; for a relational operator two object pointers;
-/// for an equality operator two pointers, or a pointer and a null
-/// pointer constant. An operand whose type the parser cannot work out is
+/// arithmetic operands; for a relational operator two pointers to
+/// compatible object types; for an equality operator two pointers to
+/// compatible types or one `void *`, or a pointer and a null pointer
+/// constant. An operand whose type the parser cannot work out is
 /// left to semantic analysis.
 fn check_uneval_compare(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Result<(), BoundErr> {
     let (Ok(left_ty), Ok(right_ty)) = (rvalue_type(left, env), rvalue_type(right, env)) else {
@@ -4256,12 +4283,17 @@ fn check_uneval_compare(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Resul
         return Ok(());
     }
     let ok = if matches!(op, BinOp::Eq | BinOp::Ne) {
-        (left_ty.is_pointer() && right_ty.is_pointer())
+        loose_pointers(&left_ty, &right_ty)
+            || void_ptr_mix(&left_ty, &right_ty)
             || (left_ty.is_pointer() && uneval_null_constant(right, &right_ty, env))
             || (right_ty.is_pointer() && uneval_null_constant(left, &left_ty, env))
     } else {
         let function = |ty: &CType| ty.pointee().is_some_and(CType::is_func);
-        left_ty.is_pointer() && right_ty.is_pointer() && !function(&left_ty) && !function(&right_ty)
+        left_ty.is_pointer()
+            && right_ty.is_pointer()
+            && !function(&left_ty)
+            && !function(&right_ty)
+            && loose_pointers(&left_ty, &right_ty)
     };
     if ok {
         Ok(())
@@ -4321,11 +4353,75 @@ fn builtin_arity(name: &str) -> Option<usize> {
         return Some(fp.arity());
     }
     match name {
-        "__builtin_signbit" | "__builtin_signbitf" | "__builtin_signbitl" => Some(1),
-        "__builtin_memcpy" | "__builtin_memmove" | "__builtin_memset" => Some(3),
+        name if is_signbit_builtin(name) => Some(1),
+        name if is_memory_builtin(name) => Some(3),
         name if crate::float::is_fp_compare_builtin(name) => Some(2),
         _ => None,
     }
+}
+
+fn is_signbit_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "__builtin_signbit" | "__builtin_signbitf" | "__builtin_signbitl"
+    )
+}
+
+fn is_memory_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "__builtin_memcpy" | "__builtin_memmove" | "__builtin_memset"
+    )
+}
+
+/// The result type semantic analysis gives a supported builtin call:
+/// the floating type of `__builtin_nan*`, `__builtin_inf*`, and
+/// `__builtin_huge_val*`; `int` for `__builtin_signbit*` and the
+/// comparison builtins; `void *` for the memory builtins.
+fn builtin_result_type(name: &str) -> Option<CType> {
+    if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
+        return Some(CType::Float(fp.kind()));
+    }
+    if is_signbit_builtin(name) || crate::float::is_fp_compare_builtin(name) {
+        return Some(CType::int_type());
+    }
+    if is_memory_builtin(name) {
+        return Some(CType::pointer(CType::Void));
+    }
+    None
+}
+
+/// The operand of `__builtin_signbit*` is arithmetic, the rule semantic
+/// analysis applies. An operand whose type the parser cannot work out is
+/// left to semantic analysis.
+fn check_uneval_signbit(arg: &Expr, env: Env) -> Result<(), BoundErr> {
+    match rvalue_type(arg, env) {
+        Ok(ty) if !ty.is_arithmetic() => Err(BoundErr::SignbitOperand),
+        _ => Ok(()),
+    }
+}
+
+/// The operands of `__builtin_memcpy`, `__builtin_memmove`, and
+/// `__builtin_memset`, as semantic analysis checks them: a pointer
+/// destination; a pointer source, or an integer value for memset; an
+/// integer size. An operand whose type the parser cannot work out is left
+/// to semantic analysis.
+fn check_uneval_memory_builtin(name: &str, args: &[Expr], env: Env) -> Result<(), BoundErr> {
+    let known = |arg: &Expr| rvalue_type(arg, env).ok();
+    if known(&args[0]).is_some_and(|ty| !ty.is_pointer()) {
+        return Err(BoundErr::MemoryDest);
+    }
+    if name == "__builtin_memset" {
+        if known(&args[1]).is_some_and(|ty| !ty.is_integer()) {
+            return Err(BoundErr::MemsetValue);
+        }
+    } else if known(&args[1]).is_some_and(|ty| !ty.is_pointer()) {
+        return Err(BoundErr::MemorySource);
+    }
+    if known(&args[2]).is_some_and(|ty| !ty.is_integer()) {
+        return Err(BoundErr::MemorySize);
+    }
+    Ok(())
 }
 
 fn uneval_lvalue(expr: &Expr, env: Env) -> bool {
@@ -4460,11 +4556,8 @@ fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
         Expr::Comma { right, .. } => rvalue_type(right, env),
         Expr::Call { callee, .. } => {
             if let Expr::Var { name, .. } = callee.as_ref() {
-                if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
-                    return Ok(CType::Float(fp.kind()));
-                }
-                if crate::float::is_fp_compare_builtin(name) {
-                    return Ok(CType::int_type());
+                if let Some(ty) = builtin_result_type(name) {
+                    return Ok(ty);
                 }
             }
             let callee = rvalue_type(callee, env)?;
@@ -5995,6 +6088,177 @@ func int main
         parsed(
             "enum { A = sizeof(__builtin_isgreater(1, 2.0f)), B = sizeof(__builtin_isless(1.0L, 'a')),\n\
              C = sizeof(__builtin_isunordered(1.0, 2.0)) };",
+        );
+    }
+
+    #[test]
+    fn restrict_function_return_requires_pointer() {
+        // C11 6.7.3p2: types other than pointer types whose referenced type
+        // is an object type shall not be restrict-qualified. A function
+        // return type is no exception.
+        for source in [
+            "int restrict f(void);",
+            "int restrict f(void) { return 0; }",
+            "void g(void) { int restrict f(void); }",
+            "const int restrict f(void);",
+            "int restrict (*f(void))(void);",
+            "unsigned long s = sizeof(int restrict (*)(void));",
+        ] {
+            let err = parse_err(source);
+            assert!(
+                err.contains("restrict requires a pointer type"),
+                "{source}: {err}"
+            );
+        }
+        // A restrict-qualified pointer to an object type is valid as a
+        // return type and as a parameter type.
+        parsed("int *restrict f(void);");
+        parsed("int *restrict f(void) { return 0; }");
+        parsed("void g(void) { int *restrict f(void); }");
+        parsed("void h(int *restrict p, int *restrict q);");
+        parsed("void h(int *restrict p, int *restrict q) { *p = *q; }");
+        parsed("typedef int *restrict (*fp)(int *restrict);");
+        parsed("unsigned long s = sizeof(int *restrict (*)(void));");
+    }
+
+    #[test]
+    fn constant_contexts_check_comparison_pointer_compatibility() {
+        // C11 6.5.9p2: two pointer operands of an equality operator point
+        // to compatible types (ignoring qualifiers), or one of them points
+        // to void. C11 6.5.8p2: two pointer operands of a relational
+        // operator point to compatible object types. These constraints
+        // hold in an unevaluated sizeof operand that the parser folds.
+        for source in [
+            "enum { N = sizeof((int *)0 == (double *)0) };",
+            "int a[sizeof((int *)0 != (long *)0)];",
+            "_Static_assert(sizeof((int *)0 < (double *)0), \"\");",
+            "struct B { int x : sizeof((char *)0 >= (unsigned char *)0); };",
+            "int *p; double *q; enum { N = sizeof(p == q) };",
+            "enum { N = sizeof((char **)0 == (const char **)0) };",
+            "enum { N = sizeof((int *)0 <= (void *)0) };",
+            "int x[2]; long y[2]; enum { N = sizeof(x == y) };",
+            "struct S { int a[8]; };\n\
+             enum { N = __builtin_offsetof(struct S, a[sizeof((int *)0 == (float *)0)]) };",
+        ] {
+            let err = parse_err(source);
+            assert!(
+                err.contains("invalid operands to a comparison"),
+                "{source}: {err}"
+            );
+        }
+        // Compatible pointees, differing qualifiers, void pointers in an
+        // equality, and null pointer constants still fold.
+        parsed(
+            "int *p; const int *cp; void *v; int x[2];\n\
+             enum { A = sizeof(p == cp), B = sizeof(p < cp), C = sizeof(p == v),\n\
+             D = sizeof(v != cp), E = sizeof(p == 0), F = sizeof(x == p),\n\
+             G = sizeof((int (*)[2])0 == (int (*)[])0), H = sizeof((char *)0 > (volatile char *)0) };",
+        );
+    }
+
+    #[test]
+    fn constant_contexts_type_nested_builtin_calls() {
+        // __builtin_signbit* yields int and __builtin_memcpy, memmove, and
+        // memset yield void *, as in semantic analysis. A call nested in a
+        // parser-folded constant keeps that type, so the operand rules of
+        // an enclosing comparison builtin or operator apply to it.
+        for source in [
+            "enum { N = sizeof(__builtin_isgreater(__builtin_signbit(1.0), 2)) };",
+            "enum { N = sizeof(__builtin_isless(__builtin_signbitf(1.0f), __builtin_signbitl(2.0L))) };",
+            "int a[sizeof(__builtin_isgreater(__builtin_signbit(1.0), 2))];",
+            "_Static_assert(sizeof(__builtin_islessequal(__builtin_signbit(1.0), 2)), \"\");",
+            "struct B { int x : sizeof(__builtin_isunordered(1, __builtin_signbit(2.0))); };",
+            "enum { N = sizeof(__builtin_isgreater(__builtin_memcpy((char *)0, (char *)0, 1), 1.0)) };",
+            "struct S { int a[8]; };\n\
+             enum { N = __builtin_offsetof(struct S, a[sizeof(__builtin_isgreater(__builtin_signbit(1.0), 2))]) };",
+        ] {
+            let err = parse_err(source);
+            assert!(err.contains("non-floating-point arguments"), "{source}: {err}");
+        }
+        for source in [
+            "int *p; double *q; enum { N = sizeof(__builtin_memcpy(p, p, 1) < q) };",
+            // A call is not an integer constant expression (C11 6.6p6), so
+            // the int result is no null pointer constant. Clang rejects
+            // this; GCC folds the call and accepts it.
+            "enum { N = sizeof(__builtin_signbit(1.0) == (int *)0) };",
+            "enum { N = sizeof(__builtin_memset((char *)0, 0, 1) == 1.0) };",
+        ] {
+            let err = parse_err(source);
+            assert!(
+                err.contains("invalid operands to a comparison"),
+                "{source}: {err}"
+            );
+        }
+        // The builtins' own operand constraints, as semantic analysis
+        // states them.
+        for (source, message) in [
+            (
+                "enum { N = sizeof(__builtin_signbit((int *)0)) };",
+                "requires an arithmetic argument",
+            ),
+            (
+                "struct T { double d; } t; enum { N = sizeof(__builtin_signbitl(t)) };",
+                "requires an arithmetic argument",
+            ),
+            (
+                "enum { N = sizeof(__builtin_memcpy(1, (char *)0, 1)) };",
+                "destination must be a pointer",
+            ),
+            (
+                "enum { N = sizeof(__builtin_memmove((char *)0, 1.0, 1)) };",
+                "source must be a pointer",
+            ),
+            (
+                "enum { N = sizeof(__builtin_memset((char *)0, (char *)0, 1)) };",
+                "value must be an integer",
+            ),
+            (
+                "enum { N = sizeof(__builtin_memcpy((char *)0, (char *)0, (char *)0)) };",
+                "size must be an integer",
+            ),
+        ] {
+            let err = parse_err(source);
+            assert!(err.contains(message), "{source}: {err}");
+        }
+        // Valid uses fold with the right result type.
+        parsed(
+            "int *p; double *q;\n\
+             enum { A = sizeof(__builtin_signbit(1.0)), B = sizeof(__builtin_memcpy(p, p, 1)),\n\
+             C = sizeof(__builtin_isgreater(__builtin_signbit(1.0), 2.0)),\n\
+             D = sizeof(__builtin_memcpy(p, p, 1) == q), E = sizeof(__builtin_memset(p, 0, 4) == p),\n\
+             F = _Generic(__builtin_signbit(1.0), int: 1, default: 2),\n\
+             G = _Generic(__builtin_memmove(p, q, 1), void *: 1, default: 2),\n\
+             H = sizeof(__builtin_signbit(__builtin_nan(\"\"))) };",
+        );
+        parsed("_Static_assert(sizeof(__builtin_signbitf(1.0f)) == sizeof(int), \"\");");
+    }
+
+    #[test]
+    fn restrict_requires_pointer_to_object_type() {
+        // C11 6.7.3p2: the referenced type of a restrict-qualified pointer
+        // is an object type, so a pointer to a function may not be
+        // restrict-qualified, whether it is an object, a parameter, a
+        // typedef, or a function return type.
+        for source in [
+            "int (*restrict pick(void))(void);",
+            "int (*restrict fp)(void);",
+            "void g(void) { int (*restrict fp)(void); }",
+            "void h(int (*restrict p)(void));",
+            "typedef int (*restrict F)(void);",
+            "int (*restrict *pfp)(void);",
+        ] {
+            let err = parse_err(source);
+            assert!(
+                err.contains("restrict requires a pointer to an object type"),
+                "{source}: {err}"
+            );
+        }
+        // A restrict-qualified pointer to a pointer to a function, to an
+        // array, to void, or to a pointer stays valid.
+        parsed(
+            "int (**restrict fpp)(void); int **restrict pp; int (*restrict ap)[4];\n\
+             void *restrict v; int *restrict *restrict q;\n\
+             int (**restrict pick(void))(void);",
         );
     }
 }
