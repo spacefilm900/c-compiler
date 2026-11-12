@@ -4929,4 +4929,21 @@ int main(void) {
         assert!(!ir.contains("@memset("), "{ir}");
         assert_eq!(run_binary(&ir).0, 0, "{ir}");
     }
+
+    #[test]
+    fn runtime_offsetof_has_no_inbounds_gep_from_null() {
+        // A getelementptr inbounds from a null base with a nonzero offset
+        // is poison (LLVM LangRef, "getelementptr"), so a subscript that
+        // is not constant must not be lowered as an address from null.
+        let source = "struct In { char t; short s[3]; };\n\
+                      struct S { char c; int a[4]; struct In in[5]; };\n\
+                      unsigned long f(int i, unsigned j) {\n\
+                        return __builtin_offsetof(struct S, a[i])\n\
+                             + __builtin_offsetof(struct S, in[j].s[i]);\n\
+                      }\n\
+                      int main(void) { return f(2, 3) == 62 ? 0 : 1; }\n";
+        let ir = crate::compile_to_ir(source, "offsetof-runtime.c").unwrap();
+        assert!(!ir.contains("ptr null"), "{ir}");
+        assert_eq!(run_binary(&ir).0, 0, "{ir}");
+    }
 }
