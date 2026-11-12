@@ -7544,4 +7544,22 @@ int typed = _Generic(__builtin_offsetof(struct In, c), unsigned long: 1, default
             "{err}"
         );
     }
+
+    #[test]
+    fn void_pointer_equality_excludes_function_pointers() {
+        // C11 6.5.9p2: a void pointer may be compared for equality with a
+        // pointer to an object type, not with a pointer to a function. A
+        // null pointer constant may be compared with either.
+        for source in [
+            "int f(void); int g(void *v) { return v == f; }",
+            "int f(void); int g(const void *v) { return f != v; }",
+            "int g(void *v, int (*fp)(int)) { return fp == v; }",
+        ] {
+            let err = sema_err(source);
+            assert!(err.contains("invalid operands to '"), "{source}: {err}");
+        }
+        sema_ok("int f(void); int g(void) { return (void *)0 == f; }");
+        sema_ok("int f(void); int g(void) { return f != 0; }");
+        sema_ok("int g(void *v, int *p, const char *c) { return (v == p) + (c != v); }");
+    }
 }

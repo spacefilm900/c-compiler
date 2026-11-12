@@ -6261,4 +6261,27 @@ func int main
              int (**restrict pick(void))(void);",
         );
     }
+
+    #[test]
+    fn constant_contexts_void_pointer_equality_excludes_function_pointers() {
+        // C11 6.5.9p2 in a parser-folded sizeof operand: a void pointer and
+        // a pointer to a function are not comparable, but a null pointer
+        // constant, including (void *)0, is comparable with either.
+        for source in [
+            "int f(void); void *v; enum { N = sizeof(v == f) };",
+            "int (*fp)(void); const void *v; int a[sizeof(fp != v)];",
+            "int f(void); void *v; _Static_assert(sizeof(f == v), \"\");",
+        ] {
+            let err = parse_err(source);
+            assert!(
+                err.contains("invalid operands to a comparison"),
+                "{source}: {err}"
+            );
+        }
+        parsed(
+            "int f(void); void *v; int *p;\n\
+             enum { A = sizeof((void *)0 == f), B = sizeof(f != 0), C = sizeof(v == p),\n\
+             D = sizeof(f == (void *)(1 - 1)), E = sizeof((const char *)0 != v) };",
+        );
+    }
 }
