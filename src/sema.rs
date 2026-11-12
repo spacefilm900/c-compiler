@@ -7236,4 +7236,76 @@ int main(void) {
         // A runtime quiet malformed tag is accepted; IR lowering calls nan().
         sema_ok("int main(void) { return __builtin_nan(\"1xyz\") != 0.0; }");
     }
+
+    #[test]
+    fn offsetof_is_an_integer_constant_expression() {
+        // C11 7.19p3: offsetof(type, member-designator) is an integer
+        // constant expression of type size_t. <stddef.h> expands it to
+        // __builtin_offsetof, which accepts `.member` and `[constant]`
+        // designators after the first member name.
+        let unit = analyzed(
+            "\
+struct In { char a; double b; int c; };
+struct Out { short s; struct In items[3]; union { char k; long w; } u; struct { char p; int q; }; };
+_Static_assert(__builtin_offsetof(struct Out, items[2].c) == 8 + 2 * 24 + 16, \"nested\");
+enum { E = __builtin_offsetof(struct Out, u.w), Q = __builtin_offsetof(struct Out, q) };
+unsigned long direct = __builtin_offsetof(struct Out, items);
+unsigned long nested = __builtin_offsetof(struct Out, items[1].b);
+unsigned long computed = __builtin_offsetof(struct Out, items[1 + 1].c);
+unsigned long via_enum = E;
+unsigned long anon = Q;
+int bound[__builtin_offsetof(struct Out, items[0].c)];
+unsigned long bound_size = sizeof bound;
+int typed = _Generic(__builtin_offsetof(struct In, c), unsigned long: 1, default: 0);
+",
+        );
+        let value = |name: &str| {
+            unit.globals
+                .iter()
+                .find(|global| global.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"))
+                .int_init()
+        };
+        assert_eq!(value("direct"), Some(8));
+        assert_eq!(value("nested"), Some(8 + 24 + 8));
+        assert_eq!(value("computed"), Some(8 + 2 * 24 + 16));
+        assert_eq!(value("via_enum"), Some(80));
+        assert_eq!(value("anon"), Some(92));
+        assert_eq!(value("bound_size"), Some(4 * 24));
+        assert_eq!(value("typed"), Some(1));
+
+        // A non-constant subscript is not an integer constant expression.
+        sema_ok(
+            "struct S { int a[4]; }; int f(int i) { return (int)__builtin_offsetof(struct S, a[i]); }",
+        );
+        assert!(sema_err(
+            "struct S { int a[4]; }; int i; _Static_assert(__builtin_offsetof(struct S, a[i]) == 0, \"\");"
+        )
+        .contains("integer constant expression"));
+
+        // Constraints: a complete structure or union type, an existing
+        // member, no bit-field (C11 7.19p3), and `[]` only on arrays.
+        assert!(sema_err(
+            "struct S { int a : 3; }; unsigned long n = __builtin_offsetof(struct S, a);"
+        )
+        .contains("bit-field"));
+        assert!(sema_err(
+            "struct S { int a; }; unsigned long n = __builtin_offsetof(struct S, b);"
+        )
+        .contains("no member named 'b'"));
+        assert!(
+            sema_err("struct S; unsigned long n = __builtin_offsetof(struct S, a);")
+                .contains("incomplete")
+        );
+        assert!(sema_err("unsigned long n = __builtin_offsetof(int, a);")
+            .contains("structure or union"));
+        assert!(sema_err(
+            "struct S { int a; }; unsigned long n = __builtin_offsetof(struct S, a[1]);"
+        )
+        .contains("subscripted value is not an array"));
+        assert!(sema_err(
+            "struct S { int a[2]; }; unsigned long n = __builtin_offsetof(struct S, a.b);"
+        )
+        .contains("not a structure or union"));
+    }
 }
