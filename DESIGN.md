@@ -4,7 +4,7 @@ Main decisions for this compiler, taken from `PLAN.md`, `STATUS.md`, `README.md`
 
 ## Clean-room
 
-Frontend code (lexer, preprocessor, parser, semantic analysis, IR generation) is original. It is written from the C standard, the LLVM Language Reference, and the System V ABI. Allowed references, from `PLAN.md`, are those documents, Kaleidoscope-style tutorials, and other public specs. For the GNU-compatibility work, the GCC user manual's public documentation of builtins and attributes is also allowed. Clang and GCC source are not copied, translated, or closely paraphrased. Clang is a black-box oracle in the test harness and the LLVM backend that links the emitted `.ll` file. The compiler does not call into Clang's or GCC's frontend.
+Frontend code (lexer, preprocessor, parser, semantic analysis, IR generation) is original. It is written from the C standard, the LLVM Language Reference, and the System V ABI. Allowed references, from `PLAN.md`, are those documents, Kaleidoscope-style tutorials, and other public specs. For the GNU-compatibility work, the GCC user manual's public documentation of builtins, attributes, and language extensions is also allowed. Clang and GCC source are not copied, translated, or closely paraphrased. Clang is a black-box oracle in the test harness and the LLVM backend that links the emitted `.ll` file. The compiler does not call into Clang's or GCC's frontend.
 
 Approved by the owner on 2026-11-09 (pull request 1). The rule is also in `PLAN.md` (repository since the initial commit on 2026-11-08) and `BOT.md`.
 
