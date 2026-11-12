@@ -2214,6 +2214,10 @@ impl Parser<'_> {
                             "function cannot return a function",
                         ));
                     }
+                    // C11 6.7.3p2 applies to a return type as to any other
+                    // type: `int restrict f(void)` is a constraint violation
+                    // wherever the declarator appears.
+                    self.reject_bad_restrict(&ret, line, column)?;
                     if !params.prototype && !params.params.is_empty() {
                         return Err(self.error_at(
                             line,
