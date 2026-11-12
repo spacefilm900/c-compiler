@@ -7528,4 +7528,32 @@ int typed = _Generic(__builtin_offsetof(struct In, c), unsigned long: 1, default
         sema_ok("double f(void) { int nan = 0; return __builtin_nan(\"1xyz\") + nan; }");
         sema_ok("double nan(const char *);\ndouble f(void) { return __builtin_nan(\"1xyz\"); }");
     }
+
+    #[test]
+    fn unevaluated_generic_control_records_no_nan_call() {
+        // The controlling expression of a generic selection is not
+        // evaluated (C11 6.5.1.1p3), so a malformed tag there makes no
+        // library call and cannot clash with an object named nan.
+        sema_ok(
+            "extern int nan;\nint f(void) { return _Generic(__builtin_nan(\"1xyz\"), double: 1, default: 0); }",
+        );
+        sema_ok(
+            "float nanf;\nint f(void) { return _Generic(_Generic(0, int: __builtin_nanf(\"x\")), float: 1); }",
+        );
+        sema_ok(
+            "extern int nan;\nint f(void) { return _Generic(1 + __builtin_nan(\"q\"), double: 2, default: 3) + (int)sizeof(__builtin_nan(\"q\")); }",
+        );
+        // The selected association is evaluated, so it still clashes.
+        let err = sema_err(
+            "extern int nan;\ndouble f(void) { return _Generic(0, int: __builtin_nan(\"1xyz\"), default: 0.0); }",
+        );
+        assert!(err.contains("conflicts with the object"), "{err}");
+        let err = sema_err(
+            "extern int nan;\ndouble f(void) { return _Generic(__builtin_nan(\"a\"), double: __builtin_nan(\"b\")); }",
+        );
+        assert!(
+            err.contains("conflicts with the object") && err.contains(":2:"),
+            "{err}"
+        );
+    }
 }
