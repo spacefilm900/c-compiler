@@ -5873,4 +5873,59 @@ func int main
             parse(&tokens, name).unwrap_or_else(|err| panic!("{name}: {err}"));
         }
     }
+
+    #[test]
+    fn constant_contexts_check_comparison_operands() {
+        // C11 6.5.8p2 and 6.5.9p2 are constraints, so they apply in an
+        // operand of sizeof even though it is not evaluated, including a
+        // subscript of __builtin_offsetof that folds to a constant.
+        for source in [
+            "enum { N = sizeof(1 < (int *)0) };",
+            "int a[sizeof((int *)0 > 1.0)];",
+            "_Static_assert(sizeof((int *)0 == 1), \"\");",
+            "_Static_assert(sizeof((int *)0 != 1.0), \"\");",
+            "struct T { int x; }; struct T t; enum { N = sizeof(t < t) };",
+            "struct B { int x : sizeof(1 >= (char *)0); };",
+            "struct S { int a[8]; };\n\
+             enum { N = __builtin_offsetof(struct S, a[sizeof(1 < (int *)0)]) };",
+        ] {
+            let err = parse_err(source);
+            assert!(
+                err.contains("invalid operands to a comparison"),
+                "{source}: {err}"
+            );
+        }
+        // Valid comparisons still fold.
+        parsed(
+            "int *p;\nenum { A = sizeof(1 < 2.0), B = sizeof(p == 0), C = sizeof(p < p),\n\
+             D = sizeof(p != (void *)0), E = sizeof(0 == p), F = sizeof(1 == 2) };",
+        );
+        parsed(
+            "struct S { int a[8]; };\n\
+             enum { N = __builtin_offsetof(struct S, a[sizeof((int *)0 == 0)]) };",
+        );
+    }
+
+    #[test]
+    fn constant_contexts_check_fp_compare_builtin_operands() {
+        // Both operands arithmetic and at least one real floating, as
+        // semantic analysis requires; parser-folded contexts apply the
+        // same rule.
+        for source in [
+            "enum { N = sizeof(__builtin_isgreater(1, 2)) };",
+            "int a[sizeof(__builtin_isless((int *)0, 1.0))];",
+            "_Static_assert(sizeof(__builtin_isunordered('a', 2L)) == 4, \"\");",
+            "struct B { int x : sizeof(__builtin_islessgreater(1, 2)); };",
+            "struct T { double d; }; struct T t; enum { N = sizeof(__builtin_islessequal(t, 1.0)) };",
+            "struct S { int a[8]; };\n\
+             enum { N = __builtin_offsetof(struct S, a[sizeof(__builtin_isgreaterequal(1, 2))]) };",
+        ] {
+            let err = parse_err(source);
+            assert!(err.contains("non-floating-point arguments"), "{source}: {err}");
+        }
+        parsed(
+            "enum { A = sizeof(__builtin_isgreater(1, 2.0f)), B = sizeof(__builtin_isless(1.0L, 'a')),\n\
+             C = sizeof(__builtin_isunordered(1.0, 2.0)) };",
+        );
+    }
 }
