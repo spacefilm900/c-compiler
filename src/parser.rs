@@ -3897,6 +3897,11 @@ enum BoundErr {
     InvalidOperand,
     InvalidCompare,
     FpCompareOperands,
+    SignbitOperand,
+    MemoryDest,
+    MemorySource,
+    MemsetValue,
+    MemorySize,
     GenericDupDefault,
     GenericBadType,
     GenericDupType,
@@ -3923,6 +3928,11 @@ fn bound_message(err: BoundErr) -> &'static str {
         BoundErr::FpCompareOperands => {
             "non-floating-point arguments in call to a floating-point comparison builtin"
         }
+        BoundErr::SignbitOperand => "__builtin_signbit requires an arithmetic argument",
+        BoundErr::MemoryDest => "memory builtin destination must be a pointer",
+        BoundErr::MemorySource => "memory builtin source must be a pointer",
+        BoundErr::MemsetValue => "__builtin_memset value must be an integer",
+        BoundErr::MemorySize => "memory builtin size must be an integer",
         BoundErr::GenericDupDefault => "duplicate default generic association",
         BoundErr::GenericBadType => "type in generic association is not a complete object type",
         BoundErr::GenericDupType => {
@@ -4185,6 +4195,12 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
                     if crate::float::is_fp_compare_builtin(name) {
                         check_uneval_fp_compare(&args[0], &args[1], env)?;
                     }
+                    if is_signbit_builtin(name) {
+                        check_uneval_signbit(&args[0], env)?;
+                    }
+                    if is_memory_builtin(name) {
+                        check_uneval_memory_builtin(name, args, env)?;
+                    }
                     if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
                         if fp.requires_string_literal()
                             && !crate::float::FpFormatBuiltin::is_string_literal_arg(&args[0])
@@ -4331,11 +4347,75 @@ fn builtin_arity(name: &str) -> Option<usize> {
         return Some(fp.arity());
     }
     match name {
-        "__builtin_signbit" | "__builtin_signbitf" | "__builtin_signbitl" => Some(1),
-        "__builtin_memcpy" | "__builtin_memmove" | "__builtin_memset" => Some(3),
+        name if is_signbit_builtin(name) => Some(1),
+        name if is_memory_builtin(name) => Some(3),
         name if crate::float::is_fp_compare_builtin(name) => Some(2),
         _ => None,
     }
+}
+
+fn is_signbit_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "__builtin_signbit" | "__builtin_signbitf" | "__builtin_signbitl"
+    )
+}
+
+fn is_memory_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "__builtin_memcpy" | "__builtin_memmove" | "__builtin_memset"
+    )
+}
+
+/// The result type semantic analysis gives a supported builtin call:
+/// the floating type of `__builtin_nan*`, `__builtin_inf*`, and
+/// `__builtin_huge_val*`; `int` for `__builtin_signbit*` and the
+/// comparison builtins; `void *` for the memory builtins.
+fn builtin_result_type(name: &str) -> Option<CType> {
+    if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
+        return Some(CType::Float(fp.kind()));
+    }
+    if is_signbit_builtin(name) || crate::float::is_fp_compare_builtin(name) {
+        return Some(CType::int_type());
+    }
+    if is_memory_builtin(name) {
+        return Some(CType::pointer(CType::Void));
+    }
+    None
+}
+
+/// The operand of `__builtin_signbit*` is arithmetic, the rule semantic
+/// analysis applies. An operand whose type the parser cannot work out is
+/// left to semantic analysis.
+fn check_uneval_signbit(arg: &Expr, env: Env) -> Result<(), BoundErr> {
+    match rvalue_type(arg, env) {
+        Ok(ty) if !ty.is_arithmetic() => Err(BoundErr::SignbitOperand),
+        _ => Ok(()),
+    }
+}
+
+/// The operands of `__builtin_memcpy`, `__builtin_memmove`, and
+/// `__builtin_memset`, as semantic analysis checks them: a pointer
+/// destination; a pointer source, or an integer value for memset; an
+/// integer size. An operand whose type the parser cannot work out is left
+/// to semantic analysis.
+fn check_uneval_memory_builtin(name: &str, args: &[Expr], env: Env) -> Result<(), BoundErr> {
+    let known = |arg: &Expr| rvalue_type(arg, env).ok();
+    if known(&args[0]).is_some_and(|ty| !ty.is_pointer()) {
+        return Err(BoundErr::MemoryDest);
+    }
+    if name == "__builtin_memset" {
+        if known(&args[1]).is_some_and(|ty| !ty.is_integer()) {
+            return Err(BoundErr::MemsetValue);
+        }
+    } else if known(&args[1]).is_some_and(|ty| !ty.is_pointer()) {
+        return Err(BoundErr::MemorySource);
+    }
+    if known(&args[2]).is_some_and(|ty| !ty.is_integer()) {
+        return Err(BoundErr::MemorySize);
+    }
+    Ok(())
 }
 
 fn uneval_lvalue(expr: &Expr, env: Env) -> bool {
@@ -4470,11 +4550,8 @@ fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
         Expr::Comma { right, .. } => rvalue_type(right, env),
         Expr::Call { callee, .. } => {
             if let Expr::Var { name, .. } = callee.as_ref() {
-                if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
-                    return Ok(CType::Float(fp.kind()));
-                }
-                if crate::float::is_fp_compare_builtin(name) {
-                    return Ok(CType::int_type());
+                if let Some(ty) = builtin_result_type(name) {
+                    return Ok(ty);
                 }
             }
             let callee = rvalue_type(callee, env)?;
