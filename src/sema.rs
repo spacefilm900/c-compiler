@@ -7414,4 +7414,44 @@ int typed = _Generic(__builtin_offsetof(struct In, c), unsigned long: 1, default
             assert!(sema_err(&format!("int x = {name}(1.0, 2.0);")).contains("not a constant"));
         }
     }
+
+    #[test]
+    fn external_object_clashing_with_a_runtime_nan_call() {
+        // A malformed quiet __builtin_nan* tag at run time calls the C
+        // library nan/nanf/nanl. An object with external linkage and the
+        // same name is undefined behaviour (C11 7.1.3p1-p2) and would make
+        // the call target the object, so it is a diagnostic at the call.
+        for source in [
+            "extern int nan;\ndouble f(void) { return __builtin_nan(\"1xyz\"); }",
+            "int nan;\ndouble f(void) { return __builtin_nan(\"1xyz\"); }",
+            "double f(void) { extern int nan; return __builtin_nan(\"1xyz\"); }",
+            "double f(void) { return __builtin_nan(\"1xyz\"); }\nint nan;",
+            "float nanf;\nfloat f(void) { return __builtin_nanf(\"x\"); }",
+            "extern char nanl[];\nlong double f(void) { return __builtin_nanl(\"x\"); }",
+        ] {
+            let err = sema_err(source);
+            assert!(err.contains("conflicts with the object"), "{source}: {err}");
+            assert!(err.contains("external linkage"), "{source}: {err}");
+            assert!(
+                err.contains(":2:") || source.starts_with("double f"),
+                "{source}: {err}"
+            );
+        }
+        // The diagnostic points at the builtin call.
+        let err = sema_err("int nan;\ndouble f(void) {\n  return __builtin_nan(\"1xyz\");\n}");
+        assert!(err.contains(":3:10"), "{err}");
+
+        // No clash: a valid tag folds, the other library name, an
+        // unevaluated operand, internal linkage, a block-scope static, a
+        // local, and a user-declared function.
+        sema_ok("extern int nan;\ndouble f(void) { return __builtin_nan(\"\") + __builtin_nan(\"0x10\"); }");
+        sema_ok("int nan;\nfloat f(void) { return __builtin_nanf(\"1xyz\"); }");
+        sema_ok(
+            "extern int nan;\nunsigned long f(void) { return sizeof(__builtin_nan(\"1xyz\")); }",
+        );
+        sema_ok("static int nan;\ndouble f(void) { return __builtin_nan(\"1xyz\"); }");
+        sema_ok("int f(void) { static int nan; return (int)__builtin_nan(\"1xyz\") + nan; }");
+        sema_ok("double f(void) { int nan = 0; return __builtin_nan(\"1xyz\") + nan; }");
+        sema_ok("double nan(const char *);\ndouble f(void) { return __builtin_nan(\"1xyz\"); }");
+    }
 }

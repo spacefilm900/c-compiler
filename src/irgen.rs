@@ -4673,4 +4673,150 @@ int main(void) {
         assert_eq!(run_binary(&ir), run_reference(source));
         assert_eq!(run_binary(&ir).0, 1);
     }
+
+    #[test]
+    fn internal_object_named_like_a_hidden_libcall_is_renamed() {
+        // LLVM IR has one namespace for global variables and functions.
+        // A file-scope `static int nan;` is valid C11 (7.1.3 reserves
+        // `nan` at file scope only with <math.h>), and its internal
+        // linkage cannot meet the library at link time. When IR lowering
+        // itself calls nan/nanf/nanl, the object gets a private symbol
+        // so `@nan` names only the library function.
+        let source = "\
+static int nan;
+double f(void) { return __builtin_nan(\"1xyz\"); }
+int main(void) { double d = f(); return (d == d) + nan; }
+";
+        let ir = crate::compile_to_ir(source, "nan-clash.c").unwrap();
+        assert!(!ir.contains("@nan = "), "object must not keep @nan: {ir}");
+        assert!(ir.contains("declare double @nan(ptr)"), "{ir}");
+        assert!(ir.contains("call double @nan(ptr"), "{ir}");
+        assert_eq!(run_binary(&ir).0, 0, "{ir}");
+
+        for (decl, call, ty) in [
+            (
+                "static float nanf = 2.0f;",
+                "__builtin_nanf(\"x\")",
+                "float",
+            ),
+            (
+                "static long double nanl = 2.0L;",
+                "__builtin_nanl(\"x\")",
+                "long double",
+            ),
+        ] {
+            let lib = if ty == "float" { "nanf" } else { "nanl" };
+            let source = format!(
+                "{decl}\n{ty} f(void) {{ return {call}; }}\n\
+                 int main(void) {{ {ty} d = f(); return (d == d) + ({lib} != 2.0f); }}\n"
+            );
+            let ir = crate::compile_to_ir(&source, "nanf-clash.c").unwrap();
+            assert!(!ir.contains(&format!("@{lib} = ")), "{ir}");
+            assert!(
+                ir.contains(&format!(
+                    "call {} @{lib}(ptr",
+                    if ty == "float" { "float" } else { "x86_fp80" }
+                )),
+                "{ir}"
+            );
+            assert_eq!(run_binary(&ir).0, 0, "{ir}");
+        }
+
+        // Every reference follows the renamed object: an address constant,
+        // a block-scope extern that names the same object, and a pointer
+        // initializer in a block-scope static.
+        let source = "\
+static int nan = 40;
+static int *where = &nan;
+int get(void) { extern int nan; return nan; }
+double f(void) { return __builtin_nan(\"-1\"); }
+int main(void) {
+    static int *again = &nan;
+    double d = f();
+    if (d == d) return 1;
+    *where += 1;
+    return get() + *again - 82;
+}
+";
+        let ir = crate::compile_to_ir(source, "nan-refs.c").unwrap();
+        assert!(!ir.contains("@nan = "), "{ir}");
+        assert_eq!(run_binary(&ir).0, 0, "{ir}");
+    }
+
+    #[test]
+    fn no_rename_without_a_hidden_libcall_clash() {
+        // A valid tag folds to a constant and makes no call.
+        for tag in ["", "0x10"] {
+            let ir = crate::compile_to_ir(
+                &format!(
+                    "static int nan = 3;\ndouble f(void) {{ return __builtin_nan(\"{tag}\"); }}\n\
+                     int main(void) {{ return nan; }}\n"
+                ),
+                "nan-valid.c",
+            )
+            .unwrap();
+            assert!(ir.contains("@nan = internal global i32 3"), "{ir}");
+            assert!(!ir.contains("@nan("), "{ir}");
+        }
+        // No builtin at all.
+        let ir = crate::compile_to_ir(
+            "static int nan = 3;\nint main(void) { return nan; }\n",
+            "nan-plain.c",
+        )
+        .unwrap();
+        assert!(ir.contains("@nan = internal global i32 3"), "{ir}");
+        // A block-scope static has its own symbol already; the library
+        // call still names @nan.
+        let source = "\
+int main(void) {
+    static int nan = 5;
+    double d = __builtin_nan(\"1xyz\");
+    return (d == d) + nan - 5;
+}
+";
+        let ir = crate::compile_to_ir(source, "nan-block.c").unwrap();
+        assert!(ir.contains("call double @nan(ptr"), "{ir}");
+        assert!(ir.contains("@main.nan."), "{ir}");
+        assert_eq!(run_binary(&ir).0, 0, "{ir}");
+        // A user-defined static function named nan stays the call target.
+        let source = "\
+static double nan(const char *tag) { return tag[0] == '1' ? 42.0 : 0.0; }
+int main(void) { return (int)__builtin_nan(\"1xyz\") - 42; }
+";
+        let ir = crate::compile_to_ir(source, "nan-user.c").unwrap();
+        assert!(ir.contains("define internal double @nan(ptr"), "{ir}");
+        assert!(!ir.contains("declare double @nan"), "{ir}");
+        assert_eq!(run_binary(&ir).0, 0, "{ir}");
+    }
+
+    #[test]
+    fn internal_names_of_memory_libcalls_are_renamed() {
+        // llvm.memcpy, llvm.memmove, and llvm.memset may be lowered to
+        // calls of the C library memcpy, memmove, and memset (LLVM
+        // LangRef), and the optimizer may introduce those calls too. An
+        // internal object or function with one of those names would
+        // capture the call in the object file, so it gets a private name.
+        let source = "\
+static int memmove = 5;
+static int memcpy = 6;
+static int memset(int x) { return x + 1; }
+struct Big { char b[4096]; };
+struct Big g1, g2;
+int main(void) {
+    struct Big local;
+    char buf[4096];
+    __builtin_memset(local.b, 1, sizeof local.b);
+    __builtin_memcpy(buf, local.b, sizeof buf);
+    g1 = local;
+    g2 = g1;
+    return g2.b[100] + buf[4000] + memmove + memcpy + memset(-1) - 13;
+}
+";
+        let ir = crate::compile_to_ir(source, "mem-clash.c").unwrap();
+        for name in ["memmove", "memcpy"] {
+            assert!(!ir.contains(&format!("@{name} = ")), "{name}: {ir}");
+        }
+        assert!(!ir.contains("@memset("), "{ir}");
+        assert_eq!(run_binary(&ir).0, 0, "{ir}");
+    }
 }
