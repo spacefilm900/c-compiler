@@ -336,19 +336,9 @@ ieee/acc2.c compile-error
 ieee/cdivchkd.c complex
 ieee/cdivchkf.c complex
 ieee/cdivchkld.c complex
-ieee/compare-fp-1.c builtin
-ieee/compare-fp-3.c builtin
-ieee/compare-fp-4.c builtin
 ieee/copysign1.c builtin
 ieee/copysign2.c builtin
-ieee/fp-cmp-4.c builtin
-ieee/fp-cmp-4f.c builtin
-ieee/fp-cmp-4l.c builtin
-ieee/fp-cmp-5.c builtin
 ieee/fp-cmp-7.c builtin
-ieee/fp-cmp-8.c builtin
-ieee/fp-cmp-8f.c builtin
-ieee/fp-cmp-8l.c builtin
 ieee/fp-cmp-cond-1.c builtin
 ieee/inf-4.c builtin
 ieee/mzero2.c builtin
@@ -362,7 +352,6 @@ ieee/pr109386.c builtin
 ieee/pr119002.c builtin
 ieee/pr30704.c compile-error
 ieee/pr36332.c builtin
-ieee/pr38016.c builtin
 ieee/pr50310.c compile-error
 ieee/pr72824-2.c compile-error
 ieee/pr72824.c builtin
@@ -494,7 +483,6 @@ pr28865.c flexible-array
 pr28982b.c compile-error
 pr29006.c compile-error
 pr30314.c compile-error
-pr30778.c compile-error
 pr31072.c builtin
 pr31448-2.c builtin
 pr31448.c builtin
