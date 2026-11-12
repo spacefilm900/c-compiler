@@ -2604,6 +2604,28 @@ impl Gen {
         Some(crate::float::llvm_const(fp.kind(), bits))
     }
 
+    /// A C11 7.12.14 comparison builtin. Both operands are converted to
+    /// their common real type and compared with one quiet `fcmp`; the
+    /// `i1` result widens to an `int` 0 or 1.
+    fn gen_fp_compare(&mut self, name: &str, args: &[Expr]) -> Option<String> {
+        let pred = crate::float::fp_compare_predicate(name)?;
+        let left_ty = args[0].ty().expect("typed");
+        let right_ty = args[1].ty().expect("typed");
+        let common = common_real(&left_ty, &right_ty);
+        let left = self.gen_val(&args[0]);
+        let left = self.convert(&left, &left_ty, &common);
+        let right = self.gen_val(&args[1]);
+        let right = self.convert(&right, &right_ty, &common);
+        let cmp = self.fresh();
+        self.emit(&format!(
+            "  {cmp} = fcmp {pred} {} {left}, {right}",
+            common.ir_type()
+        ));
+        let out = self.fresh();
+        self.emit(&format!("  {out} = zext i1 {cmp} to i32"));
+        Some(out)
+    }
+
     fn gen_lib_nan(&mut self, name: &str, kind: FloatKind, tag: &Expr) -> String {
         match name {
             "nan" => self.needs_nan = true,
@@ -2626,6 +2648,9 @@ impl Gen {
             return Some(lowered);
         }
         if let Some(lowered) = self.gen_fp_format_builtin(&resolved.name, args) {
+            return Some(lowered);
+        }
+        if let Some(lowered) = self.gen_fp_compare(&resolved.name, args) {
             return Some(lowered);
         }
         let sig =

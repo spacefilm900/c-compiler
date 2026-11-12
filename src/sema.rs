@@ -3336,6 +3336,10 @@ impl Sema {
                     let name = name.clone();
                     return self.check_fp_format_builtin(expr, &name);
                 }
+                if crate::float::is_fp_compare_builtin(name) {
+                    let name = name.clone();
+                    return self.check_fp_compare(expr, &name);
+                }
             }
         }
         let direct = match expr {
@@ -3465,6 +3469,54 @@ impl Sema {
                 args[0].line(),
                 args[0].column(),
                 format!("{name} requires an arithmetic argument"),
+            );
+        }
+        if let Expr::Call { resolved, .. } = expr {
+            *resolved = Some(CallRes {
+                name: name.to_string(),
+                ret: CType::int_type(),
+                params: Vec::new(),
+                variadic: false,
+                indirect: false,
+            });
+        }
+        expr.set_ty(CType::int_type());
+        Ok(())
+    }
+
+    /// `__builtin_isgreater`, `__builtin_isgreaterequal`,
+    /// `__builtin_isless`, `__builtin_islessequal`,
+    /// `__builtin_islessgreater`, and `__builtin_isunordered`: the C11
+    /// 7.12.14 comparison macros as glibc `<math.h>` spells them (GCC
+    /// "Other Builtins").
+    ///
+    /// Both operands are arithmetic and at least one is a real floating
+    /// type; IR lowering converts both by the usual arithmetic
+    /// conversions (6.3.1.8). The result is `int` 0 or 1.
+    fn check_fp_compare(&mut self, expr: &mut Expr, name: &str) -> Result<(), Diagnostic> {
+        let (line, column) = (expr.line(), expr.column());
+        let Expr::Call { args, .. } = expr else {
+            unreachable!("comparison builtin");
+        };
+        if args.len() != 2 {
+            return self.err(line, column, format!("{name} expects 2 arguments"));
+        }
+        for arg in args.iter_mut() {
+            self.check_expr(arg)?;
+            self.decay(arg)?;
+        }
+        let left = args[0].ty().expect("typed");
+        let right = args[1].ty().expect("typed");
+        if !left.is_arithmetic() || !right.is_arithmetic() || !(left.is_float() || right.is_float())
+        {
+            return self.err(
+                line,
+                column,
+                format!(
+                    "non-floating-point arguments in call to {name} ('{}' and '{}')",
+                    left.display(),
+                    right.display()
+                ),
             );
         }
         if let Expr::Call { resolved, .. } = expr {
@@ -7358,6 +7410,8 @@ int typed = _Generic(__builtin_offsetof(struct In, c), unsigned long: 1, default
                 sema_err(&format!("int f(double a) {{ return {name}(a, a, a); }}"))
                     .contains("expects 2 arguments")
             );
+            // Not a constant expression (Clang 19 black-box agrees).
+            assert!(sema_err(&format!("int x = {name}(1.0, 2.0);")).contains("not a constant"));
         }
     }
 }

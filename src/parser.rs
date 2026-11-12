@@ -4254,6 +4254,7 @@ fn builtin_arity(name: &str) -> Option<usize> {
     match name {
         "__builtin_signbit" | "__builtin_signbitf" | "__builtin_signbitl" => Some(1),
         "__builtin_memcpy" | "__builtin_memmove" | "__builtin_memset" => Some(3),
+        name if crate::float::is_fp_compare_builtin(name) => Some(2),
         _ => None,
     }
 }
@@ -4392,6 +4393,9 @@ fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
             if let Expr::Var { name, .. } = callee.as_ref() {
                 if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
                     return Ok(CType::Float(fp.kind()));
+                }
+                if crate::float::is_fp_compare_builtin(name) {
+                    return Ok(CType::int_type());
                 }
             }
             let callee = rvalue_type(callee, env)?;
