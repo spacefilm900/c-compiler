@@ -6298,4 +6298,30 @@ func int main
              D = sizeof(f == (void *)(1 - 1)), E = sizeof((const char *)0 != v) };",
         );
     }
+
+    #[test]
+    fn gnu_dialect_folded_void_pointer_function_pointer_equality() {
+        // The parser's folded constants follow the dialect: -std=gnu11
+        // accepts a void pointer compared with a function pointer.
+        use crate::Dialect;
+        for source in [
+            "int f(void); void *v; enum { N = sizeof(v == f) };",
+            "int f(void); void *v; enum { N = sizeof(v != &f) };",
+            "int (*fp)(void); const void *v; int a[sizeof(fp != v)];",
+        ] {
+            let tokens = lex(source, "t.c").unwrap();
+            let err = parse_dialect(&tokens, "t.c", Dialect::C11)
+                .err()
+                .map(|err| err.to_string())
+                .unwrap_or_default();
+            assert!(
+                err.contains("invalid operands to a comparison"),
+                "{source}: {err}"
+            );
+            assert!(
+                parse_dialect(&tokens, "t.c", Dialect::Gnu11).is_ok(),
+                "{source}"
+            );
+        }
+    }
 }

@@ -7562,4 +7562,57 @@ int typed = _Generic(__builtin_offsetof(struct In, c), unsigned long: 1, default
         sema_ok("int f(void); int g(void) { return f != 0; }");
         sema_ok("int g(void *v, int *p, const char *c) { return (v == p) + (c != v); }");
     }
+
+    fn sema_dialect(source: &str, dialect: crate::Dialect) -> Result<Vec<String>, String> {
+        let tokens = lex(source, "gnu.c").unwrap();
+        let mut unit = crate::parser::parse_dialect(&tokens, "gnu.c", dialect)
+            .map_err(|err| err.to_string())?;
+        analyze_dialect(&mut unit, "gnu.c", &tokens, dialect)
+            .map(|warnings| warnings.iter().map(ToString::to_string).collect())
+            .map_err(|err| err.to_string())
+    }
+
+    #[test]
+    fn gnu_dialect_accepts_void_pointer_function_pointer_equality() {
+        // C11 6.5.9p2 makes `void *` == pointer-to-function a constraint
+        // violation. -std=gnu11 accepts it as an extension, as GCC 14 and
+        // Clang 19 do outside their pedantic modes (black-box), with a
+        // warning; -std=c11, the default, keeps the error.
+        use crate::Dialect;
+        for source in [
+            "int f(void); int g(void *v) { return v == f; }",
+            "int f(void); int g(void *v) { return v != &f; }",
+            "int f(void); int g(const void *v) { return f != v; }",
+            "int g(void *v, int (*fp)(int)) { return fp == v; }",
+        ] {
+            let err = sema_dialect(source, Dialect::C11).unwrap_err();
+            assert!(err.contains("invalid operands to '"), "{source}: {err}");
+            let warnings = sema_dialect(source, Dialect::Gnu11).unwrap();
+            assert_eq!(warnings.len(), 1, "{source}: {warnings:?}");
+            assert!(
+                warnings[0].contains("warning:") && warnings[0].contains("GNU extension"),
+                "{source}: {warnings:?}"
+            );
+        }
+        // Valid in both dialects, with no warning: null pointer constants
+        // against a function pointer, and void * against object pointers.
+        for source in [
+            "int f(void); int g(void) { return (void *)0 == f; }",
+            "int f(void); int g(void) { return &f != (void *)0; }",
+            "int f(void); int g(void) { return f != 0; }",
+            "int g(void *v, int *p, const char *c) { return (v == p) + (c != v); }",
+        ] {
+            for dialect in [Dialect::C11, Dialect::Gnu11] {
+                assert_eq!(sema_dialect(source, dialect), Ok(Vec::new()), "{source}");
+            }
+        }
+        // The extension covers only equality: relational comparison of
+        // function pointers stays an error in GNU mode too.
+        let err = sema_dialect(
+            "int f(void); int g(void *v) { return v < f; }",
+            Dialect::Gnu11,
+        )
+        .unwrap_err();
+        assert!(err.contains("relational comparison"), "{err}");
+    }
 }

@@ -321,4 +321,39 @@ mod tests {
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&pre);
     }
+
+    #[test]
+    fn std_flag_selects_dialect() {
+        let (src, out) = temp_paths();
+        std::fs::write(
+            &src,
+            "int f(void);\nint main(void) { void *v = 0; return v == f; }\n",
+        )
+        .unwrap();
+        let compile = |flags: &[&str]| {
+            let _ = std::fs::remove_file(&out);
+            let mut args: Vec<String> = vec!["compiler".into()];
+            args.extend(flags.iter().map(|flag| flag.to_string()));
+            args.extend([
+                src.display().to_string(),
+                "-o".into(),
+                out.display().to_string(),
+            ]);
+            run(&args)
+        };
+        // Strict C11 is the default and can be named explicitly.
+        assert_eq!(compile(&[]), 1);
+        assert_eq!(compile(&["-std=c11"]), 1);
+        assert!(!out.exists());
+        // GNU mode accepts the comparison (with a warning) and writes IR.
+        assert_eq!(compile(&["-std=gnu11"]), 0);
+        assert!(out.exists());
+        // The last -std wins, as with other drivers.
+        assert_eq!(compile(&["-std=gnu11", "-std=c11"]), 1);
+        // Other standards are not supported.
+        assert_eq!(compile(&["-std=c99"]), 2);
+        assert_eq!(compile(&["-std="]), 2);
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&out);
+    }
 }
