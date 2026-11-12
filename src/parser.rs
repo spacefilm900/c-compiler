@@ -6072,4 +6072,81 @@ func int main
              G = sizeof((int (*)[2])0 == (int (*)[])0), H = sizeof((char *)0 > (volatile char *)0) };",
         );
     }
+
+    #[test]
+    fn constant_contexts_type_nested_builtin_calls() {
+        // __builtin_signbit* yields int and __builtin_memcpy, memmove, and
+        // memset yield void *, as in semantic analysis. A call nested in a
+        // parser-folded constant keeps that type, so the operand rules of
+        // an enclosing comparison builtin or operator apply to it.
+        for source in [
+            "enum { N = sizeof(__builtin_isgreater(__builtin_signbit(1.0), 2)) };",
+            "enum { N = sizeof(__builtin_isless(__builtin_signbitf(1.0f), __builtin_signbitl(2.0L))) };",
+            "int a[sizeof(__builtin_isgreater(__builtin_signbit(1.0), 2))];",
+            "_Static_assert(sizeof(__builtin_islessequal(__builtin_signbit(1.0), 2)), \"\");",
+            "struct B { int x : sizeof(__builtin_isunordered(1, __builtin_signbit(2.0))); };",
+            "enum { N = sizeof(__builtin_isgreater(__builtin_memcpy((char *)0, (char *)0, 1), 1.0)) };",
+            "struct S { int a[8]; };\n\
+             enum { N = __builtin_offsetof(struct S, a[sizeof(__builtin_isgreater(__builtin_signbit(1.0), 2))]) };",
+        ] {
+            let err = parse_err(source);
+            assert!(err.contains("non-floating-point arguments"), "{source}: {err}");
+        }
+        for source in [
+            "int *p; double *q; enum { N = sizeof(__builtin_memcpy(p, p, 1) < q) };",
+            // A call is not an integer constant expression (C11 6.6p6), so
+            // the int result is no null pointer constant. Clang rejects
+            // this; GCC folds the call and accepts it.
+            "enum { N = sizeof(__builtin_signbit(1.0) == (int *)0) };",
+            "enum { N = sizeof(__builtin_memset((char *)0, 0, 1) == 1.0) };",
+        ] {
+            let err = parse_err(source);
+            assert!(
+                err.contains("invalid operands to a comparison"),
+                "{source}: {err}"
+            );
+        }
+        // The builtins' own operand constraints, as semantic analysis
+        // states them.
+        for (source, message) in [
+            (
+                "enum { N = sizeof(__builtin_signbit((int *)0)) };",
+                "requires an arithmetic argument",
+            ),
+            (
+                "struct T { double d; } t; enum { N = sizeof(__builtin_signbitl(t)) };",
+                "requires an arithmetic argument",
+            ),
+            (
+                "enum { N = sizeof(__builtin_memcpy(1, (char *)0, 1)) };",
+                "destination must be a pointer",
+            ),
+            (
+                "enum { N = sizeof(__builtin_memmove((char *)0, 1.0, 1)) };",
+                "source must be a pointer",
+            ),
+            (
+                "enum { N = sizeof(__builtin_memset((char *)0, (char *)0, 1)) };",
+                "value must be an integer",
+            ),
+            (
+                "enum { N = sizeof(__builtin_memcpy((char *)0, (char *)0, (char *)0)) };",
+                "size must be an integer",
+            ),
+        ] {
+            let err = parse_err(source);
+            assert!(err.contains(message), "{source}: {err}");
+        }
+        // Valid uses fold with the right result type.
+        parsed(
+            "int *p; double *q;\n\
+             enum { A = sizeof(__builtin_signbit(1.0)), B = sizeof(__builtin_memcpy(p, p, 1)),\n\
+             C = sizeof(__builtin_isgreater(__builtin_signbit(1.0), 2.0)),\n\
+             D = sizeof(__builtin_memcpy(p, p, 1) == q), E = sizeof(__builtin_memset(p, 0, 4) == p),\n\
+             F = _Generic(__builtin_signbit(1.0), int: 1, default: 2),\n\
+             G = _Generic(__builtin_memmove(p, q, 1), void *: 1, default: 2),\n\
+             H = sizeof(__builtin_signbit(__builtin_nan(\"\"))) };",
+        );
+        parsed("_Static_assert(sizeof(__builtin_signbitf(1.0f)) == sizeof(int), \"\");");
+    }
 }
