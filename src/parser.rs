@@ -3198,6 +3198,168 @@ impl Parser<'_> {
         Ok(Expr::va_arg(ap, type_arg, line, column))
     }
 
+    /// `__builtin_offsetof ( type-name , member-designator )`, which is what
+    /// `<stddef.h>` expands `offsetof` to (C11 7.19p3). The designator is an
+    /// identifier followed by any number of `.identifier` and
+    /// `[expression]`.
+    ///
+    /// When every subscript is an integer constant expression the result
+    /// is an integer constant of type `size_t`, folded from the record
+    /// layout, so it may appear wherever C11 6.6p6 requires an integer
+    /// constant expression. A subscript that is not constant (a GNU
+    /// extension) leaves `size_t` integer arithmetic, the folded offset
+    /// plus each such index times its element size, evaluated at run time
+    /// and not a constant expression. No address is formed from a null
+    /// pointer, so the IR has no `getelementptr` on a null base.
+    fn parse_builtin_offsetof(&mut self, line: usize, column: usize) -> Result<Expr, Diagnostic> {
+        self.advance();
+        let ty = self.parse_type_name()?;
+        self.expect(TokenKind::Comma, "','")?;
+        let first = self.expect(TokenKind::Ident, "a member name")?;
+        let mut steps = vec![OffsetStep::Member(first)];
+        loop {
+            match self.current().kind {
+                TokenKind::Dot => {
+                    self.advance();
+                    let name = self.expect(TokenKind::Ident, "a member name")?;
+                    steps.push(OffsetStep::Member(name));
+                }
+                TokenKind::LBrack => {
+                    let bracket = self.advance();
+                    let index = self.parse_expression()?;
+                    self.expect(TokenKind::RBrack, "']'")?;
+                    steps.push(OffsetStep::Index(index, bracket));
+                }
+                _ => break,
+            }
+        }
+        self.expect(TokenKind::RParen, "')'")?;
+
+        let size_t = || CType::from_name(TypeName::ULong);
+        let mut cur = ty;
+        let mut offset: u64 = 0;
+        // Subscripts that are not constant, each already scaled by its
+        // element size, as size_t arithmetic evaluated at run time.
+        let mut runtime: Vec<Expr> = Vec::new();
+        for (position, step) in steps.into_iter().enumerate() {
+            match step {
+                OffsetStep::Member(name) => {
+                    let Some(handle) = cur.struct_ref() else {
+                        let message = if position == 0 {
+                            format!(
+                                "offsetof requires a structure or union type, not '{}'",
+                                cur.display()
+                            )
+                        } else {
+                            format!(
+                                "member reference base type '{}' is not a structure or union",
+                                cur.display()
+                            )
+                        };
+                        return Err(self.error_at(name.line, name.column, message));
+                    };
+                    if !handle.is_complete() {
+                        return Err(self.error_at(
+                            name.line,
+                            name.column,
+                            format!("offsetof of incomplete type '{}'", cur.display()),
+                        ));
+                    }
+                    let Some(hit) = handle.lookup_member(&name.spelling) else {
+                        return Err(self.error_at(
+                            name.line,
+                            name.column,
+                            format!("no member named '{}' in '{}'", name.spelling, cur.display()),
+                        ));
+                    };
+                    if hit.field.is_bitfield() {
+                        return Err(self.error_at(
+                            name.line,
+                            name.column,
+                            format!("cannot compute offset of bit-field '{}'", name.spelling),
+                        ));
+                    }
+                    offset = offset.wrapping_add(hit.field.offset);
+                    cur = hit.field.ty;
+                }
+                OffsetStep::Index(index, bracket) => {
+                    let Some(elem) = cur.array_elem().cloned() else {
+                        return Err(self.error_at(
+                            bracket.line,
+                            bracket.column,
+                            "subscripted value is not an array",
+                        ));
+                    };
+                    let Some(size) = elem.size() else {
+                        return Err(self.error_at(
+                            bracket.line,
+                            bracket.column,
+                            format!("array has incomplete element type '{}'", elem.display()),
+                        ));
+                    };
+                    check_uneval(&index, &self.names).map_err(|err| {
+                        self.error_at(index.line(), index.column(), ice_message(err))
+                    })?;
+                    let index_ty = rvalue_type(&index, &self.names).ok();
+                    if let Some(index_ty) = &index_ty {
+                        if !index_ty.is_integer() {
+                            return Err(self.error_at(
+                                index.line(),
+                                index.column(),
+                                "array subscript is not an integer",
+                            ));
+                        }
+                    }
+                    match eval_ice(&index, &self.names) {
+                        Ok(value) => {
+                            let scaled = if value.ty.is_signed() {
+                                (sign_extend(value.bits, value.ty.width()) as u64)
+                                    .wrapping_mul(size)
+                            } else {
+                                (value.bits & value.ty.mask()).wrapping_mul(size)
+                            };
+                            offset = offset.wrapping_add(scaled);
+                        }
+                        Err(_) => {
+                            let (at_line, at_column) = (index.line(), index.column());
+                            // Converting the index to size_t sign-extends a
+                            // signed index, so the wrapping product and sum
+                            // equal the address difference. When the parser
+                            // cannot type the index, `| (size_t)0` performs
+                            // the same conversion and leaves semantic
+                            // analysis to require an integer operand.
+                            let as_size = if index_ty.is_some() {
+                                Expr::cast(size_t(), index, at_line, at_column)
+                            } else {
+                                Expr::bin(
+                                    BinOp::BitOr,
+                                    index,
+                                    Expr::int(0, TypeName::ULong, at_line, at_column),
+                                    at_line,
+                                    at_column,
+                                )
+                            };
+                            runtime.push(Expr::bin(
+                                BinOp::Mul,
+                                as_size,
+                                Expr::int(size, TypeName::ULong, at_line, at_column),
+                                at_line,
+                                at_column,
+                            ));
+                        }
+                    }
+                    cur = elem;
+                }
+            }
+        }
+        // offset + i1 * size1 + i2 * size2 + ... in size_t: plain integer
+        // arithmetic, with no address formed from a null pointer.
+        Ok(runtime.into_iter().fold(
+            Expr::int(offset, TypeName::ULong, line, column),
+            |sum, term| Expr::bin(BinOp::Add, sum, term, line, column),
+        ))
+    }
+
     fn parse_postfix(&mut self) -> Result<Expr, Diagnostic> {
         let expr = self.parse_primary()?;
         self.parse_postfix_tail(expr)
@@ -3217,6 +3379,12 @@ impl Parser<'_> {
                             let line = *line;
                             let column = *column;
                             expr = self.parse_builtin_va_arg(line, column)?;
+                            continue;
+                        }
+                        if name == "__builtin_offsetof" {
+                            let line = *line;
+                            let column = *column;
+                            expr = self.parse_builtin_offsetof(line, column)?;
                             continue;
                         }
                     }
@@ -3704,6 +3872,12 @@ fn decl_pos(raw: &RawDecl) -> (usize, usize) {
     }
 }
 
+/// One step of an `offsetof` member designator after the type name.
+enum OffsetStep {
+    Member(Token),
+    Index(Expr, Token),
+}
+
 enum BoundErr {
     Vla,
     Incomplete,
@@ -3717,6 +3891,8 @@ enum BoundErr {
     WrongArity,
     NotStringLiteral,
     InvalidOperand,
+    InvalidCompare,
+    FpCompareOperands,
     GenericDupDefault,
     GenericBadType,
     GenericDupType,
@@ -3739,6 +3915,10 @@ fn bound_message(err: BoundErr) -> &'static str {
         BoundErr::WrongArity => "wrong number of arguments in function call",
         BoundErr::NotStringLiteral => "requires a string literal argument",
         BoundErr::InvalidOperand => "invalid operand",
+        BoundErr::InvalidCompare => "invalid operands to a comparison",
+        BoundErr::FpCompareOperands => {
+            "non-floating-point arguments in call to a floating-point comparison builtin"
+        }
         BoundErr::GenericDupDefault => "duplicate default generic association",
         BoundErr::GenericBadType => "type in generic association is not a complete object type",
         BoundErr::GenericDupType => {
@@ -3939,7 +4119,17 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
                 Err(BoundErr::Undeclared)
             }
         }
-        Expr::Bin { left, right, .. } | Expr::Comma { left, right, .. } => {
+        Expr::Bin {
+            op, left, right, ..
+        } => {
+            check_uneval(left, env)?;
+            check_uneval(right, env)?;
+            if op.is_cmp() {
+                check_uneval_compare(*op, left, right, env)?;
+            }
+            Ok(())
+        }
+        Expr::Comma { left, right, .. } => {
             check_uneval(left, env)?;
             check_uneval(right, env)
         }
@@ -3987,6 +4177,9 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
                     }
                     if args.len() != arity {
                         return Err(BoundErr::WrongArity);
+                    }
+                    if crate::float::is_fp_compare_builtin(name) {
+                        check_uneval_fp_compare(&args[0], &args[1], env)?;
                     }
                     if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
                         if fp.requires_string_literal()
@@ -4049,6 +4242,58 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
     }
 }
 
+/// The operand constraints of the relational and equality operators
+/// (C11 6.5.8p2, 6.5.9p2), as semantic analysis applies them: two
+/// arithmetic operands; for a relational operator two object pointers;
+/// for an equality operator two pointers, or a pointer and a null
+/// pointer constant. An operand whose type the parser cannot work out is
+/// left to semantic analysis.
+fn check_uneval_compare(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Result<(), BoundErr> {
+    let (Ok(left_ty), Ok(right_ty)) = (rvalue_type(left, env), rvalue_type(right, env)) else {
+        return Ok(());
+    };
+    if left_ty.is_arithmetic() && right_ty.is_arithmetic() {
+        return Ok(());
+    }
+    let ok = if matches!(op, BinOp::Eq | BinOp::Ne) {
+        (left_ty.is_pointer() && right_ty.is_pointer())
+            || (left_ty.is_pointer() && uneval_null_constant(right, &right_ty, env))
+            || (right_ty.is_pointer() && uneval_null_constant(left, &left_ty, env))
+    } else {
+        let function = |ty: &CType| ty.pointee().is_some_and(CType::is_func);
+        left_ty.is_pointer() && right_ty.is_pointer() && !function(&left_ty) && !function(&right_ty)
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(BoundErr::InvalidCompare)
+    }
+}
+
+/// An integer constant expression with the value 0 (C11 6.3.2.3p3). A
+/// pointer-typed null pointer constant is handled as a pointer operand.
+fn uneval_null_constant(expr: &Expr, ty: &CType, env: Env) -> bool {
+    ty.is_integer() && eval_ice(expr, env).is_ok_and(|value| value.bits & value.ty.mask() == 0)
+}
+
+/// The operands of `__builtin_isgreater` and its companions: both
+/// arithmetic and at least one real floating, the rule semantic analysis
+/// applies. An operand whose type the parser cannot work out is left to
+/// semantic analysis.
+fn check_uneval_fp_compare(left: &Expr, right: &Expr, env: Env) -> Result<(), BoundErr> {
+    let (Ok(left_ty), Ok(right_ty)) = (rvalue_type(left, env), rvalue_type(right, env)) else {
+        return Ok(());
+    };
+    if left_ty.is_arithmetic()
+        && right_ty.is_arithmetic()
+        && (left_ty.is_float() || right_ty.is_float())
+    {
+        Ok(())
+    } else {
+        Err(BoundErr::FpCompareOperands)
+    }
+}
+
 fn check_uneval_init(init: &Init, env: Env) -> Result<(), BoundErr> {
     match init {
         Init::Expr(expr) => check_uneval(expr, env),
@@ -4078,6 +4323,7 @@ fn builtin_arity(name: &str) -> Option<usize> {
     match name {
         "__builtin_signbit" | "__builtin_signbitf" | "__builtin_signbitl" => Some(1),
         "__builtin_memcpy" | "__builtin_memmove" | "__builtin_memset" => Some(3),
+        name if crate::float::is_fp_compare_builtin(name) => Some(2),
         _ => None,
     }
 }
@@ -4216,6 +4462,9 @@ fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
             if let Expr::Var { name, .. } = callee.as_ref() {
                 if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
                     return Ok(CType::Float(fp.kind()));
+                }
+                if crate::float::is_fp_compare_builtin(name) {
+                    return Ok(CType::int_type());
                 }
             }
             let callee = rvalue_type(callee, env)?;
@@ -5692,5 +5941,60 @@ func int main
             let tokens = lex(&source, name).unwrap();
             parse(&tokens, name).unwrap_or_else(|err| panic!("{name}: {err}"));
         }
+    }
+
+    #[test]
+    fn constant_contexts_check_comparison_operands() {
+        // C11 6.5.8p2 and 6.5.9p2 are constraints, so they apply in an
+        // operand of sizeof even though it is not evaluated, including a
+        // subscript of __builtin_offsetof that folds to a constant.
+        for source in [
+            "enum { N = sizeof(1 < (int *)0) };",
+            "int a[sizeof((int *)0 > 1.0)];",
+            "_Static_assert(sizeof((int *)0 == 1), \"\");",
+            "_Static_assert(sizeof((int *)0 != 1.0), \"\");",
+            "struct T { int x; }; struct T t; enum { N = sizeof(t < t) };",
+            "struct B { int x : sizeof(1 >= (char *)0); };",
+            "struct S { int a[8]; };\n\
+             enum { N = __builtin_offsetof(struct S, a[sizeof(1 < (int *)0)]) };",
+        ] {
+            let err = parse_err(source);
+            assert!(
+                err.contains("invalid operands to a comparison"),
+                "{source}: {err}"
+            );
+        }
+        // Valid comparisons still fold.
+        parsed(
+            "int *p;\nenum { A = sizeof(1 < 2.0), B = sizeof(p == 0), C = sizeof(p < p),\n\
+             D = sizeof(p != (void *)0), E = sizeof(0 == p), F = sizeof(1 == 2) };",
+        );
+        parsed(
+            "struct S { int a[8]; };\n\
+             enum { N = __builtin_offsetof(struct S, a[sizeof((int *)0 == 0)]) };",
+        );
+    }
+
+    #[test]
+    fn constant_contexts_check_fp_compare_builtin_operands() {
+        // Both operands arithmetic and at least one real floating, as
+        // semantic analysis requires; parser-folded contexts apply the
+        // same rule.
+        for source in [
+            "enum { N = sizeof(__builtin_isgreater(1, 2)) };",
+            "int a[sizeof(__builtin_isless((int *)0, 1.0))];",
+            "_Static_assert(sizeof(__builtin_isunordered('a', 2L)) == 4, \"\");",
+            "struct B { int x : sizeof(__builtin_islessgreater(1, 2)); };",
+            "struct T { double d; }; struct T t; enum { N = sizeof(__builtin_islessequal(t, 1.0)) };",
+            "struct S { int a[8]; };\n\
+             enum { N = __builtin_offsetof(struct S, a[sizeof(__builtin_isgreaterequal(1, 2))]) };",
+        ] {
+            let err = parse_err(source);
+            assert!(err.contains("non-floating-point arguments"), "{source}: {err}");
+        }
+        parsed(
+            "enum { A = sizeof(__builtin_isgreater(1, 2.0f)), B = sizeof(__builtin_isless(1.0L, 'a')),\n\
+             C = sizeof(__builtin_isunordered(1.0, 2.0)) };",
+        );
     }
 }

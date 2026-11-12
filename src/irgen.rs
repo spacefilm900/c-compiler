@@ -74,8 +74,16 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
         out.push('\n');
         wrote_prelude = true;
     }
+    // Function bodies are rendered first because they decide which library
+    // functions IR lowering calls. An internal object that shares such a
+    // name is then given a private symbol and the bodies are rendered again.
+    let (mut functions, mut needs) = render_functions(unit, &Renames::new());
+    let renames = library_renames(unit, &needs);
+    if !renames.is_empty() {
+        (functions, needs) = render_functions(unit, &renames);
+    }
     for global in &unit.globals {
-        out.push_str(&render_global(global));
+        out.push_str(&render_global(global, &renames));
         out.push('\n');
         wrote_prelude = true;
     }
@@ -83,17 +91,6 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
         out.push_str(&render_declare(decl));
         out.push('\n');
         wrote_prelude = true;
-    }
-    let mut functions = Vec::new();
-    let mut needs = LowerNeeds::default();
-    for decl in &unit.decls {
-        if let TopDecl::Func(func) = decl {
-            if func.body.is_some() {
-                let (text, fn_needs) = render_function(func);
-                needs.merge(fn_needs);
-                functions.push(text);
-            }
-        }
     }
     if needs.va {
         out.push_str("declare void @llvm.va_start(ptr)\n");
@@ -140,8 +137,104 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
     out
 }
 
-fn render_global(global: &IrGlobal) -> String {
-    let name = llvm_global(&global.name);
+/// LLVM symbol replacements: C linker name to the private name used in IR.
+type Renames = std::collections::HashMap<String, String>;
+
+/// Library functions that IR lowering calls although the source does not
+/// name them. LLVM may lower `llvm.memcpy`, `llvm.memmove`, and
+/// `llvm.memset` to calls of the C library functions, and its optimizer
+/// may introduce such calls too (LLVM LangRef), so those three are always
+/// reserved. `nan`, `nanf`, and `nanl` are called for a malformed quiet
+/// `__builtin_nan*` tag.
+const MEMORY_LIBCALLS: [&str; 3] = ["memcpy", "memmove", "memset"];
+
+fn render_functions(unit: &TranslationUnit, renames: &Renames) -> (Vec<String>, LowerNeeds) {
+    let mut functions = Vec::new();
+    let mut needs = LowerNeeds::default();
+    for decl in &unit.decls {
+        if let TopDecl::Func(func) = decl {
+            if func.body.is_some() {
+                let (text, fn_needs) = render_function(func, renames);
+                needs.merge(fn_needs);
+                functions.push(text);
+            }
+        }
+    }
+    (functions, needs)
+}
+
+/// Private LLVM names for internal-linkage entities whose C name is a
+/// library function that the generated code calls.
+///
+/// LLVM IR has one namespace for globals and functions, and an internal
+/// symbol in the object file would also capture a call the backend
+/// emits. Internal linkage means the name is not visible outside this
+/// translation unit (C11 6.2.2p3), so renaming it in IR does not change
+/// the program. Objects named `nan`, `nanf`, or `nanl` are renamed only
+/// when that call is emitted. Objects and defined functions named
+/// `memcpy`, `memmove`, or `memset` are always renamed. A user-defined
+/// `nan` function stays the call target, as it is when declared.
+fn library_renames(unit: &TranslationUnit, needs: &LowerNeeds) -> Renames {
+    let mut taken: std::collections::HashSet<&str> = unit
+        .globals
+        .iter()
+        .map(|global| global.name.as_str())
+        .chain(unit.func_decls.iter().map(|decl| decl.name.as_str()))
+        .collect();
+    for decl in &unit.decls {
+        if let TopDecl::Func(func) = decl {
+            taken.insert(func.symbol.as_str());
+        }
+    }
+    let nan_calls = [
+        (needs.nan, "nan"),
+        (needs.nanf, "nanf"),
+        (needs.nanl, "nanl"),
+    ];
+    let clashes = |name: &str, objects: bool| {
+        MEMORY_LIBCALLS.contains(&name)
+            || (objects && nan_calls.iter().any(|(used, lib)| *used && *lib == name))
+    };
+    let mut wanted = Vec::new();
+    for global in &unit.globals {
+        if global.linkage == Linkage::Internal && clashes(&global.name, true) {
+            wanted.push(global.name.clone());
+        }
+    }
+    for decl in &unit.decls {
+        if let TopDecl::Func(func) = decl {
+            if func.body.is_some()
+                && func.linkage == Linkage::Internal
+                && clashes(&func.symbol, false)
+            {
+                wanted.push(func.symbol.clone());
+            }
+        }
+    }
+    let mut renames = Renames::new();
+    for name in wanted {
+        let mut n = 1u32;
+        let fresh = loop {
+            let candidate = format!("{name}.{n}");
+            if !taken.contains(candidate.as_str())
+                && !renames.values().any(|used| *used == candidate)
+            {
+                break candidate;
+            }
+            n += 1;
+        };
+        renames.insert(name, fresh);
+    }
+    renames
+}
+
+/// The IR name of a global or function symbol after [`library_renames`].
+fn renamed<'a>(name: &'a str, renames: &'a Renames) -> &'a str {
+    renames.get(name).map_or(name, String::as_str)
+}
+
+fn render_global(global: &IrGlobal, renames: &Renames) -> String {
+    let name = llvm_global(renamed(&global.name, renames));
     let ir = global.ty.ir_type();
     let align = global.ty.align();
     // A const object is an LLVM `constant`. `const int *` is not const; the
@@ -156,7 +249,7 @@ fn render_global(global: &IrGlobal) -> String {
             Linkage::Internal => "internal ",
             Linkage::External => "",
         };
-        let spelled = render_const(&global.ty, value);
+        let spelled = render_const(&global.ty, value, renames);
         format!("{name} = {linkage}{kind} {ir} {spelled}, align {align}")
     } else {
         format!("{name} = external {kind} {ir}, align {align}")
@@ -265,7 +358,7 @@ fn param_ir(ty: &CType, name: Option<&str>) -> String {
     }
 }
 
-fn render_function(func: &FuncDef) -> (String, LowerNeeds) {
+fn render_function(func: &FuncDef, renames: &Renames) -> (String, LowerNeeds) {
     let body = func.body.as_ref().expect("defined function");
     let param_tys: Vec<CType> = func.params.iter().map(|param| param.ty.clone()).collect();
     // Semantic analysis rejects a definition whose aggregate needs an SSE
@@ -279,6 +372,7 @@ fn render_function(func: &FuncDef) -> (String, LowerNeeds) {
         .map(|(index, group)| arg_names(index, group.len()))
         .collect();
     let mut gen = Gen::new(func.ret_type.clone(), sig.ret_agg.clone());
+    gen.renames = renames.clone();
     let linkage = match func.linkage {
         Linkage::Internal => "internal ",
         Linkage::External => "",
@@ -288,7 +382,7 @@ fn render_function(func: &FuncDef) -> (String, LowerNeeds) {
         "define {linkage}{}{} {}({params}) {{",
         sig.ret_prefix,
         sig.ret_type,
-        llvm_global(&func.symbol)
+        llvm_global(renamed(&func.symbol, renames))
     ));
     gen.emit("entry:");
     gen.cur = "entry".to_string();
@@ -453,6 +547,8 @@ struct Gen {
     alloca_at: usize,
     /// Set when the C return type is a struct or union.
     ret_agg: Option<AggAbi>,
+    /// Private IR names of globals and functions (see [`library_renames`]).
+    renames: Renames,
 }
 
 /// One store of an automatic aggregate initializer, evaluated and waiting
@@ -486,6 +582,7 @@ impl Gen {
             needs_nanl: false,
             alloca_at: 0,
             ret_agg,
+            renames: Renames::new(),
         }
     }
 }
@@ -493,6 +590,18 @@ impl Gen {
 impl Gen {
     fn emit(&mut self, line: &str) {
         self.lines.push(line.to_string());
+    }
+
+    /// The IR operand for a variable's slot. A global slot `@name` follows
+    /// [`library_renames`]; a local slot is unchanged.
+    fn var_slot(&self, slot: &str) -> String {
+        match slot
+            .strip_prefix('@')
+            .and_then(|name| self.renames.get(name))
+        {
+            Some(fresh) => llvm_global(fresh),
+            None => slot.to_string(),
+        }
     }
 
     fn fresh(&mut self) -> String {
@@ -950,7 +1059,7 @@ impl Gen {
         let callee = if resolved.indirect {
             self.gen_val(callee)
         } else {
-            llvm_global(&resolved.name)
+            llvm_global(renamed(&resolved.name, &self.renames))
         };
         // A variadic call names the function type, including `...`
         // (`call i32 (ptr, ...) @printf(...)`). Other calls name only the
@@ -1961,7 +2070,7 @@ impl Gen {
             Expr::Int { bits, value_ty, .. } => Some(value_ty.format_bits(*bits)),
             Expr::Float { bits, kind, .. } => Some(crate::float::llvm_const(*kind, *bits)),
             Expr::Var { resolved, ty, .. } => {
-                let slot = &resolved.as_ref().expect("resolved variable").slot;
+                let slot = &self.var_slot(&resolved.as_ref().expect("resolved variable").slot);
                 let ty = ty.clone().expect("typed variable");
                 if ty.is_array() || ty.is_func() {
                     Some(slot.clone())
@@ -2141,7 +2250,7 @@ impl Gen {
     fn gen_addr(&mut self, expr: &Expr) -> String {
         match expr {
             Expr::Var { resolved, .. } => {
-                resolved.as_ref().expect("resolved variable").slot.clone()
+                self.var_slot(&resolved.as_ref().expect("resolved variable").slot)
             }
             Expr::Unary {
                 op: UnaryOp::Deref,
@@ -2604,6 +2713,28 @@ impl Gen {
         Some(crate::float::llvm_const(fp.kind(), bits))
     }
 
+    /// A C11 7.12.14 comparison builtin. Both operands are converted to
+    /// their common real type and compared with one quiet `fcmp`; the
+    /// `i1` result widens to an `int` 0 or 1.
+    fn gen_fp_compare(&mut self, name: &str, args: &[Expr]) -> Option<String> {
+        let pred = crate::float::fp_compare_predicate(name)?;
+        let left_ty = args[0].ty().expect("typed");
+        let right_ty = args[1].ty().expect("typed");
+        let common = common_real(&left_ty, &right_ty);
+        let left = self.gen_val(&args[0]);
+        let left = self.convert(&left, &left_ty, &common);
+        let right = self.gen_val(&args[1]);
+        let right = self.convert(&right, &right_ty, &common);
+        let cmp = self.fresh();
+        self.emit(&format!(
+            "  {cmp} = fcmp {pred} {} {left}, {right}",
+            common.ir_type()
+        ));
+        let out = self.fresh();
+        self.emit(&format!("  {out} = zext i1 {cmp} to i32"));
+        Some(out)
+    }
+
     fn gen_lib_nan(&mut self, name: &str, kind: FloatKind, tag: &Expr) -> String {
         match name {
             "nan" => self.needs_nan = true,
@@ -2626,6 +2757,9 @@ impl Gen {
             return Some(lowered);
         }
         if let Some(lowered) = self.gen_fp_format_builtin(&resolved.name, args) {
+            return Some(lowered);
+        }
+        if let Some(lowered) = self.gen_fp_compare(&resolved.name, args) {
             return Some(lowered);
         }
         let sig =
@@ -3305,7 +3439,7 @@ fn write_const_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: us
     }
 }
 
-fn render_const(ty: &CType, value: &ConstInit) -> String {
+fn render_const(ty: &CType, value: &ConstInit, renames: &Renames) -> String {
     if ty.is_union() || ty.record_has_bitfield() {
         return render_union_const(ty, value);
     }
@@ -3318,7 +3452,7 @@ fn render_const(ty: &CType, value: &ConstInit) -> String {
         ConstInit::Float(bits) => {
             crate::float::llvm_const(ty.float_kind().expect("float constant"), *bits)
         }
-        ConstInit::Ptr(ptr) => render_ptr(ptr),
+        ConstInit::Ptr(ptr) => render_ptr(ptr, renames),
         ConstInit::PtrToInt { ptr, width } => {
             let ir = match width {
                 8 => "i8",
@@ -3326,7 +3460,7 @@ fn render_const(ty: &CType, value: &ConstInit) -> String {
                 32 => "i32",
                 _ => "i64",
             };
-            format!("ptrtoint ({} to {ir})", render_ptr_operand(ptr))
+            format!("ptrtoint ({} to {ir})", render_ptr_operand(ptr, renames))
         }
         ConstInit::Bytes(raw) => render_byte_blob(ty, raw),
         ConstInit::Aggregate(items) => {
@@ -3338,7 +3472,11 @@ fn render_const(ty: &CType, value: &ConstInit) -> String {
                     .iter()
                     .zip(fields.iter())
                     .map(|(item, field)| {
-                        format!("{} {}", field.ty.ir_type(), render_const(&field.ty, item))
+                        format!(
+                            "{} {}",
+                            field.ty.ir_type(),
+                            render_const(&field.ty, item, renames)
+                        )
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -3352,7 +3490,7 @@ fn render_const(ty: &CType, value: &ConstInit) -> String {
             }
             let parts = items
                 .iter()
-                .map(|item| format!("{} {}", elem.ir_type(), render_const(elem, item)))
+                .map(|item| format!("{} {}", elem.ir_type(), render_const(elem, item, renames)))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("[{parts}]")
@@ -3391,25 +3529,22 @@ fn zero_const_spelling(ty: &CType) -> String {
     }
 }
 
-fn render_ptr(ptr: &PtrConst) -> String {
+fn render_ptr(ptr: &PtrConst, renames: &Renames) -> String {
     match ptr {
         PtrConst::Null => "null".to_string(),
         PtrConst::IntToPtr(bits) => format!("inttoptr (i64 {} to ptr)", i64_literal(*bits)),
-        PtrConst::Addr { name, offset } if *offset == 0 => llvm_global(name),
+        PtrConst::Addr { name, offset } if *offset == 0 => llvm_global(renamed(name, renames)),
         PtrConst::Addr { name, offset } => {
             format!(
                 "getelementptr (i8, ptr {}, i64 {offset})",
-                llvm_global(name)
+                llvm_global(renamed(name, renames))
             )
         }
     }
 }
 
-fn render_ptr_operand(ptr: &PtrConst) -> String {
-    match ptr {
-        PtrConst::Addr { name, offset } if *offset == 0 => format!("ptr {}", llvm_global(name)),
-        other => format!("ptr {}", render_ptr(other)),
-    }
+fn render_ptr_operand(ptr: &PtrConst, renames: &Renames) -> String {
+    format!("ptr {}", render_ptr(ptr, renames))
 }
 
 fn i64_literal(bits: u64) -> String {
@@ -4588,5 +4723,227 @@ int main(void) {
             "{}",
             err.message
         );
+    }
+
+    #[test]
+    fn floating_comparison_builtins_use_quiet_fcmp() {
+        // LLVM LangRef: fcmp is not signalling, and the `o` predicates are
+        // false when either operand is a NaN while `uno` is true. That is
+        // the C11 7.12.14 macro behaviour.
+        let cases = [
+            ("__builtin_isgreater", "ogt"),
+            ("__builtin_isgreaterequal", "oge"),
+            ("__builtin_isless", "olt"),
+            ("__builtin_islessequal", "ole"),
+            ("__builtin_islessgreater", "one"),
+            ("__builtin_isunordered", "uno"),
+        ];
+        for (name, pred) in cases {
+            let ir = crate::compile_to_ir(
+                &format!("int f(double a, double b) {{ return {name}(a, b); }}\n"),
+                "fpcmp.c",
+            )
+            .unwrap();
+            assert!(ir.contains(&format!("fcmp {pred} double")), "{name}: {ir}");
+            assert!(
+                !ir.contains(&format!("@{name}")),
+                "{name} is not a call: {ir}"
+            );
+        }
+        // Usual arithmetic conversions: float and long double compare
+        // as x86_fp80; int and float compare as float.
+        let ir = crate::compile_to_ir(
+            "int f(float a, long double b) { return __builtin_isless(a, b); }\n",
+            "fpcmp-mixed.c",
+        )
+        .unwrap();
+        assert!(ir.contains("fpext float"), "{ir}");
+        assert!(ir.contains("fcmp olt x86_fp80"), "{ir}");
+        let ir = crate::compile_to_ir(
+            "int f(int a, float b) { return __builtin_isunordered(a, b); }\n",
+            "fpcmp-int.c",
+        )
+        .unwrap();
+        assert!(ir.contains("sitofp i32"), "{ir}");
+        assert!(ir.contains("fcmp uno float"), "{ir}");
+
+        let source = "\
+int main(void) {
+    volatile double n = __builtin_nan(\"\"), one = 1.0;
+    volatile long double l = 2.0L;
+    volatile float f = -0.0f;
+    if (__builtin_isless(n, one) || __builtin_isgreater(one, n)) return 1;
+    if (!__builtin_isunordered(n, l) || __builtin_islessgreater(n, f)) return 2;
+    if (!__builtin_isgreaterequal(l, one) || !__builtin_islessequal(f, 0.0)) return 3;
+    if (__builtin_islessgreater(f, 0) || !__builtin_islessgreater(l, one)) return 4;
+    return __builtin_isgreater(l, f) + __builtin_isunordered(one, l) * 4;
+}
+";
+        let ir = crate::compile_to_ir(source, "fpcmp-run.c").unwrap();
+        assert_eq!(run_binary(&ir), run_reference(source));
+        assert_eq!(run_binary(&ir).0, 1);
+    }
+
+    #[test]
+    fn internal_object_named_like_a_hidden_libcall_is_renamed() {
+        // LLVM IR has one namespace for global variables and functions.
+        // A file-scope `static int nan;` is valid C11 (7.1.3 reserves
+        // `nan` at file scope only with <math.h>), and its internal
+        // linkage cannot meet the library at link time. When IR lowering
+        // itself calls nan/nanf/nanl, the object gets a private symbol
+        // so `@nan` names only the library function.
+        let source = "\
+static int nan;
+double f(void) { return __builtin_nan(\"1xyz\"); }
+int main(void) { double d = f(); return (d == d) + nan; }
+";
+        let ir = crate::compile_to_ir(source, "nan-clash.c").unwrap();
+        assert!(!ir.contains("@nan = "), "object must not keep @nan: {ir}");
+        assert!(ir.contains("declare double @nan(ptr)"), "{ir}");
+        assert!(ir.contains("call double @nan(ptr"), "{ir}");
+        assert_eq!(run_binary(&ir).0, 0, "{ir}");
+
+        for (decl, call, ty) in [
+            (
+                "static float nanf = 2.0f;",
+                "__builtin_nanf(\"x\")",
+                "float",
+            ),
+            (
+                "static long double nanl = 2.0L;",
+                "__builtin_nanl(\"x\")",
+                "long double",
+            ),
+        ] {
+            let lib = if ty == "float" { "nanf" } else { "nanl" };
+            let source = format!(
+                "{decl}\n{ty} f(void) {{ return {call}; }}\n\
+                 int main(void) {{ {ty} d = f(); return (d == d) + ({lib} != 2.0f); }}\n"
+            );
+            let ir = crate::compile_to_ir(&source, "nanf-clash.c").unwrap();
+            assert!(!ir.contains(&format!("@{lib} = ")), "{ir}");
+            assert!(
+                ir.contains(&format!(
+                    "call {} @{lib}(ptr",
+                    if ty == "float" { "float" } else { "x86_fp80" }
+                )),
+                "{ir}"
+            );
+            assert_eq!(run_binary(&ir).0, 0, "{ir}");
+        }
+
+        // Every reference follows the renamed object: an address constant,
+        // a block-scope extern that names the same object, and a pointer
+        // initializer in a block-scope static.
+        let source = "\
+static int nan = 40;
+static int *where = &nan;
+int get(void) { extern int nan; return nan; }
+double f(void) { return __builtin_nan(\"-1\"); }
+int main(void) {
+    static int *again = &nan;
+    double d = f();
+    if (d == d) return 1;
+    *where += 1;
+    return get() + *again - 82;
+}
+";
+        let ir = crate::compile_to_ir(source, "nan-refs.c").unwrap();
+        assert!(!ir.contains("@nan = "), "{ir}");
+        assert_eq!(run_binary(&ir).0, 0, "{ir}");
+    }
+
+    #[test]
+    fn no_rename_without_a_hidden_libcall_clash() {
+        // A valid tag folds to a constant and makes no call.
+        for tag in ["", "0x10"] {
+            let ir = crate::compile_to_ir(
+                &format!(
+                    "static int nan = 3;\ndouble f(void) {{ return __builtin_nan(\"{tag}\"); }}\n\
+                     int main(void) {{ return nan; }}\n"
+                ),
+                "nan-valid.c",
+            )
+            .unwrap();
+            assert!(ir.contains("@nan = internal global i32 3"), "{ir}");
+            assert!(!ir.contains("@nan("), "{ir}");
+        }
+        // No builtin at all.
+        let ir = crate::compile_to_ir(
+            "static int nan = 3;\nint main(void) { return nan; }\n",
+            "nan-plain.c",
+        )
+        .unwrap();
+        assert!(ir.contains("@nan = internal global i32 3"), "{ir}");
+        // A block-scope static has its own symbol already; the library
+        // call still names @nan.
+        let source = "\
+int main(void) {
+    static int nan = 5;
+    double d = __builtin_nan(\"1xyz\");
+    return (d == d) + nan - 5;
+}
+";
+        let ir = crate::compile_to_ir(source, "nan-block.c").unwrap();
+        assert!(ir.contains("call double @nan(ptr"), "{ir}");
+        assert!(ir.contains("@main.nan."), "{ir}");
+        assert_eq!(run_binary(&ir).0, 0, "{ir}");
+        // A user-defined static function named nan stays the call target.
+        let source = "\
+static double nan(const char *tag) { return tag[0] == '1' ? 42.0 : 0.0; }
+int main(void) { return (int)__builtin_nan(\"1xyz\") - 42; }
+";
+        let ir = crate::compile_to_ir(source, "nan-user.c").unwrap();
+        assert!(ir.contains("define internal double @nan(ptr"), "{ir}");
+        assert!(!ir.contains("declare double @nan"), "{ir}");
+        assert_eq!(run_binary(&ir).0, 0, "{ir}");
+    }
+
+    #[test]
+    fn internal_names_of_memory_libcalls_are_renamed() {
+        // llvm.memcpy, llvm.memmove, and llvm.memset may be lowered to
+        // calls of the C library memcpy, memmove, and memset (LLVM
+        // LangRef), and the optimizer may introduce those calls too. An
+        // internal object or function with one of those names would
+        // capture the call in the object file, so it gets a private name.
+        let source = "\
+static int memmove = 5;
+static int memcpy = 6;
+static int memset(int x) { return x + 1; }
+struct Big { char b[4096]; };
+struct Big g1, g2;
+int main(void) {
+    struct Big local;
+    char buf[4096];
+    __builtin_memset(local.b, 1, sizeof local.b);
+    __builtin_memcpy(buf, local.b, sizeof buf);
+    g1 = local;
+    g2 = g1;
+    return g2.b[100] + buf[4000] + memmove + memcpy + memset(-1) - 13;
+}
+";
+        let ir = crate::compile_to_ir(source, "mem-clash.c").unwrap();
+        for name in ["memmove", "memcpy"] {
+            assert!(!ir.contains(&format!("@{name} = ")), "{name}: {ir}");
+        }
+        assert!(!ir.contains("@memset("), "{ir}");
+        assert_eq!(run_binary(&ir).0, 0, "{ir}");
+    }
+
+    #[test]
+    fn runtime_offsetof_has_no_inbounds_gep_from_null() {
+        // A getelementptr inbounds from a null base with a nonzero offset
+        // is poison (LLVM LangRef, "getelementptr"), so a subscript that
+        // is not constant must not be lowered as an address from null.
+        let source = "struct In { char t; short s[3]; };\n\
+                      struct S { char c; int a[4]; struct In in[5]; };\n\
+                      unsigned long f(int i, unsigned j) {\n\
+                        return __builtin_offsetof(struct S, a[i])\n\
+                             + __builtin_offsetof(struct S, in[j].s[i]);\n\
+                      }\n\
+                      int main(void) { return f(2, 3) == 62 ? 0 : 1; }\n";
+        let ir = crate::compile_to_ir(source, "offsetof-runtime.c").unwrap();
+        assert!(!ir.contains("ptr null"), "{ir}");
+        assert_eq!(run_binary(&ir).0, 0, "{ir}");
     }
 }

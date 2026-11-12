@@ -711,6 +711,27 @@ pub enum FloatCmp {
 ///
 /// `long double` wins over `double`, and `double` wins over `float`. An
 /// integer operand is `None` and loses to every floating type.
+/// The GCC builtins behind the C11 7.12.14 comparison macros, with the
+/// LLVM `fcmp` predicate each one lowers to. The `o` predicates are false
+/// when either operand is a NaN and `uno` is true exactly then (LLVM
+/// LangRef, `fcmp`), which is the macro behaviour. `fcmp` does not
+/// signal, so a quiet NaN raises no "invalid" exception.
+pub fn fp_compare_predicate(name: &str) -> Option<&'static str> {
+    match name {
+        "__builtin_isgreater" => Some("ogt"),
+        "__builtin_isgreaterequal" => Some("oge"),
+        "__builtin_isless" => Some("olt"),
+        "__builtin_islessequal" => Some("ole"),
+        "__builtin_islessgreater" => Some("one"),
+        "__builtin_isunordered" => Some("uno"),
+        _ => None,
+    }
+}
+
+pub fn is_fp_compare_builtin(name: &str) -> bool {
+    fp_compare_predicate(name).is_some()
+}
+
 pub fn usual_real(left: Option<FloatKind>, right: Option<FloatKind>) -> FloatKind {
     if left == Some(FloatKind::LongDouble) || right == Some(FloatKind::LongDouble) {
         FloatKind::LongDouble

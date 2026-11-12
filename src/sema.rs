@@ -60,6 +60,9 @@ pub fn analyze_tokens(
         strings: Vec::new(),
         static_locals: Vec::new(),
         static_seq: 0,
+        library_nan_calls: Vec::new(),
+        object_decls: HashMap::new(),
+        sizeof_depth: 0,
         labels: HashMap::new(),
         variadic_fn: false,
         last_param: None,
@@ -171,6 +174,15 @@ struct Sema {
     /// the file-scope symbol table. The name is an LLVM symbol, not the C name.
     static_locals: Vec<IrGlobal>,
     static_seq: u32,
+    /// Runtime calls of the C library `nan`, `nanf`, or `nanl` that IR
+    /// lowering emits for a malformed quiet `__builtin_nan*` tag: the
+    /// library name, the builtin name, and the call position.
+    library_nan_calls: Vec<(String, String, usize, usize)>,
+    /// Where each file-scope object, or block-scope `extern` object, was
+    /// first declared.
+    object_decls: HashMap<String, (usize, usize)>,
+    /// Nesting depth of `sizeof` operands, which are not evaluated.
+    sizeof_depth: u32,
     /// Labels defined in the function being checked. A `goto` names one of them.
     labels: HashMap<String, (usize, usize)>,
     /// The function being checked is variadic. `va_start` requires that.
@@ -215,6 +227,9 @@ impl Sema {
                 GlobalState::Declared
             };
             self.global_order.push(name.clone());
+            self.object_decls
+                .entry(name.clone())
+                .or_insert((decl.line, decl.column));
             self.insert_file(Symbol::Var(VarSym {
                 name: name.clone(),
                 slot: format!("@{name}"),
@@ -428,6 +443,7 @@ impl Sema {
     }
 
     fn finish(&mut self, unit: &mut TranslationUnit) -> Result<(), Diagnostic> {
+        self.check_library_nan_clash()?;
         let mut missing_static = None;
         let mut incomplete_array = None;
         let mut func_decls = Vec::new();
@@ -527,6 +543,44 @@ impl Sema {
                 enc: *enc,
             })
             .collect();
+        Ok(())
+    }
+
+    /// A runtime call of `nan`, `nanf`, or `nanl` from a malformed
+    /// `__builtin_nan*` tag must reach the C library. An object with
+    /// external linkage and the same name, declared anywhere in the
+    /// translation unit, is undefined behaviour (C11 7.1.3p1-p2) and would
+    /// take the call, so it is reported at the builtin call. An object with
+    /// internal linkage gets a private symbol in IR lowering instead.
+    fn check_library_nan_clash(&self) -> Result<(), Diagnostic> {
+        let file = self.scopes.first().expect("file scope");
+        for (lib, builtin, line, column) in &self.library_nan_calls {
+            let Some(Symbol::Var(var)) = file.get(lib) else {
+                continue;
+            };
+            let external = var
+                .global
+                .as_ref()
+                .is_some_and(|info| info.linkage == Linkage::External);
+            if !external {
+                continue;
+            }
+            let (decl_line, decl_column) = self
+                .object_decls
+                .get(lib)
+                .copied()
+                .unwrap_or((*line, *column));
+            return self.err(
+                *line,
+                *column,
+                format!(
+                    "{builtin} with a tag that is not a constant calls the C library function \
+                     '{lib}', which conflicts with the object '{lib}' of type '{}' declared with \
+                     external linkage at {decl_line}:{decl_column} (C11 7.1.3)",
+                    var.ty.display()
+                ),
+            );
+        }
         Ok(())
     }
 
@@ -2313,6 +2367,9 @@ impl Sema {
             None => {
                 let slot = format!("@{name}");
                 self.global_order.push(name.to_string());
+                self.object_decls
+                    .entry(name.to_string())
+                    .or_insert((line, column));
                 self.insert_file(Symbol::Var(VarSym {
                     name: name.to_string(),
                     slot: slot.clone(),
@@ -2498,7 +2555,11 @@ impl Sema {
         };
         let (line, column) = (*line, *column);
         let mut assocs = std::mem::take(assocs);
+        // The controlling expression is not evaluated (C11 6.5.1.1p3), so
+        // a malformed __builtin_nan tag there makes no library call.
+        let control_nan_calls = self.library_nan_calls.len();
         self.check_expr(control)?;
+        self.library_nan_calls.truncate(control_nan_calls);
         let raw = control.ty().expect("typed");
         let ty = match raw.peel() {
             CType::Array(elem, _) => CType::pointer((**elem).clone()),
@@ -2564,10 +2625,12 @@ impl Sema {
                 let locals = self.static_locals.len();
                 let strings = self.strings.len();
                 let seq = self.static_seq;
+                let nan_calls = self.library_nan_calls.len();
                 self.check_expr(&mut assoc.expr)?;
                 self.static_locals.truncate(locals);
                 self.strings.truncate(strings);
                 self.static_seq = seq;
+                self.library_nan_calls.truncate(nan_calls);
             }
         }
         *expr = assocs.swap_remove(index).expr;
@@ -3251,7 +3314,10 @@ impl Sema {
             let sized = match operand {
                 SizeofOperand::Type(ty) => ty.clone(),
                 SizeofOperand::Expr(inner) => {
-                    self.check_expr(inner)?;
+                    self.sizeof_depth += 1;
+                    let checked = self.check_expr(inner);
+                    self.sizeof_depth -= 1;
+                    checked?;
                     if is_bitfield(inner) {
                         return self.err(line, column, "sizeof applied to a bit-field");
                     }
@@ -3335,6 +3401,10 @@ impl Sema {
                 if crate::float::FpFormatBuiltin::from_name(name).is_some() {
                     let name = name.clone();
                     return self.check_fp_format_builtin(expr, &name);
+                }
+                if crate::float::is_fp_compare_builtin(name) {
+                    let name = name.clone();
+                    return self.check_fp_compare(expr, &name);
                 }
             }
         }
@@ -3480,6 +3550,54 @@ impl Sema {
         Ok(())
     }
 
+    /// `__builtin_isgreater`, `__builtin_isgreaterequal`,
+    /// `__builtin_isless`, `__builtin_islessequal`,
+    /// `__builtin_islessgreater`, and `__builtin_isunordered`: the C11
+    /// 7.12.14 comparison macros as glibc `<math.h>` spells them (GCC
+    /// "Other Builtins").
+    ///
+    /// Both operands are arithmetic and at least one is a real floating
+    /// type; IR lowering converts both by the usual arithmetic
+    /// conversions (6.3.1.8). The result is `int` 0 or 1.
+    fn check_fp_compare(&mut self, expr: &mut Expr, name: &str) -> Result<(), Diagnostic> {
+        let (line, column) = (expr.line(), expr.column());
+        let Expr::Call { args, .. } = expr else {
+            unreachable!("comparison builtin");
+        };
+        if args.len() != 2 {
+            return self.err(line, column, format!("{name} expects 2 arguments"));
+        }
+        for arg in args.iter_mut() {
+            self.check_expr(arg)?;
+            self.decay(arg)?;
+        }
+        let left = args[0].ty().expect("typed");
+        let right = args[1].ty().expect("typed");
+        if !left.is_arithmetic() || !right.is_arithmetic() || !(left.is_float() || right.is_float())
+        {
+            return self.err(
+                line,
+                column,
+                format!(
+                    "non-floating-point arguments in call to {name} ('{}' and '{}')",
+                    left.display(),
+                    right.display()
+                ),
+            );
+        }
+        if let Expr::Call { resolved, .. } = expr {
+            *resolved = Some(CallRes {
+                name: name.to_string(),
+                ret: CType::int_type(),
+                params: Vec::new(),
+                variadic: false,
+                indirect: false,
+            });
+        }
+        expr.set_ty(CType::int_type());
+        Ok(())
+    }
+
     /// `__builtin_nan*` / `__builtin_nans*` / `__builtin_inf*` /
     /// `__builtin_huge_val*`.
     ///
@@ -3536,6 +3654,18 @@ impl Sema {
                     args[0].column(),
                     format!("{name} requires a string literal that strtol would consume in full"),
                 );
+            }
+        }
+        // A malformed quiet tag in a function body that is evaluated
+        // becomes a call of the C library function (IR lowering). A file
+        // object with that name is checked once the whole unit is seen.
+        if let Some(lib) = fp.libm_nan() {
+            if self.sizeof_depth == 0
+                && !self.current_func.is_empty()
+                && crate::float::nan_tag_from_expr(&args[0]).is_none()
+            {
+                self.library_nan_calls
+                    .push((lib.to_string(), name.to_string(), line, column));
             }
         }
         let ret = CType::Float(fp.kind());
@@ -7235,5 +7365,199 @@ int main(void) {
         );
         // A runtime quiet malformed tag is accepted; IR lowering calls nan().
         sema_ok("int main(void) { return __builtin_nan(\"1xyz\") != 0.0; }");
+    }
+
+    #[test]
+    fn offsetof_is_an_integer_constant_expression() {
+        // C11 7.19p3: offsetof(type, member-designator) is an integer
+        // constant expression of type size_t. <stddef.h> expands it to
+        // __builtin_offsetof, which accepts `.member` and `[constant]`
+        // designators after the first member name.
+        let unit = analyzed(
+            "\
+struct In { char a; double b; int c; };
+struct Out { short s; struct In items[3]; union { char k; long w; } u; struct { char p; int q; }; };
+_Static_assert(__builtin_offsetof(struct Out, items[2].c) == 8 + 2 * 24 + 16, \"nested\");
+enum { E = __builtin_offsetof(struct Out, u.w), Q = __builtin_offsetof(struct Out, q) };
+unsigned long direct = __builtin_offsetof(struct Out, items);
+unsigned long nested = __builtin_offsetof(struct Out, items[1].b);
+unsigned long computed = __builtin_offsetof(struct Out, items[1 + 1].c);
+unsigned long via_enum = E;
+unsigned long anon = Q;
+int bound[__builtin_offsetof(struct Out, items[0].c)];
+unsigned long bound_size = sizeof bound;
+int typed = _Generic(__builtin_offsetof(struct In, c), unsigned long: 1, default: 0);
+",
+        );
+        let value = |name: &str| {
+            unit.globals
+                .iter()
+                .find(|global| global.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"))
+                .int_init()
+        };
+        assert_eq!(value("direct"), Some(8));
+        assert_eq!(value("nested"), Some(8 + 24 + 8));
+        assert_eq!(value("computed"), Some(8 + 2 * 24 + 16));
+        assert_eq!(value("via_enum"), Some(80));
+        assert_eq!(value("anon"), Some(92));
+        assert_eq!(value("bound_size"), Some(4 * 24));
+        assert_eq!(value("typed"), Some(1));
+
+        // A non-constant subscript is not an integer constant expression.
+        sema_ok(
+            "struct S { int a[4]; }; int f(int i) { return (int)__builtin_offsetof(struct S, a[i]); }",
+        );
+        assert!(sema_err(
+            "struct S { int a[4]; }; int i; _Static_assert(__builtin_offsetof(struct S, a[i]) == 0, \"\");"
+        )
+        .contains("integer constant expression"));
+
+        // Constraints: a complete structure or union type, an existing
+        // member, no bit-field (C11 7.19p3), and `[]` only on arrays.
+        assert!(sema_err(
+            "struct S { int a : 3; }; unsigned long n = __builtin_offsetof(struct S, a);"
+        )
+        .contains("bit-field"));
+        assert!(sema_err(
+            "struct S { int a; }; unsigned long n = __builtin_offsetof(struct S, b);"
+        )
+        .contains("no member named 'b'"));
+        assert!(
+            sema_err("struct S; unsigned long n = __builtin_offsetof(struct S, a);")
+                .contains("incomplete")
+        );
+        assert!(sema_err("unsigned long n = __builtin_offsetof(int, a);")
+            .contains("structure or union"));
+        assert!(sema_err(
+            "struct S { int a; }; unsigned long n = __builtin_offsetof(struct S, a[1]);"
+        )
+        .contains("subscripted value is not an array"));
+        assert!(sema_err(
+            "struct S { int a[2]; }; unsigned long n = __builtin_offsetof(struct S, a.b);"
+        )
+        .contains("not a structure or union"));
+    }
+
+    #[test]
+    fn floating_comparison_builtins() {
+        // GCC "Other Builtins": __builtin_isgreater and the rest are the
+        // C11 7.12.14 comparison macros. Two real floating operands
+        // (one may be an integer) are converted by the usual arithmetic
+        // conversions; the result is int.
+        for name in [
+            "__builtin_isgreater",
+            "__builtin_isgreaterequal",
+            "__builtin_isless",
+            "__builtin_islessequal",
+            "__builtin_islessgreater",
+            "__builtin_isunordered",
+        ] {
+            sema_ok(&format!(
+                "int f(double a, double b) {{ return {name}(a, b); }}"
+            ));
+            sema_ok(&format!(
+                "int f(float a, long double b) {{ return {name}(a, b); }}"
+            ));
+            sema_ok(&format!(
+                "int f(int a, double b) {{ return {name}(a, b) + {name}(b, 2u); }}"
+            ));
+            sema_ok(&format!(
+                "int f(float a, float b) {{ return _Generic({name}(a, b), int: 1, default: 0); }}"
+            ));
+            sema_ok(&format!(
+                "unsigned long n = sizeof({name}(1.0, 2.0)); int a[sizeof {name}(1.0f, 2)];"
+            ));
+            assert!(
+                sema_err(&format!("int f(int a, int b) {{ return {name}(a, b); }}"))
+                    .contains("non-floating-point arguments")
+            );
+            assert!(
+                sema_err(&format!("int f(double *p) {{ return {name}(p, 1.0); }}"))
+                    .contains("non-floating-point arguments")
+            );
+            assert!(sema_err(&format!(
+                "struct S {{ double d; }}; int f(struct S s) {{ return {name}(s, 1.0); }}"
+            ))
+            .contains("non-floating-point arguments"));
+            assert!(
+                sema_err(&format!("int f(double a) {{ return {name}(a); }}"))
+                    .contains("expects 2 arguments")
+            );
+            assert!(
+                sema_err(&format!("int f(double a) {{ return {name}(a, a, a); }}"))
+                    .contains("expects 2 arguments")
+            );
+            // Not a constant expression (Clang 19 black-box agrees).
+            assert!(sema_err(&format!("int x = {name}(1.0, 2.0);")).contains("not a constant"));
+        }
+    }
+
+    #[test]
+    fn external_object_clashing_with_a_runtime_nan_call() {
+        // A malformed quiet __builtin_nan* tag at run time calls the C
+        // library nan/nanf/nanl. An object with external linkage and the
+        // same name is undefined behaviour (C11 7.1.3p1-p2) and would make
+        // the call target the object, so it is a diagnostic at the call.
+        for source in [
+            "extern int nan;\ndouble f(void) { return __builtin_nan(\"1xyz\"); }",
+            "int nan;\ndouble f(void) { return __builtin_nan(\"1xyz\"); }",
+            "double f(void) { extern int nan; return __builtin_nan(\"1xyz\"); }",
+            "double f(void) { return __builtin_nan(\"1xyz\"); }\nint nan;",
+            "float nanf;\nfloat f(void) { return __builtin_nanf(\"x\"); }",
+            "extern char nanl[];\nlong double f(void) { return __builtin_nanl(\"x\"); }",
+        ] {
+            let err = sema_err(source);
+            assert!(err.contains("conflicts with the object"), "{source}: {err}");
+            assert!(err.contains("external linkage"), "{source}: {err}");
+            assert!(
+                err.contains(":2:") || source.starts_with("double f"),
+                "{source}: {err}"
+            );
+        }
+        // The diagnostic points at the builtin call.
+        let err = sema_err("int nan;\ndouble f(void) {\n  return __builtin_nan(\"1xyz\");\n}");
+        assert!(err.contains(":3:10"), "{err}");
+
+        // No clash: a valid tag folds, the other library name, an
+        // unevaluated operand, internal linkage, a block-scope static, a
+        // local, and a user-declared function.
+        sema_ok("extern int nan;\ndouble f(void) { return __builtin_nan(\"\") + __builtin_nan(\"0x10\"); }");
+        sema_ok("int nan;\nfloat f(void) { return __builtin_nanf(\"1xyz\"); }");
+        sema_ok(
+            "extern int nan;\nunsigned long f(void) { return sizeof(__builtin_nan(\"1xyz\")); }",
+        );
+        sema_ok("static int nan;\ndouble f(void) { return __builtin_nan(\"1xyz\"); }");
+        sema_ok("int f(void) { static int nan; return (int)__builtin_nan(\"1xyz\") + nan; }");
+        sema_ok("double f(void) { int nan = 0; return __builtin_nan(\"1xyz\") + nan; }");
+        sema_ok("double nan(const char *);\ndouble f(void) { return __builtin_nan(\"1xyz\"); }");
+    }
+
+    #[test]
+    fn unevaluated_generic_control_records_no_nan_call() {
+        // The controlling expression of a generic selection is not
+        // evaluated (C11 6.5.1.1p3), so a malformed tag there makes no
+        // library call and cannot clash with an object named nan.
+        sema_ok(
+            "extern int nan;\nint f(void) { return _Generic(__builtin_nan(\"1xyz\"), double: 1, default: 0); }",
+        );
+        sema_ok(
+            "float nanf;\nint f(void) { return _Generic(_Generic(0, int: __builtin_nanf(\"x\")), float: 1); }",
+        );
+        sema_ok(
+            "extern int nan;\nint f(void) { return _Generic(1 + __builtin_nan(\"q\"), double: 2, default: 3) + (int)sizeof(__builtin_nan(\"q\")); }",
+        );
+        // The selected association is evaluated, so it still clashes.
+        let err = sema_err(
+            "extern int nan;\ndouble f(void) { return _Generic(0, int: __builtin_nan(\"1xyz\"), default: 0.0); }",
+        );
+        assert!(err.contains("conflicts with the object"), "{err}");
+        let err = sema_err(
+            "extern int nan;\ndouble f(void) { return _Generic(__builtin_nan(\"a\"), double: __builtin_nan(\"b\")); }",
+        );
+        assert!(
+            err.contains("conflicts with the object") && err.contains(":2:"),
+            "{err}"
+        );
     }
 }
