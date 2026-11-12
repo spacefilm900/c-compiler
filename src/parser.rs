@@ -3207,8 +3207,10 @@ impl Parser<'_> {
     /// is an integer constant of type `size_t`, folded from the record
     /// layout, so it may appear wherever C11 6.6p6 requires an integer
     /// constant expression. A subscript that is not constant (a GNU
-    /// extension) leaves an address difference from a null base,
-    /// evaluated at run time and not a constant expression.
+    /// extension) leaves `size_t` integer arithmetic, the folded offset
+    /// plus each such index times its element size, evaluated at run time
+    /// and not a constant expression. No address is formed from a null
+    /// pointer, so the IR has no `getelementptr` on a null base.
     fn parse_builtin_offsetof(&mut self, line: usize, column: usize) -> Result<Expr, Diagnostic> {
         self.advance();
         let ty = self.parse_type_name()?;
@@ -3233,10 +3235,13 @@ impl Parser<'_> {
         }
         self.expect(TokenKind::RParen, "')'")?;
 
-        let mut cur = ty.clone();
+        let size_t = || CType::from_name(TypeName::ULong);
+        let mut cur = ty;
         let mut offset: u64 = 0;
-        let mut constant = true;
-        for (position, step) in steps.iter().enumerate() {
+        // Subscripts that are not constant, each already scaled by its
+        // element size, as size_t arithmetic evaluated at run time.
+        let mut runtime: Vec<Expr> = Vec::new();
+        for (position, step) in steps.into_iter().enumerate() {
             match step {
                 OffsetStep::Member(name) => {
                     let Some(handle) = cur.struct_ref() else {
@@ -3292,10 +3297,11 @@ impl Parser<'_> {
                             format!("array has incomplete element type '{}'", elem.display()),
                         ));
                     };
-                    check_uneval(index, &self.names).map_err(|err| {
+                    check_uneval(&index, &self.names).map_err(|err| {
                         self.error_at(index.line(), index.column(), ice_message(err))
                     })?;
-                    if let Ok(index_ty) = rvalue_type(index, &self.names) {
+                    let index_ty = rvalue_type(&index, &self.names).ok();
+                    if let Some(index_ty) = &index_ty {
                         if !index_ty.is_integer() {
                             return Err(self.error_at(
                                 index.line(),
@@ -3304,7 +3310,7 @@ impl Parser<'_> {
                             ));
                         }
                     }
-                    match eval_ice(index, &self.names) {
+                    match eval_ice(&index, &self.names) {
                         Ok(value) => {
                             let scaled = if value.ty.is_signed() {
                                 (sign_extend(value.bits, value.ty.width()) as u64)
@@ -3314,51 +3320,43 @@ impl Parser<'_> {
                             };
                             offset = offset.wrapping_add(scaled);
                         }
-                        Err(_) => constant = false,
+                        Err(_) => {
+                            let (at_line, at_column) = (index.line(), index.column());
+                            // Converting the index to size_t sign-extends a
+                            // signed index, so the wrapping product and sum
+                            // equal the address difference. When the parser
+                            // cannot type the index, `| (size_t)0` performs
+                            // the same conversion and leaves semantic
+                            // analysis to require an integer operand.
+                            let as_size = if index_ty.is_some() {
+                                Expr::cast(size_t(), index, at_line, at_column)
+                            } else {
+                                Expr::bin(
+                                    BinOp::BitOr,
+                                    index,
+                                    Expr::int(0, TypeName::ULong, at_line, at_column),
+                                    at_line,
+                                    at_column,
+                                )
+                            };
+                            runtime.push(Expr::bin(
+                                BinOp::Mul,
+                                as_size,
+                                Expr::int(size, TypeName::ULong, at_line, at_column),
+                                at_line,
+                                at_column,
+                            ));
+                        }
                     }
                     cur = elem;
                 }
             }
         }
-        if constant {
-            return Ok(Expr::int(offset, TypeName::ULong, line, column));
-        }
-        // (size_t)((char *)&((type *)0)->designator - (char *)0)
-        let null_base = Expr::cast(
-            CType::pointer(ty),
-            Expr::int(0, TypeName::Int, line, column),
-            line,
-            column,
-        );
-        let mut place = null_base;
-        for (position, step) in steps.into_iter().enumerate() {
-            place = match step {
-                OffsetStep::Member(name) => {
-                    Expr::member(place, name.spelling, position == 0, name.line, name.column)
-                }
-                OffsetStep::Index(index, bracket) => {
-                    Expr::index(place, index, bracket.line, bracket.column)
-                }
-            };
-        }
-        let char_ptr = CType::pointer(CType::from_name(TypeName::Char));
-        let addr = Expr::cast(
-            char_ptr.clone(),
-            Expr::unary(UnaryOp::Addr, place, line, column),
-            line,
-            column,
-        );
-        let null = Expr::cast(
-            char_ptr,
-            Expr::int(0, TypeName::Int, line, column),
-            line,
-            column,
-        );
-        Ok(Expr::cast(
-            CType::from_name(TypeName::ULong),
-            Expr::bin(BinOp::Sub, addr, null, line, column),
-            line,
-            column,
+        // offset + i1 * size1 + i2 * size2 + ... in size_t: plain integer
+        // arithmetic, with no address formed from a null pointer.
+        Ok(runtime.into_iter().fold(
+            Expr::int(offset, TypeName::ULong, line, column),
+            |sum, term| Expr::bin(BinOp::Add, sum, term, line, column),
         ))
     }
 
