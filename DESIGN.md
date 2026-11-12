@@ -4,7 +4,7 @@ Main decisions for this compiler, taken from `PLAN.md`, `STATUS.md`, `README.md`
 
 ## Clean-room
 
-Frontend code (lexer, preprocessor, parser, semantic analysis, IR generation) is original. It is written from the C standard, the LLVM Language Reference, and the System V ABI. Allowed references, from `PLAN.md`, are those documents, Kaleidoscope-style tutorials, and other public specs. Clang and GCC source are not copied, translated, or closely paraphrased. Clang is a black-box oracle in the test harness and the LLVM backend that links the emitted `.ll` file. The compiler does not call into Clang's or GCC's frontend.
+Frontend code (lexer, preprocessor, parser, semantic analysis, IR generation) is original. It is written from the C standard, the LLVM Language Reference, and the System V ABI. Allowed references, from `PLAN.md`, are those documents, Kaleidoscope-style tutorials, and other public specs. For the GNU-compatibility work, the GCC user manual's public documentation of builtins and attributes is also allowed. Clang and GCC source are not copied, translated, or closely paraphrased. Clang is a black-box oracle in the test harness and the LLVM backend that links the emitted `.ll` file. The compiler does not call into Clang's or GCC's frontend.
 
 Approved by the owner on 2026-11-09 (pull request 1). The rule is also in `PLAN.md` (repository since the initial commit on 2026-11-08) and `BOT.md`.
 
@@ -18,7 +18,7 @@ Approved by the owner on 2026-11-09 (pull request 1).
 
 The compiler writes textual LLVM IR. `PLAN.md` also allows building IR through the LLVM libraries; the implementation, the CLI in `BOT.md`, and the driver write text. The contract is `build/compiler INPUT.c -o OUTPUT.ll` (and `-E` for preprocessed text). Success exits 0. Failure exits non-zero, prints one diagnostic to stderr, and does not create the output file.
 
-LLVM (`clang`, and optionally `opt` / `llc`) optimizes that IR and generates native code. There is no custom backend. The module uses opaque pointers, so Clang/LLVM must be 15 or newer.
+LLVM (`clang`, and optionally `opt` / `llc`) optimizes that IR and generates native code. There is no custom backend. `PLAN.md` keeps LLVM as the backend until a solid release; a small non-optimising backend of our own may be considered only after 0.1, alongside LLVM. The module uses opaque pointers, so Clang/LLVM must be 15 or newer.
 
 Approved by the owner on 2026-11-09 (pull request 1).
 
@@ -110,4 +110,4 @@ Follow the C standard. Where the standard leaves a choice, follow the gcc and cl
 
 Only x86_64 Linux is supported today. The triple, the data layout, the integer ABI, and the host include directories are the System V AMD64 / glibc paths for that system.
 
-The forward plan is in `PLAN.md`. After the small C11 gaps, the order is an adversarial review, then variable-length arrays, old-style definitions, and `_Alignas`, then macOS on Intel and ARM, Linux ARM, and Windows x64. Performance tuning uses the timing CI already collects. C23, WebAssembly, and RISC-V come later.
+The forward plan is in `PLAN.md`. After the remaining C11 work (an adversarial review, then variable-length arrays, old-style definitions, and `_Alignas`), the order is a separate opt-in GNU-compatibility milestone, then big programs on Linux x86_64 (DOOM via doomgeneric, then Lua and SQLite), then macOS on Apple Silicon, Linux ARM, macOS on Intel, and Windows x64. The platform list was reordered on 2026-11-12 so that macOS ARM comes first, because it is the owner's own device. Performance tuning uses the timing CI already collects. C23, WebAssembly, and RISC-V come later.
