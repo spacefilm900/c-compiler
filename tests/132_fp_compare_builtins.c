@@ -1,7 +1,10 @@
 /* The GCC comparison builtins behind the C11 7.12.14 macros
    (isgreater, isgreaterequal, isless, islessequal, islessgreater,
-   isunordered). Each takes two real floating operands, converted by
-   the usual arithmetic conversions, and yields an int 0 or 1. When
+   isunordered). The GCC manual (Library Builtins) documents them as
+   built-in versions of the ISO C99 floating-point comparison macros
+   that avoid raising exceptions for unordered operands. Each takes two
+   arithmetic operands, at least one of them real floating, converted
+   by the usual arithmetic conversions, and yields an int 0 or 1. When
    either operand is a NaN the four ordered relations and
    islessgreater are 0 and isunordered is 1. No headers: the builtins
    are called directly. */
