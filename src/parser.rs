@@ -5997,4 +5997,34 @@ func int main
              C = sizeof(__builtin_isunordered(1.0, 2.0)) };",
         );
     }
+
+    #[test]
+    fn restrict_function_return_requires_pointer() {
+        // C11 6.7.3p2: types other than pointer types whose referenced type
+        // is an object type shall not be restrict-qualified. A function
+        // return type is no exception.
+        for source in [
+            "int restrict f(void);",
+            "int restrict f(void) { return 0; }",
+            "void g(void) { int restrict f(void); }",
+            "const int restrict f(void);",
+            "int restrict (*f(void))(void);",
+            "unsigned long s = sizeof(int restrict (*)(void));",
+        ] {
+            let err = parse_err(source);
+            assert!(
+                err.contains("restrict requires a pointer type"),
+                "{source}: {err}"
+            );
+        }
+        // A restrict-qualified pointer to an object type is valid as a
+        // return type and as a parameter type.
+        parsed("int *restrict f(void);");
+        parsed("int *restrict f(void) { return 0; }");
+        parsed("void g(void) { int *restrict f(void); }");
+        parsed("void h(int *restrict p, int *restrict q);");
+        parsed("void h(int *restrict p, int *restrict q) { *p = *q; }");
+        parsed("typedef int *restrict (*fp)(int *restrict);");
+        parsed("unsigned long s = sizeof(int *restrict (*)(void));");
+    }
 }
