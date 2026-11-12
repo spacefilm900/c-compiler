@@ -8,20 +8,46 @@
 //! the 80-bit extended format, converted in [`crate::fp80`]. Hexadecimal
 //! constants are converted here from the binary significand.
 
-use crate::ast::{sign_extend, FloatKind, TypeName};
+use crate::ast::{sign_extend, Expr, FloatKind, StrEnc, TypeName};
 
 /// IEEE-64 bit pattern of `bits`, which are `f32` bits for [`FloatKind::Float`]
 /// and `f64` bits for [`FloatKind::Double`].
 ///
 /// LLVM's hexadecimal floating constant is that 64-bit pattern for both
-/// `float` and `double`. A `float` value is first widened; every `f32` value
-/// is exactly a `f64`.
+/// `float` and `double`. A `float` value is widened by integer bit
+/// operations so a signaling NaN keeps its signaling encoding. Host
+/// `f64::from(f32)` would quiet a signaling NaN.
 pub fn llvm_bits(kind: FloatKind, bits: u128) -> u128 {
     match kind {
-        FloatKind::Float => u128::from(f64::from(f32::from_bits(bits as u32)).to_bits()),
+        FloatKind::Float => u128::from(widen_f32_bits(bits as u32)),
         FloatKind::Double => bits & 0xFFFF_FFFF_FFFF_FFFF,
         FloatKind::LongDouble => bits & ((1u128 << 80) - 1),
     }
+}
+
+/// Widen IEEE-754 binary32 bits to binary64, preserving NaN payloads
+/// and the signaling/quiet bit. The 23-bit significand is left-justified
+/// in the 52-bit field. Every finite `f32` value is exactly a `f64`.
+fn widen_f32_bits(bits: u32) -> u64 {
+    let sign = u64::from(bits >> 31) << 63;
+    let exp = (bits >> 23) & 0xff;
+    let frac = bits & 0x007F_FFFF;
+    if exp == 0xff {
+        return sign | (0x7ffu64 << 52) | (u64::from(frac) << 29);
+    }
+    if exp == 0 {
+        if frac == 0 {
+            return sign;
+        }
+        // Subnormal: the highest set bit is `k` (0..=22). The value is
+        // 2^(k-149), which is a normal `f64`.
+        let k = 31 - frac.leading_zeros();
+        let exp64 = 874 + u64::from(k);
+        let mant = (u64::from(frac) << (52 - k)) & ((1u64 << 52) - 1);
+        return sign | (exp64 << 52) | mant;
+    }
+    let exp64 = u64::from(exp) + (1023 - 127);
+    sign | (exp64 << 52) | (u64::from(frac) << 29)
 }
 
 pub fn llvm_const(kind: FloatKind, bits: u128) -> String {
@@ -114,6 +140,230 @@ pub fn inf_bits(is_f32: bool) -> u64 {
     } else {
         f64::INFINITY.to_bits()
     }
+}
+
+/// GCC floating-point format builtins used by glibc `<math.h>` for
+/// `NAN`, `INFINITY`, and the `HUGE_VAL` family. Documented in the GCC
+/// manual, "Floating-Point Format Builtins".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FpFormatBuiltin {
+    /// `__builtin_inf*`, `__builtin_huge_val*`: +infinity of this type.
+    Inf(FloatKind),
+    /// `__builtin_nan*` / `__builtin_nans*`: a quiet or signaling NaN.
+    Nan { kind: FloatKind, signaling: bool },
+}
+
+impl FpFormatBuiltin {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "__builtin_inf" | "__builtin_huge_val" => Self::Inf(FloatKind::Double),
+            "__builtin_inff" | "__builtin_huge_valf" => Self::Inf(FloatKind::Float),
+            "__builtin_infl" | "__builtin_huge_vall" => Self::Inf(FloatKind::LongDouble),
+            "__builtin_nan" => Self::Nan {
+                kind: FloatKind::Double,
+                signaling: false,
+            },
+            "__builtin_nanf" => Self::Nan {
+                kind: FloatKind::Float,
+                signaling: false,
+            },
+            "__builtin_nanl" => Self::Nan {
+                kind: FloatKind::LongDouble,
+                signaling: false,
+            },
+            "__builtin_nans" => Self::Nan {
+                kind: FloatKind::Double,
+                signaling: true,
+            },
+            "__builtin_nansf" => Self::Nan {
+                kind: FloatKind::Float,
+                signaling: true,
+            },
+            "__builtin_nansl" => Self::Nan {
+                kind: FloatKind::LongDouble,
+                signaling: true,
+            },
+            _ => return None,
+        })
+    }
+
+    pub fn kind(self) -> FloatKind {
+        match self {
+            Self::Inf(kind) | Self::Nan { kind, .. } => kind,
+        }
+    }
+
+    pub fn arity(self) -> usize {
+        match self {
+            Self::Inf(_) => 0,
+            Self::Nan { .. } => 1,
+        }
+    }
+
+    /// `__builtin_nan*` / `__builtin_nans*` require an ordinary string
+    /// literal (GCC "Floating-Point Format Builtins").
+    pub fn requires_string_literal(self) -> bool {
+        matches!(self, Self::Nan { .. })
+    }
+
+    /// C library function (C11 7.12.11.2) used when a quiet
+    /// `__builtin_nan*` tag is not a compile-time constant. There is no
+    /// library equivalent for `__builtin_nans*`.
+    pub fn libm_nan(self) -> Option<&'static str> {
+        match self {
+            Self::Nan {
+                kind: FloatKind::Float,
+                signaling: false,
+            } => Some("nanf"),
+            Self::Nan {
+                kind: FloatKind::Double,
+                signaling: false,
+            } => Some("nan"),
+            Self::Nan {
+                kind: FloatKind::LongDouble,
+                signaling: false,
+            } => Some("nanl"),
+            _ => None,
+        }
+    }
+
+    /// An ordinary (`""` / `u8""`) string literal, possibly after array
+    /// decay. Wide literals are not accepted.
+    pub fn is_string_literal_arg(expr: &Expr) -> bool {
+        match expr {
+            Expr::Str {
+                enc: StrEnc::Byte, ..
+            } => true,
+            Expr::Decay { expr, .. } => Self::is_string_literal_arg(expr),
+            _ => false,
+        }
+    }
+}
+
+/// +infinity of `kind`, as the type's bit pattern.
+pub fn plus_inf(kind: FloatKind) -> u128 {
+    match kind {
+        FloatKind::Float => u128::from(inf_bits(true)),
+        FloatKind::Double => u128::from(inf_bits(false)),
+        FloatKind::LongDouble => crate::fp80::plus_inf(),
+    }
+}
+
+/// Quiet or signaling NaN bits for `kind`.
+///
+/// The payload is placed in the least significant bits of the significand
+/// and truncated to that field. A quiet NaN has the quiet bit set. A
+/// signaling NaN has it clear, and a default payload bit is set when the
+/// rest of the field would otherwise be zero (which would encode an
+/// infinity). This follows the GCC manual's description of `__builtin_nan`
+/// and `__builtin_nans`.
+pub fn nan_bits(kind: FloatKind, payload: u128, signaling: bool) -> u128 {
+    match kind {
+        FloatKind::Float => ieee_nan_bits(payload, signaling, true),
+        FloatKind::Double => ieee_nan_bits(payload, signaling, false),
+        FloatKind::LongDouble => crate::fp80::nan_bits(payload, signaling),
+    }
+}
+
+fn ieee_nan_bits(payload: u128, signaling: bool, is_f32: bool) -> u128 {
+    let (exp, mant, quiet, default_signal) = if is_f32 {
+        (0x7F80_0000u128, 0x007F_FFFF, 0x0040_0000, 0x0020_0000)
+    } else {
+        (
+            0x7FF0_0000_0000_0000u128,
+            0x000F_FFFF_FFFF_FFFF,
+            0x0008_0000_0000_0000,
+            0x0004_0000_0000_0000,
+        )
+    };
+    let mut frac = payload & mant;
+    if signaling {
+        frac &= !quiet;
+        if frac == 0 {
+            frac = default_signal;
+        }
+    } else {
+        frac |= quiet;
+    }
+    exp | frac
+}
+
+/// Payload of a `__builtin_nan*` / `__builtin_nans*` string-literal
+/// argument if the tag is a compile-time constant.
+///
+/// The GCC manual ("Floating-Point Format Builtins") says the string is
+/// parsed as by `strtol` (a leading `0` or `0x`/`0X` selects the base)
+/// and that a string literal all of which would have been consumed by
+/// `strtol` is a compile-time constant. An empty string is payload 0.
+/// Only the bytes before the first NUL are parsed (C string semantics).
+///
+/// A constant also requires that those bytes are a (possibly empty)
+/// unsigned integer literal with no sign and no leading or trailing
+/// whitespace, consumed in full. That is the rule used by both constant
+/// evaluation and IR lowering, and it matches Clang 19 as a black-box
+/// oracle: `""`, `"0"`, `"1"`, `"0x10"`, and `"010"` (octal 8) fold to a
+/// floating constant, while `" 1"`, `"1xyz"`, and `"-1"` do not.
+pub fn nan_tag_from_expr(expr: &Expr) -> Option<u128> {
+    match expr {
+        Expr::Str {
+            bytes,
+            enc: StrEnc::Byte,
+            ..
+        } => parse_nan_tag_bytes(bytes),
+        Expr::Decay { expr, .. } => nan_tag_from_expr(expr),
+        _ => None,
+    }
+}
+
+/// Parse the text of a `__builtin_nan` / `__builtin_nans` tag.
+///
+/// See [`nan_tag_from_expr`] for the GCC-manual wording and the
+/// whole-tag consumption rule. Bytes after the first NUL are ignored.
+pub fn parse_nan_tag(tag: &str) -> Option<u128> {
+    parse_nan_tag_bytes(tag.as_bytes())
+}
+
+pub fn parse_nan_tag_bytes(bytes: &[u8]) -> Option<u128> {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    parse_nan_tag_text(std::str::from_utf8(&bytes[..end]).ok()?)
+}
+
+fn parse_nan_tag_text(tag: &str) -> Option<u128> {
+    if tag.is_empty() {
+        return Some(0);
+    }
+    let bytes = tag.as_bytes();
+    let (base, digits) = if let Some(rest) = bytes
+        .strip_prefix(b"0x")
+        .or_else(|| bytes.strip_prefix(b"0X"))
+    {
+        if rest.is_empty() || !rest.iter().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        (16u32, rest)
+    } else if bytes[0] == b'0' {
+        // A leading 0 is octal, as in strtol base 0. A digit 8 or 9 means
+        // the literal is not consumed in full.
+        if !bytes.iter().all(|b| (b'0'..=b'7').contains(b)) {
+            return None;
+        }
+        (8, bytes)
+    } else if bytes.iter().all(|b| b.is_ascii_digit()) {
+        (10, bytes)
+    } else {
+        return None;
+    };
+    let mut value = 0u128;
+    for &byte in digits {
+        let digit = match byte {
+            b'0'..=b'9' => u128::from(byte - b'0'),
+            b'a'..=b'f' => u128::from(byte - b'a' + 10),
+            b'A'..=b'F' => u128::from(byte - b'A' + 10),
+            _ => return None,
+        };
+        value = value.saturating_mul(u128::from(base)).saturating_add(digit);
+    }
+    Some(value)
 }
 
 fn hex_float_bits(int_digits: &str, frac_digits: &str, bin_exp: i32, is_f32: bool) -> u64 {
@@ -627,5 +877,183 @@ mod tests {
             int_to_real(wide, TypeName::LongLong, FloatKind::Float),
             u128::from((wide as i64 as f32).to_bits())
         );
+    }
+
+    #[test]
+    fn nan_and_inf_bits_match_ieee_and_x87() {
+        // Patterns checked against Clang 19 and GCC 14 as oracles.
+        assert_eq!(plus_inf(FloatKind::Float), 0x7F80_0000);
+        assert_eq!(plus_inf(FloatKind::Double), 0x7FF0_0000_0000_0000);
+        assert_eq!(plus_inf(FloatKind::LongDouble), 0x7FFF_8000_0000_0000_0000);
+        assert_eq!(nan_bits(FloatKind::Float, 0, false), 0x7FC0_0000);
+        assert_eq!(nan_bits(FloatKind::Float, 1, false), 0x7FC0_0001);
+        assert_eq!(nan_bits(FloatKind::Float, 123, false), 0x7FC0_007B);
+        assert_eq!(nan_bits(FloatKind::Float, 0x40_0000, false), 0x7FC0_0000);
+        assert_eq!(nan_bits(FloatKind::Float, 0x7F_FFFF, false), 0x7FFF_FFFF);
+        assert_eq!(nan_bits(FloatKind::Double, 0, false), 0x7FF8_0000_0000_0000);
+        assert_eq!(nan_bits(FloatKind::Double, 1, false), 0x7FF8_0000_0000_0001);
+        assert_eq!(
+            nan_bits(FloatKind::LongDouble, 0, false),
+            0x7FFF_C000_0000_0000_0000
+        );
+        assert_eq!(
+            nan_bits(FloatKind::LongDouble, 1, false),
+            0x7FFF_C000_0000_0000_0001
+        );
+        assert_eq!(nan_bits(FloatKind::Float, 0, true), 0x7FA0_0000);
+        assert_eq!(nan_bits(FloatKind::Float, 1, true), 0x7F80_0001);
+        assert_eq!(nan_bits(FloatKind::Double, 0, true), 0x7FF4_0000_0000_0000);
+        assert_eq!(nan_bits(FloatKind::Double, 1, true), 0x7FF0_0000_0000_0001);
+        assert_eq!(
+            nan_bits(FloatKind::LongDouble, 0, true),
+            0x7FFF_A000_0000_0000_0000
+        );
+        assert_eq!(
+            nan_bits(FloatKind::LongDouble, 1, true),
+            0x7FFF_8000_0000_0000_0001
+        );
+        assert_eq!(
+            llvm_const(FloatKind::Float, nan_bits(FloatKind::Float, 0, false)),
+            "0x7FF8000000000000"
+        );
+        assert_eq!(
+            llvm_const(FloatKind::Float, plus_inf(FloatKind::Float)),
+            "0x7FF0000000000000"
+        );
+        assert_eq!(
+            llvm_const(
+                FloatKind::LongDouble,
+                nan_bits(FloatKind::LongDouble, 0, false)
+            ),
+            "0xK7FFFC000000000000000"
+        );
+    }
+
+    #[test]
+    fn parse_nan_tag_is_strtol_base_zero() {
+        // GCC "Floating-Point Format Builtins": parsed as by strtol, and
+        // a literal consumed in full is a constant. Clang 19 black-box:
+        // these tags fold; " 1", "1xyz", and "-1" do not.
+        assert_eq!(parse_nan_tag(""), Some(0));
+        assert_eq!(parse_nan_tag("0"), Some(0));
+        assert_eq!(parse_nan_tag("1"), Some(1));
+        assert_eq!(parse_nan_tag("0x10"), Some(0x10));
+        assert_eq!(parse_nan_tag("123"), Some(123));
+        assert_eq!(parse_nan_tag("010"), Some(8));
+        assert_eq!(parse_nan_tag("0x1"), Some(1));
+        assert_eq!(parse_nan_tag("0X10"), Some(16));
+        assert_eq!(parse_nan_tag("0x400000"), Some(0x40_0000));
+        assert_eq!(parse_nan_tag("abc"), None);
+        assert_eq!(parse_nan_tag("1xyz"), None);
+        assert_eq!(parse_nan_tag(" 1"), None);
+        assert_eq!(parse_nan_tag("+5"), None);
+        assert_eq!(parse_nan_tag("-1"), None);
+        assert_eq!(parse_nan_tag("08"), None);
+        assert_eq!(parse_nan_tag("0x"), None);
+        assert_eq!(parse_nan_tag("0 "), None);
+        assert_eq!(parse_nan_tag("1 "), None);
+        // C string semantics: only the bytes before the first NUL count.
+        assert_eq!(parse_nan_tag("1\0ignored"), Some(1));
+        assert_eq!(parse_nan_tag_bytes(b"1\0ignored"), Some(1));
+        assert_eq!(parse_nan_tag_bytes(b"\0ignored"), Some(0));
+        assert_eq!(parse_nan_tag_bytes(b"1xyz\0ok"), None);
+        // The same helper is what constant evaluation and IR lowering use.
+        use crate::ast::{Expr, StrEnc};
+        let literal = |bytes: &[u8]| Expr::Str {
+            bytes: bytes.to_vec(),
+            enc: StrEnc::Byte,
+            ty: None,
+            symbol: None,
+            line: 1,
+            column: 1,
+        };
+        assert_eq!(nan_tag_from_expr(&literal(b"1")), Some(1));
+        assert_eq!(nan_tag_from_expr(&literal(b"1xyz")), None);
+        assert_eq!(nan_tag_from_expr(&literal(b"1\0ignored")), Some(1));
+        let decayed = Expr::Decay {
+            expr: Box::new(literal(b"0x10")),
+            line: 1,
+            column: 1,
+            ty: None,
+        };
+        assert_eq!(nan_tag_from_expr(&decayed), Some(0x10));
+        assert_eq!(
+            crate::float::FpFormatBuiltin::from_name("__builtin_nan")
+                .unwrap()
+                .libm_nan(),
+            Some("nan")
+        );
+        assert_eq!(
+            crate::float::FpFormatBuiltin::from_name("__builtin_nanf")
+                .unwrap()
+                .libm_nan(),
+            Some("nanf")
+        );
+        assert_eq!(
+            crate::float::FpFormatBuiltin::from_name("__builtin_nanl")
+                .unwrap()
+                .libm_nan(),
+            Some("nanl")
+        );
+        assert_eq!(
+            crate::float::FpFormatBuiltin::from_name("__builtin_nans")
+                .unwrap()
+                .libm_nan(),
+            None
+        );
+    }
+
+    #[test]
+    fn widen_f32_preserves_signaling_nan_encoding() {
+        // Finite values, zeros, infinities, and quiet NaNs match the
+        // host conversion. Signaling NaNs must not be quieted.
+        for bits in [
+            0x0000_0000u32,
+            0x8000_0000,
+            0x3F80_0000, // 1.0
+            0x4000_0000, // 2.0
+            0x3F00_0000, // 0.5
+            0x7F80_0000, // +inf
+            0xFF80_0000, // -inf
+            0x0000_0001, // smallest subnormal
+            0x007F_FFFF, // largest subnormal
+            0x0080_0000, // smallest normal
+            0x7F7F_FFFF, // largest finite
+            0x7FC0_0000, // default quiet NaN
+            0x7FC0_0001,
+            0xFFC0_0000, // negative quiet NaN
+        ] {
+            assert_eq!(
+                widen_f32_bits(bits),
+                f64::from(f32::from_bits(bits)).to_bits(),
+                "mismatch for {bits:#010X}"
+            );
+        }
+        let snan = nan_bits(FloatKind::Float, 0, true) as u32;
+        assert_eq!(snan, 0x7FA0_0000);
+        assert_eq!(widen_f32_bits(snan), 0x7FF4_0000_0000_0000);
+        // The host conversion quiets this payload; that is why widening
+        // is done with integer bit operations.
+        assert_ne!(
+            f64::from(f32::from_bits(snan)).to_bits(),
+            0x7FF4_0000_0000_0000
+        );
+        assert_eq!(
+            llvm_const(FloatKind::Float, u128::from(snan)),
+            "0x7FF4000000000000"
+        );
+        assert_eq!(
+            llvm_const(FloatKind::Double, nan_bits(FloatKind::Double, 0, true)),
+            "0x7FF4000000000000"
+        );
+        assert_eq!(
+            llvm_const(
+                FloatKind::LongDouble,
+                nan_bits(FloatKind::LongDouble, 0, true)
+            ),
+            "0xK7FFFA000000000000000"
+        );
+        let neg = snan | 0x8000_0000;
+        assert_eq!(widen_f32_bits(neg), 0xFFF4_0000_0000_0000);
     }
 }

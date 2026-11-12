@@ -3332,6 +3332,10 @@ impl Sema {
                     let name = name.clone();
                     return self.check_signbit(expr, &name);
                 }
+                if crate::float::FpFormatBuiltin::from_name(name).is_some() {
+                    let name = name.clone();
+                    return self.check_fp_format_builtin(expr, &name);
+                }
             }
         }
         let direct = match expr {
@@ -3473,6 +3477,78 @@ impl Sema {
             });
         }
         expr.set_ty(CType::int_type());
+        Ok(())
+    }
+
+    /// `__builtin_nan*` / `__builtin_nans*` / `__builtin_inf*` /
+    /// `__builtin_huge_val*`.
+    ///
+    /// The result has the documented floating type and is a constant
+    /// expression when the argument, if any, is a string literal that
+    /// `strtol` would consume in full (GCC "Floating-Point Format
+    /// Builtins"). A non-literal argument is a diagnostic.
+    fn check_fp_format_builtin(&mut self, expr: &mut Expr, name: &str) -> Result<(), Diagnostic> {
+        let fp = crate::float::FpFormatBuiltin::from_name(name).expect("format builtin");
+        let (line, column) = (expr.line(), expr.column());
+        let Expr::Call { args, .. } = expr else {
+            unreachable!("format builtin");
+        };
+        if args.len() != fp.arity() {
+            return self.err(
+                line,
+                column,
+                format!(
+                    "{name} expects {} {}",
+                    fp.arity(),
+                    if fp.arity() == 1 {
+                        "argument"
+                    } else {
+                        "arguments"
+                    }
+                ),
+            );
+        }
+        if matches!(fp, crate::float::FpFormatBuiltin::Nan { .. })
+            && !crate::float::FpFormatBuiltin::is_string_literal_arg(&args[0])
+        {
+            return self.err(
+                args[0].line(),
+                args[0].column(),
+                format!("{name} requires a string literal argument"),
+            );
+        }
+        for arg in args.iter_mut() {
+            self.check_expr(arg)?;
+            self.decay(arg)?;
+        }
+        // A malformed quiet tag is left to constant evaluation in an
+        // ICE or static initializer, and to IR lowering in a runtime
+        // context (a call of nan/nanf/nanl). __builtin_nans* has no
+        // library equivalent, so a tag that is not consumed in full
+        // is always a diagnostic.
+        if let crate::float::FpFormatBuiltin::Nan {
+            signaling: true, ..
+        } = fp
+        {
+            if crate::float::nan_tag_from_expr(&args[0]).is_none() {
+                return self.err(
+                    args[0].line(),
+                    args[0].column(),
+                    format!("{name} requires a string literal that strtol would consume in full"),
+                );
+            }
+        }
+        let ret = CType::Float(fp.kind());
+        if let Expr::Call { resolved, .. } = expr {
+            *resolved = Some(CallRes {
+                name: name.to_string(),
+                ret: ret.clone(),
+                params: Vec::new(),
+                variadic: false,
+                indirect: false,
+            });
+        }
+        expr.set_ty(ret);
         Ok(())
     }
 
@@ -5235,6 +5311,10 @@ fn has_real(expr: &Expr) -> bool {
                 || has_real(else_expr)
         }
         Expr::Cast { ty_name, expr, .. } => ty_name.is_float() || has_real(expr),
+        Expr::Call { callee, .. } => matches!(
+            callee.as_ref(),
+            Expr::Var { name, .. } if crate::float::FpFormatBuiltin::from_name(name).is_some()
+        ),
         _ => false,
     }
 }
@@ -5293,8 +5373,29 @@ fn eval_num(expr: &Expr) -> Result<NumConst, ConstError> {
                 Err(ConstError::NotConst)
             }
         }
+        Expr::Call { callee, args, .. } => eval_fp_format_builtin(callee, args),
         _ => Err(ConstError::NotConst),
     }
+}
+
+fn eval_fp_format_builtin(callee: &Expr, args: &[Expr]) -> Result<NumConst, ConstError> {
+    let Expr::Var { name, .. } = callee else {
+        return Err(ConstError::NotConst);
+    };
+    let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) else {
+        return Err(ConstError::NotConst);
+    };
+    let bits = match fp {
+        crate::float::FpFormatBuiltin::Inf(kind) => crate::float::plus_inf(kind),
+        crate::float::FpFormatBuiltin::Nan { kind, signaling } => {
+            let tag = crate::float::nan_tag_from_expr(&args[0]).ok_or(ConstError::NotConst)?;
+            crate::float::nan_bits(kind, tag, signaling)
+        }
+    };
+    Ok(NumConst::Real {
+        bits,
+        kind: fp.kind(),
+    })
 }
 
 fn eval_real_unary(op: UnaryOp, expr: &Expr) -> Result<NumConst, ConstError> {
@@ -7068,5 +7169,71 @@ int main(void) {
         sema_ok(
             "int main(void) { int x; switch (x) { case 1: return 1; } switch (x) { case 1: return 2; } return 0; }",
         );
+    }
+
+    #[test]
+    fn math_format_builtins_are_constant_floats() {
+        // C11 7.12p3–p5 and GCC "Floating-Point Format Builtins": these
+        // names are constant expressions of the documented types, so they
+        // may initialize static storage and appear in `_Generic`.
+        sema_ok("float n = __builtin_nanf(\"\");");
+        sema_ok("float i = __builtin_inff();");
+        sema_ok("double h = __builtin_huge_val();");
+        sema_ok("float hf = __builtin_huge_valf();");
+        sema_ok("long double hl = __builtin_huge_vall();");
+        sema_ok("double n = __builtin_nan(\"\");");
+        sema_ok("long double n = __builtin_nanl(\"\");");
+        sema_ok("double i = __builtin_inf();");
+        sema_ok("long double i = __builtin_infl();");
+        sema_ok("float n = __builtin_nanf(\"1\");");
+        sema_ok("double n = __builtin_nan(\"1\0ignored\");");
+        sema_ok("float n = __builtin_nansf(\"\");");
+        sema_ok("double n = __builtin_nans(\"\");");
+        sema_ok("long double n = __builtin_nansl(\"\");");
+        sema_ok("int main(void) { static float n = __builtin_nanf(\"\"); return n != n; }");
+        sema_ok("int a = _Generic(__builtin_nanf(\"\"), float: 1, default: 0);");
+        sema_ok("int a = _Generic(__builtin_huge_val(), double: 1, default: 0);");
+        sema_ok("int a = _Generic(__builtin_huge_vall(), long double: 1, default: 0);");
+        // The system <math.h> macros expand to these builtins under
+        // __GNUC__ 3.3 or later (C11 7.12p3–p5).
+        let ir = crate::compile_to_ir(
+            "#include <math.h>\nfloat n = NAN;\nfloat i = INFINITY;\ndouble h = HUGE_VAL;\n",
+            "math-macros.c",
+        )
+        .expect("system math.h macros should compile");
+        assert!(
+            ir.contains("0x7FF8000000000000") && ir.contains("0x7FF0000000000000"),
+            "NAN and INFINITY / HUGE_VAL constants missing: {ir}"
+        );
+
+        assert!(
+            sema_err("float n = __builtin_nanf(0);").contains("requires a string literal argument")
+        );
+        assert!(sema_err("float n = __builtin_nanf();").contains("expects 1 argument"));
+        assert!(sema_err("float n = __builtin_inff(1);").contains("expects 0 arguments"));
+        assert!(
+            sema_err("const char *p = \"\"; float n = __builtin_nanf(p);")
+                .contains("requires a string literal argument")
+        );
+        // A string that strtol would not consume in full is not a constant
+        // (GCC "Floating-Point Format Builtins"). A static initializer
+        // and an ICE keep diagnosing. A runtime __builtin_nans* with a
+        // malformed tag is also a diagnostic: there is no library nans.
+        assert!(
+            sema_err("float n = __builtin_nanf(\"abc\");").contains("not a constant expression")
+        );
+        assert!(
+            sema_err("double x = __builtin_nan(\"1xyz\");").contains("not a constant expression")
+        );
+        assert!(sema_err(
+            "int main(void) { static double x = __builtin_nan(\"1xyz\"); return 0; }"
+        )
+        .contains("not a constant expression"));
+        assert!(
+            sema_err("int main(void) { return (int)__builtin_nans(\"1xyz\"); }")
+                .contains("strtol would consume in full")
+        );
+        // A runtime quiet malformed tag is accepted; IR lowering calls nan().
+        sema_ok("int main(void) { return __builtin_nan(\"1xyz\") != 0.0; }");
     }
 }

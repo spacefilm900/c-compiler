@@ -85,43 +85,51 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
         wrote_prelude = true;
     }
     let mut functions = Vec::new();
-    let mut needs_memmove = false;
-    let mut needs_va = false;
-    let mut needs_memcpy = false;
-    let mut needs_memset = false;
+    let mut needs = LowerNeeds::default();
     for decl in &unit.decls {
         if let TopDecl::Func(func) = decl {
             if func.body.is_some() {
-                let (text, copied, va, memcpy, memset) = render_function(func);
-                needs_memmove |= copied;
-                needs_va |= va;
-                needs_memcpy |= memcpy;
-                needs_memset |= memset;
+                let (text, fn_needs) = render_function(func);
+                needs.merge(fn_needs);
                 functions.push(text);
             }
         }
     }
-    if needs_va {
+    if needs.va {
         out.push_str("declare void @llvm.va_start(ptr)\n");
         out.push_str("declare void @llvm.va_end(ptr)\n");
         out.push_str("declare void @llvm.va_copy(ptr, ptr)\n");
         wrote_prelude = true;
     }
-    if needs_memmove {
+    if needs.memmove {
         // Overlap is allowed, so `s = s` is defined. The copy is the object
         // representation, padding included. An aggregate load/store is not:
         // LLVM may leave the padding `undef`.
         out.push_str("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)\n");
         wrote_prelude = true;
     }
-    if needs_memcpy {
+    if needs.memcpy {
         out.push_str("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n");
         wrote_prelude = true;
     }
-    if needs_memset {
+    if needs.memset {
         out.push_str("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
         wrote_prelude = true;
     }
+    // A runtime __builtin_nan* with a malformed tag lowers to nan/nanf/nanl
+    // (C11 7.12.11.2). Declare the library function if this unit does not
+    // already have that symbol.
+    for (needed, name, decl) in [
+        (needs.nan, "nan", "declare double @nan(ptr)\n"),
+        (needs.nanf, "nanf", "declare float @nanf(ptr)\n"),
+        (needs.nanl, "nanl", "declare x86_fp80 @nanl(ptr)\n"),
+    ] {
+        if needed && !has_func_symbol(unit, name) {
+            out.push_str(decl);
+            wrote_prelude = true;
+        }
+    }
+
     if wrote_prelude {
         out.push('\n');
     }
@@ -257,7 +265,7 @@ fn param_ir(ty: &CType, name: Option<&str>) -> String {
     }
 }
 
-fn render_function(func: &FuncDef) -> (String, bool, bool, bool, bool) {
+fn render_function(func: &FuncDef) -> (String, LowerNeeds) {
     let body = func.body.as_ref().expect("defined function");
     let param_tys: Vec<CType> = func.params.iter().map(|param| param.ty.clone()).collect();
     // Semantic analysis rejects a definition whose aggregate needs an SSE
@@ -315,10 +323,15 @@ fn render_function(func: &FuncDef) -> (String, bool, bool, bool, bool) {
     gen.emit("}");
     (
         gen.lines.join("\n"),
-        gen.needs_memmove,
-        gen.needs_va,
-        gen.needs_memcpy,
-        gen.needs_memset,
+        LowerNeeds {
+            memmove: gen.needs_memmove,
+            va: gen.needs_va,
+            memcpy: gen.needs_memcpy,
+            memset: gen.needs_memset,
+            nan: gen.needs_nan,
+            nanf: gen.needs_nanf,
+            nanl: gen.needs_nanl,
+        },
     )
 }
 
@@ -374,6 +387,40 @@ fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, CType)>) {
     }
 }
 
+/// Declarations the function body needs inserted in the module prelude.
+#[derive(Default)]
+struct LowerNeeds {
+    memmove: bool,
+    va: bool,
+    memcpy: bool,
+    memset: bool,
+    nan: bool,
+    nanf: bool,
+    nanl: bool,
+}
+
+impl LowerNeeds {
+    fn merge(&mut self, other: Self) {
+        self.memmove |= other.memmove;
+        self.va |= other.va;
+        self.memcpy |= other.memcpy;
+        self.memset |= other.memset;
+        self.nan |= other.nan;
+        self.nanf |= other.nanf;
+        self.nanl |= other.nanl;
+    }
+}
+
+fn has_func_symbol(unit: &TranslationUnit, name: &str) -> bool {
+    unit.func_decls.iter().any(|decl| decl.name == name)
+        || unit.decls.iter().any(|decl| {
+            matches!(
+                decl,
+                TopDecl::Func(func) if func.body.is_some() && func.symbol == name
+            )
+        })
+}
+
 struct Gen {
     lines: Vec<String>,
     tmp: u32,
@@ -397,6 +444,11 @@ struct Gen {
     needs_va: bool,
     needs_memcpy: bool,
     needs_memset: bool,
+    /// Emit a library `nan` / `nanf` / `nanl` declaration if the symbol
+    /// is not already in the unit.
+    needs_nan: bool,
+    needs_nanf: bool,
+    needs_nanl: bool,
     /// Index in `lines` where the next entry-block alloca is inserted.
     alloca_at: usize,
     /// Set when the C return type is a struct or union.
@@ -429,6 +481,9 @@ impl Gen {
             needs_va: false,
             needs_memcpy: false,
             needs_memset: false,
+            needs_nan: false,
+            needs_nanf: false,
+            needs_nanl: false,
             alloca_at: 0,
             ret_agg,
         }
@@ -2518,11 +2573,59 @@ impl Gen {
         Some(dest)
     }
 
+    /// `__builtin_nan*` / `__builtin_nans*` / `__builtin_inf*` /
+    /// `__builtin_huge_val*` fold to an LLVM floating constant when the
+    /// tag, if any, is a compile-time constant. `float` and `double` use
+    /// the 16-digit `0x` form; `long double` uses `0xK` and 20 hex digits
+    /// (LLVM Language Reference, "Simple Constants").
+    ///
+    /// A quiet `__builtin_nan*` whose tag is not consumed in full, in a
+    /// runtime context, is lowered to a call of the C library `nan` /
+    /// `nanf` / `nanl` (C11 7.12.11.2) with the same string literal. The
+    /// whole-tag rule is [`crate::float::nan_tag_from_expr`], shared with
+    /// constant evaluation. A malformed `__builtin_nans*` tag is diagnosed
+    /// in semantic analysis.
+    fn gen_fp_format_builtin(&mut self, name: &str, args: &[Expr]) -> Option<String> {
+        let fp = crate::float::FpFormatBuiltin::from_name(name)?;
+        let bits = match fp {
+            crate::float::FpFormatBuiltin::Inf(kind) => crate::float::plus_inf(kind),
+            crate::float::FpFormatBuiltin::Nan { kind, signaling } => {
+                match crate::float::nan_tag_from_expr(&args[0]) {
+                    Some(tag) => crate::float::nan_bits(kind, tag, signaling),
+                    None => {
+                        let lib = fp
+                            .libm_nan()
+                            .expect("malformed __builtin_nans* tag should be diagnosed");
+                        return Some(self.gen_lib_nan(lib, fp.kind(), &args[0]));
+                    }
+                }
+            }
+        };
+        Some(crate::float::llvm_const(fp.kind(), bits))
+    }
+
+    fn gen_lib_nan(&mut self, name: &str, kind: FloatKind, tag: &Expr) -> String {
+        match name {
+            "nan" => self.needs_nan = true,
+            "nanf" => self.needs_nanf = true,
+            "nanl" => self.needs_nanl = true,
+            _ => unreachable!("library nan name"),
+        }
+        let arg = self.gen_val(tag);
+        let tmp = self.fresh();
+        let ret = crate::ast::CType::Float(kind).ir_type();
+        self.emit(&format!("  {tmp} = call {ret} @{name}(ptr {arg})"));
+        tmp
+    }
+
     fn gen_call(&mut self, callee: &Expr, args: &[Expr], resolved: &CallRes) -> Option<String> {
         if let Some(lowered) = self.gen_memory_builtin(&resolved.name, args) {
             return Some(lowered);
         }
         if let Some(lowered) = self.gen_signbit(&resolved.name, args) {
+            return Some(lowered);
+        }
+        if let Some(lowered) = self.gen_fp_format_builtin(&resolved.name, args) {
             return Some(lowered);
         }
         let sig =
@@ -4328,5 +4431,162 @@ int main(void) {
         let _ = std::fs::remove_file(&clang_main);
         let _ = std::fs::remove_file(&clang_obj_path);
         let _ = std::fs::remove_file(&bin2);
+    }
+    #[test]
+    fn signaling_nan_constants_keep_ieee_encoding() {
+        // GCC "Floating-Point Format Builtins": a default `__builtin_nans*`
+        // is a signaling NaN. LLVM hex constants for `float` use the
+        // widened IEEE-64 pattern (Language Reference, "Simple Constants").
+        let source = concat!(
+            "float f = __builtin_nansf(\"\");\n",
+            "double d = __builtin_nans(\"\");\n",
+            "long double l = __builtin_nansl(\"\");\n",
+        );
+        let ir = crate::compile_to_ir(source, "nans.c").unwrap();
+        assert!(
+            ir.contains("@f = global float 0x7FF4000000000000"),
+            "nansf encoding quieted or missing: {ir}"
+        );
+        assert!(
+            ir.contains("@d = global double 0x7FF4000000000000"),
+            "nans encoding missing: {ir}"
+        );
+        assert!(
+            ir.contains("@l = global x86_fp80 0xK7FFFA000000000000000"),
+            "nansl encoding missing: {ir}"
+        );
+
+        // Clang 19 as a black-box oracle: the same hex constants in its IR.
+        let cfile = temp_paths().0.with_extension("c");
+        std::fs::write(&cfile, source).unwrap();
+        let ll = cfile.with_extension("ll");
+        let compiled = Command::new("clang")
+            .args([
+                "-std=c11",
+                "-O0",
+                "-S",
+                "-emit-llvm",
+                "-o",
+                ll.to_str().unwrap(),
+                cfile.to_str().unwrap(),
+            ])
+            .output()
+            .expect("clang");
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let clang_ir = std::fs::read_to_string(&ll).unwrap();
+        assert!(
+            clang_ir.contains("float 0x7FF4000000000000"),
+            "clang nansf: {clang_ir}"
+        );
+        assert!(
+            clang_ir.contains("double 0x7FF4000000000000"),
+            "clang nans: {clang_ir}"
+        );
+        assert!(
+            clang_ir.contains("x86_fp80 0xK7FFFA000000000000000"),
+            "clang nansl: {clang_ir}"
+        );
+        let _ = std::fs::remove_file(&cfile);
+        let _ = std::fs::remove_file(&ll);
+
+        // C string semantics: bytes after the first NUL are not part of
+        // the payload, so "1\0ignored" matches "1".
+        let nul_ir = crate::compile_to_ir(
+            "double a = __builtin_nan(\"1\");\ndouble b = __builtin_nan(\"1\\0ignored\");\n",
+            "nan-nul.c",
+        )
+        .unwrap();
+        assert_eq!(
+            nul_ir.matches("0x7FF8000000000001").count(),
+            2,
+            "NUL payload should match \"1\": {nul_ir}"
+        );
+    }
+
+    #[test]
+    fn malformed_runtime_nan_tag_calls_libm() {
+        // Clang 19 black-box: a runtime __builtin_nan("1xyz") is a call of
+        // nan() (C11 7.12.11.2), not a payload-zero constant. The same
+        // helper used by constant evaluation decides whether the tag folds.
+        let ir = crate::compile_to_ir(
+            "double f(void) { return __builtin_nan(\"1xyz\"); }\n",
+            "nan-runtime.c",
+        )
+        .unwrap();
+        assert!(
+            ir.contains("declare double @nan(ptr)"),
+            "missing nan declaration: {ir}"
+        );
+        assert!(
+            ir.contains("call double @nan(ptr") && ir.contains("c\"1xyz\\00\""),
+            "should call nan() with the tag string: {ir}"
+        );
+        assert!(
+            !ir.contains("ret double 0x7FF8000000000000"),
+            "malformed tag must not become a payload-zero NaN: {ir}"
+        );
+        assert_eq!(ir.matches("declare double @nan(ptr)").count(), 1, "{ir}");
+
+        let irf = crate::compile_to_ir(
+            "float f(void) { return __builtin_nanf(\"1xyz\"); }\n",
+            "nanf-runtime.c",
+        )
+        .unwrap();
+        assert!(irf.contains("declare float @nanf(ptr)"), "{irf}");
+        assert!(irf.contains("call float @nanf(ptr"), "{irf}");
+
+        let irl = crate::compile_to_ir(
+            "long double f(void) { return __builtin_nanl(\"1xyz\"); }\n",
+            "nanl-runtime.c",
+        )
+        .unwrap();
+        assert!(irl.contains("declare x86_fp80 @nanl(ptr)"), "{irl}");
+        assert!(irl.contains("call x86_fp80 @nanl(ptr"), "{irl}");
+
+        // A valid tag still folds, including in a function body.
+        let ok = crate::compile_to_ir(
+            "double f(void) { return __builtin_nan(\"1\"); }\n",
+            "nan-ok.c",
+        )
+        .unwrap();
+        assert!(ok.contains("ret double 0x7FF8000000000001"), "{ok}");
+        assert!(!ok.contains("@nan("), "{ok}");
+
+        // Do not emit a second declare if the unit already names nan.
+        let declared = crate::compile_to_ir(
+            "double nan(const char *); double f(void) { return __builtin_nan(\"1xyz\"); }\n",
+            "nan-declared.c",
+        )
+        .unwrap();
+        assert_eq!(
+            declared.matches("declare double @nan(ptr)").count(),
+            1,
+            "{declared}"
+        );
+        assert!(declared.contains("call double @nan(ptr"), "{declared}");
+
+        // A static malformed tag is still rejected. So is a runtime
+        // __builtin_nans* malformed tag (no library equivalent).
+        let err = crate::compile_to_ir("double x = __builtin_nan(\"1xyz\");\n", "nan-static.c")
+            .unwrap_err();
+        assert!(
+            err.message.contains("not a constant expression"),
+            "{}",
+            err.message
+        );
+        let err = crate::compile_to_ir(
+            "double f(void) { return __builtin_nans(\"1xyz\"); }\n",
+            "nans-runtime.c",
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("strtol would consume in full"),
+            "{}",
+            err.message
+        );
     }
 }

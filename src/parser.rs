@@ -3715,6 +3715,7 @@ enum BoundErr {
     NotConst,
     Undeclared,
     WrongArity,
+    NotStringLiteral,
     InvalidOperand,
     GenericDupDefault,
     GenericBadType,
@@ -3736,6 +3737,7 @@ fn bound_message(err: BoundErr) -> &'static str {
         BoundErr::NotConst => "array size is not an integer constant",
         BoundErr::Undeclared => "use of undeclared identifier",
         BoundErr::WrongArity => "wrong number of arguments in function call",
+        BoundErr::NotStringLiteral => "requires a string literal argument",
         BoundErr::InvalidOperand => "invalid operand",
         BoundErr::GenericDupDefault => "duplicate default generic association",
         BoundErr::GenericBadType => "type in generic association is not a complete object type",
@@ -3986,6 +3988,13 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
                     if args.len() != arity {
                         return Err(BoundErr::WrongArity);
                     }
+                    if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
+                        if fp.requires_string_literal()
+                            && !crate::float::FpFormatBuiltin::is_string_literal_arg(&args[0])
+                        {
+                            return Err(BoundErr::NotStringLiteral);
+                        }
+                    }
                     return Ok(());
                 }
             }
@@ -4063,6 +4072,9 @@ fn check_uneval_init(init: &Init, env: Env) -> Result<(), BoundErr> {
 }
 
 fn builtin_arity(name: &str) -> Option<usize> {
+    if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
+        return Some(fp.arity());
+    }
     match name {
         "__builtin_signbit" | "__builtin_signbitf" | "__builtin_signbitl" => Some(1),
         "__builtin_memcpy" | "__builtin_memmove" | "__builtin_memset" => Some(3),
@@ -4201,6 +4213,11 @@ fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
         | Expr::IncDec { target, .. } => Ok(type_only(target, env)?.unqualified()),
         Expr::Comma { right, .. } => rvalue_type(right, env),
         Expr::Call { callee, .. } => {
+            if let Expr::Var { name, .. } = callee.as_ref() {
+                if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
+                    return Ok(CType::Float(fp.kind()));
+                }
+            }
             let callee = rvalue_type(callee, env)?;
             let func = callee
                 .pointee()
@@ -5592,6 +5609,74 @@ func int main
         // field is valid; `!1` is 0, which is a diagnostic on a named field.
         assert!(parsed("struct S { unsigned f : !0; } s;\n").contains("global struct S s"));
         assert!(parse_err("struct S { unsigned f : !1; };").contains("zero width"));
+    }
+
+    #[test]
+    fn math_format_builtins_in_constant_expressions() {
+        // C11 7.12p4–p5: INFINITY and NAN are constant expressions of type
+        // float. glibc spells them as these GCC builtins. The type of each
+        // builtin is visible to `_Generic` in an integer constant expression
+        // (6.5.1.1, 6.6, 6.7.10).
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_nanf(\"\"), float: 1, default: 0), \"NAN\");\n",
+        )
+        .is_empty());
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_inff(), float: 1, default: 0), \"INF\");\n",
+        )
+        .is_empty());
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_huge_val(), double: 1, default: 0), \"HV\");\n",
+        )
+        .is_empty());
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_huge_valf(), float: 1, default: 0), \"HVF\");\n",
+        )
+        .is_empty());
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_huge_vall(), long double: 1, default: 0), \"HVL\");\n",
+        )
+        .is_empty());
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_nan(\"\"), double: 1, default: 0), \"nan\");\n",
+        )
+        .is_empty());
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_nanl(\"\"), long double: 1, default: 0), \"nanl\");\n",
+        )
+        .is_empty());
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_inf(), double: 1, default: 0), \"inf\");\n",
+        )
+        .is_empty());
+        assert!(parsed(
+            "_Static_assert(_Generic(__builtin_infl(), long double: 1, default: 0), \"infl\");\n",
+        )
+        .is_empty());
+        assert!(parsed("int a[sizeof(__builtin_nanf(\"\"))];\n").contains("global int [4] a"));
+        assert!(parsed("int a[sizeof(__builtin_huge_val())];\n").contains("global int [8] a"));
+        assert!(parsed("int a[sizeof(__builtin_huge_vall())];\n").contains("global int [16] a"));
+        // A non-literal nan argument is a diagnostic at every ICE entry
+        // point, not only in semantic analysis. sizeof / _Generic would
+        // otherwise see the result type and accept the program.
+        assert!(parse_err("_Static_assert(__builtin_nanf(0), \"x\");")
+            .contains("requires a string literal argument"));
+        assert!(parse_err(
+            "_Static_assert(_Generic(__builtin_nanf(0), float: 1, default: 0), \"x\");"
+        )
+        .contains("requires a string literal argument"));
+        assert!(parse_err("enum { E = sizeof(__builtin_nanf(0)) };")
+            .contains("requires a string literal argument"));
+        assert!(parse_err("int a[sizeof(__builtin_nanf(0))];")
+            .contains("requires a string literal argument"));
+        assert!(
+            parse_err("enum { E = _Generic(__builtin_nanf(0), float: 1, default: 0) };")
+                .contains("requires a string literal argument")
+        );
+        assert!(
+            parse_err("int a[_Generic(__builtin_nanf(0), float: 1, default: 0)];")
+                .contains("requires a string literal argument")
+        );
     }
 
     #[test]

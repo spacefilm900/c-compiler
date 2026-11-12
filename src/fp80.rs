@@ -127,6 +127,32 @@ pub fn parse_hex(int_digits: &str, frac_digits: &str, bin_exp: i32) -> u128 {
     hex_bits(int_digits, frac_digits, bin_exp)
 }
 
+/// +infinity: all-ones exponent and a significand of 2^63.
+pub fn plus_inf() -> u128 {
+    INF
+}
+
+/// A quiet or signaling NaN, with `payload` in the low bits of the 64-bit
+/// significand. The integer bit is set. A quiet NaN also has bit 62 set; a
+/// signaling NaN has it clear, and bit 61 is set when the rest of the
+/// field would otherwise be zero (which would encode an infinity).
+pub fn nan_bits(payload: u128, signaling: bool) -> u128 {
+    const INTEGER: u128 = 1 << 63;
+    const QUIET: u128 = 1 << 62;
+    const DEFAULT_SIGNAL: u128 = 1 << 61;
+    let mut frac = payload & ((1u128 << 64) - 1);
+    frac |= INTEGER;
+    if signaling {
+        frac &= !QUIET;
+        if frac & !INTEGER == 0 {
+            frac |= DEFAULT_SIGNAL;
+        }
+    } else {
+        frac |= QUIET;
+    }
+    (0x7FFFu128 << 64) | frac
+}
+
 pub fn is_zero(bits: u128) -> bool {
     bits & ((1u128 << 79) - 1) == 0
 }
