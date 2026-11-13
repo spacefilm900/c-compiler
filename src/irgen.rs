@@ -88,7 +88,7 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
         wrote_prelude = true;
     }
     for decl in &unit.func_decls {
-        out.push_str(&render_declare(decl));
+        out.push_str(&render_declare(decl, unit.fn_attrs.get(&decl.name)));
         out.push('\n');
         wrote_prelude = true;
     }
@@ -127,6 +127,74 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
         }
     }
 
+    for line in &needs.intrinsics {
+        out.push_str(line);
+        out.push('\n');
+        wrote_prelude = true;
+    }
+    let used: Vec<String> = unit
+        .globals
+        .iter()
+        .filter(|global| global.attrs.used && global.init.is_some())
+        .map(|global| llvm_global(renamed(&global.name, &renames)))
+        .chain(
+            unit.decls
+                .iter()
+                .filter_map(|decl| match decl {
+                    TopDecl::Func(func) if func.body.is_some() => Some(func),
+                    _ => None,
+                })
+                .filter(|func| {
+                    unit.fn_attrs
+                        .get(&func.symbol)
+                        .is_some_and(|attrs| attrs.used)
+                })
+                .map(|func| llvm_global(renamed(&func.symbol, &renames))),
+        )
+        .collect();
+    if !used.is_empty() {
+        let list: Vec<String> = used.iter().map(|name| format!("ptr {name}")).collect();
+        out.push_str(&format!(
+            "@llvm.used = appending global [{} x ptr] [{}], section \"llvm.metadata\"\n",
+            used.len(),
+            list.join(", ")
+        ));
+        wrote_prelude = true;
+    }
+    for (kind, ctor) in [("ctors", true), ("dtors", false)] {
+        let entries: Vec<String> = unit
+            .decls
+            .iter()
+            .filter_map(|decl| match decl {
+                TopDecl::Func(func) if func.body.is_some() => Some(func),
+                _ => None,
+            })
+            .filter(|func| {
+                unit.fn_attrs.get(&func.symbol).is_some_and(|attrs| {
+                    if ctor {
+                        attrs.constructor
+                    } else {
+                        attrs.destructor
+                    }
+                })
+            })
+            .map(|func| {
+                format!(
+                    "{{ i32, ptr, ptr }} {{ i32 65535, ptr {}, ptr null }}",
+                    llvm_global(renamed(&func.symbol, &renames))
+                )
+            })
+            .collect();
+        if !entries.is_empty() {
+            out.push_str(&format!(
+                "@llvm.global_{kind} = appending global [{} x {{ i32, ptr, ptr }}] [{}]\n",
+                entries.len(),
+                entries.join(", ")
+            ));
+            wrote_prelude = true;
+        }
+    }
+
     if wrote_prelude {
         out.push('\n');
     }
@@ -154,7 +222,8 @@ fn render_functions(unit: &TranslationUnit, renames: &Renames) -> (Vec<String>, 
     for decl in &unit.decls {
         if let TopDecl::Func(func) = decl {
             if func.body.is_some() {
-                let (text, fn_needs) = render_function(func, renames);
+                let (text, fn_needs) =
+                    render_function(func, renames, unit.fn_attrs.get(&func.symbol));
                 needs.merge(fn_needs);
                 functions.push(text);
             }
@@ -236,7 +305,13 @@ fn renamed<'a>(name: &'a str, renames: &'a Renames) -> &'a str {
 fn render_global(global: &IrGlobal, renames: &Renames) -> String {
     let name = llvm_global(renamed(&global.name, renames));
     let ir = global.ty.ir_type();
-    let align = global.ty.align();
+    let align = global.ty.align().max(global.attrs.align.unwrap_or(0));
+    let section = global
+        .attrs
+        .section
+        .as_ref()
+        .map(|name| format!(", section {}", llvm_string(name)))
+        .unwrap_or_default();
     // A const object is an LLVM `constant`. `const int *` is not const; the
     // pointer can be reseated. An array of const elements is constant.
     let kind = if global.ty.is_const_object() {
@@ -247,10 +322,13 @@ fn render_global(global: &IrGlobal, renames: &Renames) -> String {
     if let Some(value) = &global.init {
         let linkage = match global.linkage {
             Linkage::Internal => "internal ",
+            Linkage::External if global.attrs.weak => "weak ",
             Linkage::External => "",
         };
         let spelled = render_const(&global.ty, value, renames);
-        format!("{name} = {linkage}{kind} {ir} {spelled}, align {align}")
+        format!("{name} = {linkage}{kind} {ir} {spelled}{section}, align {align}")
+    } else if global.attrs.weak {
+        format!("{name} = extern_weak {kind} {ir}, align {align}")
     } else {
         format!("{name} = external {kind} {ir}, align {align}")
     }
@@ -310,7 +388,7 @@ fn render_string(literal: &StrConst) -> String {
     )
 }
 
-fn render_declare(decl: &IrFunc) -> String {
+fn render_declare(decl: &IrFunc, attrs: Option<&FnAttrs>) -> String {
     // An unused prototype whose aggregate is still incomplete, or whose
     // return would use `%st0`, has no callable signature yet. The symbol
     // still has to exist when its address is taken.
@@ -318,12 +396,56 @@ fn render_declare(decl: &IrFunc) -> String {
         return format!("declare void {}()", llvm_global(&decl.name));
     };
     let params = sig_params(&sig, decl.variadic, None);
+    let weak = if attrs.is_some_and(|attrs| attrs.weak) {
+        "extern_weak "
+    } else {
+        ""
+    };
     format!(
-        "declare {}{} {}({params})",
+        "declare {weak}{}{} {}({params}){}",
         sig.ret_prefix,
         sig.ret_type,
-        llvm_global(&decl.name)
+        llvm_global(&decl.name),
+        fn_attr_suffix(attrs, false)
     )
+}
+
+/// LLVM function attributes for GNU function attributes (LLVM LangRef,
+/// "Function Attributes"), with a leading space, and the section of a
+/// definition.
+fn fn_attr_suffix(attrs: Option<&FnAttrs>, definition: bool) -> String {
+    let Some(attrs) = attrs else {
+        return String::new();
+    };
+    let mut parts = Vec::new();
+    if attrs.noreturn {
+        parts.push("noreturn".to_string());
+    }
+    if attrs.noinline {
+        parts.push("noinline".to_string());
+    } else if attrs.always_inline {
+        parts.push("alwaysinline".to_string());
+    }
+    if attrs.cold {
+        parts.push("cold".to_string());
+    } else if attrs.hot {
+        parts.push("hot".to_string());
+    }
+    if attrs.const_fn {
+        parts.push("memory(none)".to_string());
+    } else if attrs.pure {
+        parts.push("memory(read)".to_string());
+    }
+    if definition {
+        if let Some(section) = &attrs.section {
+            parts.push(format!("section {}", llvm_string(section)));
+        }
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", parts.join(" "))
+    }
 }
 
 /// Parameter list of a lowered signature. `names` supplies one LLVM name per
@@ -358,7 +480,11 @@ fn param_ir(ty: &CType, name: Option<&str>) -> String {
     }
 }
 
-fn render_function(func: &FuncDef, renames: &Renames) -> (String, LowerNeeds) {
+fn render_function(
+    func: &FuncDef,
+    renames: &Renames,
+    attrs: Option<&FnAttrs>,
+) -> (String, LowerNeeds) {
     let body = func.body.as_ref().expect("defined function");
     let param_tys: Vec<CType> = func.params.iter().map(|param| param.ty.clone()).collect();
     // Semantic analysis rejects a definition whose aggregate needs an SSE
@@ -375,14 +501,16 @@ fn render_function(func: &FuncDef, renames: &Renames) -> (String, LowerNeeds) {
     gen.renames = renames.clone();
     let linkage = match func.linkage {
         Linkage::Internal => "internal ",
+        Linkage::External if attrs.is_some_and(|attrs| attrs.weak) => "weak ",
         Linkage::External => "",
     };
     let params = sig_params(&sig, func.variadic, Some(&names));
     gen.emit(&format!(
-        "define {linkage}{}{} {}({params}) {{",
+        "define {linkage}{}{} {}({params}){} {{",
         sig.ret_prefix,
         sig.ret_type,
-        llvm_global(renamed(&func.symbol, renames))
+        llvm_global(renamed(&func.symbol, renames)),
+        fn_attr_suffix(attrs, true)
     ));
     gen.emit("entry:");
     gen.cur = "entry".to_string();
@@ -396,11 +524,10 @@ fn render_function(func: &FuncDef, renames: &Renames) -> (String, LowerNeeds) {
             param.ty.align()
         ));
     }
-    for (slot, ty) in local_slots(body) {
+    for (slot, ty, align) in local_slots(body) {
         gen.emit(&format!(
-            "  {slot} = alloca {}, align {}",
-            ty.ir_type(),
-            ty.align()
+            "  {slot} = alloca {}, align {align}",
+            ty.ir_type()
         ));
     }
     // Temps allocated while the body is emitted are inserted here, still in
@@ -425,11 +552,12 @@ fn render_function(func: &FuncDef, renames: &Renames) -> (String, LowerNeeds) {
             nan: gen.needs_nan,
             nanf: gen.needs_nanf,
             nanl: gen.needs_nanl,
+            intrinsics: gen.intrinsics,
         },
     )
 }
 
-fn local_slots(compound: &Compound) -> Vec<(String, CType)> {
+fn local_slots(compound: &Compound) -> Vec<(String, CType, u32)> {
     let mut slots = Vec::new();
     for item in &compound.items {
         collect_slots(item, &mut slots);
@@ -437,11 +565,9 @@ fn local_slots(compound: &Compound) -> Vec<(String, CType)> {
     slots
 }
 
-fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, CType)>) {
+fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, CType, u32)>) {
     match stmt {
-        Stmt::Decl(decl) if decl.storage == Storage::None => {
-            slots.push((decl.slot.clone(), decl.ty.clone()))
-        }
+        Stmt::Decl(decl) if decl.storage == Storage::None => slots.push(slot_of(decl)),
         Stmt::Decl(_) | Stmt::FuncDecl(_) => {}
         Stmt::Compound(compound) => {
             for item in &compound.items {
@@ -466,7 +592,7 @@ fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, CType)>) {
             if let ForInit::Decl(decls) = init {
                 for decl in decls {
                     if decl.storage == Storage::None {
-                        slots.push((decl.slot.clone(), decl.ty.clone()));
+                        slots.push(slot_of(decl));
                     }
                 }
             }
@@ -481,6 +607,13 @@ fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, CType)>) {
     }
 }
 
+/// An automatic object's slot, type, and alignment, including a GNU
+/// `aligned` attribute.
+fn slot_of(decl: &VarDecl) -> (String, CType, u32) {
+    let align = decl.ty.align().max(decl.align.unwrap_or(0));
+    (decl.slot.clone(), decl.ty.clone(), align)
+}
+
 /// Declarations the function body needs inserted in the module prelude.
 #[derive(Default)]
 struct LowerNeeds {
@@ -491,10 +624,12 @@ struct LowerNeeds {
     nan: bool,
     nanf: bool,
     nanl: bool,
+    intrinsics: std::collections::BTreeSet<String>,
 }
 
 impl LowerNeeds {
     fn merge(&mut self, other: Self) {
+        self.intrinsics.extend(other.intrinsics);
         self.memmove |= other.memmove;
         self.va |= other.va;
         self.memcpy |= other.memcpy;
@@ -549,6 +684,14 @@ struct Gen {
     ret_agg: Option<AggAbi>,
     /// Private IR names of globals and functions (see [`library_renames`]).
     renames: Renames,
+    /// Pointers that may be less aligned than their pointee type: members
+    /// of a GNU `packed` record and addresses derived from them.
+    unaligned: std::collections::HashSet<String>,
+    /// `declare` lines for LLVM intrinsics the body calls.
+    intrinsics: std::collections::BTreeSet<String>,
+    /// GNU case ranges of the switch being collected: low and high bits
+    /// and the case block.
+    switch_ranges: Vec<(u64, u64, String)>,
 }
 
 /// One store of an automatic aggregate initializer, evaluated and waiting
@@ -583,6 +726,9 @@ impl Gen {
             alloca_at: 0,
             ret_agg,
             renames: Renames::new(),
+            unaligned: std::collections::HashSet::new(),
+            intrinsics: std::collections::BTreeSet::new(),
+            switch_ranges: Vec::new(),
         }
     }
 }
@@ -901,6 +1047,19 @@ impl Gen {
             Expr::Comma { left, right, .. } => {
                 let _ = self.gen_expr(left);
                 self.record_ptr(right)
+            }
+            Expr::StmtExpr { body, ty, .. } => {
+                let ty = ty.clone().expect("typed statement expression");
+                let last = self
+                    .gen_stmt_expr_body(body)
+                    .expect("a record-valued statement expression ends in an expression");
+                let volatile = last.ty().is_some_and(|ty| ty.is_volatile());
+                let src = self.record_ptr(last);
+                self.ensure_block();
+                // The block's objects end with it; the value is a copy.
+                let tmp = self.entry_alloca(&ty);
+                self.copy_struct(&ty, &src, &tmp, volatile);
+                tmp
             }
             _ => panic!("internal compiler error: aggregate expression has no address"),
         }
@@ -1393,23 +1552,33 @@ impl Gen {
     }
 
     fn store(&mut self, ty: &CType, value: &str, slot: &str) {
+        let align = self.access_align(ty, slot);
         self.emit(&format!(
-            "  store{} {} {value}, ptr {slot}, align {}",
+            "  store{} {} {value}, ptr {slot}, align {align}",
             vol_attr(ty),
             ty.ir_type(),
-            ty.align()
         ));
     }
 
     fn load(&mut self, ty: &CType, slot: &str) -> String {
         let tmp = self.fresh();
+        let align = self.access_align(ty, slot);
         self.emit(&format!(
-            "  {tmp} = load{} {}, ptr {slot}, align {}",
+            "  {tmp} = load{} {}, ptr {slot}, align {align}",
             vol_attr(ty),
             ty.ir_type(),
-            ty.align()
         ));
         tmp
+    }
+
+    /// The alignment of an access through `slot`: the type's, or 1 for a
+    /// member of a packed record.
+    fn access_align(&self, ty: &CType, slot: &str) -> u32 {
+        if self.unaligned.contains(slot) {
+            1
+        } else {
+            ty.align()
+        }
     }
 
     /// Convert `value` from `from` to `to`.
@@ -1702,11 +1871,59 @@ impl Gen {
         let mut cases = Vec::new();
         let mut default_label = None;
         let mut labels = Vec::new();
+        let saved_ranges = std::mem::take(&mut self.switch_ranges);
         self.collect_switch_targets(body, &mut cases, &mut default_label, &mut labels);
+        let ranges = std::mem::replace(&mut self.switch_ranges, saved_ranges);
 
         let end_label = self.label();
         let default_dest = default_label.unwrap_or_else(|| end_label.clone());
-        self.emit_switch(promoted, &value, &default_dest, &cases);
+        // A GNU case range `low ... high`: a small one is listed value by
+        // value; a large one is tested after the switch's own cases miss,
+        // as `value - low <= high - low` unsigned.
+        let mask = promoted.mask();
+        let mut wide = Vec::new();
+        for (low, high, label) in ranges {
+            let empty = if promoted.is_signed() {
+                sign_extend(low, promoted.width()) > sign_extend(high, promoted.width())
+            } else {
+                low & mask > high & mask
+            };
+            if empty {
+                continue;
+            }
+            let span = high.wrapping_sub(low) & mask;
+            if span < 256 {
+                for step in 0..=span {
+                    cases.push((low.wrapping_add(step) & mask, label.clone()));
+                }
+            } else {
+                wide.push((low, span, label));
+            }
+        }
+        if wide.is_empty() {
+            self.emit_switch(promoted, &value, &default_dest, &cases);
+        } else {
+            let check = self.label();
+            self.emit_switch(promoted, &value, &check, &cases);
+            self.start(check);
+            let ir = promoted.ir_type();
+            for (low, span, label) in wide {
+                let diff = self.fresh();
+                self.emit(&format!(
+                    "  {diff} = sub {ir} {value}, {}",
+                    promoted.format_bits(low)
+                ));
+                let hit = self.fresh();
+                self.emit(&format!(
+                    "  {hit} = icmp ule {ir} {diff}, {}",
+                    TypeName::ULongLong.format_bits(span)
+                ));
+                let next = self.label();
+                self.br_cond(&hit, &label, &next);
+                self.start(next);
+            }
+            self.br(&default_dest);
+        }
 
         let saved_labels = std::mem::replace(&mut self.switch_labels, labels);
         let saved_at = self.switch_at;
@@ -1760,10 +1977,18 @@ impl Gen {
     ) {
         match stmt {
             Stmt::Switch { .. } => {}
-            Stmt::Case { value, stmt, .. } => {
+            Stmt::Case {
+                value,
+                high_value,
+                stmt,
+                ..
+            } => {
                 let label = self.label();
                 let bits = value.expect("case value");
-                cases.push((bits, label.clone()));
+                match high_value {
+                    None => cases.push((bits, label.clone())),
+                    Some(high) => self.switch_ranges.push((bits, *high, label.clone())),
+                }
                 labels.push(label);
                 self.collect_switch_targets(stmt, cases, default_label, labels);
             }
@@ -2244,7 +2469,104 @@ impl Gen {
             Expr::Generic { .. } => {
                 unreachable!("semantic analysis replaces a generic selection")
             }
+            Expr::StmtExpr { body, ty, .. } => {
+                let last = self.gen_stmt_expr_body(body);
+                let value = last.and_then(|last| self.gen_expr(last));
+                self.ensure_block();
+                if ty.as_ref().is_some_and(CType::is_void) {
+                    None
+                } else {
+                    value
+                }
+            }
+            Expr::CondShort {
+                cond,
+                else_expr,
+                ty,
+                ..
+            } => self.gen_cond_short(cond, else_expr, ty.clone().expect("typed")),
         }
+    }
+
+    /// Emit a statement expression's block up to its last expression
+    /// statement, which is returned for the caller to evaluate. Its
+    /// automatic objects get entry-block slots.
+    fn gen_stmt_expr_body<'b>(&mut self, body: &'b Compound) -> Option<&'b Expr> {
+        for (slot, ty, align) in local_slots(body) {
+            let line = format!("  {slot} = alloca {}, align {align}", ty.ir_type());
+            self.lines.insert(self.alloca_at, line);
+            self.alloca_at += 1;
+        }
+        let (last, rest) = match body.items.split_last() {
+            Some((
+                Stmt::Expr {
+                    expr: Some(last), ..
+                },
+                rest,
+            )) => (Some(last), rest),
+            _ => (None, &body.items[..]),
+        };
+        for item in rest {
+            self.gen_stmt(item);
+        }
+        self.ensure_block();
+        last
+    }
+
+    /// `x ?: y`: `x` is evaluated once; when it is nonzero it is the
+    /// result, otherwise `y` is evaluated.
+    fn gen_cond_short(&mut self, cond: &Expr, else_expr: &Expr, result: CType) -> Option<String> {
+        let cond_ty = cond.ty().expect("typed");
+        let value = self.gen_val(cond);
+        let test = self.test_nonzero(&value, &cond_ty);
+        let then_label = self.label();
+        let else_label = self.label();
+        let end_label = self.label();
+        self.br_cond(&test, &then_label, &else_label);
+        self.start(then_label);
+        let then_val = if result.is_void() {
+            None
+        } else {
+            Some(self.convert(&value, &cond_ty, &result))
+        };
+        let then_block = self.cur.clone();
+        self.br(&end_label);
+        self.start(else_label);
+        let else_val = self
+            .gen_expr(else_expr)
+            .map(|value| self.convert(&value, &else_expr.ty().expect("typed"), &result));
+        self.ensure_block();
+        let else_block = self.cur.clone();
+        self.br(&end_label);
+        self.start(end_label);
+        match (then_val, else_val) {
+            (Some(then_val), Some(else_val)) => {
+                let tmp = self.fresh();
+                self.emit(&format!(
+                    "  {tmp} = phi {} [ {then_val}, %{then_block} ], [ {else_val}, %{else_block} ]",
+                    result.ir_type()
+                ));
+                Some(tmp)
+            }
+            _ => None,
+        }
+    }
+
+    /// `value != 0` as an `i1`, for a scalar of type `ty`.
+    fn test_nonzero(&mut self, value: &str, ty: &CType) -> String {
+        let tmp = self.fresh();
+        if ty.is_pointer() {
+            self.emit(&format!("  {tmp} = icmp ne ptr {value}, null"));
+        } else if ty.is_float() {
+            let zero = crate::float::llvm_const(ty.float_kind().expect("float"), 0);
+            self.emit(&format!(
+                "  {tmp} = fcmp une {} {value}, {zero}",
+                ty.ir_type()
+            ));
+        } else {
+            self.emit(&format!("  {tmp} = icmp ne {} {value}, 0", ty.ir_type()));
+        }
+        tmp
     }
 
     fn gen_addr(&mut self, expr: &Expr) -> String {
@@ -2278,6 +2600,20 @@ impl Gen {
                     self.spill(base)
                 };
                 let tmp = self.fresh();
+                let record_ty = if *arrow {
+                    base.ty().as_ref().and_then(CType::pointee).cloned()
+                } else {
+                    base.ty()
+                };
+                let field_align = expr.ty().map_or(1, |ty| ty.member_align());
+                let record_align = record_ty.as_ref().map_or(1, CType::align);
+                let field_offset = offset.unwrap_or(0);
+                if self.unaligned.contains(&base_ptr)
+                    || record_align < field_align
+                    || field_offset % u64::from(field_align.max(1)) != 0
+                {
+                    self.unaligned.insert(tmp.clone());
+                }
                 if *bytewise {
                     let offset = offset.expect("member offset");
                     self.emit(&format!(
@@ -2368,6 +2704,9 @@ impl Gen {
         self.emit(&format!(
             "  {tmp} = getelementptr inbounds {elem}, ptr {ptr}, i64 {idx}"
         ));
+        if self.unaligned.contains(&ptr) {
+            self.unaligned.insert(tmp.clone());
+        }
         tmp
     }
 
@@ -2762,10 +3101,336 @@ impl Gen {
         if let Some(lowered) = self.gen_fp_compare(&resolved.name, args) {
             return Some(lowered);
         }
+        if let Some(inline) = crate::builtins::Inline::from_name(&resolved.name) {
+            return self.gen_inline_builtin(inline, args);
+        }
         let sig =
             function_sig(&resolved.ret, &resolved.params).expect("call has a System V signature");
         let rendered = self.render_call_args(args, resolved, &sig, None);
         self.emit_call(callee, resolved, &sig, &rendered)
+    }
+
+    /// Note an intrinsic declaration for the module prelude.
+    fn intrinsic(&mut self, declare: &str) {
+        self.intrinsics.insert(declare.to_string());
+    }
+
+    /// The argument converted to the builtin's parameter type.
+    fn builtin_arg(
+        &mut self,
+        inline: crate::builtins::Inline,
+        args: &[Expr],
+        index: usize,
+    ) -> String {
+        let value = self.gen_val(&args[index]);
+        let src = args[index].ty().expect("typed");
+        match inline.param_type(index) {
+            Some(param) => self.convert(&value, &src, &param),
+            None => value,
+        }
+    }
+
+    /// Lower a builtin from [`crate::builtins::Inline`] in place.
+    fn gen_inline_builtin(
+        &mut self,
+        inline: crate::builtins::Inline,
+        args: &[Expr],
+    ) -> Option<String> {
+        use crate::builtins::Inline;
+        let int_result = |gen: &mut Self, value: &str, from: TypeName| -> String {
+            gen.convert(value, &CType::Int(from), &CType::int_type())
+        };
+        match inline {
+            Inline::Clz(ty) | Inline::Ctz(ty) | Inline::Popcount(ty) | Inline::Parity(ty) => {
+                let value = self.builtin_arg(inline, args, 0);
+                let ir = ty.ir_type();
+                let tmp = self.fresh();
+                match inline {
+                    Inline::Clz(_) | Inline::Ctz(_) => {
+                        let which = if matches!(inline, Inline::Clz(_)) {
+                            "ctlz"
+                        } else {
+                            "cttz"
+                        };
+                        self.intrinsic(&format!("declare {ir} @llvm.{which}.{ir}({ir}, i1)"));
+                        self.emit(&format!(
+                            "  {tmp} = call {ir} @llvm.{which}.{ir}({ir} {value}, i1 false)"
+                        ));
+                    }
+                    _ => {
+                        self.intrinsic(&format!("declare {ir} @llvm.ctpop.{ir}({ir})"));
+                        self.emit(&format!(
+                            "  {tmp} = call {ir} @llvm.ctpop.{ir}({ir} {value})"
+                        ));
+                    }
+                }
+                let result = if matches!(inline, Inline::Parity(_)) {
+                    let bit = self.fresh();
+                    self.emit(&format!("  {bit} = and {ir} {tmp}, 1"));
+                    bit
+                } else {
+                    tmp
+                };
+                Some(int_result(self, &result, ty))
+            }
+            Inline::Ffs(ty) => {
+                let value = self.builtin_arg(inline, args, 0);
+                let ir = ty.ir_type();
+                self.intrinsic(&format!("declare {ir} @llvm.cttz.{ir}({ir}, i1)"));
+                let count = self.fresh();
+                self.emit(&format!(
+                    "  {count} = call {ir} @llvm.cttz.{ir}({ir} {value}, i1 false)"
+                ));
+                let plus = self.fresh();
+                self.emit(&format!("  {plus} = add {ir} {count}, 1"));
+                let zero = self.fresh();
+                self.emit(&format!("  {zero} = icmp eq {ir} {value}, 0"));
+                let pick = self.fresh();
+                self.emit(&format!("  {pick} = select i1 {zero}, {ir} 0, {ir} {plus}"));
+                Some(int_result(self, &pick, ty))
+            }
+            Inline::Clrsb(ty) => {
+                let value = self.builtin_arg(inline, args, 0);
+                let ir = ty.ir_type();
+                let width = ty.width();
+                self.intrinsic(&format!("declare {ir} @llvm.ctlz.{ir}({ir}, i1)"));
+                let sign = self.fresh();
+                self.emit(&format!("  {sign} = ashr {ir} {value}, {}", width - 1));
+                let flipped = self.fresh();
+                self.emit(&format!("  {flipped} = xor {ir} {value}, {sign}"));
+                let count = self.fresh();
+                self.emit(&format!(
+                    "  {count} = call {ir} @llvm.ctlz.{ir}({ir} {flipped}, i1 false)"
+                ));
+                let less = self.fresh();
+                self.emit(&format!("  {less} = sub {ir} {count}, 1"));
+                Some(int_result(self, &less, ty))
+            }
+            Inline::Bswap(ty) => {
+                let value = self.builtin_arg(inline, args, 0);
+                let ir = ty.ir_type();
+                self.intrinsic(&format!("declare {ir} @llvm.bswap.{ir}({ir})"));
+                let tmp = self.fresh();
+                self.emit(&format!(
+                    "  {tmp} = call {ir} @llvm.bswap.{ir}({ir} {value})"
+                ));
+                Some(tmp)
+            }
+            Inline::Expect => {
+                let value = self.builtin_arg(inline, args, 0);
+                let _ = self.builtin_arg(inline, args, 1);
+                Some(value)
+            }
+            Inline::Unreachable | Inline::Trap => {
+                if inline == Inline::Trap {
+                    self.intrinsic("declare void @llvm.trap()");
+                    self.emit("  call void @llvm.trap()");
+                }
+                self.emit("  unreachable");
+                self.terminated = true;
+                // Code after the call is in a block with no predecessor.
+                self.ensure_block();
+                None
+            }
+            Inline::Alloca => {
+                let size = self.builtin_arg(inline, args, 0);
+                let tmp = self.fresh();
+                self.emit(&format!("  {tmp} = alloca i8, i64 {size}, align 16"));
+                Some(tmp)
+            }
+            Inline::Prefetch => {
+                // A hint only. The address is evaluated for its side effects.
+                for index in 0..args.len() {
+                    let _ = self.builtin_arg(inline, args, index);
+                }
+                None
+            }
+            Inline::AssumeAligned => {
+                let ptr = self.builtin_arg(inline, args, 0);
+                for index in 1..args.len() {
+                    let _ = self.builtin_arg(inline, args, index);
+                }
+                Some(ptr)
+            }
+            Inline::ReturnAddress => {
+                self.intrinsic("declare ptr @llvm.returnaddress(i32)");
+                let tmp = self.fresh();
+                self.emit(&format!("  {tmp} = call ptr @llvm.returnaddress(i32 0)"));
+                Some(tmp)
+            }
+            Inline::FrameAddress => {
+                self.intrinsic("declare ptr @llvm.frameaddress.p0(i32)");
+                let tmp = self.fresh();
+                self.emit(&format!("  {tmp} = call ptr @llvm.frameaddress.p0(i32 0)"));
+                Some(tmp)
+            }
+            Inline::IsNan | Inline::IsInf | Inline::IsFinite | Inline::IsNormal => {
+                let value = self.gen_val(&args[0]);
+                let ty = args[0].ty().expect("typed");
+                let kind = ty.float_kind().expect("floating argument");
+                let ir = ty.ir_type();
+                let cmp = self.fresh();
+                if inline == Inline::IsNan {
+                    self.emit(&format!("  {cmp} = fcmp uno {ir} {value}, {value}"));
+                } else {
+                    let suffix = match kind {
+                        FloatKind::Float => "f32",
+                        FloatKind::Double => "f64",
+                        FloatKind::LongDouble => "f80",
+                    };
+                    self.intrinsic(&format!("declare {ir} @llvm.fabs.{suffix}({ir})"));
+                    let abs = self.fresh();
+                    self.emit(&format!(
+                        "  {abs} = call {ir} @llvm.fabs.{suffix}({ir} {value})"
+                    ));
+                    let (inf, min_normal): (u128, u128) = match kind {
+                        FloatKind::Float => (0x7f80_0000, 0x0080_0000),
+                        FloatKind::Double => (0x7ff0_0000_0000_0000, 0x0010_0000_0000_0000),
+                        FloatKind::LongDouble => {
+                            (0x7fff_8000_0000_0000_0000, 0x0001_8000_0000_0000_0000)
+                        }
+                    };
+                    let inf = crate::float::llvm_const(kind, inf);
+                    match inline {
+                        Inline::IsInf => {
+                            self.emit(&format!("  {cmp} = fcmp oeq {ir} {abs}, {inf}"));
+                        }
+                        Inline::IsFinite => {
+                            self.emit(&format!("  {cmp} = fcmp olt {ir} {abs}, {inf}"));
+                        }
+                        _ => {
+                            let min = crate::float::llvm_const(kind, min_normal);
+                            let below = self.fresh();
+                            self.emit(&format!("  {below} = fcmp olt {ir} {abs}, {inf}"));
+                            let above = self.fresh();
+                            self.emit(&format!("  {above} = fcmp oge {ir} {abs}, {min}"));
+                            self.emit(&format!("  {cmp} = and i1 {below}, {above}"));
+                        }
+                    }
+                }
+                let tmp = self.fresh();
+                self.emit(&format!("  {tmp} = zext i1 {cmp} to i32"));
+                Some(tmp)
+            }
+            Inline::Overflow { op, fixed } => Some(self.gen_overflow(op, fixed, args)),
+        }
+    }
+
+    /// `__builtin_add_overflow` and friends. Both operands are widened to
+    /// `i128`, where the exact result of an addition or subtraction of
+    /// 64-bit values fits. A product is formed from the magnitudes, which
+    /// fit in 128 bits unsigned, and its sign. The result is stored
+    /// truncated to the target type; the return value says whether the
+    /// exact result was out of that type's range.
+    fn gen_overflow(
+        &mut self,
+        op: crate::builtins::OverflowOp,
+        fixed: Option<TypeName>,
+        args: &[Expr],
+    ) -> String {
+        use crate::builtins::OverflowOp;
+        let operand = |gen: &mut Self, index: usize| -> (String, TypeName) {
+            let value = gen.gen_val(&args[index]);
+            let src = args[index].ty().expect("typed");
+            let ty = fixed.unwrap_or_else(|| src.as_integer().expect("integer operand"));
+            let value = gen.convert(&value, &src, &CType::Int(ty));
+            let wide = gen.fresh();
+            let ext = if ty.is_signed() { "sext" } else { "zext" };
+            gen.emit(&format!(
+                "  {wide} = {ext} {} {value} to i128",
+                ty.ir_type()
+            ));
+            (wide, ty)
+        };
+        let (left, left_ty) = operand(self, 0);
+        let (right, right_ty) = operand(self, 1);
+        let dest_ptr = self.gen_val(&args[2]);
+        let target = match fixed {
+            Some(ty) => ty,
+            None => args[2]
+                .ty()
+                .and_then(|ty| ty.pointee().and_then(CType::as_integer))
+                .expect("pointer to an integer"),
+        };
+        let tir = target.ir_type();
+        let tw = target.width();
+        let overflow = match op {
+            OverflowOp::Add | OverflowOp::Sub => {
+                let exact = self.fresh();
+                let inst = if op == OverflowOp::Add { "add" } else { "sub" };
+                self.emit(&format!("  {exact} = {inst} i128 {left}, {right}"));
+                let low = self.fresh();
+                self.emit(&format!("  {low} = trunc i128 {exact} to {tir}"));
+                self.store(&CType::Int(target), &low, &dest_ptr);
+                let back = self.fresh();
+                let ext = if target.is_signed() { "sext" } else { "zext" };
+                self.emit(&format!("  {back} = {ext} {tir} {low} to i128"));
+                let ov = self.fresh();
+                self.emit(&format!("  {ov} = icmp ne i128 {back}, {exact}"));
+                ov
+            }
+            OverflowOp::Mul => {
+                let magnitude = |gen: &mut Self, value: &str, ty: TypeName| -> (String, String) {
+                    if !ty.is_signed() {
+                        return (value.to_string(), "false".to_string());
+                    }
+                    let neg = gen.fresh();
+                    gen.emit(&format!("  {neg} = icmp slt i128 {value}, 0"));
+                    let flipped = gen.fresh();
+                    gen.emit(&format!("  {flipped} = sub i128 0, {value}"));
+                    let abs = gen.fresh();
+                    gen.emit(&format!(
+                        "  {abs} = select i1 {neg}, i128 {flipped}, i128 {value}"
+                    ));
+                    (abs, neg)
+                };
+                let (left_abs, left_neg) = magnitude(self, &left, left_ty);
+                let (right_abs, right_neg) = magnitude(self, &right, right_ty);
+                let mag = self.fresh();
+                self.emit(&format!("  {mag} = mul i128 {left_abs}, {right_abs}"));
+                let neg = self.fresh();
+                self.emit(&format!("  {neg} = xor i1 {left_neg}, {right_neg}"));
+                let flipped = self.fresh();
+                self.emit(&format!("  {flipped} = sub i128 0, {mag}"));
+                let exact = self.fresh();
+                self.emit(&format!(
+                    "  {exact} = select i1 {neg}, i128 {flipped}, i128 {mag}"
+                ));
+                let low = self.fresh();
+                self.emit(&format!("  {low} = trunc i128 {exact} to {tir}"));
+                self.store(&CType::Int(target), &low, &dest_ptr);
+                // A zero product is never negative.
+                let nonzero = self.fresh();
+                self.emit(&format!("  {nonzero} = icmp ne i128 {mag}, 0"));
+                let negative = self.fresh();
+                self.emit(&format!("  {negative} = and i1 {neg}, {nonzero}"));
+                if target.is_signed() {
+                    let max = (1u128 << (tw - 1)) - 1;
+                    let limit = self.fresh();
+                    self.emit(&format!(
+                        "  {limit} = select i1 {negative}, i128 {}, i128 {max}",
+                        max + 1
+                    ));
+                    let ov = self.fresh();
+                    self.emit(&format!("  {ov} = icmp ugt i128 {mag}, {limit}"));
+                    ov
+                } else {
+                    let max = if tw == 64 {
+                        u128::from(u64::MAX)
+                    } else {
+                        (1u128 << tw) - 1
+                    };
+                    let big = self.fresh();
+                    self.emit(&format!("  {big} = icmp ugt i128 {mag}, {max}"));
+                    let ov = self.fresh();
+                    self.emit(&format!("  {ov} = or i1 {big}, {negative}"));
+                    ov
+                }
+            }
+        };
+        let tmp = self.fresh();
+        self.emit(&format!("  {tmp} = zext i1 {overflow} to i8"));
+        tmp
     }
 
     fn zext_cond(&mut self, expr: &Expr) -> String {

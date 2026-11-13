@@ -184,6 +184,12 @@ pub fn keyword(spelling: &str) -> Option<TokenKind> {
         "_Noreturn" => TokenKind::KwNoreturn,
         "_Static_assert" => TokenKind::KwStaticAssert,
         "_Thread_local" => TokenKind::KwThreadLocal,
+        // Alternate spellings GCC accepts in every mode (GCC manual,
+        // "Alternate Keywords").
+        "__signed" | "__signed__" => TokenKind::KwSigned,
+        "__const" | "__const__" => TokenKind::KwConst,
+        "__volatile" | "__volatile__" => TokenKind::KwVolatile,
+        "__alignof" | "__alignof__" => TokenKind::KwAlignof,
         _ => return None,
     })
 }

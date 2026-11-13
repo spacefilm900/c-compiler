@@ -27,6 +27,11 @@ this compiler's default (strict C11), where it must be rejected with a
 diagnostic and no crash, because every file there uses an extension that
 is a C11 constraint violation.
 
+tests/gnu/both/*.c use GNU spellings that strict C11 also accepts
+(`__attribute__`, `__builtin_` functions, `__alignof__`): reserved
+identifiers, not constraint violations. Each is compared with Clang in
+both modes, -std=c11 and -std=gnu11.
+
 Env: CC_UNDER_TEST, CLANG (default "clang"), TIMEOUT (seconds, default 10).
 Exit status 0 only if all tests pass.
 """
@@ -76,6 +81,10 @@ def test_gnu(src, tmp):
     if b"error:" not in err:
         return "strict C11 rejected the program without an error message"
     return test(src, tmp, "gnu11")
+
+def test_both(src, tmp):
+    """Accepted in both modes: differential at -std=c11 and -std=gnu11."""
+    return test(src, tmp) or test(src, tmp, "gnu11")
 
 
 def test_cross(def_src, use_src, tmp):
@@ -127,12 +136,13 @@ def main():
     hosted = sorted((ROOT / "tests" / "hosted").glob("*.c"))
     crosses = sorted((ROOT / "tests" / "xabi").glob("*_def.c"))
     gnu = sorted((ROOT / "tests" / "gnu").glob("*.c"))
+    both = sorted((ROOT / "tests" / "gnu" / "both").glob("*.c"))
     problems = []
     if not (COMPILER.is_file() and os.access(COMPILER, os.X_OK)):
         problems.append(f"compiler not found/executable: {COMPILER}")
     if shutil.which(CLANG) is None:
         problems.append(f"clang not found: {CLANG}")
-    total = len(tests) + len(hosted) + len(crosses) + len(gnu)
+    total = len(tests) + len(hosted) + len(crosses) + len(gnu) + len(both)
     if problems:
         for t in tests:
             print(f"FAIL {t.name}: " + "; ".join(problems))
@@ -140,6 +150,8 @@ def main():
             print(f"FAIL {t.parent.name}/{t.name}: " + "; ".join(problems))
         for t in crosses + gnu:
             print(f"FAIL {t.parent.name}/{t.name}: " + "; ".join(problems))
+        for t in both:
+            print(f"FAIL gnu/both/{t.name}: " + "; ".join(problems))
         print(f"\n0/{total} passed")
         return 1
     passed = 0
@@ -166,6 +178,11 @@ def main():
         for t in gnu:
             r = test_gnu(t, tmp)
             label = f"{t.parent.name}/{t.name}"
+            print(f"{'PASS' if r is None else 'FAIL'} {label}" + ("" if r is None else f": {r}"))
+            passed += r is None
+        for t in both:
+            r = test_both(t, tmp)
+            label = f"gnu/both/{t.name}"
             print(f"{'PASS' if r is None else 'FAIL'} {label}" + ("" if r is None else f": {r}"))
             passed += r is None
     print(f"\n{passed}/{total} passed")
