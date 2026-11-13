@@ -1817,6 +1817,14 @@ pub enum ConstInit {
     Aggregate(Vec<ConstInit>),
     /// Raw little-endian bytes of a bit-field aggregate.
     Bytes(Vec<u8>),
+    /// The object representation of a union or bit-field record that also
+    /// holds addresses. Each relocation is a byte offset and a `Ptr` (eight
+    /// bytes) or `PtrToInt` (its width) value; the bytes under it are zero.
+    /// Relocations are sorted by offset and do not overlap.
+    RelocBytes {
+        bytes: Vec<u8>,
+        relocs: Vec<(u64, ConstInit)>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

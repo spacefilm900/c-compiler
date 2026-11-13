@@ -1529,7 +1529,7 @@ impl Sema {
         stores: &[ElemStore],
     ) -> Result<ConstInit, Diagnostic> {
         let size = ty.size().unwrap_or(0) as usize;
-        let mut bytes = vec![0u8; size];
+        let mut image = ByteImage::zeroed(size);
         for store in stores {
             if let Some(bits) = &store.bits {
                 let fold_ty = if bits.declared == TypeName::Bool {
@@ -1545,10 +1545,10 @@ impl Sema {
                         format!("initializer of '{name}' is not a constant expression"),
                     );
                 };
-                pack_bits(&mut bytes, bits.abs_bit, bits.width, raw);
+                image.pack_bits(bits.abs_bit, bits.width, raw);
             } else {
                 let value = self.fold_one(name, &store.expr, &store.ty)?;
-                if !write_folded_bytes(&store.ty, &value, &mut bytes, store.offset as usize) {
+                if !image.write(&store.ty, &value, store.offset as usize) {
                     let kind = if ty.is_union() {
                         "union"
                     } else {
@@ -1562,7 +1562,7 @@ impl Sema {
                 }
             }
         }
-        Ok(ConstInit::Bytes(bytes))
+        Ok(image.into_const())
     }
 
     /// A file-scope initializer whose top type is an ordinary struct or array,
@@ -1575,7 +1575,7 @@ impl Sema {
         stores: &[ElemStore],
     ) -> Result<ConstInit, Diagnostic> {
         let size = ty.size().unwrap_or(0) as usize;
-        let mut image = vec![0u8; size];
+        let mut image = ByteImage::zeroed(size);
         let mut ranges = Vec::new();
         bit_record_ranges(ty, 0, &mut ranges);
         let mut unions = UnionImages::new(ty);
@@ -1595,16 +1595,16 @@ impl Sema {
                         format!("initializer of '{name}' is not a constant expression"),
                     );
                 };
-                pack_bits(&mut image, bits.abs_bit, bits.width, raw);
+                image.pack_bits(bits.abs_bit, bits.width, raw);
             } else {
                 let value = self.fold_one(name, &store.expr, &store.ty)?;
                 let inside = ranges
                     .iter()
                     .any(|(start, end)| store.offset >= *start && store.offset < *end);
                 if inside {
-                    // The nested record is a byte image. A plain member shares
-                    // that image; a relocation cannot.
-                    if !write_folded_bytes(&store.ty, &value, &mut image, store.offset as usize) {
+                    // The nested record is a byte image. A plain member,
+                    // including an address, is written into that image.
+                    if !image.write(&store.ty, &value, store.offset as usize) {
                         return self.err(
                             store.expr.line(),
                             store.expr.column(),
@@ -4926,6 +4926,128 @@ fn initializable_fields(fields: Vec<StructField>, union_ty: bool) -> Vec<StructF
     }
 }
 
+/// An object representation being built for a union or a bit-field
+/// record: its bytes, plus the addresses that need a relocation.
+///
+/// An address cannot be written as bytes, so it is kept beside them at its
+/// byte offset with zeros underneath. A later store that overlaps it
+/// replaces it, the same way later bytes replace earlier ones.
+#[derive(Clone)]
+struct ByteImage {
+    bytes: Vec<u8>,
+    relocs: Vec<(u64, ConstInit)>,
+}
+
+impl ByteImage {
+    fn zeroed(size: usize) -> Self {
+        ByteImage {
+            bytes: vec![0u8; size],
+            relocs: Vec::new(),
+        }
+    }
+
+    /// Drop every relocation that overlaps `start..start + len`.
+    fn clear_relocs(&mut self, start: usize, len: usize) {
+        let (start, end) = (start as u64, (start + len) as u64);
+        self.relocs
+            .retain(|(at, value)| at + reloc_width(value) <= start || *at >= end);
+    }
+
+    fn zero(&mut self, start: usize, len: usize) {
+        let end = (start + len).min(self.bytes.len());
+        if start < end {
+            self.bytes[start..end].fill(0);
+        }
+    }
+
+    /// Write `value`, of type `ty`, at byte `offset`. `false` means the
+    /// value has no object representation here (an aggregate).
+    fn write(&mut self, ty: &CType, value: &ConstInit, offset: usize) -> bool {
+        match value {
+            ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => {
+                let len = reloc_width(value) as usize;
+                self.clear_relocs(offset, len);
+                self.zero(offset, len);
+                self.relocs.push((offset as u64, value.clone()));
+                self.relocs.sort_by_key(|(at, _)| *at);
+                true
+            }
+            ConstInit::RelocBytes { bytes, relocs } => {
+                self.clear_relocs(offset, bytes.len());
+                for (index, byte) in bytes.iter().enumerate() {
+                    if let Some(slot) = self.bytes.get_mut(offset + index) {
+                        *slot = *byte;
+                    }
+                }
+                for (at, reloc) in relocs {
+                    self.relocs.push((offset as u64 + at, reloc.clone()));
+                }
+                self.relocs.sort_by_key(|(at, _)| *at);
+                true
+            }
+            ConstInit::Bytes(raw) => {
+                self.clear_relocs(offset, raw.len());
+                for (index, byte) in raw.iter().enumerate() {
+                    if let Some(slot) = self.bytes.get_mut(offset + index) {
+                        *slot = *byte;
+                    }
+                }
+                true
+            }
+            _ => {
+                self.clear_relocs(offset, ty.size().unwrap_or(0) as usize);
+                write_folded_bytes(ty, value, &mut self.bytes, offset)
+            }
+        }
+    }
+
+    fn pack_bits(&mut self, bit: u32, width: u32, value: u64) {
+        let first = (bit / 8) as usize;
+        let last = ((bit + width).div_ceil(8)) as usize;
+        self.clear_relocs(first, last.saturating_sub(first));
+        pack_bits(&mut self.bytes, bit, width, value);
+    }
+
+    /// The `size` bytes at `start`, with the relocations inside them.
+    fn slice(&self, start: usize, size: usize) -> ConstInit {
+        let mut bytes = vec![0u8; size];
+        if start < self.bytes.len() {
+            let end = (start + size).min(self.bytes.len());
+            bytes[..end - start].copy_from_slice(&self.bytes[start..end]);
+        }
+        let (lo, hi) = (start as u64, (start + size) as u64);
+        let relocs: Vec<_> = self
+            .relocs
+            .iter()
+            .filter(|(at, _)| *at >= lo && *at < hi)
+            .map(|(at, value)| (at - lo, value.clone()))
+            .collect();
+        if relocs.is_empty() {
+            ConstInit::Bytes(bytes)
+        } else {
+            ConstInit::RelocBytes { bytes, relocs }
+        }
+    }
+
+    fn into_const(self) -> ConstInit {
+        let size = self.bytes.len();
+        self.slice(0, size)
+    }
+}
+
+/// Bytes covered by a relocation in a [`ByteImage`].
+fn reloc_width(value: &ConstInit) -> u64 {
+    match value {
+        ConstInit::PtrToInt { width, .. } => u64::from(*width / 8),
+        _ => 8,
+    }
+}
+
+/// A union or bit-field record already rendered as an image.
+fn is_image_const(value: &ConstInit) -> bool {
+    matches!(value, ConstInit::Bytes(_) | ConstInit::RelocBytes { .. })
+}
+
 fn pack_bits(bytes: &mut [u8], bit: u32, width: u32, value: u64) {
     let mask = if width >= 64 {
         u64::MAX
@@ -5150,8 +5272,9 @@ fn union_bytes_ok(ty: &CType, value: &ConstInit) -> bool {
         // The address of an object needs a relocation.
         ConstInit::Ptr(PtrConst::Null | PtrConst::IntToPtr(_)) => true,
         ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => !ty.is_union(),
-        // Bytes are an object representation. A relocation cannot hide in them.
-        ConstInit::Bytes(_) => true,
+        // Bytes are an object representation. Addresses in an image are
+        // explicit relocations that the IR generator spells out.
+        ConstInit::Bytes(_) | ConstInit::RelocBytes { .. } => true,
         ConstInit::Aggregate(items) => {
             if ty.is_union() {
                 return items.first().is_none_or(const_has_no_address);
@@ -5174,7 +5297,9 @@ fn const_has_no_address(value: &ConstInit) -> bool {
     match value {
         ConstInit::Zero | ConstInit::Int(_) | ConstInit::Float(_) => true,
         ConstInit::Ptr(PtrConst::Null | PtrConst::IntToPtr(_)) => true,
-        ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => false,
+        ConstInit::Ptr(PtrConst::Addr { .. })
+        | ConstInit::PtrToInt { .. }
+        | ConstInit::RelocBytes { .. } => false,
         ConstInit::Bytes(_) => true,
         ConstInit::Aggregate(items) => items.iter().all(const_has_no_address),
     }
@@ -5190,7 +5315,7 @@ struct UnionImages {
     /// Sorted and disjoint.
     ranges: Vec<(u64, u64)>,
     /// An image is made when the first store lands in its union.
-    images: Vec<Option<Vec<u8>>>,
+    images: Vec<Option<ByteImage>>,
     bad: Option<(usize, usize)>,
 }
 
@@ -5216,9 +5341,10 @@ impl UnionImages {
             return Ok(false);
         }
         let (start, end) = self.ranges[index - 1];
-        let image = self.images[index - 1].get_or_insert_with(|| vec![0u8; (end - start) as usize]);
+        let image =
+            self.images[index - 1].get_or_insert_with(|| ByteImage::zeroed((end - start) as usize));
         let at = (store.offset - start) as usize;
-        if !write_folded_bytes(&store.ty, value, image, at) && self.bad.is_none() {
+        if !image.write(&store.ty, value, at) && self.bad.is_none() {
             self.bad = Some((store.expr.line(), store.expr.column()));
         }
         Ok(true)
@@ -5239,7 +5365,7 @@ impl UnionImages {
         }
         for ((start, _), image) in self.ranges.into_iter().zip(self.images) {
             if let Some(image) = image {
-                folded.push((start, ConstInit::Bytes(image)));
+                folded.push((start, image.into_const()));
             }
         }
         Ok(())
@@ -5278,7 +5404,7 @@ fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
         if let Some((_, value)) = stores
             .iter()
             .rev()
-            .find(|(offset, value)| *offset == base && matches!(value, ConstInit::Bytes(_)))
+            .find(|(offset, value)| *offset == base && is_image_const(value))
         {
             return value.clone();
         }
@@ -5287,7 +5413,7 @@ fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
         if let Some((_, value)) = stores
             .iter()
             .rev()
-            .find(|(offset, value)| *offset == base && matches!(value, ConstInit::Bytes(_)))
+            .find(|(offset, value)| *offset == base && is_image_const(value))
         {
             return value.clone();
         }
@@ -5390,16 +5516,10 @@ fn bit_record_ranges(ty: &CType, base: u64, out: &mut Vec<(u64, u64)>) {
 /// C11 6.7.9 initializes the designated union member and leaves the rest of
 /// that union's object representation zero. Every member occupies the same
 /// bytes, so a bit-field in a member other than the first is still this image.
-fn splice_bit_blobs(ty: &CType, base: u64, image: &[u8], out: &mut Vec<(u64, ConstInit)>) {
+fn splice_bit_blobs(ty: &CType, base: u64, image: &ByteImage, out: &mut Vec<(u64, ConstInit)>) {
     if is_bit_image(ty) {
         let size = ty.size().unwrap_or(0) as usize;
-        let start = base as usize;
-        let mut bytes = vec![0u8; size];
-        if start < image.len() {
-            let end = (start + size).min(image.len());
-            bytes[..end - start].copy_from_slice(&image[start..end]);
-        }
-        out.push((base, ConstInit::Bytes(bytes)));
+        out.push((base, image.slice(base as usize, size)));
         return;
     }
     if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
@@ -6486,10 +6606,7 @@ mod tests {
             "struct I { int a, b; }; struct O { struct I in; int z; } o = { .in = 1, 2, .nope = 3 };"
         )
         .contains("no member named 'nope'"));
-        assert!(sema_err(
-            "int x; union U { int i; int *p; }; struct S { union U u; } s = { .u.p = &x };"
-        )
-        .contains("uses an address in a union"));
+        sema_ok("int x; union U { int i; int *p; }; struct S { union U u; } s = { .u.p = &x };");
     }
 
     #[test]
@@ -7529,8 +7646,9 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
             sema_err("static int f(void); int main(void) { int (*p)(void) = f; return 0; }")
                 .contains("static function 'f' is used but not defined")
         );
-        assert!(sema_err("int g; union U { int *p; long l; } u = { &g };")
-            .contains("address in a union"));
+        let ir = crate::compile_to_ir("int g; union U { int *p; long l; } u = { &g };\n", "ua.c")
+            .unwrap();
+        assert!(ir.contains("@u = global <{ ptr }> <{ ptr @g }>"), "{ir}");
         assert!(sema_err("struct S { int *p : 3; };").contains("non-integral"));
         assert!(sema_err("struct S { int x : 4294967297L; };").contains("exceeds the width"));
         sema_ok("struct A { int a : 3; }; struct O { struct A in; } g = {{1}};");

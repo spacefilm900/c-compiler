@@ -325,7 +325,11 @@ fn render_global(global: &IrGlobal, renames: &Renames) -> String {
             Linkage::External if global.attrs.weak => "weak ",
             Linkage::External => "",
         };
-        let spelled = render_const(&global.ty, value, renames);
+        // An address inside a union or bit-field image needs a constant of
+        // its own shape. The global then has that type instead of `ir`;
+        // every access goes through an opaque `ptr`, so only the size and
+        // alignment have to agree.
+        let (ir, spelled) = render_typed_const(&global.ty, value, renames);
         format!("{name} = {linkage}{kind} {ir} {spelled}{section}, align {align}")
     } else if global.attrs.weak {
         format!("{name} = extern_weak {kind} {ir}, align {align}")
@@ -4091,7 +4095,9 @@ fn write_const_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: us
             }
             true
         }
-        ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => false,
+        ConstInit::Ptr(PtrConst::Addr { .. })
+        | ConstInit::PtrToInt { .. }
+        | ConstInit::RelocBytes { .. } => false,
         ConstInit::Bytes(raw) => {
             for (index, byte) in raw.iter().enumerate() {
                 let at = offset + index;
@@ -4102,6 +4108,120 @@ fn write_const_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: us
             true
         }
     }
+}
+
+/// A constant that holds an image with addresses somewhere inside it.
+fn has_reloc_image(value: &ConstInit) -> bool {
+    match value {
+        ConstInit::RelocBytes { .. } => true,
+        ConstInit::Aggregate(items) => items.iter().any(has_reloc_image),
+        _ => false,
+    }
+}
+
+/// The LLVM type and spelling of a static initializer.
+///
+/// Most constants have the object's own type. A union or bit-field record
+/// is a byte array in LLVM, which cannot hold an address, so an image with
+/// relocations becomes a packed struct of byte runs and `ptr` (or
+/// `ptrtoint`) pieces at their offsets. A struct or array around one is
+/// then a packed struct too, laid out from the C offsets, unless every
+/// array element still has the same type.
+fn render_typed_const(ty: &CType, value: &ConstInit, renames: &Renames) -> (String, String) {
+    if !has_reloc_image(value) {
+        return (ty.ir_type(), render_const(ty, value, renames));
+    }
+    let size = ty.size().unwrap_or(0);
+    let mut pieces: Vec<(String, String)> = Vec::new();
+    let pad = |pieces: &mut Vec<(String, String)>, from: u64, to: u64| {
+        if to > from {
+            pieces.push((
+                format!("[{} x i8]", to - from),
+                "zeroinitializer".to_string(),
+            ));
+        }
+    };
+    match value {
+        ConstInit::RelocBytes { bytes, relocs } => {
+            let mut at = 0u64;
+            let run = |pieces: &mut Vec<(String, String)>, from: u64, to: u64| {
+                if to > from {
+                    let slice = &bytes[from as usize..to as usize];
+                    let spelled = if slice.iter().all(|byte| *byte == 0) {
+                        "zeroinitializer".to_string()
+                    } else {
+                        format!("c{}", llvm_bytes(slice))
+                    };
+                    pieces.push((format!("[{} x i8]", to - from), spelled));
+                }
+            };
+            for (offset, reloc) in relocs {
+                run(&mut pieces, at, *offset);
+                match reloc {
+                    ConstInit::PtrToInt { ptr, width } => {
+                        let ir = format!("i{width}");
+                        let spelled =
+                            format!("ptrtoint ({} to {ir})", render_ptr_operand(ptr, renames));
+                        pieces.push((ir, spelled));
+                        at = offset + u64::from(*width / 8);
+                    }
+                    ConstInit::Ptr(ptr) => {
+                        pieces.push(("ptr".to_string(), render_ptr(ptr, renames)));
+                        at = offset + 8;
+                    }
+                    other => unreachable!("relocation {other:?}"),
+                }
+            }
+            run(&mut pieces, at, bytes.len() as u64);
+            pad(&mut pieces, bytes.len() as u64, size);
+        }
+        ConstInit::Aggregate(items) if ty.array_elem().is_some() => {
+            let elem = ty.array_elem().expect("array element");
+            let parts: Vec<_> = items
+                .iter()
+                .map(|item| render_typed_const(elem, item, renames))
+                .collect();
+            if parts.iter().all(|(ir, _)| *ir == parts[0].0) && !parts.is_empty() {
+                let body = parts
+                    .iter()
+                    .map(|(ir, spelled)| format!("{ir} {spelled}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return (
+                    format!("[{} x {}]", parts.len(), parts[0].0),
+                    format!("[{body}]"),
+                );
+            }
+            let step = elem.size().unwrap_or(0);
+            pieces.extend(parts);
+            pad(&mut pieces, step * items.len() as u64, size);
+        }
+        ConstInit::Aggregate(items) => {
+            let fields = ty
+                .struct_ref()
+                .and_then(StructRef::fields)
+                .expect("aggregate with an image inside is a struct or array");
+            let mut at = 0u64;
+            for (field, item) in fields.iter().zip(items) {
+                pad(&mut pieces, at, field.offset);
+                pieces.push(render_typed_const(&field.ty, item, renames));
+                at = at.max(field.offset + field.ty.size().unwrap_or(0));
+            }
+            pad(&mut pieces, at, size);
+        }
+        other => unreachable!("constant {other:?} has no image"),
+    }
+    let types = pieces
+        .iter()
+        .map(|(ir, _)| ir.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let body = pieces
+        .iter()
+        .map(|(ir, spelled)| format!("{ir} {spelled}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    (format!("<{{ {types} }}>"), format!("<{{ {body} }}>"))
 }
 
 fn render_const(ty: &CType, value: &ConstInit, renames: &Renames) -> String {
@@ -4128,6 +4248,9 @@ fn render_const(ty: &CType, value: &ConstInit, renames: &Renames) -> String {
             format!("ptrtoint ({} to {ir})", render_ptr_operand(ptr, renames))
         }
         ConstInit::Bytes(raw) => render_byte_blob(ty, raw),
+        ConstInit::RelocBytes { .. } => {
+            unreachable!("an image with addresses is spelled by render_typed_const")
+        }
         ConstInit::Aggregate(items) => {
             if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
                 if fields.len() != items.len() {
