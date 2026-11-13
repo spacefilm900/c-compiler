@@ -6351,4 +6351,27 @@ func int main
             );
         }
     }
+
+    #[test]
+    fn folded_null_pointer_constants_generic_and_nested_casts() {
+        // C11 6.3.2.3p3: a null pointer constant is an integer constant
+        // expression with the value 0, or such an expression cast to
+        // void *. A generic selection keeps the selected expression's
+        // null-pointer-constant status, as Clang 19 and GCC 14 with
+        // -pedantic-errors treat it. A void * cast of (void *)0 is a null
+        // pointer but not a null pointer constant, so it is not comparable
+        // with a function pointer.
+        parsed("int f(void); enum { N = sizeof(f == _Generic(0, int: (void *)0)) };");
+        parsed("int f(void); enum { N = sizeof(_Generic(1L, long: 0, default: f) != f) };");
+        for source in [
+            "int f(void); enum { N = sizeof(f == (void *)(void *)0) };",
+            "int f(void); enum { N = sizeof((void *)(void *)(1 - 1) != &f) };",
+        ] {
+            let err = parse_err(source);
+            assert!(
+                err.contains("invalid operands to a comparison"),
+                "{source}: {err}"
+            );
+        }
+    }
 }

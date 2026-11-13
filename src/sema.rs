@@ -7659,4 +7659,21 @@ int typed = _Generic(__builtin_offsetof(struct In, c), unsigned long: 1, default
         .unwrap_err();
         assert!(err.contains("relational comparison"), "{err}");
     }
+
+    #[test]
+    fn null_pointer_constant_needs_integer_operand_in_void_cast() {
+        // C11 6.3.2.3p3: only an integer constant expression with the value
+        // 0, possibly cast to void *, is a null pointer constant.
+        // (void *)(void *)0 is a null pointer of type void *, so comparing
+        // it with a function pointer violates 6.5.9p2.
+        for source in [
+            "int f(void); int g(void) { return f == (void *)(void *)0; }",
+            "int f(void); int g(void) { return (void *)(void *)(1 - 1) != &f; }",
+        ] {
+            let err = sema_err(source);
+            assert!(err.contains("invalid operands to '"), "{source}: {err}");
+        }
+        sema_ok("int f(void); int g(void) { return f == _Generic(0, int: (void *)0); }");
+        sema_ok("int g(int *p) { return p == (void *)(void *)0; }");
+    }
 }
