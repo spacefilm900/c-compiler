@@ -4307,6 +4307,7 @@ fn check_uneval_compare(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Resul
         loose_pointers(&left_ty, &right_ty)
             || void_ptr_mix(&left_ty, &right_ty)
             || (env.dialect.gnu() && void_function_ptr_mix(&left_ty, &right_ty))
+            || (env.dialect.gnu() && gnu_distinct_pointers(&left_ty, &right_ty))
             || (left_ty.is_pointer() && uneval_null_constant(right, &right_ty, env))
             || (right_ty.is_pointer() && uneval_null_constant(left, &left_ty, env))
     } else {
@@ -4315,7 +4316,8 @@ fn check_uneval_compare(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Resul
             && right_ty.is_pointer()
             && !function(&left_ty)
             && !function(&right_ty)
-            && loose_pointers(&left_ty, &right_ty)
+            && (loose_pointers(&left_ty, &right_ty)
+                || (env.dialect.gnu() && gnu_distinct_pointers(&left_ty, &right_ty)))
     };
     if ok {
         Ok(())

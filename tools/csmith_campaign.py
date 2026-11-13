@@ -37,6 +37,7 @@ import resource
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -308,11 +309,22 @@ def call(
 
 
 def write_json(path: Path, obj: Any) -> None:
-    """Write JSON by replacing a temporary file in the same directory."""
+    """Write JSON by replacing a temporary file in the same directory.
+
+    Each call gets its own temporary name, so concurrent shards writing the
+    same destination never replace or truncate each other's partial file.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    fd, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    tmp = Path(name)
+    try:
+        os.fchmod(fd, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(obj, indent=2) + "\n")
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _sha256(path: Path) -> str:

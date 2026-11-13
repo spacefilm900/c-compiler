@@ -465,9 +465,24 @@ class SummarizeAndToolTests(unittest.TestCase):
             tool = tmp_path / "gcc"
             tool.write_text("#!/bin/sh\n", encoding="utf-8")
             tool.chmod(tool.stat().st_mode | 0o111)
-            resolved = camp.resolve_tool(str(Path(tmp) / "gcc"))
+            tool_arg = os.path.relpath(tool)
+            self.assertFalse(Path(tool_arg).is_absolute())
+            resolved = camp.resolve_tool(tool_arg)
             self.assertTrue(Path(resolved).is_absolute())
             self.assertEqual(Path(resolved).resolve(), tool.resolve())
+
+    def test_write_json_uses_a_unique_temporary_file(self) -> None:
+        # Two shards summarising one directory must not share a temporary
+        # name. A fixed "<name>.tmp" that is already taken (here by a
+        # directory) must not stop the write, and nothing is left behind.
+        with tempfile.TemporaryDirectory(prefix="csmith-json-") as tmp:
+            dest = Path(tmp) / "SUMMARY.json"
+            (Path(tmp) / "SUMMARY.json.tmp").mkdir()
+            camp.write_json(dest, {"a": 1})
+            camp.write_json(dest, {"a": 2})
+            self.assertEqual(json.loads(dest.read_text(encoding="utf-8")), {"a": 2})
+            leftovers = sorted(p.name for p in Path(tmp).iterdir())
+            self.assertEqual(leftovers, ["SUMMARY.json", "SUMMARY.json.tmp"])
 
     def test_stale_generation_failed_is_replaced_after_success(self) -> None:
         with tempfile.TemporaryDirectory(prefix="csmith-stale-") as tmp:
