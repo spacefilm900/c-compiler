@@ -1,11 +1,11 @@
 //! Language dialect, selected with `-std=`.
 //!
 //! Strict ISO C11 (`-std=c11`) is the default. `-std=gnu11` opts in to GNU
-//! extensions. It is the hook for the GNU-compatibility milestone (PLAN.md,
-//! stage 1). For now it relaxes these constraints of C11 to warnings, the
-//! way GCC 14 and Clang 19 treat them in GNU mode (observed as black boxes),
-//! and changes nothing else (the predefined macros are the same in both
-//! modes):
+//! extensions (PLAN.md, stage 1), with behaviour taken from the public GCC
+//! manual and observed from GCC 14 and Clang 19 as black boxes. The
+//! predefined macros are the same in both modes.
+//!
+//! In GNU mode these C11 constraints become warnings:
 //!
 //! - An equality comparison between a void pointer and a pointer to a
 //!   function (C11 6.5.9p2).
@@ -15,6 +15,20 @@
 //!   pointee differs only in integer signedness, or drops a qualifier of
 //!   the source pointee (C11 6.5.16.1p1). Deeper mismatches, such as
 //!   `int **` from `unsigned **`, stay errors, as they are in GCC 14.
+//!
+//! GNU mode also accepts these extensions, which strict C11 rejects with an
+//! error that names `-std=gnu11`:
+//!
+//! - `typeof`, in both spellings (`typeof` and `__typeof__`).
+//! - Statement expressions `({ ... })`.
+//! - Case ranges `case low ... high:`.
+//! - Zero-length arrays `T a[0]`, and empty initializers `{}`.
+//! - The conditional with an omitted middle operand, `x ?: y`.
+//!
+//! The reserved spellings `__attribute__`, `__extension__`, `__inline__`,
+//! `__asm__` labels and the `__builtin_*` functions are
+//! accepted in both modes, because they are in the implementation's
+//! namespace (C11 7.1.3).
 
 /// The C dialect being compiled.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

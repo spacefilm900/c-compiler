@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::diag::Diagnostic;
+use crate::diag::{Diagnostic, Warning};
 use crate::dialect::Dialect;
 use crate::token::{Token, TokenKind};
 
@@ -36,6 +36,11 @@ pub fn parse_dialect(
         defining: HashSet::new(),
         shadow_decl: None,
         va_list: None,
+        attr_sink: Vec::new(),
+        warnings: Vec::new(),
+        fn_attrs: HashMap::new(),
+        var_attrs: HashMap::new(),
+        stmt_expr_depth: 0,
     }
     .parse_translation_unit()
 }
@@ -66,6 +71,173 @@ struct Parser<'a> {
     /// visible. A lone `union tag;` hides the outer tag. Using it as a type
     /// in the same declaration is an error.
     shadow_decl: Option<(String, RecordKind)>,
+    /// GNU attributes parsed since the enclosing specifier list or
+    /// declarator started collecting them.
+    attr_sink: Vec<Attr>,
+    /// Warnings, such as an unknown attribute.
+    warnings: Vec<Warning>,
+    fn_attrs: HashMap<String, FnAttrs>,
+    var_attrs: HashMap<String, VarAttrs>,
+    /// Statement expressions being parsed, innermost last.
+    stmt_expr_depth: usize,
+}
+
+/// One GNU attribute, `name` or `name(args)` inside `__attribute__((...))`
+/// (GCC manual, "Attribute Syntax"). The name has any surrounding `__`
+/// removed, so `__packed__` is `packed`.
+#[derive(Clone, Debug)]
+struct Attr {
+    name: String,
+    args: Vec<AttrArg>,
+    line: usize,
+    column: usize,
+}
+
+#[derive(Clone, Debug)]
+enum AttrArg {
+    Ident(String),
+    Str(String),
+    Expr(Expr),
+    /// An argument this compiler does not interpret.
+    Other,
+}
+
+/// What an attribute does here.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AttrClass {
+    /// Has a meaning that is implemented, or is a hint that is safe to drop.
+    Known,
+    /// Would change the meaning of the program and is not implemented.
+    Unsupported,
+    /// Not an attribute this compiler knows. It is ignored with a warning.
+    Unknown,
+}
+
+/// An attribute name without surrounding `__` (`__packed__` is `packed`).
+fn attr_name(spelling: &str) -> String {
+    spelling
+        .strip_prefix("__")
+        .and_then(|rest| rest.strip_suffix("__"))
+        .unwrap_or(spelling)
+        .to_string()
+}
+
+fn attr_class(name: &str) -> AttrClass {
+    match name {
+        "aligned"
+        | "packed"
+        | "noreturn"
+        | "unused"
+        | "used"
+        | "always_inline"
+        | "noinline"
+        | "section"
+        | "weak"
+        | "format"
+        | "format_arg"
+        | "deprecated"
+        | "cold"
+        | "hot"
+        | "const"
+        | "pure"
+        | "constructor"
+        | "destructor"
+        | "fallthrough"
+        | "mode"
+        | "nonnull"
+        | "nothrow"
+        | "leaf"
+        | "returns_nonnull"
+        | "warn_unused_result"
+        | "malloc"
+        | "alloc_size"
+        | "alloc_align"
+        | "visibility"
+        | "may_alias"
+        | "sentinel"
+        | "no_instrument_function"
+        | "artificial"
+        | "gnu_inline"
+        | "externally_visible"
+        | "flatten"
+        | "noclone"
+        | "no_icf"
+        | "noipa"
+        | "optimize"
+        | "target"
+        | "returns_twice"
+        | "access"
+        | "nonstring"
+        | "warning"
+        | "error"
+        | "unavailable"
+        | "designated_init"
+        | "common"
+        | "nocommon"
+        | "tls_model"
+        | "no_reorder"
+        | "no_stack_protector"
+        | "stack_protect"
+        | "no_sanitize"
+        | "no_sanitize_address"
+        | "no_sanitize_thread"
+        | "no_sanitize_undefined"
+        | "no_split_stack"
+        | "warn_if_not_aligned"
+        | "assume_aligned"
+        | "noplt"
+        | "retain"
+        | "uninitialized"
+        | "zero_call_used_regs"
+        | "counted_by"
+        | "strict_flex_array"
+        | "fd_arg"
+        | "fd_arg_read"
+        | "fd_arg_write"
+        | "null_terminated_string_arg"
+        | "copy"
+        | "noinit"
+        | "persistent"
+        | "symver"
+        | "no_profile_instrument_function"
+        | "transparent_union"
+        | "scalar_storage_order"
+        | "regparm"
+        | "cdecl"
+        | "ms_abi"
+        | "sysv_abi"
+        | "force_align_arg_pointer"
+        | "expected_throw" => AttrClass::Known,
+        "vector_size" | "cleanup" | "alias" | "ifunc" | "naked" | "weakref" => {
+            AttrClass::Unsupported
+        }
+        _ => AttrClass::Unknown,
+    }
+}
+
+/// Attributes whose arguments are expressions, not identifiers.
+fn attr_takes_exprs(name: &str) -> bool {
+    matches!(
+        name,
+        "aligned"
+            | "alloc_size"
+            | "alloc_align"
+            | "constructor"
+            | "destructor"
+            | "vector_size"
+            | "nonnull"
+            | "format_arg"
+            | "sentinel"
+            | "assume_aligned"
+            | "warn_if_not_aligned"
+    )
+}
+
+/// Attributes of one member of a struct or union.
+#[derive(Clone, Copy, Default)]
+struct MemberAttrs {
+    align: Option<u32>,
+    packed: bool,
 }
 
 /// One tag in the shared struct/union/enum namespace.
@@ -111,6 +283,9 @@ impl Parser<'_> {
             func_decls: Vec::new(),
             strings: Vec::new(),
             structs: std::mem::take(&mut self.structs),
+            fn_attrs: std::mem::take(&mut self.fn_attrs),
+            var_attrs: std::mem::take(&mut self.var_attrs),
+            warnings: std::mem::take(&mut self.warnings),
         })
     }
 
@@ -212,13 +387,21 @@ impl Parser<'_> {
             );
             scope.insert(
                 "__PRETTY_FUNCTION__".to_string(),
+                NameBinding::Ordinary(Some(func_ty.clone())),
+            );
+            scope.insert(
+                "__FUNCTION__".to_string(),
                 NameBinding::Ordinary(Some(func_ty)),
             );
         }
+        let symbol = declarator
+            .symbol
+            .clone()
+            .unwrap_or_else(|| declarator.name.clone());
+        self.note_fn_attrs(&symbol, &specs.attrs, &declarator.attrs);
         let body = self.parse_compound_scoped(false)?;
         self.pop_tags();
 
-        let symbol = declarator.symbol.unwrap_or_else(|| declarator.name.clone());
         Ok(TopDecl::Func(FuncDef {
             ret_type: ret,
             name: declarator.name,
@@ -257,6 +440,7 @@ impl Parser<'_> {
                 .symbol
                 .clone()
                 .unwrap_or_else(|| declarator.name.clone());
+            self.note_fn_attrs(&symbol, &specs.attrs, &declarator.attrs);
             self.bind_ordinary(
                 &declarator.name,
                 Some(ty),
@@ -280,6 +464,18 @@ impl Parser<'_> {
         let DeclKind::Object(ty) = declarator.kind else {
             unreachable!("function handled above");
         };
+        let attrs: Vec<Attr> = specs
+            .attrs
+            .iter()
+            .chain(&declarator.attrs)
+            .cloned()
+            .collect();
+        let ty = self.apply_mode(ty, &attrs)?;
+        let var_attrs = self.var_attrs_of(&attrs)?;
+        self.var_attrs
+            .entry(declarator.name.clone())
+            .or_default()
+            .merge(&var_attrs);
         if ty.is_void() {
             return Err(self.error_at(
                 declarator.line,
@@ -321,7 +517,15 @@ impl Parser<'_> {
         }))
     }
 
+    /// Declaration specifiers. GNU attributes among them are returned in
+    /// [`Specs::attrs`].
     fn parse_specs(&mut self, where_: SpecPlace) -> Result<Specs, Diagnostic> {
+        let (mut specs, attrs) = self.collect_attrs(|parser| parser.parse_specs_inner(where_))?;
+        specs.attrs = attrs;
+        Ok(specs)
+    }
+
+    fn parse_specs_inner(&mut self, where_: SpecPlace) -> Result<Specs, Diagnostic> {
         let mut flags = SpecFlags::default();
         loop {
             let token = self.current().clone();
@@ -398,6 +602,20 @@ impl Parser<'_> {
                     flags.line = token.line;
                     flags.column = token.column;
                 }
+                TokenKind::Ident if self.is_typeof_word(&token) => {
+                    if flags.struct_ty.is_some()
+                        || flags.bool_ty
+                        || flags.float_ty.is_some()
+                        || flags.has_scalar()
+                    {
+                        return Err(self.error("invalid combination of type specifiers"));
+                    }
+                    let ty = self.parse_typeof()?;
+                    flags.any = true;
+                    flags.struct_ty = Some(ty);
+                    flags.line = token.line;
+                    flags.column = token.column;
+                }
                 TokenKind::Ident if self.is_typedef(&token.spelling) => {
                     // A typedef name is a type specifier only when the list
                     // does not already have one. `typedef T T` is a declarator
@@ -461,6 +679,7 @@ impl Parser<'_> {
             shadow_decl,
             line: flags.line,
             column: flags.column,
+            attrs: Vec::new(),
         })
     }
 
@@ -627,6 +846,53 @@ impl Parser<'_> {
         flags.line = line;
         flags.column = column;
         Ok(())
+    }
+
+    /// `__typeof__` and `__typeof` in any mode (strict C11 rejects them
+    /// with a diagnostic), and `typeof` in GNU mode, where it is a keyword.
+    fn is_typeof_word(&self, token: &Token) -> bool {
+        token.kind == TokenKind::Ident
+            && (matches!(token.spelling.as_str(), "__typeof__" | "__typeof")
+                || (token.spelling == "typeof" && self.dialect.gnu()))
+    }
+
+    /// `typeof ( expression )` or `typeof ( type-name )` (GCC manual,
+    /// "Referring to a Type with typeof"). The type of an expression is
+    /// taken before lvalue conversion, so an array stays an array and
+    /// qualifiers are kept; the expression is not evaluated.
+    fn parse_typeof(&mut self) -> Result<CType, Diagnostic> {
+        let keyword = self.advance();
+        if !self.dialect.gnu() {
+            return Err(self.error_at(
+                keyword.line,
+                keyword.column,
+                format!("'{}' is a GNU extension; use -std=gnu11", keyword.spelling),
+            ));
+        }
+        self.expect(TokenKind::LParen, "'('")?;
+        let ty = if self.at_type_specifier(self.current()) {
+            self.parse_type_name()?
+        } else {
+            let expr = self.parse_expression()?;
+            if is_bitfield_member(&expr, self.env()) {
+                return Err(self.error_at(
+                    expr.line(),
+                    expr.column(),
+                    "'typeof' applied to a bit-field",
+                ));
+            }
+            check_uneval(&expr, self.env())
+                .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
+            type_only(&expr, self.env()).map_err(|_| {
+                self.error_at(
+                    expr.line(),
+                    expr.column(),
+                    "cannot determine the type of this 'typeof' operand",
+                )
+            })?
+        };
+        self.expect(TokenKind::RParen, "')'")?;
+        Ok(ty)
     }
 
     fn spec_word(&self, words: &[&str]) -> bool {
@@ -852,6 +1118,8 @@ impl Parser<'_> {
         self.shadow_decl = None;
         let kw = self.advance();
         let word = kind.word();
+        // `struct __attribute__((packed)) tag { ... }`.
+        let pre_attrs = self.parse_attributes_into()?;
         let (tag, line, column) = if self.current().kind == TokenKind::Ident {
             let tag_tok = self.advance();
             (Some(tag_tok.spelling), tag_tok.line, tag_tok.column)
@@ -865,8 +1133,7 @@ impl Parser<'_> {
             ));
         };
         if self.current().kind == TokenKind::LBrace {
-            let ty = self.define_record(kind, tag.as_deref(), line, column)?;
-            self.skip_attributes()?;
+            let ty = self.define_record(kind, tag.as_deref(), line, column, pre_attrs)?;
             return Ok((ty, None, line, column));
         }
         let tag = tag.expect("tag");
@@ -902,12 +1169,18 @@ impl Parser<'_> {
         Ok((CType::Struct(created), None, line, column))
     }
 
+    /// A struct or union definition. `attrs` are the attributes before the
+    /// tag; those after the closing brace join them. `packed` gives every
+    /// member alignment 1 and `aligned(N)` raises the record's alignment
+    /// (GCC manual, "Common Type Attributes"). A layout that differs from
+    /// the natural one makes the LLVM type a byte array.
     fn define_record(
         &mut self,
         kind: RecordKind,
         tag: Option<&str>,
         line: usize,
         column: usize,
+        mut attrs: Vec<Attr>,
     ) -> Result<CType, Diagnostic> {
         let word = kind.word();
         let handle = if let Some(tag) = tag {
@@ -944,14 +1217,15 @@ impl Parser<'_> {
         self.defining.insert(id);
         let parsed = self.parse_member_list();
         self.defining.remove(&id);
-        let mut fields = parsed?;
+        let (mut fields, member_attrs) = parsed?;
         self.expect(TokenKind::RBrace, "'}'")?;
+        attrs.extend(self.parse_attributes_into()?);
         let label = tag.unwrap_or(word);
         if fields.is_empty() {
             return Err(self.error_at(line, column, format!("{word} '{label}' has no members")));
         }
         self.check_flexible_members(kind, &fields, line, column)?;
-        let spec: Vec<LayoutMember> = fields
+        let natural_spec: Vec<LayoutMember> = fields
             .iter()
             .map(|field| LayoutMember {
                 size: field.ty.size().unwrap_or(0),
@@ -960,11 +1234,57 @@ impl Parser<'_> {
                 named: !field.name.is_empty(),
             })
             .collect();
-        let Some((places, size, align)) = layout_members(&spec, kind == RecordKind::Union) else {
-            return Err(self.error_at(line, column, format!("{word} '{label}' is too large")));
-        };
+        let packed = attrs.iter().any(|attr| attr.name == "packed");
+        let record_align = self.attrs_align(&attrs)?;
+        let spec: Vec<LayoutMember> = natural_spec
+            .iter()
+            .zip(&member_attrs)
+            .map(|(member, extra)| {
+                let base = if packed || extra.packed {
+                    1
+                } else {
+                    member.align
+                };
+                LayoutMember {
+                    align: extra.align.map_or(base, |align| base.max(align)),
+                    ..*member
+                }
+            })
+            .collect();
+        let union_layout = kind == RecordKind::Union;
+        let too_large = || self.error_at(line, column, format!("{word} '{label}' is too large"));
+        let natural = layout_members(&natural_spec, union_layout).ok_or_else(too_large)?;
+        let (places, mut size, mut align) =
+            layout_members(&spec, union_layout).ok_or_else(too_large)?;
+        if let Some(extra) = record_align {
+            align = align.max(extra);
+            size = size.div_ceil(u64::from(align)) * u64::from(align);
+        }
+        let irregular = places != natural.0 || size != natural.1 || align != natural.2;
+        if irregular
+            && fields
+                .iter()
+                .any(|field| field.bit_width.is_some_and(|w| w > 0))
+        {
+            // A bit-field is read through its declared type's storage unit.
+            // That only matches GCC when packing moved nothing and every
+            // unit stays inside the record.
+            let fits = places.iter().zip(&fields).all(|(place, field)| {
+                field.bit_width.is_none() || place.offset + field.ty.size().unwrap_or(0) <= size
+            });
+            if places != natural.0 || !fits {
+                return Err(self.error_at(
+                    line,
+                    column,
+                    format!("bit-fields in a packed or aligned {word} are not supported"),
+                ));
+            }
+        }
         if size == 0 {
             return Err(self.error_at(line, column, format!("{word} '{label}' has size 0")));
+        }
+        if irregular {
+            handle.set_irregular();
         }
         for (field, place) in fields.iter_mut().zip(places) {
             field.offset = place.offset;
@@ -1079,13 +1399,13 @@ impl Parser<'_> {
         specs: Specs,
         first: NamedDecl,
     ) -> Result<Vec<TopDecl>, Diagnostic> {
-        self.bind_typedef_decl(&first)?;
+        self.bind_typedef_decl(&specs.attrs, &first)?;
         while self.match_kind(TokenKind::Comma) {
             let next = self.parse_named_decl(specs.ty.clone())?;
             if next.is_function() && self.current().kind == TokenKind::LBrace {
                 return Err(self.error("a function definition cannot follow another declarator"));
             }
-            self.bind_typedef_decl(&next)?;
+            self.bind_typedef_decl(&specs.attrs, &next)?;
         }
         self.expect(TokenKind::Semi, "';'")?;
         Ok(Vec::new())
@@ -1097,7 +1417,7 @@ impl Parser<'_> {
             if declarator.is_function() && self.current().kind == TokenKind::LBrace {
                 return Err(self.error("a typedef cannot have a function body"));
             }
-            self.bind_typedef_decl(&declarator)?;
+            self.bind_typedef_decl(&specs.attrs, &declarator)?;
             if self.match_kind(TokenKind::Comma) {
                 continue;
             }
@@ -1107,7 +1427,11 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn bind_typedef_decl(&mut self, declarator: &NamedDecl) -> Result<(), Diagnostic> {
+    fn bind_typedef_decl(
+        &mut self,
+        spec_attrs: &[Attr],
+        declarator: &NamedDecl,
+    ) -> Result<(), Diagnostic> {
         if self.current().kind == TokenKind::Assign {
             return Err(self.error("a typedef cannot have an initializer"));
         }
@@ -1115,6 +1439,23 @@ impl Parser<'_> {
             DeclKind::Object(ty) => ty.clone(),
             DeclKind::Function { .. } => decl_kind_type(&declarator.kind),
         };
+        let attrs: Vec<Attr> = spec_attrs
+            .iter()
+            .chain(&declarator.attrs)
+            .cloned()
+            .collect();
+        let ty = self.apply_mode(ty, &attrs)?;
+        // A typedef with its own alignment is a distinct type in GCC. Only
+        // the type's own alignment is supported here.
+        if let Some(align) = self.attrs_align(&attrs)? {
+            if ty.size().is_none() || ty.member_align() != align {
+                return Err(self.error_at(
+                    declarator.line,
+                    declarator.column,
+                    "an 'aligned' attribute on a typedef is only supported on a struct or union definition",
+                ));
+            }
+        }
         self.reject_bad_restrict(&ty, declarator.line, declarator.column)?;
         self.bind_typedef(&declarator.name, ty, declarator.line, declarator.column)
     }
@@ -1253,6 +1594,7 @@ impl Parser<'_> {
             )
             || (token.kind == TokenKind::Ident
                 && (self.is_typedef(&token.spelling) || token.spelling == "__builtin_va_list"))
+            || self.is_typeof_word(token)
             || matches!(token.spelling.as_str(), "__restrict" | "__restrict__")
                 && token.kind == TokenKind::Ident
     }
@@ -1287,32 +1629,323 @@ impl Parser<'_> {
         }
     }
 
+    /// Merge a function declaration's attributes into those of its symbol.
+    fn note_fn_attrs(&mut self, symbol: &str, spec_attrs: &[Attr], decl_attrs: &[Attr]) {
+        let attrs: Vec<Attr> = spec_attrs.iter().chain(decl_attrs).cloned().collect();
+        let found = self.fn_attrs_of(&attrs);
+        if found != FnAttrs::default() {
+            self.fn_attrs
+                .entry(symbol.to_string())
+                .or_default()
+                .merge(&found);
+        }
+    }
+
+    fn at_attribute(&self) -> bool {
+        self.spec_word(&["__attribute__", "__attribute"])
+    }
+
+    /// Any number of `__attribute__((...))` groups. Each attribute is added
+    /// to [`Parser::attr_sink`] for the declaration being parsed.
     fn skip_attributes(&mut self) -> Result<(), Diagnostic> {
-        while self.spec_word(&["__attribute__", "__attribute"]) {
+        while self.at_attribute() {
             self.skip_attribute()?;
         }
         Ok(())
     }
 
-    /// `__attribute__ (( balanced ))`. Nested parentheses are skipped.
+    /// Attribute groups here, returned instead of joining the enclosing
+    /// declaration's attributes.
+    fn parse_attributes_into(&mut self) -> Result<Vec<Attr>, Diagnostic> {
+        self.collect_attrs(Self::skip_attributes)
+            .map(|((), attrs)| attrs)
+    }
+
+    /// Run `parse`, and return the attributes it parsed separately from the
+    /// enclosing declaration's.
+    fn collect_attrs<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<T, Diagnostic>,
+    ) -> Result<(T, Vec<Attr>), Diagnostic> {
+        let saved = std::mem::take(&mut self.attr_sink);
+        let result = parse(self);
+        let attrs = std::mem::replace(&mut self.attr_sink, saved);
+        result.map(|value| (value, attrs))
+    }
+
+    /// `__attribute__ (( attribute-list ))` (GCC manual, "Attribute
+    /// Syntax"). Each attribute is a word, optionally followed by a
+    /// parenthesized argument list; empty entries are allowed. An unknown
+    /// attribute is ignored with a warning; one that would change the
+    /// program and is not implemented is an error.
     fn skip_attribute(&mut self) -> Result<(), Diagnostic> {
         let at = self.advance();
         self.expect(TokenKind::LParen, "'('")?;
         self.expect(TokenKind::LParen, "'('")?;
-        let mut depth = 1i32;
-        while depth > 0 {
+        loop {
             match self.current().kind {
+                TokenKind::RParen => break,
+                TokenKind::Comma => {
+                    self.advance();
+                    continue;
+                }
                 TokenKind::Eof => {
                     return Err(self.error_at(at.line, at.column, "unclosed __attribute__"));
                 }
+                _ => {}
+            }
+            let tok = self.current().clone();
+            let word = tok
+                .spelling
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+            if !word
+                || matches!(
+                    tok.kind,
+                    TokenKind::Int | TokenKind::Float | TokenKind::String
+                )
+            {
+                return Err(self.error("expected an attribute name"));
+            }
+            self.advance();
+            let name = attr_name(&tok.spelling);
+            let mut args = Vec::new();
+            if self.current().kind == TokenKind::LParen {
+                self.advance();
+                while self.current().kind != TokenKind::RParen {
+                    args.push(self.parse_attr_arg(&name)?);
+                    if !self.match_kind(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RParen, "')'")?;
+            }
+            match attr_class(&name) {
+                AttrClass::Known => {}
+                AttrClass::Unsupported => {
+                    return Err(self.error_at(
+                        tok.line,
+                        tok.column,
+                        format!("attribute '{name}' is not supported"),
+                    ));
+                }
+                AttrClass::Unknown => {
+                    self.warn_at(
+                        tok.line,
+                        tok.column,
+                        format!("unknown attribute '{name}' ignored"),
+                    );
+                }
+            }
+            self.attr_sink.push(Attr {
+                name,
+                args,
+                line: tok.line,
+                column: tok.column,
+            });
+            if !self.match_kind(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen, "')'")?;
+        self.expect(TokenKind::RParen, "')'")?;
+        Ok(())
+    }
+
+    fn parse_attr_arg(&mut self, name: &str) -> Result<AttrArg, Diagnostic> {
+        let cur = self.current().clone();
+        if cur.kind == TokenKind::String {
+            let mut bytes = Vec::new();
+            while self.current().kind == TokenKind::String {
+                let tok = self.advance();
+                bytes.extend(tok.bytes.unwrap_or_default());
+            }
+            return Ok(AttrArg::Str(String::from_utf8_lossy(&bytes).into_owned()));
+        }
+        if attr_takes_exprs(name) {
+            return Ok(AttrArg::Expr(self.parse_assignment()?));
+        }
+        if cur.kind == TokenKind::Ident
+            && matches!(self.lookahead(), TokenKind::Comma | TokenKind::RParen)
+        {
+            self.advance();
+            return Ok(AttrArg::Ident(cur.spelling));
+        }
+        let mut depth = 0usize;
+        loop {
+            match self.current().kind {
                 TokenKind::LParen => depth += 1,
+                TokenKind::RParen if depth == 0 => break,
                 TokenKind::RParen => depth -= 1,
+                TokenKind::Comma if depth == 0 => break,
+                TokenKind::Eof => return Err(self.error("unclosed __attribute__")),
                 _ => {}
             }
             self.advance();
         }
-        self.expect(TokenKind::RParen, "')'")?;
-        Ok(())
+        Ok(AttrArg::Other)
+    }
+
+    /// A warning, except in a system header.
+    fn warn_at(&mut self, line: usize, column: usize, message: impl Into<String>) {
+        let file = self.file_at(line, column).to_string();
+        if file != self.filename && file.starts_with('/') {
+            return;
+        }
+        self.warnings
+            .push(Warning(Diagnostic::new(file, line, column, message)));
+    }
+
+    /// The alignment `aligned` or `aligned(N)` asks for. With no argument it
+    /// is the largest alignment of any type on the target, 16.
+    fn attr_align(&self, attr: &Attr) -> Result<u32, Diagnostic> {
+        let Some(arg) = attr.args.first() else {
+            return Ok(16);
+        };
+        let AttrArg::Expr(expr) = arg else {
+            return Err(self.error_at(
+                attr.line,
+                attr.column,
+                "requested alignment is not an integer constant",
+            ));
+        };
+        let value = eval_ice(expr, self.env()).map_err(|_| {
+            self.error_at(
+                attr.line,
+                attr.column,
+                "requested alignment is not an integer constant",
+            )
+        })?;
+        let bits = if value.ty.is_signed() {
+            let signed = sign_extend(value.bits, value.ty.width());
+            if signed <= 0 {
+                u64::MAX
+            } else {
+                signed as u64
+            }
+        } else {
+            value.bits & value.ty.mask()
+        };
+        if !bits.is_power_of_two() || bits > (1 << 28) {
+            return Err(self.error_at(
+                attr.line,
+                attr.column,
+                "requested alignment is not a positive power of 2",
+            ));
+        }
+        Ok(bits as u32)
+    }
+
+    /// The strictest `aligned` in `attrs`, if any.
+    fn attrs_align(&self, attrs: &[Attr]) -> Result<Option<u32>, Diagnostic> {
+        let mut align: Option<u32> = None;
+        for attr in attrs.iter().filter(|attr| attr.name == "aligned") {
+            let value = self.attr_align(attr)?;
+            align = Some(align.map_or(value, |old| old.max(value)));
+        }
+        Ok(align)
+    }
+
+    fn attr_string(attr: &Attr) -> Option<String> {
+        attr.args.iter().find_map(|arg| match arg {
+            AttrArg::Str(text) => Some(text.clone()),
+            _ => None,
+        })
+    }
+
+    /// The function attributes in `attrs` that change the IR.
+    fn fn_attrs_of(&self, attrs: &[Attr]) -> FnAttrs {
+        let mut out = FnAttrs::default();
+        for attr in attrs {
+            match attr.name.as_str() {
+                "noreturn" => out.noreturn = true,
+                "always_inline" => out.always_inline = true,
+                "noinline" => out.noinline = true,
+                "cold" => out.cold = true,
+                "hot" => out.hot = true,
+                "const" => out.const_fn = true,
+                "pure" => out.pure = true,
+                "weak" => out.weak = true,
+                "used" => out.used = true,
+                "constructor" => out.constructor = true,
+                "destructor" => out.destructor = true,
+                "section" => out.section = Self::attr_string(attr),
+                "deprecated" => {
+                    out.deprecated = Some(Self::attr_string(attr).unwrap_or_default());
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// The object attributes in `attrs` that change the IR.
+    fn var_attrs_of(&self, attrs: &[Attr]) -> Result<VarAttrs, Diagnostic> {
+        let mut out = VarAttrs {
+            align: self.attrs_align(attrs)?,
+            ..VarAttrs::default()
+        };
+        for attr in attrs {
+            match attr.name.as_str() {
+                "weak" => out.weak = true,
+                "used" => out.used = true,
+                "section" => out.section = Self::attr_string(attr),
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
+    /// Apply `mode(...)` to a declared integer type (GCC manual, "Common
+    /// Variable Attributes"): the integer of that width with the same
+    /// signedness.
+    fn apply_mode(&self, ty: CType, attrs: &[Attr]) -> Result<CType, Diagnostic> {
+        let Some(attr) = attrs.iter().rev().find(|attr| attr.name == "mode") else {
+            return Ok(ty);
+        };
+        let mode = match attr.args.first() {
+            Some(AttrArg::Ident(word)) => attr_name(word),
+            _ => {
+                return Err(self.error_at(
+                    attr.line,
+                    attr.column,
+                    "mode attribute needs a mode name",
+                ))
+            }
+        };
+        let width = match mode.as_str() {
+            "QI" | "byte" => 8,
+            "HI" => 16,
+            "SI" => 32,
+            "DI" | "word" | "pointer" => 64,
+            other => {
+                return Err(self.error_at(
+                    attr.line,
+                    attr.column,
+                    format!("mode '{other}' is not supported"),
+                ));
+            }
+        };
+        let Some(name) = ty.as_integer().filter(|name| *name != TypeName::Bool) else {
+            return Err(self.error_at(
+                attr.line,
+                attr.column,
+                "mode attribute requires an integer type",
+            ));
+        };
+        let signed = name.is_signed();
+        let chosen = match (width, signed) {
+            (8, true) => TypeName::SChar,
+            (8, false) => TypeName::UChar,
+            (16, true) => TypeName::Short,
+            (16, false) => TypeName::UShort,
+            (32, true) => TypeName::Int,
+            (32, false) => TypeName::UInt,
+            (_, true) => TypeName::Long,
+            (_, false) => TypeName::ULong,
+        };
+        Ok(CType::Int(chosen).with_quals(ty.quals()))
     }
 
     /// Attributes and an optional `__asm__("name")` after a declarator.
@@ -1400,11 +2033,13 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn parse_member_list(&mut self) -> Result<Vec<StructField>, Diagnostic> {
+    /// The members, and the GNU attributes of each.
+    fn parse_member_list(&mut self) -> Result<(Vec<StructField>, Vec<MemberAttrs>), Diagnostic> {
         let mut fields = Vec::new();
+        let mut extras = Vec::new();
         let mut names = HashSet::new();
         if self.current().kind == TokenKind::RBrace {
-            return Ok(fields);
+            return Ok((fields, extras));
         }
         while !matches!(self.current().kind, TokenKind::RBrace | TokenKind::Eof) {
             if self.current().kind == TokenKind::KwStaticAssert {
@@ -1432,6 +2067,7 @@ impl Parser<'_> {
                         bit_offset: 0,
                         bit_width: None,
                     });
+                    extras.push(self.member_attrs(&specs.attrs, &[])?);
                     self.advance();
                     continue;
                 }
@@ -1439,7 +2075,10 @@ impl Parser<'_> {
             }
             loop {
                 if self.current().kind == TokenKind::Colon {
-                    let width = self.parse_bit_width(&specs.ty, false)?;
+                    let (width, attrs) =
+                        self.collect_attrs(|parser| parser.parse_bit_width(&specs.ty, false))?;
+                    let (_, more) = self.collect_attrs(Self::skip_attributes)?;
+                    let attrs: Vec<Attr> = attrs.into_iter().chain(more).collect();
                     fields.push(StructField {
                         name: String::new(),
                         ty: specs.ty.clone(),
@@ -1447,6 +2086,7 @@ impl Parser<'_> {
                         bit_offset: 0,
                         bit_width: Some(width),
                     });
+                    extras.push(self.member_attrs(&specs.attrs, &attrs)?);
                 } else {
                     let named = self.parse_named_decl(specs.ty.clone())?;
                     let DeclKind::Object(ty) = named.kind else {
@@ -1461,6 +2101,9 @@ impl Parser<'_> {
                     } else {
                         None
                     };
+                    let more = self.parse_attributes_into()?;
+                    let member_attrs: Vec<Attr> = named.attrs.iter().cloned().chain(more).collect();
+                    let ty = self.apply_mode(ty, &member_attrs)?;
                     // An incomplete array may be a flexible array member. The
                     // constraint (last member, another named member, not a
                     // union) is checked once the member list is finished.
@@ -1492,6 +2135,7 @@ impl Parser<'_> {
                         bit_offset: 0,
                         bit_width: width,
                     });
+                    extras.push(self.member_attrs(&specs.attrs, &member_attrs)?);
                 }
                 if self.match_kind(TokenKind::Comma) {
                     if matches!(
@@ -1506,7 +2150,15 @@ impl Parser<'_> {
             }
             self.expect(TokenKind::Semi, "';'")?;
         }
-        Ok(fields)
+        Ok((fields, extras))
+    }
+
+    fn member_attrs(&self, spec_attrs: &[Attr], attrs: &[Attr]) -> Result<MemberAttrs, Diagnostic> {
+        let all: Vec<Attr> = spec_attrs.iter().chain(attrs).cloned().collect();
+        Ok(MemberAttrs {
+            align: self.attrs_align(&all)?,
+            packed: all.iter().any(|attr| attr.name == "packed"),
+        })
     }
 
     /// Member names an anonymous struct or union contributes to its parent.
@@ -1698,6 +2350,13 @@ impl Parser<'_> {
 
     /// A named declarator. `int *a, b` parses two of these against one base type.
     fn parse_named_decl(&mut self, base: CType) -> Result<NamedDecl, Diagnostic> {
+        let (mut named, attrs) =
+            self.collect_attrs(|parser| parser.parse_named_decl_inner(base))?;
+        named.attrs = attrs;
+        Ok(named)
+    }
+
+    fn parse_named_decl_inner(&mut self, base: CType) -> Result<NamedDecl, Diagnostic> {
         let raw = self.parse_raw_declarator(false)?;
         let (name, line, column) = match decl_name(&raw) {
             Some(found) => found,
@@ -1734,6 +2393,7 @@ impl Parser<'_> {
             param_tags,
             param_names,
             symbol,
+            attrs: Vec::new(),
         })
     }
 
@@ -1969,6 +2629,8 @@ impl Parser<'_> {
             )));
         }
         let raw = self.parse_raw_declarator(true)?;
+        // `int x __attribute__((unused))`: parameter attributes are ignored.
+        self.parse_attributes_into()?;
         let named = decl_name(&raw);
         let (line, column) = named
             .as_ref()
@@ -2131,6 +2793,10 @@ impl Parser<'_> {
                     quals.is_restrict = true;
                     self.advance();
                 }
+                TokenKind::Ident if self.at_attribute() => {
+                    // An attribute on a pointer declarator is ignored.
+                    self.parse_attributes_into()?;
+                }
                 _ => break,
             }
         }
@@ -2161,6 +2827,15 @@ impl Parser<'_> {
         let expr = self.parse_assignment()?;
         match fold_array_bound(&expr, self.env()) {
             Ok(len) => Ok(Some(len)),
+            // GNU C allows a zero-length array (GCC manual, "Arrays of
+            // Length Zero").
+            Err(BoundErr::NonPositive)
+                if self.dialect.gnu()
+                    && eval_ice(&expr, self.env())
+                        .is_ok_and(|value| value.bits & value.ty.mask() == 0) =>
+            {
+                Ok(Some(0))
+            }
             Err(err) => Err(self.error_at(expr.line(), expr.column(), bound_message(err))),
         }
     }
@@ -2324,6 +2999,8 @@ impl Parser<'_> {
                 self.current().kind == TokenKind::Ident && self.lookahead() == TokenKind::Colon;
             if self.current().kind == TokenKind::KwStaticAssert {
                 self.parse_static_assert()?;
+            } else if let Some(stmt) = self.parse_attribute_statement()? {
+                items.push(stmt);
             } else if !is_label && self.starts_declaration() {
                 items.extend(self.parse_block_declaration(false)?);
             } else if let Some(message) = unsupported(self.current().kind) {
@@ -2441,6 +3118,7 @@ impl Parser<'_> {
             .symbol
             .clone()
             .unwrap_or_else(|| declarator.name.clone());
+        self.note_fn_attrs(&symbol, &specs.attrs, &declarator.attrs);
         self.bind_ordinary(
             &declarator.name,
             Some(ty),
@@ -2470,6 +3148,14 @@ impl Parser<'_> {
         let DeclKind::Object(ty) = declarator.kind else {
             unreachable!("object declarator");
         };
+        let attrs: Vec<Attr> = specs
+            .attrs
+            .iter()
+            .chain(&declarator.attrs)
+            .cloned()
+            .collect();
+        let ty = self.apply_mode(ty, &attrs)?;
+        let align = self.attrs_align(&attrs)?;
         if ty.is_void() {
             return Err(self.error_at(
                 declarator.line,
@@ -2505,7 +3191,53 @@ impl Parser<'_> {
             line: declarator.line,
             column: declarator.column,
             slot: String::new(),
+            align,
         })
+    }
+
+    /// `__attribute__((fallthrough));` and other attributes on a null
+    /// statement (GCC manual, "Statement Attributes"). `None` when the
+    /// attributes start a declaration instead.
+    fn parse_attribute_statement(&mut self) -> Result<Option<Stmt>, Diagnostic> {
+        if !self.at_attribute() {
+            return Ok(None);
+        }
+        let mut index = self.index;
+        while self.tokens.get(index).is_some_and(|tok| {
+            tok.kind == TokenKind::Ident
+                && matches!(tok.spelling.as_str(), "__attribute__" | "__attribute")
+        }) {
+            index += 1;
+            if self.tokens.get(index).map(|tok| tok.kind) != Some(TokenKind::LParen) {
+                return Ok(None);
+            }
+            let mut depth = 0usize;
+            while let Some(tok) = self.tokens.get(index) {
+                match tok.kind {
+                    TokenKind::LParen => depth += 1,
+                    TokenKind::RParen => {
+                        depth -= 1;
+                        if depth == 0 {
+                            index += 1;
+                            break;
+                        }
+                    }
+                    TokenKind::Eof => return Ok(None),
+                    _ => {}
+                }
+                index += 1;
+            }
+        }
+        if self.tokens.get(index).map(|tok| tok.kind) != Some(TokenKind::Semi) {
+            return Ok(None);
+        }
+        self.parse_attributes_into()?;
+        let semi = self.advance();
+        Ok(Some(Stmt::Expr {
+            expr: None,
+            line: semi.line,
+            column: semi.column,
+        }))
     }
 
     fn parse_statement(&mut self) -> Result<Stmt, Diagnostic> {
@@ -2513,6 +3245,9 @@ impl Parser<'_> {
         // before the declaration test so `typedef int T; T: ;` is a label.
         if self.current().kind == TokenKind::Ident && self.lookahead() == TokenKind::Colon {
             return self.parse_label();
+        }
+        if let Some(stmt) = self.parse_attribute_statement()? {
+            return Ok(stmt);
         }
         // A label's statement is parsed here, including `case 1: int x;`.
         // A declaration is not a statement in C11 (C23 allows the label).
@@ -2575,6 +3310,8 @@ impl Parser<'_> {
     fn parse_label(&mut self) -> Result<Stmt, Diagnostic> {
         let name = self.advance();
         self.expect(TokenKind::Colon, "':'")?;
+        // Label attributes, such as `unused`, are accepted and ignored.
+        self.parse_attributes_into()?;
         let stmt = Box::new(self.parse_statement()?);
         Ok(Stmt::Label {
             name: name.spelling,
@@ -2745,11 +3482,27 @@ impl Parser<'_> {
     fn parse_case(&mut self) -> Result<Stmt, Diagnostic> {
         let token = self.advance();
         let expr = self.parse_conditional()?;
+        // `case low ... high:` (GCC manual, "Case Ranges").
+        let high = if self.current().kind == TokenKind::Ellipsis {
+            let dots = self.advance();
+            if !self.dialect.gnu() {
+                return Err(self.error_at(
+                    dots.line,
+                    dots.column,
+                    "case ranges are a GNU extension; use -std=gnu11",
+                ));
+            }
+            Some(self.parse_conditional()?)
+        } else {
+            None
+        };
         self.expect(TokenKind::Colon, "':'")?;
         let stmt = Box::new(self.parse_statement()?);
         Ok(Stmt::Case {
             expr,
             value: None,
+            high,
+            high_value: None,
             stmt,
             line: token.line,
             column: token.column,
@@ -2803,6 +3556,26 @@ impl Parser<'_> {
         }
         let line = cond.line();
         let column = cond.column();
+        if self.current().kind == TokenKind::Colon {
+            // `x ?: y` (GCC manual, "Conditionals with Omitted Operands"):
+            // `x` is evaluated once and is the value when it is nonzero.
+            let colon = self.advance();
+            if !self.dialect.gnu() {
+                return Err(self.error_at(
+                    colon.line,
+                    colon.column,
+                    "a conditional with an omitted middle operand is a GNU extension; use -std=gnu11",
+                ));
+            }
+            let else_expr = self.parse_conditional()?;
+            return Ok(Expr::CondShort {
+                cond: Box::new(cond),
+                else_expr: Box::new(else_expr),
+                line,
+                column,
+                ty: None,
+            });
+        }
         let then_expr = self.parse_expression()?;
         self.expect(TokenKind::Colon, "':'")?;
         let else_expr = self.parse_conditional()?;
@@ -2995,6 +3768,21 @@ impl Parser<'_> {
         }
         let brace = self.advance();
         if self.current().kind == TokenKind::RBrace {
+            if self.dialect.gnu() {
+                // GNU C: `{}` zero-initializes the object, which `{ 0 }`
+                // does for every type that has an initializer.
+                let close = self.advance();
+                return Ok(Init::List {
+                    items: vec![Init::Expr(Expr::int(
+                        0,
+                        TypeName::Int,
+                        close.line,
+                        close.column,
+                    ))],
+                    line: brace.line,
+                    column: brace.column,
+                });
+            }
             return Err(self.error("empty initializer list"));
         }
         let mut items = Vec::new();
@@ -3087,8 +3875,34 @@ impl Parser<'_> {
     /// alignment a member of that type gets (the ABI's 16-byte rule for
     /// large array objects is not a property of the type).
     fn parse_alignof(&mut self, line: usize, column: usize) -> Result<Expr, Diagnostic> {
-        self.advance();
+        let keyword = self.advance();
         if self.current().kind != TokenKind::LParen || !self.lookahead_is_type() {
+            if keyword.spelling.starts_with("__") {
+                // `__alignof__ expression` (GCC manual, "Determining the
+                // Alignment of Functions, Types or Variables"): the
+                // alignment of the expression's type.
+                let expr = self.parse_unary()?;
+                let ty = type_only(&expr, self.env()).map_err(|_| {
+                    self.error_at(
+                        expr.line(),
+                        expr.column(),
+                        "cannot determine the type of this '__alignof__' operand",
+                    )
+                })?;
+                if ty.size().is_none() || ty.is_void() || ty.is_func() {
+                    return Err(self.error_at(
+                        line,
+                        column,
+                        "invalid application of '__alignof__' to an incomplete type",
+                    ));
+                }
+                return Ok(Expr::int(
+                    u64::from(ty.member_align()),
+                    TypeName::ULong,
+                    line,
+                    column,
+                ));
+            }
             return Err(self.error("_Alignof requires a parenthesized type name"));
         }
         self.advance();
@@ -3148,6 +3962,7 @@ impl Parser<'_> {
                 line,
                 column,
                 slot: String::new(),
+                align: None,
             }),
             line,
             column,
@@ -3391,6 +4206,123 @@ impl Parser<'_> {
         ))
     }
 
+    /// Builtins the parser answers itself, with their arguments still to
+    /// be read: `__builtin_types_compatible_p (type, type)`,
+    /// `__builtin_choose_expr (const, e1, e2)`, and
+    /// `__builtin_constant_p (e)` (GCC manual, "Other Built-in
+    /// Functions"). `None` for any other name.
+    fn parse_folded_builtin(
+        &mut self,
+        name: String,
+        line: usize,
+        column: usize,
+    ) -> Result<Option<Expr>, Diagnostic> {
+        match name.as_str() {
+            "__builtin_types_compatible_p" => {
+                self.advance();
+                let first = self.parse_type_name()?;
+                self.expect(TokenKind::Comma, "','")?;
+                let second = self.parse_type_name()?;
+                self.expect(TokenKind::RParen, "')'")?;
+                // Top-level qualifiers are ignored.
+                let same = compatible(&first.unqualified(), &second.unqualified());
+                Ok(Some(Expr::int(
+                    u64::from(same),
+                    TypeName::Int,
+                    line,
+                    column,
+                )))
+            }
+            "__builtin_choose_expr" => {
+                self.advance();
+                let cond = self.parse_assignment()?;
+                let value = eval_ice(&cond, self.env()).map_err(|_| {
+                    self.error_at(
+                        cond.line(),
+                        cond.column(),
+                        "the first argument of __builtin_choose_expr is not a constant",
+                    )
+                })?;
+                self.expect(TokenKind::Comma, "','")?;
+                let first = self.parse_assignment()?;
+                self.expect(TokenKind::Comma, "','")?;
+                let second = self.parse_assignment()?;
+                self.expect(TokenKind::RParen, "')'")?;
+                Ok(Some(if value.bits & value.ty.mask() != 0 {
+                    first
+                } else {
+                    second
+                }))
+            }
+            "__builtin_constant_p" => {
+                self.advance();
+                let arg = self.parse_assignment()?;
+                self.expect(TokenKind::RParen, "')'")?;
+                // 1 for an integer constant expression or a floating or
+                // string literal; 0 otherwise. The argument is not
+                // evaluated. GCC may also answer 1 after optimization; 0 is
+                // always a correct answer.
+                let constant = matches!(arg, Expr::Float { .. } | Expr::Str { .. })
+                    || eval_ice(&arg, self.env()).is_ok();
+                Ok(Some(Expr::int(
+                    u64::from(constant),
+                    TypeName::Int,
+                    line,
+                    column,
+                )))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Fold a bit-counting or byte-swapping builtin, or
+    /// `__builtin_expect`, whose arguments are integer constant
+    /// expressions, so the call is itself one (GCC folds these too).
+    fn fold_builtin_call(&self, call: Expr) -> Expr {
+        let Expr::Call {
+            callee,
+            args,
+            line,
+            column,
+            ..
+        } = &call
+        else {
+            return call;
+        };
+        let Expr::Var { name, .. } = callee.as_ref() else {
+            return call;
+        };
+        let Some(builtin) = crate::builtins::Inline::from_name(name) else {
+            return call;
+        };
+        let env = self.env();
+        if builtin == crate::builtins::Inline::Expect && args.len() == 2 {
+            if let (Ok(value), Ok(_)) = (eval_ice(&args[0], env), eval_ice(&args[1], env)) {
+                let bits = convert_bits(value.bits, value.ty, TypeName::Long);
+                return Expr::int(bits, TypeName::Long, *line, *column);
+            }
+            return call;
+        }
+        if args.len() != 1 {
+            return call;
+        }
+        let Some(param) = builtin.param_type(0).and_then(|ty| ty.as_integer()) else {
+            return call;
+        };
+        let Ok(value) = eval_ice(&args[0], env) else {
+            return call;
+        };
+        let bits = convert_bits(value.bits, value.ty, param);
+        let Some(result) = builtin.fold(bits) else {
+            return call;
+        };
+        let result_ty = builtin
+            .result_type()
+            .as_integer()
+            .expect("bit builtins return an integer");
+        Expr::int(result, result_ty, *line, *column)
+    }
+
     fn parse_postfix(&mut self) -> Result<Expr, Diagnostic> {
         let expr = self.parse_primary()?;
         self.parse_postfix_tail(expr)
@@ -3416,6 +4348,12 @@ impl Parser<'_> {
                             let line = *line;
                             let column = *column;
                             expr = self.parse_builtin_offsetof(line, column)?;
+                            continue;
+                        }
+                        if let Some(folded) =
+                            self.parse_folded_builtin(name.clone(), *line, *column)?
+                        {
+                            expr = folded;
                             continue;
                         }
                     }
@@ -3448,7 +4386,7 @@ impl Parser<'_> {
                     expr = if let Some(op) = builtin {
                         Expr::va_op(op, args, line, column)
                     } else {
-                        Expr::call(expr, args, line, column)
+                        self.fold_builtin_call(Expr::call(expr, args, line, column))
                     };
                 }
                 TokenKind::LBrack => {
@@ -3475,6 +4413,8 @@ impl Parser<'_> {
                     let name = self.advance();
                     expr = Expr::member(expr, name.spelling, arrow, op.line, op.column);
                 }
+                // `case low ... high:` in GNU C.
+                TokenKind::Ellipsis if self.dialect.gnu() => break,
                 TokenKind::Ellipsis => {
                     return Err(self.error("unexpected '...'"));
                 }
@@ -3550,6 +4490,7 @@ impl Parser<'_> {
                 }
                 Ok(Expr::str_lit(bytes, prefix.enc(), token.line, token.column))
             }
+            TokenKind::LParen if self.lookahead() == TokenKind::LBrace => self.parse_stmt_expr(),
             TokenKind::LParen => {
                 self.advance();
                 let expr = self.parse_expression()?;
@@ -3563,6 +4504,54 @@ impl Parser<'_> {
                 Err(self.error(format!("expected an expression, found {}", found(&token))))
             }
         }
+    }
+
+    /// `({ block-item-list })` (GCC manual, "Statements and Declarations in
+    /// Expressions"). The value is the last expression statement's, after
+    /// lvalue conversion; a block ending in anything else is `void`.
+    fn parse_stmt_expr(&mut self) -> Result<Expr, Diagnostic> {
+        let open = self.advance();
+        if !self.dialect.gnu() {
+            return Err(self.error_at(
+                open.line,
+                open.column,
+                "statement expressions are a GNU extension; use -std=gnu11",
+            ));
+        }
+        if self.names.len() <= 1 {
+            return Err(self.error_at(
+                open.line,
+                open.column,
+                "statement expression not allowed at file scope",
+            ));
+        }
+        let brace = self.advance();
+        self.push_tags();
+        self.stmt_expr_depth += 1;
+        let body = self.parse_compound_items(brace.line, brace.column);
+        self.stmt_expr_depth -= 1;
+        let body = match body {
+            Ok(body) => body,
+            Err(err) => {
+                self.pop_tags();
+                return Err(err);
+            }
+        };
+        let value_ty = match body.items.last() {
+            Some(Stmt::Expr {
+                expr: Some(expr), ..
+            }) => rvalue_type(expr, self.env()).ok(),
+            _ => Some(CType::Void),
+        };
+        self.pop_tags();
+        self.expect(TokenKind::RParen, "')'")?;
+        Ok(Expr::StmtExpr {
+            body: Box::new(body),
+            value_ty,
+            line: open.line,
+            column: open.column,
+            ty: None,
+        })
     }
 
     fn current(&self) -> &Token {
@@ -3736,6 +4725,8 @@ struct Specs {
     shadow_decl: Option<(String, RecordKind)>,
     line: usize,
     column: usize,
+    /// GNU attributes among the specifiers. They apply to every declarator.
+    attrs: Vec<Attr>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3797,6 +4788,8 @@ struct NamedDecl {
     param_names: Vec<(String, NameBinding)>,
     /// `__asm__("name")`, if the declarator had one.
     symbol: Option<String>,
+    /// GNU attributes in and after the declarator.
+    attrs: Vec<Attr>,
 }
 
 impl NamedDecl {
@@ -4099,12 +5092,33 @@ fn eval_ice(expr: &Expr, env: Env) -> Result<BVal, BoundErr> {
         | Expr::Member { .. }
         | Expr::VaArg { .. }
         | Expr::VaOp { .. } => Err(BoundErr::Vla),
-        Expr::CompoundLit { .. } => Err(BoundErr::NotConst),
+        Expr::CompoundLit { .. } | Expr::StmtExpr { .. } => Err(BoundErr::NotConst),
         Expr::Generic {
             control, assocs, ..
         } => {
             check_generic_assocs(control, assocs, env)?;
             eval_ice(select_generic(control, assocs, env)?, env)
+        }
+        Expr::CondShort {
+            cond, else_expr, ..
+        } => {
+            let first = eval_ice(cond, env)?;
+            let value = if first.bits & first.ty.mask() == 0 {
+                eval_ice(else_expr, env)?
+            } else {
+                first
+            };
+            let result = match (type_only(cond, env)?, type_only(else_expr, env)?) {
+                (left, right) if left.is_integer() && right.is_integer() => left
+                    .as_integer()
+                    .unwrap()
+                    .usual(right.as_integer().unwrap()),
+                _ => return Err(BoundErr::Vla),
+            };
+            Ok(BVal {
+                bits: convert_bits(value.bits, value.ty, result),
+                ty: result,
+            })
         }
     }
 }
@@ -4212,6 +5226,14 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
             // A supported builtin is recognized only as a call, not as a bare
             // identifier, so it is accepted here before ordinary lookup.
             if let Expr::Var { name, .. } = callee.as_ref() {
+                if crate::builtins::Inline::from_name(name).is_some()
+                    || (crate::builtins::library(name).is_some() && env_lookup(env, name).is_none())
+                {
+                    for arg in args {
+                        check_uneval(arg, env)?;
+                    }
+                    return Ok(());
+                }
                 if let Some(arity) = builtin_arity(name) {
                     for arg in args {
                         check_uneval(arg, env)?;
@@ -4286,6 +5308,14 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
             Some(init) => check_uneval_init(init, env),
             None => Ok(()),
         },
+        // Its names were resolved when the block was parsed.
+        Expr::StmtExpr { .. } => Ok(()),
+        Expr::CondShort {
+            cond, else_expr, ..
+        } => {
+            check_uneval(cond, env)?;
+            check_uneval(else_expr, env)
+        }
     }
 }
 
@@ -4438,7 +5468,10 @@ fn builtin_result_type(name: &str) -> Option<CType> {
     if is_memory_builtin(name) {
         return Some(CType::pointer(CType::Void));
     }
-    None
+    if let Some(inline) = crate::builtins::Inline::from_name(name) {
+        return Some(inline.result_type());
+    }
+    crate::builtins::library(name).map(|sig| sig.ret)
 }
 
 /// The operand of `__builtin_signbit*` is arithmetic, the rule semantic
@@ -4586,13 +5619,19 @@ fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
             }
         }
         Expr::Cast { ty_name, .. } => Ok(ty_name.unqualified()),
+        Expr::StmtExpr { value_ty, .. } => value_ty.clone().ok_or(BoundErr::NotConst),
         Expr::Cond {
-            then_expr,
-            else_expr,
+            then_expr: left,
+            else_expr: right,
+            ..
+        }
+        | Expr::CondShort {
+            cond: left,
+            else_expr: right,
             ..
         } => {
-            let left = rvalue_type(then_expr, env)?;
-            let right = rvalue_type(else_expr, env)?;
+            let left = rvalue_type(left, env)?;
+            let right = rvalue_type(right, env)?;
             if left.is_arithmetic() && right.is_arithmetic() {
                 arith_common(&left, &right)
             } else if left.is_void() || right.is_void() {

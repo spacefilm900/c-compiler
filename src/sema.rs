@@ -81,6 +81,18 @@ pub fn analyze_dialect(
         labels: HashMap::new(),
         variadic_fn: false,
         last_param: None,
+        stmt_expr_seq: 0,
+        library_calls: std::collections::BTreeMap::new(),
+        deprecated: unit
+            .fn_attrs
+            .iter()
+            .filter_map(|(symbol, attrs)| {
+                attrs
+                    .deprecated
+                    .clone()
+                    .map(|message| (symbol.clone(), message))
+            })
+            .collect(),
     };
     for decl in &mut unit.decls {
         match decl {
@@ -159,10 +171,27 @@ enum Symbol {
 struct SwitchCtx {
     promoted: TypeName,
     seen: HashSet<u64>,
+    /// GNU case ranges, as values of `promoted` widened to `i128`.
+    ranges: Vec<(i128, i128)>,
     has_default: bool,
 }
 
+/// A case value of type `ty` as a number, for range comparisons.
+fn case_key(bits: u64, ty: TypeName) -> i128 {
+    if ty.is_signed() {
+        i128::from(sign_extend(bits, ty.width()))
+    } else {
+        i128::from(bits & ty.mask())
+    }
+}
+
 struct Sema {
+    /// Statement expressions checked so far, for their slot names.
+    stmt_expr_seq: u32,
+    /// C library functions that a `__builtin_` forwarder calls, by symbol.
+    library_calls: std::collections::BTreeMap<String, crate::builtins::LibSig>,
+    /// Functions declared `deprecated`, by symbol, with the message.
+    deprecated: HashMap<String, String>,
     filename: String,
     dialect: Dialect,
     /// Warnings for accepted GNU extensions, in the order they were found.
@@ -503,6 +532,20 @@ impl Sema {
                     });
                 }
             }
+            for (symbol, sig) in &self.library_calls {
+                if matches!(file.get(symbol), Some(Symbol::Var(_))) {
+                    continue;
+                }
+                if declared.insert(symbol.clone()) {
+                    func_decls.push(IrFunc {
+                        name: symbol.clone(),
+                        ret: sig.ret.clone(),
+                        params: sig.params.clone(),
+                        variadic: sig.variadic,
+                        linkage: Linkage::External,
+                    });
+                }
+            }
             if missing_static.is_none() {
                 for name in &self.global_order {
                     let Some(Symbol::Var(var)) = file.get(name) else {
@@ -526,6 +569,7 @@ impl Sema {
                         ty: var.ty.clone(),
                         linkage: info.linkage,
                         init,
+                        attrs: unit.var_attrs.get(name).cloned().unwrap_or_default(),
                     });
                 }
             }
@@ -1866,6 +1910,7 @@ impl Sema {
                 self.switches.push(SwitchCtx {
                     promoted: prom,
                     seen: HashSet::new(),
+                    ranges: Vec::new(),
                     has_default: false,
                 });
                 self.check_stmt(body)?;
@@ -1875,6 +1920,8 @@ impl Sema {
             Stmt::Case {
                 expr,
                 value,
+                high,
+                high_value,
                 stmt,
                 line,
                 column,
@@ -1888,7 +1935,46 @@ impl Sema {
                 self.decay(expr)?;
                 let prom = self.switches.last().expect("switch").promoted;
                 let bits = self.case_value(expr, prom)?;
-                if !self.switches.last_mut().expect("switch").seen.insert(bits) {
+                let key = case_key(bits, prom);
+                if let Some(high) = high {
+                    self.check_expr(high)?;
+                    self.decay(high)?;
+                    let high_bits = self.case_value(high, prom)?;
+                    let high_key = case_key(high_bits, prom);
+                    if key > high_key {
+                        // GCC and Clang warn and drop the label.
+                        self.warn(line, column, "empty case range specified");
+                    } else {
+                        let ctx = self.switches.last().expect("switch");
+                        let clash = ctx
+                            .seen
+                            .iter()
+                            .any(|seen| (key..=high_key).contains(&case_key(*seen, prom)))
+                            || ctx
+                                .ranges
+                                .iter()
+                                .any(|(lo, hi)| *lo <= high_key && key <= *hi);
+                        if clash {
+                            return self.err(line, column, "duplicate case value in case range");
+                        }
+                        self.switches
+                            .last_mut()
+                            .expect("switch")
+                            .ranges
+                            .push((key, high_key));
+                    }
+                    *value = Some(bits);
+                    *high_value = Some(high_bits);
+                    return self.check_stmt(stmt);
+                }
+                let in_range = self
+                    .switches
+                    .last()
+                    .expect("switch")
+                    .ranges
+                    .iter()
+                    .any(|(lo, hi)| (*lo..=*hi).contains(&key));
+                if in_range || !self.switches.last_mut().expect("switch").seen.insert(bits) {
                     return self.err(
                         line,
                         column,
@@ -2132,6 +2218,10 @@ impl Sema {
             ty,
             linkage: Linkage::Internal,
             init: Some(value),
+            attrs: VarAttrs {
+                align: decl.align,
+                ..VarAttrs::default()
+            },
         });
         Ok(())
     }
@@ -2485,7 +2575,10 @@ impl Sema {
             name, line, column, ..
         } = expr
         {
-            if (name == "__func__" || name == "__PRETTY_FUNCTION__") && self.lookup(name).is_none()
+            if matches!(
+                name.as_str(),
+                "__func__" | "__PRETTY_FUNCTION__" | "__FUNCTION__"
+            ) && self.lookup(name).is_none()
             {
                 if self.fn_name.is_empty() {
                     return self.err(
@@ -2523,6 +2616,8 @@ impl Sema {
             Expr::CompoundAssign { .. } => self.check_compound_assign(expr),
             Expr::IncDec { .. } => self.check_incdec(expr),
             Expr::Cond { .. } => self.check_cond(expr),
+            Expr::CondShort { .. } => self.check_cond_short(expr),
+            Expr::StmtExpr { .. } => self.check_stmt_expr(expr),
             Expr::Comma { .. } => self.check_comma(expr),
             Expr::Sizeof { .. } => self.check_sizeof(expr),
             Expr::Cast { .. } => self.check_cast(expr),
@@ -2700,6 +2795,7 @@ impl Sema {
             ty: ty.clone(),
             linkage: Linkage::Internal,
             init: Some(value),
+            attrs: VarAttrs::default(),
         });
         *expr = Expr::Var {
             name: String::new(),
@@ -3330,6 +3426,65 @@ impl Sema {
         Ok(())
     }
 
+    /// `x ?: y` (GCC manual, "Conditionals with Omitted Operands"): the
+    /// type is that of `x ? x : y`, and `x` is evaluated once.
+    fn check_cond_short(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        let Expr::CondShort {
+            cond,
+            else_expr,
+            line,
+            column,
+            ..
+        } = expr
+        else {
+            unreachable!("conditional with omitted operand");
+        };
+        let (line, column) = (*line, *column);
+        self.check_expr(cond)?;
+        self.decay(cond)?;
+        self.require_scalar(cond)?;
+        self.check_expr(else_expr)?;
+        self.decay(else_expr)?;
+        let ty = self.cond_type(cond, else_expr, line, column)?;
+        expr.set_ty(ty);
+        Ok(())
+    }
+
+    /// `({ ... })` (GCC manual, "Statements and Declarations in
+    /// Expressions"). The block is checked in its own scope. The value is
+    /// that of the last expression statement after lvalue conversion; a
+    /// block that ends in anything else gives `void`.
+    fn check_stmt_expr(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        let Expr::StmtExpr {
+            body, line, column, ..
+        } = expr
+        else {
+            unreachable!("statement expression");
+        };
+        if self.fn_name.is_empty() {
+            return self.err(
+                *line,
+                *column,
+                "statement expression not allowed outside a function",
+            );
+        }
+        // Automatic objects in the block get their own slot names; the
+        // function's numbering did not reach into expressions.
+        self.stmt_expr_seq += 1;
+        let mut next = 0;
+        number_compound_in(body, &mut next, &format!("%se{}.", self.stmt_expr_seq));
+        self.collect_labels(body)?;
+        self.check_compound(body, true)?;
+        let ty = match body.items.last() {
+            Some(Stmt::Expr {
+                expr: Some(last), ..
+            }) => last.ty().expect("typed").unqualified(),
+            _ => CType::Void,
+        };
+        expr.set_ty(ty);
+        Ok(())
+    }
+
     /// The left operand is evaluated and discarded. The result has the type
     /// of the right operand. There is a sequence point between the two.
     fn check_comma(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
@@ -3454,6 +3609,15 @@ impl Sema {
                     let name = name.clone();
                     return self.check_fp_compare(expr, &name);
                 }
+                if let Some(inline) = crate::builtins::Inline::from_name(name) {
+                    let name = name.clone();
+                    return self.check_inline_builtin(expr, &name, inline);
+                }
+                if self.lookup(name).is_none() {
+                    if let Some(sig) = crate::builtins::library(name) {
+                        return self.check_library_builtin(expr, sig);
+                    }
+                }
             }
         }
         let direct = match expr {
@@ -3549,12 +3713,176 @@ impl Sema {
             }
         }
         self.note_use(&name, line, column);
+        if let Some(message) = self.deprecated.get(&fname) {
+            let text = if message.is_empty() {
+                format!("'{name}' is deprecated")
+            } else {
+                format!("'{name}' is deprecated: {message}")
+            };
+            self.warn(line, column, text);
+        }
         if let Expr::Call { resolved, .. } = expr {
             *resolved = Some(CallRes {
                 name: fname,
                 ret: ret.clone(),
                 params,
                 variadic,
+                indirect: false,
+            });
+        }
+        expr.set_ty(ret);
+        Ok(())
+    }
+
+    /// A `__builtin_` spelling of a C library function: a call of that
+    /// function with its ISO C prototype (GCC manual, "Other Built-in
+    /// Functions"). The module declares the function if the program does
+    /// not.
+    fn check_library_builtin(
+        &mut self,
+        expr: &mut Expr,
+        sig: crate::builtins::LibSig,
+    ) -> Result<(), Diagnostic> {
+        let (line, column) = (expr.line(), expr.column());
+        let Expr::Call { callee, args, .. } = expr else {
+            unreachable!("library builtin");
+        };
+        let name = match callee.as_ref() {
+            Expr::Var { name, .. } => name.clone(),
+            _ => unreachable!("library builtin callee"),
+        };
+        let arity = sig.params.len();
+        let argc = args.len();
+        if (sig.variadic && argc < arity) || (!sig.variadic && argc != arity) {
+            return self.err(
+                line,
+                column,
+                format!(
+                    "function '{name}' expects {}{arity} {}, found {argc}",
+                    if sig.variadic { "at least " } else { "" },
+                    if arity == 1 { "argument" } else { "arguments" },
+                ),
+            );
+        }
+        for (index, arg) in args.iter_mut().enumerate() {
+            self.check_expr(arg)?;
+            self.decay(arg)?;
+            if index < arity {
+                self.can_assign(&sig.params[index], arg)?;
+            } else {
+                self.require_scalar(arg)?;
+            }
+        }
+        let ret = sig.ret.clone();
+        if let Expr::Call { resolved, .. } = expr {
+            *resolved = Some(CallRes {
+                name: sig.name.clone(),
+                ret: ret.clone(),
+                params: sig.params.clone(),
+                variadic: sig.variadic,
+                indirect: false,
+            });
+        }
+        self.library_calls.insert(sig.name.clone(), sig);
+        expr.set_ty(ret);
+        Ok(())
+    }
+
+    /// A builtin that IR lowering expands in place: bit counting, byte
+    /// swapping, branch hints, `__builtin_trap`, `__builtin_alloca`, the
+    /// floating classification builtins, and the overflow-checking
+    /// arithmetic (GCC manual, "Other Built-in Functions" and "Built-in
+    /// Functions to Perform Arithmetic with Overflow Checking").
+    fn check_inline_builtin(
+        &mut self,
+        expr: &mut Expr,
+        name: &str,
+        inline: crate::builtins::Inline,
+    ) -> Result<(), Diagnostic> {
+        use crate::builtins::Inline;
+        let (line, column) = (expr.line(), expr.column());
+        let Expr::Call { args, .. } = expr else {
+            unreachable!("inline builtin");
+        };
+        let (min, max) = inline.arity();
+        if args.len() < min || args.len() > max {
+            let expected = if min == max {
+                format!("{min}")
+            } else {
+                format!("{min} to {max}")
+            };
+            return self.err(
+                line,
+                column,
+                format!(
+                    "{name} expects {expected} {}, found {}",
+                    if max == 1 { "argument" } else { "arguments" },
+                    args.len()
+                ),
+            );
+        }
+        for (index, arg) in args.iter_mut().enumerate() {
+            self.check_expr(arg)?;
+            self.decay(arg)?;
+            if let Some(param) = inline.param_type(index) {
+                self.can_assign(&param, arg)?;
+            }
+        }
+        match inline {
+            Inline::IsNan | Inline::IsInf | Inline::IsFinite | Inline::IsNormal => {
+                let ty = args[0].ty().expect("typed");
+                if !ty.is_float() {
+                    return self.err(
+                        args[0].line(),
+                        args[0].column(),
+                        format!("{name} requires a floating-point argument"),
+                    );
+                }
+            }
+            Inline::ReturnAddress | Inline::FrameAddress => {
+                if eval_const_expr(&args[0]).map_or(true, |value| !is_zero(&value)) {
+                    return self.err(
+                        args[0].line(),
+                        args[0].column(),
+                        format!("{name} supports only level 0"),
+                    );
+                }
+            }
+            Inline::Overflow { fixed: None, .. } => {
+                for arg in &args[..2] {
+                    if !arg.ty().is_some_and(|ty| ty.is_integer()) {
+                        return self.err(
+                            arg.line(),
+                            arg.column(),
+                            format!("operand of {name} must be an integer"),
+                        );
+                    }
+                }
+                let target = args[2].ty().expect("typed");
+                let ok = target.pointee().is_some_and(|pointee| {
+                    pointee.is_integer()
+                        && !pointee.is_const()
+                        && pointee.as_integer() != Some(TypeName::Bool)
+                });
+                if !ok {
+                    return self.err(
+                        args[2].line(),
+                        args[2].column(),
+                        format!(
+                            "result argument of {name} must be a pointer to a non-const integer other than _Bool"
+                        ),
+                    );
+                }
+            }
+            _ => {}
+        }
+        let ret = inline.result_type();
+        if let Expr::Call { resolved, .. } = expr {
+            *resolved = Some(CallRes {
+                name: name.to_string(),
+                ret: ret.clone(),
+                params: Vec::new(),
+                variadic: false,
                 indirect: false,
             });
         }
@@ -5785,7 +6113,29 @@ fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
         | Expr::VaArg { .. }
         | Expr::VaOp { .. }
         | Expr::Generic { .. }
+        | Expr::StmtExpr { .. }
         | Expr::CompoundLit { .. } => Err(ConstError::NotConst),
+        Expr::CondShort {
+            cond,
+            else_expr,
+            ty,
+            ..
+        } => {
+            let first = eval_const_expr(cond)?;
+            let value = if is_zero(&first) {
+                eval_const_expr(else_expr)?
+            } else {
+                first
+            };
+            let result = ty
+                .as_ref()
+                .and_then(CType::as_integer)
+                .ok_or(ConstError::NotConst)?;
+            Ok(CVal {
+                bits: convert_bits(value.bits, value.ty, result),
+                ty: result,
+            })
+        }
     }
 }
 
@@ -6040,48 +6390,53 @@ fn assign_slots(func: &mut FuncDef) {
 }
 
 fn number_compound(compound: &mut Compound, next: &mut u32) {
+    number_compound_in(compound, next, "%v");
+}
+
+/// Number the automatic objects in `compound` as `{prefix}{n}`.
+fn number_compound_in(compound: &mut Compound, next: &mut u32, prefix: &str) {
     for item in &mut compound.items {
-        number_stmt(item, next);
+        number_stmt(item, next, prefix);
     }
 }
 
-fn number_stmt(stmt: &mut Stmt, next: &mut u32) {
+fn number_stmt(stmt: &mut Stmt, next: &mut u32, prefix: &str) {
     match stmt {
         Stmt::Decl(decl) => {
             // `static` and `extern` are globals. Their slots are the LLVM
             // symbol, assigned while checking the declaration.
             if decl.storage == Storage::None {
                 *next += 1;
-                decl.slot = format!("%v{next}");
+                decl.slot = format!("{prefix}{next}");
             }
         }
-        Stmt::Compound(compound) => number_compound(compound, next),
+        Stmt::Compound(compound) => number_compound_in(compound, next, prefix),
         Stmt::If {
             then_stmt,
             else_stmt,
             ..
         } => {
-            number_stmt(then_stmt, next);
+            number_stmt(then_stmt, next, prefix);
             if let Some(else_stmt) = else_stmt {
-                number_stmt(else_stmt, next);
+                number_stmt(else_stmt, next, prefix);
             }
         }
-        Stmt::While { body, .. } | Stmt::Do { body, .. } => number_stmt(body, next),
+        Stmt::While { body, .. } | Stmt::Do { body, .. } => number_stmt(body, next, prefix),
         Stmt::Switch { body, .. }
         | Stmt::Case { stmt: body, .. }
         | Stmt::Default { stmt: body, .. } => {
-            number_stmt(body, next);
+            number_stmt(body, next, prefix);
         }
         Stmt::For { init, body, .. } => {
             if let ForInit::Decl(decls) = init {
                 for decl in decls {
                     *next += 1;
-                    decl.slot = format!("%v{next}");
+                    decl.slot = format!("{prefix}{next}");
                 }
             }
-            number_stmt(body, next);
+            number_stmt(body, next, prefix);
         }
-        Stmt::Label { stmt, .. } => number_stmt(stmt, next),
+        Stmt::Label { stmt, .. } => number_stmt(stmt, next, prefix),
         Stmt::FuncDecl(_)
         | Stmt::Return { .. }
         | Stmt::Expr { .. }
@@ -7773,6 +8128,11 @@ int typed = _Generic(__builtin_offsetof(struct In, c), unsigned long: 1, default
         // GCC 14 rejects these even in GNU mode, so this compiler does too.
         for source in [
             "void g(int *a, long *b) { a = b; }",
+            // Same size, different types: only signedness is relaxed.
+            "void g(long *a, long long *b) { a = b; }",
+            "void g(long long *a, unsigned long *b) { a = b; }",
+            "void g(unsigned long *a, const long long *b) { a = b; }",
+            "void g(_Bool *a, unsigned char *b) { a = b; }",
             "void g(int **a, unsigned **b) { a = b; }",
             "void g(const int **a, int **b) { a = b; }",
             "void g(int *a, double *b) { a = b; }",

@@ -325,6 +325,8 @@ struct StructBody {
     size: u64,
     align: u32,
     llvm_name: String,
+    /// See [`StructRef::set_irregular`].
+    irregular: bool,
 }
 
 impl PartialEq for StructRef {
@@ -353,6 +355,7 @@ impl StructRef {
                 size: 0,
                 align: 1,
                 llvm_name: String::new(),
+                irregular: false,
             })),
         }
     }
@@ -478,9 +481,20 @@ impl StructRef {
     /// A member is a bit-field, including a zero-width one. The LLVM type is
     /// then a byte array, the same shape as a union, because several C
     /// members share one storage unit.
+    /// The record has a bit-field, or a GNU `packed` or `aligned` layout.
+    /// Either way its LLVM type is a byte array and members are reached by
+    /// byte offset.
     pub fn has_bitfield(&self) -> bool {
-        self.fields()
-            .is_some_and(|fields| fields.iter().any(StructField::is_bitfield))
+        self.data.borrow().irregular
+            || self
+                .fields()
+                .is_some_and(|fields| fields.iter().any(StructField::is_bitfield))
+    }
+
+    /// Mark a layout that `packed` or `aligned` moved away from the natural
+    /// one.
+    pub fn set_irregular(&self) {
+        self.data.borrow_mut().irregular = true;
     }
 
     /// The last member is a flexible array (C11 6.7.2.1). `sizeof` excludes it.
@@ -540,6 +554,7 @@ pub fn layout_union(fields: &[(u64, u32)]) -> Option<(Vec<u64>, u64, u32)> {
 /// in. A normal member leaves `bit_width` as `None` and uses its own size
 /// and alignment. `named` is false for an unnamed bit-field; those occupy
 /// bits but do not increase the struct's alignment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayoutMember {
     pub size: u64,
     pub align: u32,
@@ -553,6 +568,7 @@ pub struct LayoutMember {
 /// storage unit that holds a bit-field. `bit_offset` is the absolute bit
 /// position from the start of the object (bit 0 is the least significant bit
 /// of byte 0). `bit_width` copies the input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayoutPlace {
     pub offset: u64,
     pub bit_offset: u32,
@@ -1381,7 +1397,8 @@ pub fn gnu_distinct_pointers(left: &CType, right: &CType) -> bool {
 /// the signedness of an integer type (`int *` from `unsigned *`, or plain
 /// `char` against `signed char` and `unsigned char`), or the destination
 /// pointee lacks a qualifier of the source pointee (`int *` from
-/// `const int *`, `void *` from `const int *`), or both. Only the first
+/// `const int *`, `void *` from `const int *`), or both. `long *` from
+/// `long long *` is not covered: the types differ in more than sign. Only the first
 /// level of pointee is relaxed: `int **` from `unsigned **` stays an error,
 /// as it is in GCC 14. Function pointers are not covered.
 pub fn gnu_pointer_sign_or_qual_mix(dest: &CType, src: &CType) -> bool {
@@ -1396,7 +1413,12 @@ pub fn gnu_pointer_sign_or_qual_mix(dest: &CType, src: &CType) -> bool {
         return true;
     }
     match (du.as_integer(), su.as_integer()) {
-        (Some(a), Some(b)) => a != TypeName::Bool && b != TypeName::Bool && a.size() == b.size(),
+        // Signedness is the only difference allowed: the same rank (C11
+        // 6.3.1.1) names a signed type and its unsigned counterpart, and
+        // plain `char` shares the rank of both character types. `long` and
+        // `long long` have the same size but different ranks, so they stay
+        // incompatible.
+        (Some(a), Some(b)) => a != TypeName::Bool && b != TypeName::Bool && a.rank() == b.rank(),
         _ => false,
     }
 }
@@ -2014,6 +2036,28 @@ pub enum Expr {
         column: usize,
         ty: Option<CType>,
     },
+    /// A GNU statement expression `({ ... })` (GCC manual, "Statements and
+    /// Declarations in Expressions"). Its value is that of the last item when
+    /// that is an expression statement; otherwise it has type `void`.
+    /// `value_ty` is the parser's view of that type, for `typeof` and
+    /// `sizeof` before semantic analysis.
+    StmtExpr {
+        body: Box<Compound>,
+        value_ty: Option<CType>,
+        line: usize,
+        column: usize,
+        ty: Option<CType>,
+    },
+    /// The GNU conditional with the middle operand omitted, `cond ?: else`
+    /// (GCC manual, "Conditionals with Omitted Operands"). `cond` is
+    /// evaluated once; when it is nonzero it is also the result.
+    CondShort {
+        cond: Box<Expr>,
+        else_expr: Box<Expr>,
+        line: usize,
+        column: usize,
+        ty: Option<CType>,
+    },
 }
 
 /// One association of a generic selection. `ty` is `None` for `default`.
@@ -2269,7 +2313,9 @@ impl Expr {
             | Expr::VaArg { line, .. }
             | Expr::VaOp { line, .. }
             | Expr::Generic { line, .. }
-            | Expr::CompoundLit { line, .. } => *line,
+            | Expr::CompoundLit { line, .. }
+            | Expr::StmtExpr { line, .. }
+            | Expr::CondShort { line, .. } => *line,
         }
     }
 
@@ -2295,7 +2341,9 @@ impl Expr {
             | Expr::VaArg { column, .. }
             | Expr::VaOp { column, .. }
             | Expr::Generic { column, .. }
-            | Expr::CompoundLit { column, .. } => *column,
+            | Expr::CompoundLit { column, .. }
+            | Expr::StmtExpr { column, .. }
+            | Expr::CondShort { column, .. } => *column,
         }
     }
 
@@ -2321,7 +2369,9 @@ impl Expr {
             | Expr::VaArg { ty, .. }
             | Expr::VaOp { ty, .. }
             | Expr::Generic { ty, .. }
-            | Expr::CompoundLit { ty, .. } => ty.clone(),
+            | Expr::CompoundLit { ty, .. }
+            | Expr::StmtExpr { ty, .. }
+            | Expr::CondShort { ty, .. } => ty.clone(),
         }
     }
 
@@ -2347,7 +2397,9 @@ impl Expr {
             | Expr::VaArg { ty: slot, .. }
             | Expr::VaOp { ty: slot, .. }
             | Expr::Generic { ty: slot, .. }
-            | Expr::CompoundLit { ty: slot, .. } => *slot = Some(ty),
+            | Expr::CompoundLit { ty: slot, .. }
+            | Expr::StmtExpr { ty: slot, .. }
+            | Expr::CondShort { ty: slot, .. } => *slot = Some(ty),
         }
     }
 
@@ -2392,6 +2444,9 @@ pub struct VarDecl {
     pub line: usize,
     pub column: usize,
     pub slot: String,
+    /// Alignment from a GNU `aligned` attribute, when it is stricter than
+    /// the type's own.
+    pub align: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -2467,10 +2522,14 @@ pub enum Stmt {
     /// `case` constant-expression `:` statement.
     ///
     /// `value` is that constant converted to the enclosing switch's promoted
-    /// type. Semantic analysis fills it in.
+    /// type. Semantic analysis fills it in. `high` is the upper bound of a
+    /// GNU case range `case low ... high:` (GCC manual, "Case Ranges"), and
+    /// `high_value` its converted value.
     Case {
         expr: Expr,
         value: Option<u64>,
+        high: Option<Expr>,
+        high_value: Option<u64>,
         stmt: Box<Stmt>,
         line: usize,
         column: usize,
@@ -2571,6 +2630,78 @@ pub struct IrGlobal {
     /// `None` is an external declaration. `Some` is a definition, including
     /// a tentative definition completed as zero.
     pub init: Option<ConstInit>,
+    /// GNU variable attributes that change the emitted global.
+    pub attrs: VarAttrs,
+}
+
+/// GNU function attributes that change the IR (GCC manual, "Common
+/// Function Attributes"). Every declaration of the function contributes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FnAttrs {
+    pub noreturn: bool,
+    pub always_inline: bool,
+    pub noinline: bool,
+    pub cold: bool,
+    pub hot: bool,
+    /// `const`: no memory is read or written.
+    pub const_fn: bool,
+    /// `pure`: memory is only read.
+    pub pure: bool,
+    pub weak: bool,
+    pub used: bool,
+    pub section: Option<String>,
+    /// `deprecated`, with its optional message. A call warns.
+    pub deprecated: Option<String>,
+    /// Run before `main` (`constructor`) or after it returns
+    /// (`destructor`).
+    pub constructor: bool,
+    pub destructor: bool,
+}
+
+impl FnAttrs {
+    pub fn merge(&mut self, other: &FnAttrs) {
+        self.noreturn |= other.noreturn;
+        self.always_inline |= other.always_inline;
+        self.noinline |= other.noinline;
+        self.cold |= other.cold;
+        self.hot |= other.hot;
+        self.const_fn |= other.const_fn;
+        self.pure |= other.pure;
+        self.weak |= other.weak;
+        self.used |= other.used;
+        if other.section.is_some() {
+            self.section = other.section.clone();
+        }
+        if other.deprecated.is_some() {
+            self.deprecated = other.deprecated.clone();
+        }
+        self.constructor |= other.constructor;
+        self.destructor |= other.destructor;
+    }
+}
+
+/// GNU variable attributes that change the IR (GCC manual, "Common
+/// Variable Attributes").
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VarAttrs {
+    /// `aligned(N)`: the object is at least this aligned.
+    pub align: Option<u32>,
+    pub section: Option<String>,
+    pub weak: bool,
+    pub used: bool,
+}
+
+impl VarAttrs {
+    pub fn merge(&mut self, other: &VarAttrs) {
+        if let Some(align) = other.align {
+            self.align = Some(self.align.map_or(align, |old| old.max(align)));
+        }
+        if other.section.is_some() {
+            self.section = other.section.clone();
+        }
+        self.weak |= other.weak;
+        self.used |= other.used;
+    }
 }
 
 impl IrGlobal {
@@ -2619,6 +2750,14 @@ pub struct TranslationUnit {
     /// Completed struct types, in the order they were defined. An incomplete
     /// struct that is never completed is not listed; a pointer to it is `ptr`.
     pub structs: Vec<StructRef>,
+    /// GNU function attributes by linker symbol, merged over every
+    /// declaration.
+    pub fn_attrs: std::collections::HashMap<String, FnAttrs>,
+    /// GNU attributes of file-scope objects by name, merged over every
+    /// declaration.
+    pub var_attrs: std::collections::HashMap<String, VarAttrs>,
+    /// Warnings from parsing (unknown attributes, for example).
+    pub warnings: Vec<crate::diag::Warning>,
 }
 
 pub fn dump(unit: &TranslationUnit) -> String {
@@ -2791,9 +2930,15 @@ fn dump_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
             put(out, indent + 1, "body");
             dump_stmt(out, body, indent + 2);
         }
-        Stmt::Case { expr, stmt, .. } => {
+        Stmt::Case {
+            expr, high, stmt, ..
+        } => {
             put(out, indent, "case");
             dump_expr(out, expr, indent + 1);
+            if let Some(high) = high {
+                put(out, indent, "...");
+                dump_expr(out, high, indent + 1);
+            }
             dump_stmt(out, stmt, indent + 1);
         }
         Stmt::Default { stmt, .. } => {
@@ -2884,6 +3029,17 @@ fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
             dump_expr(out, cond, indent + 1);
             dump_expr(out, then_expr, indent + 1);
             dump_expr(out, else_expr, indent + 1);
+        }
+        Expr::CondShort {
+            cond, else_expr, ..
+        } => {
+            put(out, indent, "?:");
+            dump_expr(out, cond, indent + 1);
+            dump_expr(out, else_expr, indent + 1);
+        }
+        Expr::StmtExpr { body, .. } => {
+            put(out, indent, "({})");
+            dump_compound(out, body, indent + 1);
         }
         Expr::Comma { left, right, .. } => {
             put(out, indent, ",");
