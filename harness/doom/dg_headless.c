@@ -14,6 +14,10 @@
  *   written to the log as
  *   "<frame> <hash>". After --frames frames the log gets a final
  *   "total <frames> <hash-of-hashes>" line and the program exits 0.
+ * - When the demo ends first, -timedemo reports "timed N gametics" through
+ *   I_Error, which exits with status 255. An atexit handler writes the
+ *   same "total" line then, so a demo played to its natural end is
+ *   compared in full.
  *
  * Harness options are removed from argv before doomgeneric sees it:
  *   --frames N   stop after N frames (default 2100)
@@ -32,6 +36,19 @@ static long frames_wanted = 2100;
 static long frames_done;
 static FILE *hash_log;
 static uint64_t total_hash = 0xcbf29ce484222325u;
+static int total_written;
+
+static void write_total(void)
+{
+    if (total_written || hash_log == NULL)
+        return;
+    total_written = 1;
+    fprintf(hash_log, "total %ld %016llx\n", frames_done,
+            (unsigned long long)total_hash);
+    fflush(hash_log);
+    if (hash_log != stdout)
+        fclose(hash_log);
+}
 
 static uint64_t fnv1a_step(uint64_t h, uint32_t word)
 {
@@ -57,11 +74,7 @@ void DG_DrawFrame(void)
     total_hash = fnv1a_step(total_hash, (uint32_t)(h >> 32));
     fprintf(hash_log, "%ld %016llx\n", frames_done, (unsigned long long)h);
     if (frames_done >= frames_wanted) {
-        fprintf(hash_log, "total %ld %016llx\n", frames_done,
-                (unsigned long long)total_hash);
-        fflush(hash_log);
-        if (hash_log != stdout)
-            fclose(hash_log);
+        write_total();
         exit(0);
     }
 }
@@ -120,6 +133,7 @@ int main(int argc, char **argv)
         }
     }
 
+    atexit(write_total);
     doomgeneric_Create(n, rest);
     for (;;)
         doomgeneric_Tick();

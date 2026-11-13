@@ -16,11 +16,19 @@ case "$DEST" in
         ;;
 esac
 
+# A cached tree is accepted only if it is still the exact pinned checkout:
+# HEAD at the pin and no tracked file changed. Anything else is fetched
+# again, so the harness never compiles a tree that differs from the pin.
 if [ -f "$DEST/.pin" ] \
     && [ "$(cat "$DEST/.pin")" = "$PIN" ] \
-    && [ -f "$DEST/doomgeneric/d_main.c" ]; then
+    && [ -f "$DEST/doomgeneric/d_main.c" ] \
+    && [ "$(git -C "$DEST" rev-parse --verify -q HEAD 2>/dev/null)" = "$PIN" ] \
+    && git -C "$DEST" diff --quiet HEAD -- 2>/dev/null; then
     echo "doomgeneric already at $PIN"
     exit 0
+fi
+if [ -d "$DEST" ]; then
+    echo "doomgeneric cache is not the pinned checkout; fetching again" >&2
 fi
 
 rm -rf "$DEST"
