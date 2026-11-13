@@ -1,0 +1,1212 @@
+{
+  "meta": {
+    "date": "2026-11-13",
+    "compiler_commit": "8896153",
+    "doomgeneric_pin": "e257a09527062bfb986b6e5e0780839b6cbd5b71",
+    "wad": "freedoom1.wad",
+    "wad_sha256": "7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d",
+    "clang": "Debian clang version 19.1.7 (3+b1)",
+    "demo": "demo1"
+  },
+  "frames": 7100,
+  "jobs": 1,
+  "files": 82,
+  "levels": [
+    {
+      "opt": "O0",
+      "files": [
+        {
+          "file": "dummy.c",
+          "frontend_seconds": 0.0167716180003481,
+          "backend_seconds": 0.016095677005068865,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "am_map.c",
+          "frontend_seconds": 0.12678570699790725,
+          "backend_seconds": 0.030746411001018714,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "doomdef.c",
+          "frontend_seconds": 0.038094868999905884,
+          "backend_seconds": 0.020874462999927346,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "doomstat.c",
+          "frontend_seconds": 0.06119947199476883,
+          "backend_seconds": 0.022024051002517808,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "dstrings.c",
+          "frontend_seconds": 0.002571300996351056,
+          "backend_seconds": 0.01837477799563203,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "d_event.c",
+          "frontend_seconds": 0.04568903199833585,
+          "backend_seconds": 0.020390229001350235,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "d_items.c",
+          "frontend_seconds": 0.04198860599717591,
+          "backend_seconds": 0.017704961996059865,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "d_iwad.c",
+          "frontend_seconds": 0.09710352499678265,
+          "backend_seconds": 0.023617241000465583,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "d_loop.c",
+          "frontend_seconds": 0.07605195100040874,
+          "backend_seconds": 0.025855118001345545,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "d_main.c",
+          "frontend_seconds": 0.17465269400418038,
+          "backend_seconds": 0.03335768800025107,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "d_mode.c",
+          "frontend_seconds": 0.019002357999852393,
+          "backend_seconds": 0.028517171995190438,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "d_net.c",
+          "frontend_seconds": 0.12955702999897767,
+          "backend_seconds": 0.025989840003603604,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "f_finale.c",
+          "frontend_seconds": 0.10448200999962864,
+          "backend_seconds": 0.028463439004553948,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "f_wipe.c",
+          "frontend_seconds": 0.045012745998974424,
+          "backend_seconds": 0.02124020399787696,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "g_game.c",
+          "frontend_seconds": 0.27355698800238315,
+          "backend_seconds": 0.037659458997950424,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "hu_lib.c",
+          "frontend_seconds": 0.07650925499910954,
+          "backend_seconds": 0.034514085004047956,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "hu_stuff.c",
+          "frontend_seconds": 0.09316968000348425,
+          "backend_seconds": 0.027472610003314912,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "info.c",
+          "frontend_seconds": 0.2297874040013994,
+          "backend_seconds": 0.03020716700120829,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_cdmus.c",
+          "frontend_seconds": 0.031059379994985647,
+          "backend_seconds": 0.020301459000620525,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_endoom.c",
+          "frontend_seconds": 0.03993787900253665,
+          "backend_seconds": 0.019818811997538432,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_joystick.c",
+          "frontend_seconds": 0.06923498199466849,
+          "backend_seconds": 0.020992894998926204,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_scale.c",
+          "frontend_seconds": 0.08473288700042758,
+          "backend_seconds": 0.02878864700323902,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_sound.c",
+          "frontend_seconds": 0.05946532199595822,
+          "backend_seconds": 0.04986304400517838,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_system.c",
+          "frontend_seconds": 0.10320875799516216,
+          "backend_seconds": 0.025035483995452523,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_timer.c",
+          "frontend_seconds": 0.04728731099748984,
+          "backend_seconds": 0.020599250005034264,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "memio.c",
+          "frontend_seconds": 0.06267435000336263,
+          "backend_seconds": 0.021246447002340574,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_argv.c",
+          "frontend_seconds": 0.0750327119967551,
+          "backend_seconds": 0.02229547599563375,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_bbox.c",
+          "frontend_seconds": 0.0018729479998000897,
+          "backend_seconds": 0.01816923599835718,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_cheat.c",
+          "frontend_seconds": 0.02380598300078418,
+          "backend_seconds": 0.017506725002021994,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_config.c",
+          "frontend_seconds": 0.103955805003352,
+          "backend_seconds": 0.026195389000349678,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_controls.c",
+          "frontend_seconds": 0.04072500199981732,
+          "backend_seconds": 0.019341160004842095,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_fixed.c",
+          "frontend_seconds": 0.04710142099793302,
+          "backend_seconds": 0.019194906002667267,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_menu.c",
+          "frontend_seconds": 0.15780697100126417,
+          "backend_seconds": 0.032971573004033417,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_misc.c",
+          "frontend_seconds": 0.09581901699857553,
+          "backend_seconds": 0.026114062005945016,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_random.c",
+          "frontend_seconds": 0.0021833710052305833,
+          "backend_seconds": 0.018056659995636437,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_ceilng.c",
+          "frontend_seconds": 0.07570338399818866,
+          "backend_seconds": 0.024230711998825427,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_doors.c",
+          "frontend_seconds": 0.08221100299851969,
+          "backend_seconds": 0.025062681997951586,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_enemy.c",
+          "frontend_seconds": 0.12610786000004737,
+          "backend_seconds": 0.03353498599608429,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_floor.c",
+          "frontend_seconds": 0.07596289600041928,
+          "backend_seconds": 0.025261501999921165,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_inter.c",
+          "frontend_seconds": 0.08357089700439246,
+          "backend_seconds": 0.02749772900278913,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_lights.c",
+          "frontend_seconds": 0.06660029400518397,
+          "backend_seconds": 0.023132253001676872,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_map.c",
+          "frontend_seconds": 0.12952302800113102,
+          "backend_seconds": 0.03014167200308293,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_maputl.c",
+          "frontend_seconds": 0.10675905000243802,
+          "backend_seconds": 0.027537747999303974,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_mobj.c",
+          "frontend_seconds": 0.08720816999993986,
+          "backend_seconds": 0.026680609997129068,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_plats.c",
+          "frontend_seconds": 0.07666086300014285,
+          "backend_seconds": 0.024817723999149166,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_pspr.c",
+          "frontend_seconds": 0.0771922470012214,
+          "backend_seconds": 0.025293148995842785,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_saveg.c",
+          "frontend_seconds": 0.14091736800037324,
+          "backend_seconds": 0.03127567299816292,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_setup.c",
+          "frontend_seconds": 0.19501966000098037,
+          "backend_seconds": 0.030248773997300304,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_sight.c",
+          "frontend_seconds": 0.07009927000035532,
+          "backend_seconds": 0.025639102997956797,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_spec.c",
+          "frontend_seconds": 0.1323388189994148,
+          "backend_seconds": 0.03106663899961859,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_switch.c",
+          "frontend_seconds": 0.0824838619955699,
+          "backend_seconds": 0.026282945997081697,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_telept.c",
+          "frontend_seconds": 0.07550629699835554,
+          "backend_seconds": 0.02358284900401486,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_tick.c",
+          "frontend_seconds": 0.07190913000522414,
+          "backend_seconds": 0.024019206000957638,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_user.c",
+          "frontend_seconds": 0.06790811300015775,
+          "backend_seconds": 0.023884248999820556,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "r_bsp.c",
+          "frontend_seconds": 0.06339005000336329,
+          "backend_seconds": 0.023005781004030723,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "r_data.c",
+          "frontend_seconds": 0.09564760699868202,
+          "backend_seconds": 0.026012000998889562,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "r_draw.c",
+          "frontend_seconds": 0.08372377199702896,
+          "backend_seconds": 0.024581494995800313,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "r_main.c",
+          "frontend_seconds": 0.18198998599837068,
+          "backend_seconds": 0.029243042001326103,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "r_plane.c",
+          "frontend_seconds": 0.1089899910002714,
+          "backend_seconds": 0.024084384000161663,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "r_segs.c",
+          "frontend_seconds": 0.10396796699933475,
+          "backend_seconds": 0.025087513000471517,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "r_sky.c",
+          "frontend_seconds": 0.0603229670014116,
+          "backend_seconds": 0.020367583994811866,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "r_things.c",
+          "frontend_seconds": 0.12175489199580625,
+          "backend_seconds": 0.029590946003736462,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "sha1.c",
+          "frontend_seconds": 0.09475366699916776,
+          "backend_seconds": 0.03633795699715847,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "sounds.c",
+          "frontend_seconds": 0.06057780900300713,
+          "backend_seconds": 0.022131174999231007,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "statdump.c",
+          "frontend_seconds": 0.09131824300129665,
+          "backend_seconds": 0.023343893000856042,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "st_lib.c",
+          "frontend_seconds": 0.08197952199407155,
+          "backend_seconds": 0.022222419996978715,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "st_stuff.c",
+          "frontend_seconds": 0.11539295900001889,
+          "backend_seconds": 0.027101106999907643,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "s_sound.c",
+          "frontend_seconds": 0.11889395100297406,
+          "backend_seconds": 0.0269465629971819,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "tables.c",
+          "frontend_seconds": 0.13228281100600725,
+          "backend_seconds": 0.024525911998352967,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "v_video.c",
+          "frontend_seconds": 0.15497996500198497,
+          "backend_seconds": 0.02800252699671546,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "wi_stuff.c",
+          "frontend_seconds": 0.11701404699851992,
+          "backend_seconds": 0.03087675599817885,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "w_checksum.c",
+          "frontend_seconds": 0.07579605400678702,
+          "backend_seconds": 0.02374921400041785,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "w_file.c",
+          "frontend_seconds": 0.03648908300237963,
+          "backend_seconds": 0.025805038996622898,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "w_main.c",
+          "frontend_seconds": 0.038690640998538584,
+          "backend_seconds": 0.019352458999492228,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "w_wad.c",
+          "frontend_seconds": 0.09159394800371956,
+          "backend_seconds": 0.021808591001899913,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "z_zone.c",
+          "frontend_seconds": 0.037369237004895695,
+          "backend_seconds": 0.020179292994725984,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "w_file_stdc.c",
+          "frontend_seconds": 0.0430573519988684,
+          "backend_seconds": 0.020066600998688955,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_input.c",
+          "frontend_seconds": 0.18418777299666544,
+          "backend_seconds": 0.02584708100039279,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_video.c",
+          "frontend_seconds": 0.08968386500055203,
+          "backend_seconds": 0.02427946199895814,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "doomgeneric.c",
+          "frontend_seconds": 0.06204350999905728,
+          "backend_seconds": 0.020238458004314452,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "dg_headless.c",
+          "frontend_seconds": 0.06517120599892223,
+          "backend_seconds": 0.021913728000072297,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "dg_alloc.c",
+          "frontend_seconds": 0.03502501500042854,
+          "backend_seconds": 0.018903691998275463,
+          "status": "ok",
+          "stderr": ""
+        }
+      ],
+      "clang_compile_seconds": 2.542792066000402,
+      "ours_frontend_seconds": 7.0676604460022645,
+      "ours_compile_seconds": 9.132051144995785,
+      "failed_files": [],
+      "clang_run_seconds": 7.959629814002255,
+      "reference_total": "572516d0c710de2b",
+      "build": "full",
+      "link_ok": true,
+      "ours_run_seconds": 8.121684070996707,
+      "run_rc": 0,
+      "run_stderr": "",
+      "total": "572516d0c710de2b",
+      "compare": {
+        "reference_frames": 7100,
+        "frames": 7100,
+        "matching": 7100,
+        "first_mismatch": null
+      },
+      "match": true
+    },
+    {
+      "opt": "O2",
+      "files": [
+        {
+          "file": "dummy.c",
+          "frontend_seconds": 0.01770859099633526,
+          "backend_seconds": 0.01754374400479719,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "am_map.c",
+          "frontend_seconds": 0.1298224569982267,
+          "backend_seconds": 0.11708853999880375,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "doomdef.c",
+          "frontend_seconds": 0.03848305100109428,
+          "backend_seconds": 0.020797372002562042,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "doomstat.c",
+          "frontend_seconds": 0.05660240099678049,
+          "backend_seconds": 0.021154690002731513,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "dstrings.c",
+          "frontend_seconds": 0.0026465720002306625,
+          "backend_seconds": 0.017893233998620417,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "d_event.c",
+          "frontend_seconds": 0.05263926499901572,
+          "backend_seconds": 0.023150322995206807,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "d_items.c",
+          "frontend_seconds": 0.04352442899835296,
+          "backend_seconds": 0.017478582994954195,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "d_iwad.c",
+          "frontend_seconds": 0.09427751800103579,
+          "backend_seconds": 0.049852534000820015,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "d_loop.c",
+          "frontend_seconds": 0.07832541099924129,
+          "backend_seconds": 0.058744868998473976,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "d_main.c",
+          "frontend_seconds": 0.15442072600126266,
+          "backend_seconds": 0.09356072600348853,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "d_mode.c",
+          "frontend_seconds": 0.018537659001594875,
+          "backend_seconds": 0.03424597599951085,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "d_net.c",
+          "frontend_seconds": 0.11121779099630658,
+          "backend_seconds": 0.03864243799762335,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "f_finale.c",
+          "frontend_seconds": 0.09978256300382782,
+          "backend_seconds": 0.07762692300457275,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "f_wipe.c",
+          "frontend_seconds": 0.0436312009987887,
+          "backend_seconds": 0.07070281099731801,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "g_game.c",
+          "frontend_seconds": 0.2761257050005952,
+          "backend_seconds": 0.16316258800361538,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "hu_lib.c",
+          "frontend_seconds": 0.07533941700239666,
+          "backend_seconds": 0.06170065700280247,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "hu_stuff.c",
+          "frontend_seconds": 0.09154690200375626,
+          "backend_seconds": 0.05348804799723439,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "info.c",
+          "frontend_seconds": 0.23214305299916305,
+          "backend_seconds": 0.029009851001319475,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_cdmus.c",
+          "frontend_seconds": 0.030668528997921385,
+          "backend_seconds": 0.02206164399831323,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_endoom.c",
+          "frontend_seconds": 0.037252421003358904,
+          "backend_seconds": 0.018948750002891757,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_joystick.c",
+          "frontend_seconds": 0.07400600999972085,
+          "backend_seconds": 0.026249189999361988,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_scale.c",
+          "frontend_seconds": 0.08659234700462548,
+          "backend_seconds": 0.42540509899845347,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_sound.c",
+          "frontend_seconds": 0.0664085980024538,
+          "backend_seconds": 0.02928033799980767,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_system.c",
+          "frontend_seconds": 0.09887051700206939,
+          "backend_seconds": 0.04925179800193291,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_timer.c",
+          "frontend_seconds": 0.04509673500433564,
+          "backend_seconds": 0.025739651995536406,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "memio.c",
+          "frontend_seconds": 0.05922722000104841,
+          "backend_seconds": 0.032462349998240825,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_argv.c",
+          "frontend_seconds": 0.07165607500064652,
+          "backend_seconds": 0.03072988200437976,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_bbox.c",
+          "frontend_seconds": 0.0018061379960272461,
+          "backend_seconds": 0.02181110400124453,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_cheat.c",
+          "frontend_seconds": 0.02472090099763591,
+          "backend_seconds": 0.02223064399731811,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_config.c",
+          "frontend_seconds": 0.10270538499753457,
+          "backend_seconds": 0.048844567994819954,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_controls.c",
+          "frontend_seconds": 0.03865480699460022,
+          "backend_seconds": 0.03024103400093736,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_fixed.c",
+          "frontend_seconds": 0.04336140899977181,
+          "backend_seconds": 0.02200529100082349,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_menu.c",
+          "frontend_seconds": 0.1509202609959175,
+          "backend_seconds": 0.12993927599745803,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_misc.c",
+          "frontend_seconds": 0.10353706999740098,
+          "backend_seconds": 0.05606226799864089,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "m_random.c",
+          "frontend_seconds": 0.0022802530002081767,
+          "backend_seconds": 0.022968369004956912,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_ceilng.c",
+          "frontend_seconds": 0.07859076099703088,
+          "backend_seconds": 0.04961443800129928,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_doors.c",
+          "frontend_seconds": 0.08925801899749786,
+          "backend_seconds": 0.040252309998322744,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_enemy.c",
+          "frontend_seconds": 0.13491856800101232,
+          "backend_seconds": 0.15988702500180807,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_floor.c",
+          "frontend_seconds": 0.08174171100108651,
+          "backend_seconds": 0.049289100999885704,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_inter.c",
+          "frontend_seconds": 0.08837587499874644,
+          "backend_seconds": 0.06423616500251228,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_lights.c",
+          "frontend_seconds": 0.06938417100172956,
+          "backend_seconds": 0.042184796002402436,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_map.c",
+          "frontend_seconds": 0.12757977600267623,
+          "backend_seconds": 0.09300917600194225,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_maputl.c",
+          "frontend_seconds": 0.10484554299910087,
+          "backend_seconds": 0.08733649799978593,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_mobj.c",
+          "frontend_seconds": 0.08931144399684854,
+          "backend_seconds": 0.0835491190009634,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_plats.c",
+          "frontend_seconds": 0.07802514200011501,
+          "backend_seconds": 0.04717751899443101,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_pspr.c",
+          "frontend_seconds": 0.07687892099784222,
+          "backend_seconds": 0.09550152999872807,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_saveg.c",
+          "frontend_seconds": 0.145650372003729,
+          "backend_seconds": 0.15013796600396745,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_setup.c",
+          "frontend_seconds": 0.1960765729963896,
+          "backend_seconds": 0.09313341699453304,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_sight.c",
+          "frontend_seconds": 0.0722562189985183,
+          "backend_seconds": 0.051465103002556134,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_spec.c",
+          "frontend_seconds": 0.1296824379969621,
+          "backend_seconds": 0.08810927599552087,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_switch.c",
+          "frontend_seconds": 0.08301549400493968,
+          "backend_seconds": 0.05103734000294935,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_telept.c",
+          "frontend_seconds": 0.06609291699714959,
+          "backend_seconds": 0.029870411999581847,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_tick.c",
+          "frontend_seconds": 0.07166519400198013,
+          "backend_seconds": 0.030052684000111185,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "p_user.c",
+          "frontend_seconds": 0.07157302599807736,
+          "backend_seconds": 0.04295314300543396,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "r_bsp.c",
+          "frontend_seconds": 0.06748337900353363,
+          "backend_seconds": 0.05249364300107118,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "r_data.c",
+          "frontend_seconds": 0.10043367699836381,
+          "backend_seconds": 0.08613340000010794,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "r_draw.c",
+          "frontend_seconds": 0.08856544299487723,
+          "backend_seconds": 0.08765050199872348,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "r_main.c",
+          "frontend_seconds": 0.192745289998129,
+          "backend_seconds": 0.07906466900021769,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "r_plane.c",
+          "frontend_seconds": 0.13173708399699535,
+          "backend_seconds": 0.0605749440001091,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "r_segs.c",
+          "frontend_seconds": 0.10878652099927422,
+          "backend_seconds": 0.07601046600029804,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "r_sky.c",
+          "frontend_seconds": 0.06076772400410846,
+          "backend_seconds": 0.02427970600547269,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "r_things.c",
+          "frontend_seconds": 0.1229583719978109,
+          "backend_seconds": 0.09122237900010077,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "sha1.c",
+          "frontend_seconds": 0.09920313800103031,
+          "backend_seconds": 0.1145617799993488,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "sounds.c",
+          "frontend_seconds": 0.0635154510018765,
+          "backend_seconds": 0.02706902800127864,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "statdump.c",
+          "frontend_seconds": 0.0918168339994736,
+          "backend_seconds": 0.027981856001133565,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "st_lib.c",
+          "frontend_seconds": 0.09039716199913528,
+          "backend_seconds": 0.04560368700185791,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "st_stuff.c",
+          "frontend_seconds": 0.11734876399714267,
+          "backend_seconds": 0.08960048600420123,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "s_sound.c",
+          "frontend_seconds": 0.12335279599938076,
+          "backend_seconds": 0.07268475599994417,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "tables.c",
+          "frontend_seconds": 0.13265030500042485,
+          "backend_seconds": 0.028637755996896885,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "v_video.c",
+          "frontend_seconds": 0.15898905399808427,
+          "backend_seconds": 0.11753020500327693,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "wi_stuff.c",
+          "frontend_seconds": 0.12242675800371217,
+          "backend_seconds": 0.19588400200154865,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "w_checksum.c",
+          "frontend_seconds": 0.0760956369995256,
+          "backend_seconds": 0.030761597998207435,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "w_file.c",
+          "frontend_seconds": 0.035819967997667845,
+          "backend_seconds": 0.02311969400034286,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "w_main.c",
+          "frontend_seconds": 0.03810605200123973,
+          "backend_seconds": 0.02324057900113985,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "w_wad.c",
+          "frontend_seconds": 0.08911188400088577,
+          "backend_seconds": 0.05632355800480582,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "z_zone.c",
+          "frontend_seconds": 0.03684126999723958,
+          "backend_seconds": 0.044617846004257444,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "w_file_stdc.c",
+          "frontend_seconds": 0.04279609100194648,
+          "backend_seconds": 0.024215787001594435,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_input.c",
+          "frontend_seconds": 0.18384018699725857,
+          "backend_seconds": 0.03422669699648395,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "i_video.c",
+          "frontend_seconds": 0.08854934999544639,
+          "backend_seconds": 0.05089281799882883,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "doomgeneric.c",
+          "frontend_seconds": 0.059868882002774626,
+          "backend_seconds": 0.024751266006205697,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "dg_headless.c",
+          "frontend_seconds": 0.06361288499465445,
+          "backend_seconds": 0.03378014800546225,
+          "status": "ok",
+          "stderr": ""
+        },
+        {
+          "file": "dg_alloc.c",
+          "frontend_seconds": 0.034548442003142554,
+          "backend_seconds": 0.02879892900091363,
+          "status": "ok",
+          "stderr": ""
+        }
+      ],
+      "clang_compile_seconds": 5.488201585998468,
+      "ours_frontend_seconds": 7.1318299519698485,
+      "ours_compile_seconds": 12.112414319009986,
+      "failed_files": [],
+      "clang_run_seconds": 4.315630606994091,
+      "reference_total": "572516d0c710de2b",
+      "build": "full",
+      "link_ok": true,
+      "ours_run_seconds": 4.12085987500177,
+      "run_rc": 0,
+      "run_stderr": "",
+      "total": "572516d0c710de2b",
+      "compare": {
+        "reference_frames": 7100,
+        "frames": 7100,
+        "matching": 7100,
+        "first_mismatch": null
+      },
+      "match": true
+    }
+  ]
+}

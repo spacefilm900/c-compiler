@@ -57,15 +57,20 @@ python3 harness/run_tests.py
 
 `cargo test` runs the lexer, parser, diagnostic, and IR unit tests, and compares every `tests/*.c` program with Clang. `harness/run_tests.py` is the project differential runner: it compiles each `tests/*.c` with this compiler and with Clang, links both, and compares exit status, stdout, and stderr.
 
-The external suites (Csmith, One True AWK, the AWK Builder suites, and `gcc.c-torture/execute`) and the performance script are described in [tests/external/README.md](tests/external/README.md) and [STATUS.md](STATUS.md).
+The external suites (Csmith, One True AWK, the AWK Builder suites, `gcc.c-torture/execute`, and DOOM) and the performance script are described in [tests/external/README.md](tests/external/README.md) and [STATUS.md](STATUS.md).
 
 ```sh
 make csmith
 make otawk
 make torture
+make doom
 make perf
 make awk-extra
 ```
+
+### Big programs
+
+DOOM is the first real program. `make doom` fetches [doomgeneric](https://github.com/ozkl/doomgeneric) at a pinned commit and the free [Freedoom](https://freedoom.github.io/) game data, builds DOOM twice (with this compiler and with Clang), plays the same recorded demo in both with no window, and checks that every frame is identical. It builds with this compiler alone and all 7,100 frames of the demo match Clang at `-O0` and `-O2`. The per-program scorecards are in [reports/doom/](reports/doom/): `baseline.md` is the first run, kept unchanged, and `scorecard.md` is the current one.
 
 On the machine where system `cargo` is Rust 1.85.1 and has no clippy component, the clippy check that passed was:
 
@@ -157,6 +162,8 @@ The parser or checker rejects variable-length arrays, a `static` or `extern` dec
 - `build/compiler` — release binary produced by `make` (not committed)
 - `tests/` — C programs for the differential harness; `tests/inc/` holds headers those programs include
 - `harness/run_tests.py` — Clang oracle
+- `harness/run_doom.py`, `harness/doom/` — DOOM harness and its headless backend
+- `reports/` — scorecards and campaign reports (`reports/doom/` for DOOM)
 - `PLAN.md` — staged plan (unchanged starter plan)
 - `STATUS.md` — what this milestone actually does
 - `DESIGN.md` — design decisions
@@ -164,4 +171,4 @@ The parser or checker rejects variable-length arrays, a `static` or `extern` dec
 
 ## Licence
 
-The compiler is MIT (see [LICENSE](LICENSE)). The Writing a C Compiler test suite is third-party (MIT, Copyright (c) 2023 Nora Sandler), downloaded at a pinned commit and not stored in this repo (see [tests/external/README.md](tests/external/README.md)).
+The compiler is MIT (see [LICENSE](LICENSE)). The Writing a C Compiler test suite is third-party (MIT, Copyright (c) 2023 Nora Sandler), downloaded at a pinned commit and not stored in this repo (see [tests/external/README.md](tests/external/README.md)). So are doomgeneric (GPL-2.0) and the Freedoom game data (BSD), which are test inputs only.
