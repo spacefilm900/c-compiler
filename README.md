@@ -70,7 +70,7 @@ make awk-extra
 
 ### Big programs
 
-DOOM is the first real program. `make doom` fetches [doomgeneric](https://github.com/ozkl/doomgeneric) at a pinned commit and the free [Freedoom](https://freedoom.github.io/) game data, builds DOOM twice (with this compiler and with Clang), plays the same recorded demo in both with no window, and checks that every frame is identical. It builds with this compiler alone and all 7,100 frames of the demo match Clang at `-O0` and `-O2`. The per-program scorecards are in [reports/doom/](reports/doom/): `baseline.md` is the first run, kept unchanged, and `scorecard.md` is the current one.
+DOOM is the first real program. `make doom` fetches [doomgeneric](https://github.com/ozkl/doomgeneric) at a pinned commit and the free [Freedoom](https://freedoom.github.io/) game data, builds DOOM twice (with this compiler and with Clang), plays the same recorded demos in both with no window, and checks that every frame is identical. It builds with this compiler alone, and all eight Freedoom demos (four in each of `freedoom1.wad` and `freedoom2.wad`, 39,209 frames) match Clang frame for frame at `-O0` and `-O2`. The per-program scorecards are in [reports/doom/](reports/doom/): `baseline.md` is the first run, kept unchanged, and `scorecard.md` is the current one.
 
 On the machine where system `cargo` is Rust 1.85.1 and has no clippy component, the clippy check that passed was:
 

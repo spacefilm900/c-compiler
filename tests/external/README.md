@@ -124,13 +124,14 @@ Failures that remain are listed in `harness/gcc_torture_known_failures.txt`. `bu
 The first big program (PLAN.md step 5). Both inputs are fetched, not vendored, and are test inputs only: no DOOM code is copied into the compiler, and the tree is not patched.
 
 - doomgeneric: https://github.com/ozkl/doomgeneric, pin `e257a09527062bfb986b6e5e0780839b6cbd5b71` (2026-10-11). Licence: GPL-2.0, in the fetched tree.
-- Freedoom 0.13.0: https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip, zip SHA-256 `3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59`, `freedoom1.wad` SHA-256 `7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d`. Licence: BSD-style, `COPYING.txt` kept beside the WAD. The WAD's `DEMO1` (vanilla 1.9 demo format) is the input.
+- Freedoom 0.13.0: https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip, zip SHA-256 `3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59`, `freedoom1.wad` SHA-256 `7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d`, `freedoom2.wad` SHA-256 `a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b`. Licence: BSD-style, `COPYING.txt` kept beside the WADs. Each WAD's `DEMO1` to `DEMO4` (vanilla 1.9 demo format) are the input, each played to its end.
 
 ```sh
 scripts/fetch_doomgeneric.sh
 scripts/fetch_freedoom.sh
-python3 harness/run_doom.py                 # -O0 and -O2, first 2,100 frames
-python3 harness/run_doom.py --frames 7100 --jobs 1 --json out.json --scorecard out.md
+python3 harness/run_doom.py                 # -O0 and -O2, all eight demos to their end
+python3 harness/run_doom.py --opt O2 --opt O0:freedoom1/demo1 --play-jobs 4
+python3 harness/run_doom.py --json out.json --scorecard out.md --notes reports/doom/notes.md
 ```
 
 The headless backend (`harness/doom/dg_headless.c`) and the fixed-address allocator (`harness/doom/dg_alloc.c`) are this repository's own code. How the run is made deterministic, the graded per-file, mixed, and full builds, and the scorecard are described in `harness/run_doom.py` and `STATUS.md`. Scorecards are in `reports/doom/`.
