@@ -391,7 +391,8 @@ def render_scorecard(payload: dict, title: str, notes: str = "") -> str:
         *[f"- WAD: `{w['wad']}` (SHA-256 `{w['sha256']}`)" for w in meta.get("wads", [])],
         "- Demos played with `-timedemo` to their natural end",
         f"- Reference: {meta.get('clang', 'clang')}, `-std=gnu11`, same optimisation level",
-        f"- Frame cap per demo: {payload['frames']}; translation units: {total}; parallel jobs: {payload.get('jobs', '')}",
+        f"- Frame cap per demo: {payload['frames']}; translation units: {total}; compile jobs: {payload.get('jobs', '')};"
+        f" demo runs at once: {payload.get('play_jobs', 1)}",
         "",
         f"| | {head} |",
         f"|---| {rule} |",
