@@ -471,6 +471,12 @@ The independent C11 challenge v0.6 first run (724 cases, at `fa39ab2`) failed C1
 
 Local results on the final source (rustc 1.85.1, Clang 19.1.7, GCC 14.2.0): `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **120 passed**, `make` produced `build/compiler`, `python3 harness/run_tests.py` **151/151 passed**, `python3 harness/run_wacc.py` **1384 passed, 0 known failures, 233 skipped**, `python3 harness/run_csmith.py` **25 passed, 15 known failures, 0 unexpected, 40 seeds**, `python3 harness/run_gcc_torture.py` **917 passed, 829 known failures, 0 unexpected** (with `-std=gnu11`; no now-passing entries), and `python3 harness/perf.py` completed. The independent C11 challenge v0.6 is **724/724** at both `-O0` and `-O2` (was 722/724), including the `cross-abi` cases in both directions; its metamorphic tool reports **60/60** and its IR verifier **150/150**.
 
+Review fixes after CodeRabbit on `8e29121` (three Minor findings, all taken; tests first in `ce81be1`):
+
+1. **Nested `void *` casts.** C11 6.3.2.3p3 makes a `void *` cast a null pointer constant only when its operand is an integer constant expression with the value 0. `(void *)(void *)0` is a null pointer but not a null pointer constant, so `f == (void *)(void *)0` is now a diagnostic in semantic analysis and in parser-folded constants (Clang 19 and GCC 14 with `-pedantic-errors` reject it too).
+2. **`_Generic` in parser-folded constants.** The parser's null pointer constant check now classifies a generic selection by its selected expression, so `sizeof(f == _Generic(0, int: (void *)0))` is accepted again, as Clang 19 and GCC 14 with `-pedantic-errors` accept it.
+3. **README.** GNU mode accepts the comparison in parser-folded constants without a warning; README now says so.
+
 A 1,000-seed Csmith campaign with the challenge's tool (Csmith 2.3.0 default options, `-O0` and `-O2`) found **no wrong-code case**. Of 2,000 runs, 332 built with the candidate and all 332 match GCC and Clang (166 at `-O0` after relinking with `-lm`, which the tool omits); the other 1,668 are programs with incompatible-pointer comparisons or assignments that the candidate rejects as C11 constraint violations, confirmed by both `clang -std=c11 -pedantic-errors` and `gcc -std=c11 -pedantic-errors` (262 of them also time out in the reference binaries). Default Csmith output is therefore mostly not strict C11, which limits how much code generation that campaign exercises.
 
 ## Small C11 gaps record
