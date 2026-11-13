@@ -19,10 +19,12 @@
 //! when they sit in an evaluated operand. An unevaluated operand (`sizeof`,
 //! or the skipped arm of `&&`, `||`, or `?:`) may contain them.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::diag::Diagnostic;
+use crate::diag::{Diagnostic, Warning};
+use crate::dialect::Dialect;
 
 pub fn analyze(unit: &mut TranslationUnit, filename: &str) -> Result<(), Diagnostic> {
     analyze_tokens(unit, filename, &[])
@@ -35,6 +37,17 @@ pub fn analyze_tokens(
     filename: &str,
     tokens: &[crate::token::Token],
 ) -> Result<(), Diagnostic> {
+    analyze_dialect(unit, filename, tokens, Dialect::C11).map(|_| ())
+}
+
+/// Like [`analyze_tokens`], in the given dialect. Returns the warnings, in
+/// source order; only GNU extensions produce them.
+pub fn analyze_dialect(
+    unit: &mut TranslationUnit,
+    filename: &str,
+    tokens: &[crate::token::Token],
+    dialect: Dialect,
+) -> Result<Vec<Warning>, Diagnostic> {
     for decl in &mut unit.decls {
         if let TopDecl::Func(func) = decl {
             assign_slots(func);
@@ -48,6 +61,8 @@ pub fn analyze_tokens(
     }
     let mut sema = Sema {
         filename: filename.to_string(),
+        dialect,
+        warnings: RefCell::new(Vec::new()),
         locs,
         scopes: vec![HashMap::new()],
         loop_depth: 0,
@@ -78,7 +93,8 @@ pub fn analyze_tokens(
             }
         }
     }
-    sema.finish(unit)
+    sema.finish(unit)?;
+    Ok(sema.warnings.into_inner())
 }
 
 #[derive(Clone)]
@@ -148,6 +164,9 @@ struct SwitchCtx {
 
 struct Sema {
     filename: String,
+    dialect: Dialect,
+    /// Warnings for accepted GNU extensions, in the order they were found.
+    warnings: RefCell<Vec<Warning>>,
     /// Last token at each line and column. Included files override the main
     /// file when they share a coordinate; parser diagnostics resolve this
     /// more precisely from the token cursor.
@@ -2967,6 +2986,20 @@ impl Sema {
         if pointers_ok {
             return Ok(CType::int_type());
         }
+        if equality && self.dialect.gnu() && void_function_ptr_mix(&left_ty, &right_ty) {
+            self.warn(
+                line,
+                column,
+                format!(
+                    "'{}' compares a void pointer with a function pointer ({} and {}); \
+                     C11 6.5.9p2 does not allow this; accepted as a GNU extension (-std=gnu11)",
+                    op.as_str(),
+                    left_ty.display(),
+                    right_ty.display()
+                ),
+            );
+            return Ok(CType::int_type());
+        }
         self.err(
             line,
             column,
@@ -4362,6 +4395,17 @@ impl Sema {
         self.scopes.last().and_then(|scope| scope.get(name))
     }
 
+    fn warn(&self, line: usize, column: usize, message: impl Into<String>) {
+        let file = self
+            .locs
+            .get(&(line, column))
+            .map(String::as_str)
+            .unwrap_or(self.filename.as_str());
+        self.warnings
+            .borrow_mut()
+            .push(Warning(Diagnostic::new(file, line, column, message)));
+    }
+
     fn err<T>(
         &self,
         line: usize,
@@ -4693,7 +4737,9 @@ fn flexible_member_named(ty: &CType, name: &str) -> bool {
         })
 }
 
-/// An integer constant expression with value 0, or that expression cast to `void *`.
+/// An integer constant expression with value 0, or that expression cast to
+/// `void *` (C11 6.3.2.3p3). A `void *` cast of a pointer, such as
+/// `(void *)(void *)0`, is a null pointer but not a null pointer constant.
 fn is_null_pointer_constant(expr: &Expr) -> bool {
     match expr {
         Expr::Cast { ty_name, expr, .. }
@@ -4701,12 +4747,17 @@ fn is_null_pointer_constant(expr: &Expr) -> bool {
                 .pointee()
                 .is_some_and(|pointee| pointee.is_void() && pointee.quals().is_empty()) =>
         {
-            is_null_pointer_constant(expr)
+            is_integer_zero(expr)
         }
-        _ => match eval_const_expr(expr) {
-            Ok(value) => value.ty.is_integer() && (value.bits & value.ty.mask()) == 0,
-            Err(_) => false,
-        },
+        _ => is_integer_zero(expr),
+    }
+}
+
+/// An integer constant expression with value 0.
+fn is_integer_zero(expr: &Expr) -> bool {
+    match eval_const_expr(expr) {
+        Ok(value) => value.ty.is_integer() && (value.bits & value.ty.mask()) == 0,
+        Err(_) => false,
     }
 }
 
@@ -7543,5 +7594,93 @@ int typed = _Generic(__builtin_offsetof(struct In, c), unsigned long: 1, default
             err.contains("conflicts with the object") && err.contains(":2:"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn void_pointer_equality_excludes_function_pointers() {
+        // C11 6.5.9p2: a void pointer may be compared for equality with a
+        // pointer to an object type, not with a pointer to a function. A
+        // null pointer constant may be compared with either.
+        for source in [
+            "int f(void); int g(void *v) { return v == f; }",
+            "int f(void); int g(const void *v) { return f != v; }",
+            "int g(void *v, int (*fp)(int)) { return fp == v; }",
+        ] {
+            let err = sema_err(source);
+            assert!(err.contains("invalid operands to '"), "{source}: {err}");
+        }
+        sema_ok("int f(void); int g(void) { return (void *)0 == f; }");
+        sema_ok("int f(void); int g(void) { return f != 0; }");
+        sema_ok("int g(void *v, int *p, const char *c) { return (v == p) + (c != v); }");
+    }
+
+    fn sema_dialect(source: &str, dialect: crate::Dialect) -> Result<Vec<String>, String> {
+        let tokens = lex(source, "gnu.c").unwrap();
+        let mut unit = crate::parser::parse_dialect(&tokens, "gnu.c", dialect)
+            .map_err(|err| err.to_string())?;
+        analyze_dialect(&mut unit, "gnu.c", &tokens, dialect)
+            .map(|warnings| warnings.iter().map(ToString::to_string).collect())
+            .map_err(|err| err.to_string())
+    }
+
+    #[test]
+    fn gnu_dialect_accepts_void_pointer_function_pointer_equality() {
+        // C11 6.5.9p2 makes `void *` == pointer-to-function a constraint
+        // violation. -std=gnu11 accepts it as an extension, as GCC 14 and
+        // Clang 19 do outside their pedantic modes (black-box), with a
+        // warning; -std=c11, the default, keeps the error.
+        use crate::Dialect;
+        for source in [
+            "int f(void); int g(void *v) { return v == f; }",
+            "int f(void); int g(void *v) { return v != &f; }",
+            "int f(void); int g(const void *v) { return f != v; }",
+            "int g(void *v, int (*fp)(int)) { return fp == v; }",
+        ] {
+            let err = sema_dialect(source, Dialect::C11).unwrap_err();
+            assert!(err.contains("invalid operands to '"), "{source}: {err}");
+            let warnings = sema_dialect(source, Dialect::Gnu11).unwrap();
+            assert_eq!(warnings.len(), 1, "{source}: {warnings:?}");
+            assert!(
+                warnings[0].contains("warning:") && warnings[0].contains("GNU extension"),
+                "{source}: {warnings:?}"
+            );
+        }
+        // Valid in both dialects, with no warning: null pointer constants
+        // against a function pointer, and void * against object pointers.
+        for source in [
+            "int f(void); int g(void) { return (void *)0 == f; }",
+            "int f(void); int g(void) { return &f != (void *)0; }",
+            "int f(void); int g(void) { return f != 0; }",
+            "int g(void *v, int *p, const char *c) { return (v == p) + (c != v); }",
+        ] {
+            for dialect in [Dialect::C11, Dialect::Gnu11] {
+                assert_eq!(sema_dialect(source, dialect), Ok(Vec::new()), "{source}");
+            }
+        }
+        // The extension covers only equality: relational comparison of
+        // function pointers stays an error in GNU mode too.
+        let err = sema_dialect(
+            "int f(void); int g(void *v) { return v < f; }",
+            Dialect::Gnu11,
+        )
+        .unwrap_err();
+        assert!(err.contains("relational comparison"), "{err}");
+    }
+
+    #[test]
+    fn null_pointer_constant_needs_integer_operand_in_void_cast() {
+        // C11 6.3.2.3p3: only an integer constant expression with the value
+        // 0, possibly cast to void *, is a null pointer constant.
+        // (void *)(void *)0 is a null pointer of type void *, so comparing
+        // it with a function pointer violates 6.5.9p2.
+        for source in [
+            "int f(void); int g(void) { return f == (void *)(void *)0; }",
+            "int f(void); int g(void) { return (void *)(void *)(1 - 1) != &f; }",
+        ] {
+            let err = sema_err(source);
+            assert!(err.contains("invalid operands to '"), "{source}: {err}");
+        }
+        sema_ok("int f(void); int g(void) { return f == _Generic(0, int: (void *)0); }");
+        sema_ok("int g(int *p) { return p == (void *)(void *)0; }");
     }
 }

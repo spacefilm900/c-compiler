@@ -1346,10 +1346,25 @@ pub fn loose_pointers(left: &CType, right: &CType) -> bool {
     }
 }
 
-/// Two pointers of which at least one is `void *` (possibly qualified), the
-/// other pointer case an equality operator allows (C11 6.5.9p2).
+/// A pointer to an object type and a pointer to a qualified or unqualified
+/// version of `void`, the other pointer case an equality operator allows
+/// (C11 6.5.9p2). A pointer to a function does not qualify; a null pointer
+/// constant is handled separately.
 pub fn void_ptr_mix(left: &CType, right: &CType) -> bool {
-    left.is_pointer() && right.is_pointer() && (left.is_void_pointer() || right.is_void_pointer())
+    let object_pointer = |ty: &CType| ty.pointee().is_some_and(|pointee| !pointee.is_func());
+    object_pointer(left)
+        && object_pointer(right)
+        && (left.is_void_pointer() || right.is_void_pointer())
+}
+
+/// A void pointer and a pointer to a function, in either order. C11 6.5.9p2
+/// does not allow them as operands of an equality operator; `-std=gnu11`
+/// accepts them as an extension. A null pointer constant is handled
+/// separately and is valid in both modes.
+pub fn void_function_ptr_mix(left: &CType, right: &CType) -> bool {
+    let function_pointer = |ty: &CType| ty.pointee().is_some_and(CType::is_func);
+    (left.is_void_pointer() && function_pointer(right))
+        || (right.is_void_pointer() && function_pointer(left))
 }
 
 /// Two types are compatible (C11 6.2.7, 6.7.6, 6.7.3).

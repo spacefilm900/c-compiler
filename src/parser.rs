@@ -9,11 +9,23 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diag::Diagnostic;
+use crate::dialect::Dialect;
 use crate::token::{Token, TokenKind};
 
 pub fn parse(tokens: &[Token], filename: &str) -> Result<TranslationUnit, Diagnostic> {
+    parse_dialect(tokens, filename, Dialect::C11)
+}
+
+/// Like [`parse`], in the given dialect. The dialect affects only the
+/// constraints checked in folded integer constant expressions.
+pub fn parse_dialect(
+    tokens: &[Token],
+    filename: &str,
+    dialect: Dialect,
+) -> Result<TranslationUnit, Diagnostic> {
     Parser {
         tokens,
+        dialect,
         index: 0,
         filename,
         tags: Vec::new(),
@@ -30,6 +42,7 @@ pub fn parse(tokens: &[Token], filename: &str) -> Result<TranslationUnit, Diagno
 
 struct Parser<'a> {
     tokens: &'a [Token],
+    dialect: Dialect,
     index: usize,
     filename: &'a str,
     /// Tag namespace, innermost scope last. Ordinary identifiers are not here.
@@ -77,6 +90,14 @@ enum NameBinding {
 }
 
 impl Parser<'_> {
+    /// The names in scope and the dialect, for folding constants.
+    fn env(&self) -> Env<'_> {
+        Env {
+            names: &self.names,
+            dialect: self.dialect,
+        }
+    }
+
     fn parse_translation_unit(&mut self) -> Result<TranslationUnit, Diagnostic> {
         self.push_tags();
         let mut decls = Vec::new();
@@ -1020,9 +1041,9 @@ impl Parser<'_> {
             let name = self.advance();
             let value = if self.match_kind(TokenKind::Assign) {
                 let expr = self.parse_assignment()?;
-                check_uneval(&expr, &self.names)
+                check_uneval(&expr, self.env())
                     .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
-                let folded = eval_ice(&expr, &self.names)
+                let folded = eval_ice(&expr, self.env())
                     .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
                 enum_int(folded).map_err(|_| {
                     self.error_at(
@@ -1156,7 +1177,7 @@ impl Parser<'_> {
         let (Some(init), CType::Array(elem, None)) = (init, ty) else {
             return;
         };
-        let Some(len) = infer_init_len(elem, init, &self.names) else {
+        let Some(len) = infer_init_len(elem, init, self.env()) else {
             return;
         };
         if let Some(scope) = self.names.last_mut() {
@@ -1344,9 +1365,9 @@ impl Parser<'_> {
         self.advance();
         self.expect(TokenKind::LParen, "'('")?;
         let expr = self.parse_conditional()?;
-        check_uneval(&expr, &self.names)
+        check_uneval(&expr, self.env())
             .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
-        let value = eval_ice(&expr, &self.names)
+        let value = eval_ice(&expr, self.env())
             .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
         self.expect(TokenKind::Comma, "','")?;
         if self.current().kind != TokenKind::String {
@@ -1520,9 +1541,9 @@ impl Parser<'_> {
             ));
         };
         let expr = self.parse_conditional()?;
-        check_uneval(&expr, &self.names)
+        check_uneval(&expr, self.env())
             .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
-        let value = eval_ice(&expr, &self.names)
+        let value = eval_ice(&expr, self.env())
             .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
         let signed = if value.ty.is_signed() {
             sign_extend(value.bits, value.ty.width())
@@ -2138,7 +2159,7 @@ impl Parser<'_> {
             return Ok(None);
         }
         let expr = self.parse_assignment()?;
-        match fold_array_bound(&expr, &self.names) {
+        match fold_array_bound(&expr, self.env()) {
             Ok(len) => Ok(Some(len)),
             Err(err) => Err(self.error_at(expr.line(), expr.column(), bound_message(err))),
         }
@@ -3307,10 +3328,10 @@ impl Parser<'_> {
                             format!("array has incomplete element type '{}'", elem.display()),
                         ));
                     };
-                    check_uneval(&index, &self.names).map_err(|err| {
+                    check_uneval(&index, self.env()).map_err(|err| {
                         self.error_at(index.line(), index.column(), ice_message(err))
                     })?;
-                    let index_ty = rvalue_type(&index, &self.names).ok();
+                    let index_ty = rvalue_type(&index, self.env()).ok();
                     if let Some(index_ty) = &index_ty {
                         if !index_ty.is_integer() {
                             return Err(self.error_at(
@@ -3320,7 +3341,7 @@ impl Parser<'_> {
                             ));
                         }
                     }
-                    match eval_ice(&index, &self.names) {
+                    match eval_ice(&index, self.env()) {
                         Ok(value) => {
                             let scaled = if value.ty.is_signed() {
                                 (sign_extend(value.bits, value.ty.width()) as u64)
@@ -4285,6 +4306,7 @@ fn check_uneval_compare(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Resul
     let ok = if matches!(op, BinOp::Eq | BinOp::Ne) {
         loose_pointers(&left_ty, &right_ty)
             || void_ptr_mix(&left_ty, &right_ty)
+            || (env.dialect.gnu() && void_function_ptr_mix(&left_ty, &right_ty))
             || (left_ty.is_pointer() && uneval_null_constant(right, &right_ty, env))
             || (right_ty.is_pointer() && uneval_null_constant(left, &left_ty, env))
     } else {
@@ -4302,9 +4324,35 @@ fn check_uneval_compare(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Resul
     }
 }
 
-/// An integer constant expression with the value 0 (C11 6.3.2.3p3). A
-/// pointer-typed null pointer constant is handled as a pointer operand.
+/// A null pointer constant (C11 6.3.2.3p3): an integer constant expression
+/// with the value 0, or such an expression cast to `void *`. A generic
+/// selection is classified by its selected expression; a `void *` cast of
+/// a pointer, such as `(void *)(void *)0`, is a null pointer but not a null
+/// pointer constant.
 fn uneval_null_constant(expr: &Expr, ty: &CType, env: Env) -> bool {
+    match expr {
+        Expr::Generic {
+            control, assocs, ..
+        } => select_generic(control, assocs, env).is_ok_and(|selected| {
+            rvalue_type(selected, env)
+                .is_ok_and(|selected_ty| uneval_null_constant(selected, &selected_ty, env))
+        }),
+        Expr::Cast {
+            ty_name,
+            expr: inner,
+            ..
+        } if ty_name
+            .pointee()
+            .is_some_and(|pointee| pointee.is_void() && pointee.quals().is_empty()) =>
+        {
+            rvalue_type(inner, env).is_ok_and(|inner_ty| uneval_integer_zero(inner, &inner_ty, env))
+        }
+        _ => uneval_integer_zero(expr, ty, env),
+    }
+}
+
+/// An integer constant expression with the value 0.
+fn uneval_integer_zero(expr: &Expr, ty: &CType, env: Env) -> bool {
     ty.is_integer() && eval_ice(expr, env).is_ok_and(|value| value.bits & value.ty.mask() == 0)
 }
 
@@ -4460,11 +4508,16 @@ fn select_generic<'e>(
         .ok_or(BoundErr::NotConst)
 }
 
-/// Ordinary-identifier scopes, innermost last, as the parser sees them.
-type Env<'a> = &'a [HashMap<String, NameBinding>];
+/// What constant folding needs from the parser: the ordinary-identifier
+/// scopes, innermost last, and the dialect.
+#[derive(Clone, Copy)]
+struct Env<'a> {
+    names: &'a [HashMap<String, NameBinding>],
+    dialect: Dialect,
+}
 
 fn env_lookup<'a>(env: Env<'a>, name: &str) -> Option<&'a NameBinding> {
-    env.iter().rev().find_map(|scope| scope.get(name))
+    env.names.iter().rev().find_map(|scope| scope.get(name))
 }
 
 /// Type of an expression, computed from declarations the parser has seen.
@@ -6260,5 +6313,77 @@ func int main
              void *restrict v; int *restrict *restrict q;\n\
              int (**restrict pick(void))(void);",
         );
+    }
+
+    #[test]
+    fn constant_contexts_void_pointer_equality_excludes_function_pointers() {
+        // C11 6.5.9p2 in a parser-folded sizeof operand: a void pointer and
+        // a pointer to a function are not comparable, but a null pointer
+        // constant, including (void *)0, is comparable with either.
+        for source in [
+            "int f(void); void *v; enum { N = sizeof(v == f) };",
+            "int (*fp)(void); const void *v; int a[sizeof(fp != v)];",
+            "int f(void); void *v; _Static_assert(sizeof(f == v), \"\");",
+        ] {
+            let err = parse_err(source);
+            assert!(
+                err.contains("invalid operands to a comparison"),
+                "{source}: {err}"
+            );
+        }
+        parsed(
+            "int f(void); void *v; int *p;\n\
+             enum { A = sizeof((void *)0 == f), B = sizeof(f != 0), C = sizeof(v == p),\n\
+             D = sizeof(f == (void *)(1 - 1)), E = sizeof((const char *)0 != v) };",
+        );
+    }
+
+    #[test]
+    fn gnu_dialect_folded_void_pointer_function_pointer_equality() {
+        // The parser's folded constants follow the dialect: -std=gnu11
+        // accepts a void pointer compared with a function pointer.
+        use crate::Dialect;
+        for source in [
+            "int f(void); void *v; enum { N = sizeof(v == f) };",
+            "int f(void); void *v; enum { N = sizeof(v != &f) };",
+            "int (*fp)(void); const void *v; int a[sizeof(fp != v)];",
+        ] {
+            let tokens = lex(source, "t.c").unwrap();
+            let err = parse_dialect(&tokens, "t.c", Dialect::C11)
+                .err()
+                .map(|err| err.to_string())
+                .unwrap_or_default();
+            assert!(
+                err.contains("invalid operands to a comparison"),
+                "{source}: {err}"
+            );
+            assert!(
+                parse_dialect(&tokens, "t.c", Dialect::Gnu11).is_ok(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn folded_null_pointer_constants_generic_and_nested_casts() {
+        // C11 6.3.2.3p3: a null pointer constant is an integer constant
+        // expression with the value 0, or such an expression cast to
+        // void *. A generic selection keeps the selected expression's
+        // null-pointer-constant status, as Clang 19 and GCC 14 with
+        // -pedantic-errors treat it. A void * cast of (void *)0 is a null
+        // pointer but not a null pointer constant, so it is not comparable
+        // with a function pointer.
+        parsed("int f(void); enum { N = sizeof(f == _Generic(0, int: (void *)0)) };");
+        parsed("int f(void); enum { N = sizeof(_Generic(1L, long: 0, default: f) != f) };");
+        for source in [
+            "int f(void); enum { N = sizeof(f == (void *)(void *)0) };",
+            "int f(void); enum { N = sizeof((void *)(void *)(1 - 1) != &f) };",
+        ] {
+            let err = parse_err(source);
+            assert!(
+                err.contains("invalid operands to a comparison"),
+                "{source}: {err}"
+            );
+        }
     }
 }

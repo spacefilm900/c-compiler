@@ -7,6 +7,10 @@ clang -O0 -lm, and checks that the program's own self-test exits 0.
 It does not compare with GCC or Clang, and it does not read the GCC
 compiler sources.
 
+The tests are GNU C, so this compiler runs with `-std=gnu11`, its opt-in
+GNU mode (see README). 20041212-1.c compares a `void *` with a function
+pointer, which strict C11 rejects.
+
 The whole `builtins/` directory is skipped. GCC's harness links each
 of those tests with a `-lib.c` companion and `lib/main.c`; they are
 not standalone programs, and they exist to exercise compiler builtins.
@@ -151,7 +155,9 @@ def one_test(src: str) -> tuple[str, str, str]:
         work = Path(tmp)
         ll = work / "t.ll"
         exe = work / "t"
-        rc, _, err = run([str(COMPILER), str(path), "-o", str(ll)], COMPILE_TIMEOUT)
+        rc, _, err = run(
+            [str(COMPILER), "-std=gnu11", str(path), "-o", str(ll)], COMPILE_TIMEOUT
+        )
         err_text = err.decode(errors="replace")
         if "panicked at" in err_text.lower():
             return rel, "panic", clip(err)
