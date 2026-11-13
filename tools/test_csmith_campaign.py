@@ -267,6 +267,67 @@ class ClassificationTests(unittest.TestCase):
         )
         self.assertEqual(status, "reference-disagreement")
 
+    def test_same_signal_is_not_agreement(self) -> None:
+        status = camp.classify_seed(
+            gcc_build={"code": 0},
+            clang_build={"code": 0},
+            candidate_build={"code": 0},
+            candidate_link={"code": 0},
+            gcc_run=self._run(code=-9, stdout=""),
+            clang_run=self._run(code=-9, stdout=""),
+            candidate_run=self._run(code=-9, stdout=""),
+        )
+        self.assertEqual(status, "reference-crash")
+        self.assertFalse(camp.is_valid_comparison(status))
+
+    def test_candidate_signal_is_crash(self) -> None:
+        status = camp.classify_seed(
+            gcc_build={"code": 0},
+            clang_build={"code": 0},
+            candidate_build={"code": 0},
+            candidate_link={"code": 0},
+            gcc_run=self._run(),
+            clang_run=self._run(),
+            candidate_run=self._run(code=-11, stdout=""),
+        )
+        self.assertEqual(status, "candidate-crash-or-ice")
+
+    def test_candidate_compile_timeout_is_timeout(self) -> None:
+        status = camp.classify_seed(
+            gcc_build={"code": 0},
+            clang_build={"code": 0},
+            candidate_build={"code": "timeout", "stderr": ""},
+            candidate_link=None,
+            gcc_run=self._run(),
+            clang_run=self._run(),
+            candidate_run=None,
+        )
+        self.assertEqual(status, "candidate-timeout")
+
+    def test_candidate_link_timeout_is_timeout(self) -> None:
+        status = camp.classify_seed(
+            gcc_build={"code": 0},
+            clang_build={"code": 0},
+            candidate_build={"code": 0},
+            candidate_link={"code": "timeout", "stderr": ""},
+            gcc_run=self._run(),
+            clang_run=self._run(),
+            candidate_run=None,
+        )
+        self.assertEqual(status, "candidate-timeout")
+
+    def test_stdout_digest_detects_difference_beyond_truncation(self) -> None:
+        status = camp.classify_seed(
+            gcc_build={"code": 0},
+            clang_build={"code": 0},
+            candidate_build={"code": 0},
+            candidate_link={"code": 0},
+            gcc_run=self._run(stdout="TAIL", **{"stdout_sha256": "aaa"}),
+            clang_run=self._run(stdout="TAIL", **{"stdout_sha256": "aaa"}),
+            candidate_run=self._run(stdout="TAIL", **{"stdout_sha256": "bbb"}),
+        )
+        self.assertEqual(status, "candidate-wrong-output")
+
     def test_valid_comparison_only_when_all_ran(self) -> None:
         self.assertTrue(camp.is_valid_comparison("agreement"))
         self.assertTrue(camp.is_valid_comparison("candidate-wrong-output"))
@@ -370,6 +431,86 @@ class CiHarnessCommandTests(unittest.TestCase):
         self.assertNotIn("-pedantic-errors", ref)
         self.assertNotIn("-std=c11", cand)
         self.assertNotIn("-std=c11", ref)
+
+
+class SummarizeAndToolTests(unittest.TestCase):
+    def test_summarize_does_not_double_count_generation_failed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="csmith-sum-") as tmp:
+            out = Path(tmp)
+            seed = out / "seeds" / "1"
+            (seed / "O0").mkdir(parents=True)
+            (seed / "O2").mkdir(parents=True)
+            camp.write_json(
+                seed / "generation.json",
+                {"code": 1, "stderr": "csmith failed"},
+            )
+            for opt in ("O0", "O2"):
+                camp.write_json(
+                    seed / opt / "result.json",
+                    {
+                        "seed": 1,
+                        "opt": opt,
+                        "status": "generation-failed",
+                        "valid_comparison": False,
+                    },
+                )
+            summary = camp.summarize_tree(out, ["O0", "O2"])
+            self.assertEqual(summary["totals"]["O0"]["generation-failed"], 1)
+            self.assertEqual(summary["totals"]["O2"]["generation-failed"], 1)
+            self.assertEqual(summary["seed_count"], 1)
+
+    def test_resolve_tool_expands_a_relative_file_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="csmith-tool-") as tmp:
+            tmp_path = Path(tmp)
+            tool = tmp_path / "gcc"
+            tool.write_text("#!/bin/sh\n", encoding="utf-8")
+            tool.chmod(tool.stat().st_mode | 0o111)
+            resolved = camp.resolve_tool(str(Path(tmp) / "gcc"))
+            self.assertTrue(Path(resolved).is_absolute())
+            self.assertEqual(Path(resolved).resolve(), tool.resolve())
+
+    def test_stale_generation_failed_is_replaced_after_success(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="csmith-stale-") as tmp:
+            tmp_path = Path(tmp)
+            out = tmp_path / "results"
+            tools_dir = tmp_path / "tools"
+            tools_dir.mkdir()
+            logs = tmp_path / "logs"
+            logs.mkdir()
+            os.environ["FAKE_LOG_DIR"] = str(logs)
+            tools = write_fake_tools(tools_dir)
+            seed = out / "seeds" / "1"
+            (seed / "O0").mkdir(parents=True)
+            camp.write_json(seed / "generation.json", {"code": 1})
+            camp.write_json(
+                seed / "O0" / "result.json",
+                {
+                    "seed": 1,
+                    "opt": "O0",
+                    "status": "generation-failed",
+                    "valid_comparison": False,
+                },
+            )
+            summary = camp.run_campaign(
+                camp.CampaignConfig(
+                    compiler=str(tools["candidate"]),
+                    csmith=str(tools["csmith"]),
+                    gcc=str(tools["gcc"]),
+                    clang=str(tools["clang-wrap"]),
+                    csmith_include=str(tmp_path / "inc"),
+                    seed_start=1,
+                    count=1,
+                    opts=["O0"],
+                    timeout=2,
+                    out=out,
+                    mode="gnu11",
+                )
+            )
+            self.assertTrue((seed / "source.c").is_file())
+            result = json.loads((seed / "O0" / "result.json").read_text())
+            self.assertEqual(result["status"], "agreement")
+            self.assertEqual(summary["totals"]["O0"]["agreement"], 1)
+            self.assertEqual(summary["totals"]["O0"]["generation-failed"], 0)
 
 
 if __name__ == "__main__":

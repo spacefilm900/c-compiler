@@ -126,15 +126,31 @@ def is_valid_comparison(status: str) -> bool:
     return status in VALID_COMPARISON_STATUSES
 
 
+def _is_signal(code: Any) -> bool:
+    if isinstance(code, int) and code < 0:
+        return True
+    return isinstance(code, str) and code.upper().startswith("SIG")
+
+
 def _finished_run(run: dict[str, Any] | None) -> bool:
     if not run:
         return False
-    return run.get("code") not in (None, "timeout", "oserror")
+    code = run.get("code")
+    if code in (None, "timeout", "oserror") or _is_signal(code):
+        return False
+    return isinstance(code, int)
+
+
+def _run_crashed(run: dict[str, Any] | None) -> bool:
+    return bool(run and _is_signal(run.get("code")))
 
 
 def _run_signature(run: dict[str, Any] | None) -> tuple[Any, str] | None:
     if not _finished_run(run):
         return None
+    digest = run.get("stdout_sha256")
+    if digest:
+        return (run.get("code"), digest)
     return (run.get("code"), run.get("stdout", ""))
 
 
@@ -192,9 +208,10 @@ def classify_seed(
 
     if gcc_timeout or clang_timeout or not gcc_done or not clang_done:
         # One reference rejected the program while the other ran, or a
-        # run did not finish. If both references compiled, a missing
-        # finished run is a timeout or a crash treated as a timeout class.
+        # run did not finish. Signal deaths are not timeouts.
         if gcc_compiled and clang_compiled:
+            if _run_crashed(gcc_run) or _run_crashed(clang_run):
+                return "reference-crash"
             return "reference-timeout"
         return "invalid-program"
 
@@ -204,12 +221,18 @@ def classify_seed(
         return "reference-disagreement"
 
     if not cand_compiled:
+        if candidate_build and candidate_build.get("code") == "timeout":
+            return "candidate-timeout"
         return "candidate-rejects-valid-gnu-c"
     if not cand_linked:
         if _is_ice(candidate_link):
             return "candidate-crash-or-ice"
+        if candidate_link and candidate_link.get("code") == "timeout":
+            return "candidate-timeout"
         return "candidate-bad-ir"
     if not _finished_run(candidate_run):
+        if _run_crashed(candidate_run) or _is_ice(candidate_run):
+            return "candidate-crash-or-ice"
         return "candidate-timeout"
     if _run_signature(candidate_run) != gcc_sig:
         return "candidate-wrong-output"
@@ -259,6 +282,8 @@ def call(
             preexec_fn=(lambda: _limit_program(cpu)) if limit else None,
         )
         rec["code"] = proc.returncode
+        rec["stdout_sha256"] = hashlib.sha256(proc.stdout or b"").hexdigest()
+        rec["stderr_sha256"] = hashlib.sha256(proc.stderr or b"").hexdigest()
         stdout = proc.stdout.decode(errors="replace")
         stderr = proc.stderr.decode(errors="replace")
         if truncate and len(stdout) > truncate:
@@ -269,13 +294,25 @@ def call(
         rec["stderr"] = stderr
     except subprocess.TimeoutExpired as exc:
         rec["code"] = "timeout"
-        rec["stdout"] = (exc.stdout or b"").decode(errors="replace")[-truncate:]
-        rec["stderr"] = (exc.stderr or b"").decode(errors="replace")[-truncate:]
+        out_b = exc.stdout or b""
+        err_b = exc.stderr or b""
+        rec["stdout_sha256"] = hashlib.sha256(out_b).hexdigest()
+        rec["stderr_sha256"] = hashlib.sha256(err_b).hexdigest()
+        rec["stdout"] = out_b.decode(errors="replace")[-truncate:]
+        rec["stderr"] = err_b.decode(errors="replace")[-truncate:]
     except OSError as exc:
         rec["code"] = "oserror"
         rec["stdout"] = ""
         rec["stderr"] = str(exc)
     return rec
+
+
+def write_json(path: Path, obj: Any) -> None:
+    """Write JSON by replacing a temporary file in the same directory."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
 
 
 def _sha256(path: Path) -> str:
@@ -405,9 +442,7 @@ def run_one_opt(
             },
         },
     }
-    (work / "result.json").write_text(
-        json.dumps(rec, indent=2) + "\n", encoding="utf-8"
-    )
+    write_json(work / "result.json", rec)
     if not cfg.keep_binaries:
         for path in (gcc_exe, clang_exe, cand_exe):
             if path.exists():
@@ -425,6 +460,7 @@ def _empty_totals(opts: list[str]) -> dict[str, Any]:
             "candidate-bad-ir": 0,
             "candidate-timeout": 0,
             "reference-timeout": 0,
+            "reference-crash": 0,
             "reference-disagreement": 0,
             "invalid-program": 0,
             "generation-failed": 0,
@@ -459,12 +495,18 @@ def summarize_tree(out: Path, opts: list[str] | None = None) -> dict[str, Any]:
             if gen_path.is_file() and not src.is_file():
                 gen = json.loads(gen_path.read_text(encoding="utf-8"))
                 if gen.get("code") != 0:
+                    seed_id = (
+                        int(seed_dir.name)
+                        if seed_dir.name.isdigit()
+                        else seed_dir.name
+                    )
+                    have = {rec["opt"] for rec in records if rec["seed"] == seed_id}
                     for opt in sorted(found_opts or {"O0"}):
+                        if opt in have:
+                            continue
                         records.append(
                             {
-                                "seed": int(seed_dir.name)
-                                if seed_dir.name.isdigit()
-                                else seed_dir.name,
+                                "seed": seed_id,
                                 "opt": opt,
                                 "status": "generation-failed",
                                 "valid_comparison": False,
@@ -489,14 +531,10 @@ def summarize_tree(out: Path, opts: list[str] | None = None) -> dict[str, Any]:
         "records": records,
         "seed_count": len({rec["seed"] for rec in records}),
     }
-    (out / "SUMMARY.json").write_text(
-        json.dumps(
-            {k: summary[k] for k in ("totals", "valid_comparisons", "seed_count")}
-            | {"record_count": len(records)},
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+    write_json(
+        out / "SUMMARY.json",
+        {k: summary[k] for k in ("totals", "valid_comparisons", "seed_count")}
+        | {"record_count": len(records)},
     )
     return summary
 
@@ -550,11 +588,19 @@ def run_campaign(cfg: CampaignConfig) -> dict[str, Any]:
                     "valid_comparison": False,
                     "generation": gen,
                 }
-                (work / "result.json").write_text(
-                    json.dumps(rec, indent=2) + "\n", encoding="utf-8"
-                )
+                write_json(work / "result.json", rec)
                 print(f"SEED {seed} {opt} generation-failed", flush=True)
             continue
+        for opt in cfg.opts:
+            result_path = seed_dir / opt / "result.json"
+            if result_path.is_file():
+                try:
+                    old_rec = json.loads(result_path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    result_path.unlink()
+                else:
+                    if old_rec.get("status") == "generation-failed":
+                        result_path.unlink()
         for opt in cfg.opts:
             if (seed_dir / opt / "result.json").is_file():
                 print(f"SKIP {seed} {opt} already complete", flush=True)
@@ -575,6 +621,14 @@ def _resolve_include(path: Path) -> Path:
 
 def _tool_ok(exe: str) -> bool:
     return bool(shutil.which(exe) or Path(exe).is_file())
+
+
+def resolve_tool(exe: str) -> str:
+    path = Path(exe)
+    if path.is_file():
+        return str(path.resolve())
+    found = shutil.which(exe)
+    return found or exe
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -636,10 +690,10 @@ def main(argv: list[str] | None = None) -> int:
     csmith_options = [] if args.no_default_csmith_options else list(DEFAULT_CSMITH_OPTIONS)
     csmith_options.extend(args.csmith_option)
     cfg = CampaignConfig(
-        compiler=str(Path(args.compiler).resolve()) if Path(args.compiler).is_file() else args.compiler,
-        csmith=str(Path(args.csmith).resolve()) if Path(args.csmith).is_file() else args.csmith,
-        gcc=args.gcc,
-        clang=args.clang,
+        compiler=resolve_tool(args.compiler),
+        csmith=resolve_tool(args.csmith),
+        gcc=resolve_tool(args.gcc),
+        clang=resolve_tool(args.clang),
         csmith_include=str(include.resolve()),
         seed_start=args.seed_start,
         count=args.count,
