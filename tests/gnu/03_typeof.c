@@ -4,9 +4,6 @@
 
 int printf(const char *, ...);
 
-#define max(a, b) ({ typeof(a) _a = (a); typeof(b) _b = (b); _a > _b ? _a : _b; })
-#define swap(x, y) do { __typeof__(x) _t = (x); (x) = (y); (y) = _t; } while (0)
-
 struct point { int x, y; };
 static int calls;
 static int bump(void) { return ++calls; }
@@ -34,15 +31,17 @@ int main(void)
     typeof(int[3]) arr = {1, 2, 3};
     __typeof__(pt.x) px = pt.y;
 
-    swap(i, j);
+    { __typeof__(i) _t = i; i = j; j = _t; }
     buf[0] = 'a';
     other[0] = 'b';
     cp[1] = 0;
     printf("%d %d %d %u %.2f %ld\n", i, j, k, uc, f, wide);
     printf("%zu %zu %zu %zu %zu\n", sizeof(other), sizeof(j), sizeof(uc), sizeof(wide), sizeof(arr));
     printf("%d %d %ld %d %d %d\n", pp->x, copy.y, fp(4), unevaluated, calls, cj);
-    printf("%d %d %d\n", max(3, 8), max(-1, -7), max(i, j));
-    printf("%.1f %d %c\n", (double)max(1.5, 0.5), px, buf[0]);
+    printf("%d %d %d\n", ({ typeof(3) _a = 3; typeof(8) _b = 8; _a > _b ? _a : _b; }),
+           ({ typeof(-1) _a = -1; typeof(-7) _b = -7; _a > _b ? _a : _b; }),
+           ({ typeof(i) _a = i; typeof(j) _b = j; _a > _b ? _a : _b; }));
+    printf("%.1f %d %c\n", (double)({ typeof(1.5) _a = 1.5; typeof(0.5) _b = 0.5; _a > _b ? _a : _b; }), px, buf[0]);
     printf("%d\n", _Generic((typeof(ci))0, int: 1, default: 0));
     printf("%d\n", _Generic(&cj, const int *: 1, default: 0));
     return arr[2] - 3;

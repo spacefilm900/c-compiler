@@ -9,13 +9,11 @@ struct pair { int a; long b; };
 static int counter;
 static int next(void) { return ++counter; }
 
-#define SQUARE(x) ({ int _v = (x); _v * _v; })
-
 int main(void)
 {
     int a = ({ int t = 3; t * 2; });
     int b = ({ int s = 0; for (int i = 1; i <= 4; i++) s += i; s; });
-    int c = SQUARE(next());
+    int c = ({ int _v = next(); _v * _v; });
     int d = ({ int x = 1; ({ int y = x + 1; y * 10; }) + x; });
     long e = ({ struct pair p = {2, 40}; p.a + p.b; });
     struct pair q = ({ struct pair r = {7, 8}; r.b += 1; r; });
