@@ -58,7 +58,19 @@ scripts/fetch_csmith.sh
 python3 harness/run_csmith.py
 ```
 
-CI runs `harness/csmith_seeds.txt`. `python3 harness/run_csmith.py --count 500` is a larger local batch and is not part of CI. Options and the checksum/timeout/ulimit wrapper are in `harness/run_csmith.py`. Failures that remain are listed in `harness/csmith_known_failures.txt`.
+CI runs `harness/csmith_seeds.txt` through `harness/run_csmith.py`. That runner compiles the candidate with `-std=gnu11` and the Clang reference with `-std=gnu11 -O0`, and it links both binaries with `-lm`. A local batch is `python3 harness/run_csmith.py --count 500` and is not part of CI. Options and the checksum/timeout/ulimit wrapper are in `harness/run_csmith.py`. Failures that remain are listed in `harness/csmith_known_failures.txt`.
+
+For a large coverage campaign, use `tools/csmith_campaign.py`. The default mode is `gnu11`: the candidate is given `-std=gnu11`, and GCC and Clang run in their default GNU mode, without `-pedantic-errors`. Every executable, at both `-O0` and `-O2`, is linked with `-lm`. Csmith is given the same size caps as the CI runner, plus `--no-packed-struct` and `--no-argc`, so programs usually finish in seconds and layouts stay comparable. Shards can share one `--out` directory with different `--seed-start` and `--count` values; a completed seed is skipped if the same range is run again. `--summarize DIR` rebuilds `SUMMARY.json` from the seed tree.
+
+```sh
+python3 tools/csmith_campaign.py \
+  --compiler build/compiler \
+  --seed-start 1 --count 500 \
+  --opt O0 --opt O2 \
+  --out /tmp/csmith-coverage
+```
+
+`--mode strict` compiles the candidate as default C11 and the references with `-std=c11`. Tests for the command lines, the `-lm` fix, and the classification are in `tools/test_csmith_campaign.py`.
 
 ## One True AWK
 

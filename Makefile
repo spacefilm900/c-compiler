@@ -1,7 +1,7 @@
 # Build the compiler the harness expects at build/compiler.
 CARGO ?= cargo
 
-.PHONY: all test wacc csmith otawk torture perf awk-extra clean
+.PHONY: all test wacc csmith csmith-campaign otawk torture perf awk-extra clean
 
 all: build/compiler
 
@@ -21,6 +21,14 @@ wacc: build/compiler
 csmith: build/compiler
 	scripts/fetch_csmith.sh
 	python3 harness/run_csmith.py
+
+# Local coverage campaign. Override SEED_START, COUNT, and OUT.
+SEED_START ?= 1
+COUNT ?= 100
+OUT ?= csmith-campaign-results
+csmith-campaign: build/compiler
+	scripts/fetch_csmith.sh
+	python3 tools/csmith_campaign.py --compiler build/compiler --seed-start $(SEED_START) --count $(COUNT) --opt O0 --opt O2 --out $(OUT)
 
 otawk: build/compiler
 	scripts/fetch_onetrueawk.sh

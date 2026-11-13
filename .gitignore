@@ -11,3 +11,6 @@ tests/external/awk-posix-challenge/
 tests/external/awk-volume-tests/
 tests/external/awk-results/
 reports/perf.json
+
+# Written by Csmith into the working directory.
+platform.info
