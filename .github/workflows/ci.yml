@@ -330,12 +330,12 @@ jobs:
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: tests/external/freedoom
-          key: freedoom-0.13.0-7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d-${{ runner.os }}
+          key: freedoom-0.13.0-7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d-a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b-${{ runner.os }}
 
-      - name: Build DOOM both ways and compare frame hashes at -O0 and -O2
+      - name: Build DOOM both ways and compare frame hashes at -O0 and -O2, every demo to its end
         run: |
           set -euo pipefail
           scripts/fetch_doomgeneric.sh
           scripts/fetch_freedoom.sh
           make
-          python3 harness/run_doom.py --opt O0 --opt O2
+          python3 harness/run_doom.py --opt O0 --opt O2 --play-jobs "$(nproc)"

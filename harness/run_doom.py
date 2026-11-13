@@ -9,8 +9,12 @@ Fetch the inputs first:
 The program is the pinned doomgeneric tree plus two files of this
 repository: the headless backend harness/doom/dg_headless.c and the
 fixed-address allocator harness/doom/dg_alloc.c. The backend has no
-window, a fake clock, and no input. It plays DEMO1 of freedoom1.wad with -timedemo (one
-game tic per frame), hashes every frame, and exits after --frames frames.
+window, a fake clock, and no input. It plays a recorded demo with -timedemo
+(one game tic per frame) and hashes every frame. By default every demo in
+freedoom1.wad and freedoom2.wad (DEMO1 to DEMO4 in each) is played to its
+natural end, where -timedemo reports "timed N gametics" and exits; --frames
+is only a safety cap. Both builds must end the same way after the same
+number of game tics, with the same hash for every frame.
 
 For each optimisation level the harness does three graded steps:
 
@@ -30,10 +34,15 @@ holds old heap addresses. dg_alloc.c puts every allocation at a fixed
 address, so those frames are the same from run to run and from build to
 build; see the comment at the top of that file.
 
-Exit status is 0 only when every requested level built with this compiler
-alone and every frame hash matched the reference.
+Each --opt may name the demos to play at that level, as
+LEVEL:WAD/DEMO,WAD/DEMO or LEVEL:WAD (all its demos), for example
+--opt O2 --opt O0:freedoom1/demo1. A bare LEVEL plays every demo.
 
-Env: CC_UNDER_TEST, CLANG, DOOMGENERIC_ROOT, DOOM_WAD.
+Exit status is 0 only when every requested level built with this compiler
+alone and every frame hash of every demo matched the reference.
+
+Env: CC_UNDER_TEST, CLANG, DOOMGENERIC_ROOT, DOOM_WAD (one WAD instead of
+the two Freedoom WADs; a relative path is taken from the current directory).
 """
 
 from __future__ import annotations
@@ -43,6 +52,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -57,13 +67,33 @@ DG_ROOT = Path(
     os.environ.get("DOOMGENERIC_ROOT", ROOT / "tests" / "external" / "doomgeneric")
 )
 SRC = DG_ROOT / "doomgeneric"
-WAD = Path(
-    os.environ.get("DOOM_WAD", ROOT / "tests" / "external" / "freedoom" / "freedoom1.wad")
+FREEDOOM = ROOT / "tests" / "external" / "freedoom"
+# Resolved now: the game runs with a temporary home directory as its working
+# directory, where a relative WAD path would not be found.
+WADS = (
+    [Path(os.environ["DOOM_WAD"]).resolve()]
+    if os.environ.get("DOOM_WAD")
+    else [FREEDOOM / "freedoom1.wad", FREEDOOM / "freedoom2.wad"]
 )
 BACKEND = ROOT / "harness" / "doom" / "dg_headless.c"
 ALLOCATOR = ROOT / "harness" / "doom" / "dg_alloc.c"
 DEFINES = ["-DNORMALUNIX", "-DLINUX", "-D_DEFAULT_SOURCE"]
-DEMO = "demo1"
+TIMED = re.compile(r"timed (\d+) gametics")
+
+
+def wad_demos(wad: Path) -> list[str]:
+    """The DEMOn lumps in a WAD's directory, in directory order, lower case."""
+    data = wad.read_bytes()
+    kind, count, table = struct.unpack_from("<4sii", data, 0)
+    if kind not in (b"IWAD", b"PWAD"):
+        raise SystemExit(f"{wad} is not a WAD file")
+    names = []
+    for i in range(count):
+        raw = data[table + 16 * i + 8 : table + 16 * i + 16].rstrip(b"\0")
+        name = raw.decode("ascii", errors="replace")
+        if re.fullmatch(r"DEMO\d+", name):
+            names.append(name.lower())
+    return names
 
 
 def sources() -> list[Path]:
@@ -109,7 +139,8 @@ def ours_obj(src: Path, obj: Path, opt: str) -> dict:
     if rc != 0:
         if rc == 124:
             status = "timeout"
-        elif rc == 101 or "panicked" in err:
+        elif rc < 0 or rc == 101 or "panicked" in err:
+            # A negative status is a signal (SIGSEGV, SIGABRT): a crash.
             status = "ice"
         else:
             status = "reject"
@@ -129,15 +160,25 @@ def link(objs: list[Path], exe: Path) -> tuple[int, str]:
     return rc, err
 
 
-def play(exe: Path, log: Path, frames: int, timeout: float) -> dict:
+def play(exe: Path, wad: Path, demo: str, log: Path, frames: int, timeout: float) -> dict:
+    """Play one demo. `end` is "demo end" when -timedemo finished the demo
+    (exit 255 with "timed N gametics"), "frame cap" when --frames stopped
+    it (exit 0), and None for anything else, which is a failed run."""
     home = Path(tempfile.mkdtemp(prefix="doom-home-"))
-    cmd = [str(exe), "-iwad", str(WAD), "-timedemo", DEMO, "-nogui", "--frames", str(frames), "--log", str(log)]
+    cmd = [str(exe), "-iwad", str(wad), "-timedemo", demo, "-nogui", "--frames", str(frames), "--log", str(log)]
     env = dict(os.environ, HOME=str(home))
     try:
         rc, err, secs = run(cmd, timeout, env=env, cwd=str(home))
     finally:
         shutil.rmtree(home, ignore_errors=True)
-    return {"rc": rc, "seconds": secs, "stderr": err[-2000:]}
+    timed = TIMED.search(err)
+    end = None
+    gametics = None
+    if rc == 255 and timed:
+        end, gametics = "demo end", int(timed.group(1))
+    elif rc == 0:
+        end = "frame cap"
+    return {"rc": rc, "seconds": secs, "end": end, "gametics": gametics, "stderr": err[-2000:]}
 
 
 def read_log(log: Path) -> tuple[list[str], str | None]:
@@ -165,7 +206,15 @@ def compare(ref: list[str], got: list[str]) -> dict:
     return {"reference_frames": len(ref), "frames": len(got), "matching": same, "first_mismatch": first_bad}
 
 
-def level(opt: str, files: list[Path], out: Path, frames: int, jobs: int) -> dict:
+def level(
+    opt: str,
+    files: list[Path],
+    out: Path,
+    demos: list[tuple[Path, str]],
+    frames: int,
+    jobs: int,
+    play_jobs: int,
+) -> dict:
     ref_dir = out / f"clang-{opt}"
     our_dir = out / f"ours-{opt}"
     for d in (ref_dir, our_dir):
@@ -193,32 +242,81 @@ def level(opt: str, files: list[Path], out: Path, frames: int, jobs: int) -> dic
     rc, err = link([obj_for(ref_dir, s) for s in files], ref_exe)
     if rc != 0:
         raise SystemExit(f"clang reference failed to link:\n{err}")
-    ref_log = ref_dir / "frames.log"
-    ref_run = play(ref_exe, ref_log, frames, 600)
-    ref_hashes, ref_total = read_log(ref_log)
-    if ref_run["rc"] != 0 or ref_total is None:
-        raise SystemExit(f"clang reference run failed (rc {ref_run['rc']}):\n{ref_run['stderr']}")
-    result["clang_run_seconds"] = ref_run["seconds"]
-    result["reference_total"] = ref_total
 
     mixed = bool(failed)
     result["build"] = "mixed" if mixed else "full"
     objs = [obj_for(ref_dir if s.name in failed else our_dir, s) for s in files]
     exe = our_dir / "doom"
     rc, err = link(objs, exe)
+    result["link_ok"] = rc == 0
     if rc != 0:
-        result.update(link_ok=False, link_stderr=err[-2000:])
-        return result
-    result["link_ok"] = True
-    log = our_dir / "frames.log"
-    got_run = play(exe, log, frames, 600)
-    hashes, total = read_log(log)
-    result["ours_run_seconds"] = got_run["seconds"]
-    result["run_rc"] = got_run["rc"]
-    result["run_stderr"] = got_run["stderr"] if got_run["rc"] != 0 else ""
-    result["total"] = total
-    result["compare"] = compare(ref_hashes, hashes)
-    result["match"] = total == ref_total and got_run["rc"] == 0 and hashes == ref_hashes
+        result["link_stderr"] = err[-2000:]
+
+    # Every run is independent, so they can share the machine (--play-jobs).
+    tasks = [(ref_exe, ref_dir, wad, demo) for wad, demo in demos]
+    if result["link_ok"]:
+        tasks += [(exe, our_dir, wad, demo) for wad, demo in demos]
+    with ThreadPoolExecutor(max_workers=max(1, play_jobs)) as pool:
+        played = dict(
+            zip(
+                [(d, w, m) for _, d, w, m in tasks],
+                pool.map(lambda t: play(t[0], t[2], t[3], t[1] / f"{t[2].stem}-{t[3]}.log", frames, 900), tasks),
+            )
+        )
+
+    runs = []
+    for wad, demo in demos:
+        tag = f"{wad.stem}-{demo}"
+        ref_log = ref_dir / f"{tag}.log"
+        ref_run = played[(ref_dir, wad, demo)]
+        ref_hashes, ref_total = read_log(ref_log)
+        if ref_run["end"] is None or ref_total is None:
+            raise SystemExit(
+                f"clang reference run of {wad.name} {demo} failed (rc {ref_run['rc']}):\n{ref_run['stderr']}"
+            )
+        entry = {
+            "wad": wad.name,
+            "demo": demo,
+            "end": ref_run["end"],
+            "gametics": ref_run["gametics"],
+            "reference_total": ref_total,
+            "clang_run_seconds": ref_run["seconds"],
+        }
+        if result["link_ok"]:
+            log = our_dir / f"{tag}.log"
+            got_run = played[(our_dir, wad, demo)]
+            hashes, total = read_log(log)
+            entry.update(
+                ours_run_seconds=got_run["seconds"],
+                run_rc=got_run["rc"],
+                ours_end=got_run["end"],
+                ours_gametics=got_run["gametics"],
+                run_stderr="" if got_run["end"] else got_run["stderr"],
+                total=total,
+                compare=compare(ref_hashes, hashes),
+                match=(
+                    total == ref_total
+                    and got_run["end"] == ref_run["end"]
+                    and got_run["gametics"] == ref_run["gametics"]
+                    and hashes == ref_hashes
+                ),
+            )
+        else:
+            entry.update(compare=compare(ref_hashes, []), match=False)
+        runs.append(entry)
+    result["demos"] = runs
+    result["clang_run_seconds"] = sum(r["clang_run_seconds"] for r in runs)
+    result["ours_run_seconds"] = sum(r.get("ours_run_seconds", 0.0) for r in runs)
+    result["compare"] = {
+        "reference_frames": sum(r["compare"]["reference_frames"] for r in runs),
+        "frames": sum(r["compare"]["frames"] for r in runs),
+        "matching": sum(r["compare"]["matching"] for r in runs),
+        "first_mismatch": next(
+            (f"{r['wad']} {r['demo']} frame {r['compare']['first_mismatch']}" for r in runs if not r["match"]),
+            None,
+        ),
+    }
+    result["match"] = result["link_ok"] and bool(runs) and all(r["match"] for r in runs)
     return result
 
 
@@ -233,12 +331,19 @@ def summary(res: dict) -> str:
         f" clang {res['clang_compile_seconds']:.1f}s;"
         f" run: ours {res.get('ours_run_seconds', 0):.2f}s clang {res['clang_run_seconds']:.2f}s",
     ]
+    for d in res.get("demos", []):
+        dc = d["compare"]
+        lines.append(
+            f"    {d['wad']} {d['demo']}: {d['end']} after {dc['reference_frames']} frames"
+            f" ({d['gametics']} gametics); ours {dc['frames']} frames, matching {dc['matching']},"
+            f" match={'yes' if d['match'] else 'no'}"
+        )
+        if d.get("run_stderr"):
+            lines.append(f"      run exited {d.get('run_rc')}: {d['run_stderr'].strip()[-300:]}")
     for f in res["files"]:
         if f["status"] != "ok":
             first = (f.get("stderr") or "").strip().splitlines()
             lines.append(f"    {f['status']}: {f['file']}: {first[0] if first else ''}")
-    if res.get("run_rc"):
-        lines.append(f"    run exited {res['run_rc']}: {res['run_stderr'].strip()[-300:]}")
     return "\n".join(lines)
 
 
@@ -254,10 +359,8 @@ def metadata() -> dict:
         "date": time.strftime("%Y-%m-%d"),
         "compiler_commit": out(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"]),
         "doomgeneric_pin": pin.read_text().strip() if pin.is_file() else "",
-        "wad": WAD.name,
-        "wad_sha256": out(["sha256sum", str(WAD)]).split(" ")[0],
+        "wads": [{"wad": w.name, "sha256": out(["sha256sum", str(w)]).split(" ")[0]} for w in WADS],
         "clang": out([CLANG, "--version"]).splitlines()[0] if out([CLANG, "--version"]) else "",
-        "demo": DEMO,
     }
 
 
@@ -285,9 +388,10 @@ def render_scorecard(payload: dict, title: str, notes: str = "") -> str:
         f"- Date: {meta.get('date', '')}",
         f"- Compiler commit: `{meta.get('compiler_commit', '')}`",
         f"- doomgeneric: `{meta.get('doomgeneric_pin', '')}`",
-        f"- WAD: `{meta.get('wad', '')}` (SHA-256 `{meta.get('wad_sha256', '')}`), demo `{meta.get('demo', '')}` with `-timedemo`",
+        *[f"- WAD: `{w['wad']}` (SHA-256 `{w['sha256']}`)" for w in meta.get("wads", [])],
+        "- Demos played with `-timedemo` to their natural end",
         f"- Reference: {meta.get('clang', 'clang')}, `-std=gnu11`, same optimisation level",
-        f"- Frames requested: {payload['frames']}; translation units: {total}; parallel jobs: {payload.get('jobs', '')}",
+        f"- Frame cap per demo: {payload['frames']}; translation units: {total}; parallel jobs: {payload.get('jobs', '')}",
         "",
         f"| | {head} |",
         f"|---| {rule} |",
@@ -304,9 +408,10 @@ def render_scorecard(payload: dict, title: str, notes: str = "") -> str:
         "",
         "Compile time is the sum over all files of this compiler plus Clang turning",
         "its IR into an object, against Clang compiling the C directly. Run time is",
-        "the whole demo run, including hashing every frame.",
+        "all the demo runs at that level, including hashing every frame.",
         "",
     ]
+    lines += demo_table(levels)
     failed = [(level["opt"], f) for level in levels for f in level["files"] if f["status"] != "ok"]
     if failed:
         lines += ["## Files this compiler did not build", ""]
@@ -319,11 +424,86 @@ def render_scorecard(payload: dict, title: str, notes: str = "") -> str:
     return "\n".join(lines)
 
 
+def demo_table(levels: list[dict]) -> list[str]:
+    """One row per demo: its length and whether each level matched."""
+    order: list[tuple[str, str]] = []
+    info: dict[tuple[str, str], dict] = {}
+    for lvl in levels:
+        for d in lvl.get("demos", []):
+            key = (d["wad"], d["demo"])
+            if key not in info:
+                order.append(key)
+                info[key] = {"frames": d["compare"]["reference_frames"], "gametics": d["gametics"], "end": d["end"]}
+    if not order:
+        return []
+    opts = [lvl["opt"] for lvl in levels]
+    lines = [
+        "## Demos",
+        "",
+        "| WAD | Demo | Ends by | Game tics | Frames | " + " | ".join(f"{o} matches Clang" for o in opts) + " |",
+        "|---|---|---|---|---| " + " | ".join("---" for _ in opts) + " |",
+    ]
+    for key in order:
+        cells = []
+        for lvl in levels:
+            hit = next((d for d in lvl.get("demos", []) if (d["wad"], d["demo"]) == key), None)
+            if hit is None:
+                cells.append("not run")
+            elif hit["match"]:
+                cells.append(f"yes ({hit['compare']['matching']} frames)")
+            else:
+                cells.append(f"no (first mismatch frame {hit['compare']['first_mismatch']})")
+        i = info[key]
+        lines.append(
+            f"| `{key[0]}` | {key[1]} | {i['end']} | {i['gametics'] or ''} | {i['frames']} | " + " | ".join(cells) + " |"
+        )
+    compared = sum(d["compare"]["reference_frames"] for lvl in levels for d in lvl.get("demos", []))
+    lines += ["", f"Total frames compared, all demos and levels: {compared}.", ""]
+    return lines
+
+
+def parse_plan(specs: list[str] | None) -> list[tuple[str, list[tuple[Path, str]]]]:
+    """`--opt` values to (level, demos). A bare level plays every demo."""
+    by_stem = {w.stem: w for w in WADS}
+    every = [(w, d) for w in WADS for d in wad_demos(w)]
+    plan = []
+    for spec in specs or ["O0", "O2"]:
+        opt, _, rest = spec.partition(":")
+        if opt not in ("O0", "O1", "O2", "O3"):
+            raise SystemExit(f"bad --opt {spec!r}")
+        if not rest:
+            plan.append((opt, every))
+            continue
+        demos = []
+        for item in rest.split(","):
+            stem, _, demo = item.partition("/")
+            if stem not in by_stem:
+                raise SystemExit(f"--opt {spec!r}: no WAD named {stem}")
+            names = wad_demos(by_stem[stem])
+            pick = [demo.lower()] if demo else names
+            for name in pick:
+                if name not in names:
+                    raise SystemExit(f"--opt {spec!r}: {stem} has no {name}")
+                demos.append((by_stem[stem], name))
+        plan.append((opt, demos))
+    return plan
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--opt", action="append", choices=["O0", "O1", "O2", "O3"], help="repeatable; default O0 and O2")
-    ap.add_argument("--frames", type=int, default=2100, help="frames to hash (default 2100, one minute of game time)")
+    ap.add_argument(
+        "--opt",
+        action="append",
+        help="LEVEL or LEVEL:WAD/DEMO,... (repeatable; default O0 and O2 with every demo)",
+    )
+    ap.add_argument("--frames", type=int, default=100000, help="safety cap on frames per demo (default 100000)")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
+    ap.add_argument(
+        "--play-jobs",
+        type=int,
+        default=1,
+        help="demo runs at once (default 1, so run times are not skewed by sharing the machine)",
+    )
     ap.add_argument("--out", type=Path, default=ROOT / "build" / "doom")
     ap.add_argument("--json", type=Path, help="write the full results here")
     ap.add_argument("--scorecard", type=Path, help="write a Markdown scorecard here")
@@ -341,7 +521,8 @@ def main() -> int:
         return 0
     args.out = args.out.resolve()
 
-    for path, hint in ((SRC / "d_main.c", "scripts/fetch_doomgeneric.sh"), (WAD, "scripts/fetch_freedoom.sh")):
+    needed = [(SRC / "d_main.c", "scripts/fetch_doomgeneric.sh")] + [(w, "scripts/fetch_freedoom.sh") for w in WADS]
+    for path, hint in needed:
         if not path.is_file():
             print(f"missing {path}. Run {hint} first.", file=sys.stderr)
             return 2
@@ -352,8 +533,8 @@ def main() -> int:
     files = sources()
     results = []
     ok = True
-    for opt in args.opt or ["O0", "O2"]:
-        res = level(opt, files, args.out, args.frames, args.jobs)
+    for opt, demos in parse_plan(args.opt):
+        res = level(opt, files, args.out, demos, args.frames, args.jobs, args.play_jobs)
         print(summary(res), flush=True)
         results.append(res)
         ok = ok and res["build"] == "full" and bool(res.get("match"))
@@ -361,6 +542,7 @@ def main() -> int:
         "meta": metadata(),
         "frames": args.frames,
         "jobs": args.jobs,
+        "play_jobs": args.play_jobs,
         "files": len(files),
         "levels": results,
     }
