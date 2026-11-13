@@ -869,7 +869,7 @@ impl Sema {
                             children: init_children(elem, false),
                             index: 0,
                             base: 0,
-                            union: union_key(&elem),
+                            union: union_key(elem),
                         });
                         self.positional_one(&first, &mut frames, &mut scratch, elem)?;
                     }
@@ -1239,7 +1239,7 @@ impl Sema {
             children: init_children(ty, false),
             index: 0,
             base,
-            union: union_key(&ty),
+            union: union_key(ty),
         }];
         for item in items {
             if let Init::Designated {
@@ -1696,7 +1696,13 @@ impl Sema {
             }
         }
         unions.finish(name, self, &mut folded)?;
-        splice_bit_blobs(ty, 0, &image, &mut folded);
+        if !splice_bit_blobs(ty, 0, &image, &mut folded) {
+            return self.err(
+                stores.first().map(|store| store.expr.line()).unwrap_or(1),
+                stores.first().map(|store| store.expr.column()).unwrap_or(1),
+                format!("initializer of '{name}' uses an address in a bit-field struct"),
+            );
+        }
         let value = assemble(ty, &folded, 0);
         if !union_bytes_ok(ty, &value) {
             return self.err(
@@ -5108,13 +5114,21 @@ impl ByteImage {
     }
 
     /// The `size` bytes at `start`, with the relocations inside them.
-    fn slice(&self, start: usize, size: usize) -> ConstInit {
+    /// `None` when a relocation starts inside and ends outside: its address
+    /// cannot be split across two pieces.
+    fn slice(&self, start: usize, size: usize) -> Option<ConstInit> {
         let mut bytes = vec![0u8; size];
         if start < self.bytes.len() {
             let end = (start + size).min(self.bytes.len());
             bytes[..end - start].copy_from_slice(&self.bytes[start..end]);
         }
         let (lo, hi) = (start as u64, (start + size) as u64);
+        if self.relocs.iter().any(|(at, value)| {
+            let end = at + reloc_width(value);
+            (*at >= lo && *at < hi && end > hi) || (*at < lo && end > lo)
+        }) {
+            return None;
+        }
         let relocs: Vec<_> = self
             .relocs
             .iter()
@@ -5122,15 +5136,16 @@ impl ByteImage {
             .map(|(at, value)| (at - lo, value.clone()))
             .collect();
         if relocs.is_empty() {
-            ConstInit::Bytes(bytes)
+            Some(ConstInit::Bytes(bytes))
         } else {
-            ConstInit::RelocBytes { bytes, relocs }
+            Some(ConstInit::RelocBytes { bytes, relocs })
         }
     }
 
     fn into_const(self) -> ConstInit {
         let size = self.bytes.len();
         self.slice(0, size)
+            .expect("an address written into an image lies inside it")
     }
 }
 
@@ -5581,9 +5596,43 @@ fn is_bit_image_seen(ty: &CType, seen: &mut HashSet<u32>) -> bool {
     })
 }
 
+/// A bit-field record or a union that holds a bit-field record anywhere in
+/// its members, including through a struct or an array member.
+///
+/// All members of a union share its bytes (C11 6.7.2.1p16), so such a union
+/// is assembled as one complete byte image. Slicing out only the bit-field
+/// record of its first member would lose a longer member's bytes, and with
+/// them the union's size and the C offsets of the fields after it.
+fn is_image_record(ty: &CType) -> bool {
+    if is_bit_image(ty) {
+        return true;
+    }
+    ty.is_union() && holds_bit_record(ty, &mut HashSet::new())
+}
+
+fn holds_bit_record(ty: &CType, seen: &mut HashSet<u32>) -> bool {
+    if ty.record_has_bitfield() {
+        return true;
+    }
+    if let Some(elem) = ty.array_elem() {
+        return holds_bit_record(elem, seen);
+    }
+    let Some(handle) = ty.struct_ref() else {
+        return false;
+    };
+    if !seen.insert(handle.id()) {
+        return false;
+    }
+    handle.fields().is_some_and(|fields| {
+        fields
+            .iter()
+            .any(|field| field.bit_width.is_some() || holds_bit_record(&field.ty, seen))
+    })
+}
+
 /// Byte ranges of nested records whose LLVM type is a byte image.
 fn bit_record_ranges(ty: &CType, base: u64, out: &mut Vec<(u64, u64)>) {
-    if is_bit_image(ty) {
+    if is_image_record(ty) {
         out.push((base, base + ty.size().unwrap_or(0)));
         return;
     }
@@ -5615,11 +5664,22 @@ fn bit_record_ranges(ty: &CType, base: u64, out: &mut Vec<(u64, u64)>) {
 /// C11 6.7.9 initializes the designated union member and leaves the rest of
 /// that union's object representation zero. Every member occupies the same
 /// bytes, so a bit-field in a member other than the first is still this image.
-fn splice_bit_blobs(ty: &CType, base: u64, image: &ByteImage, out: &mut Vec<(u64, ConstInit)>) {
-    if is_bit_image(ty) {
+///
+/// `false` means an address in `image` crosses the edge of a record, so it
+/// has no place in any one record's bytes.
+fn splice_bit_blobs(
+    ty: &CType,
+    base: u64,
+    image: &ByteImage,
+    out: &mut Vec<(u64, ConstInit)>,
+) -> bool {
+    if is_image_record(ty) {
         let size = ty.size().unwrap_or(0) as usize;
-        out.push((base, image.slice(base as usize, size)));
-        return;
+        let Some(blob) = image.slice(base as usize, size) else {
+            return false;
+        };
+        out.push((base, blob));
+        return true;
     }
     if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
         let fields: Vec<_> = if ty.is_union() {
@@ -5631,16 +5691,21 @@ fn splice_bit_blobs(ty: &CType, base: u64, image: &ByteImage, out: &mut Vec<(u64
             if field.bit_width.is_some() {
                 continue;
             }
-            splice_bit_blobs(&field.ty, base + field.offset, image, out);
+            if !splice_bit_blobs(&field.ty, base + field.offset, image, out) {
+                return false;
+            }
         }
-        return;
+        return true;
     }
     if let (Some(elem), Some(len)) = (ty.array_elem(), ty.array_len()) {
         let step = elem.size().unwrap_or(0);
         for index in 0..len {
-            splice_bit_blobs(elem, base + index * step, image, out);
+            if !splice_bit_blobs(elem, base + index * step, image, out) {
+                return false;
+            }
         }
     }
+    true
 }
 
 fn ptr_as_int(ptr: PtrConst, dest: TypeName) -> ConstInit {
