@@ -2,7 +2,7 @@
 """Csmith differential runner.
 
 Generates programs with Csmith 2.3.0 (scripts/fetch_csmith.sh), compiles
-each with this compiler and with clang -std=c11 -O0, runs both, and
+each with this compiler (`-std=gnu11`) and with clang -std=gnu11 -O0, runs both, and
 compares exit status and stdout. Csmith's own main prints a checksum
 line (`checksum = ...`); that line is part of stdout. This is the usual
 Csmith method (timeout around the compiler and the program, then compare
@@ -159,6 +159,19 @@ def clip(data: bytes, n: int = 300) -> str:
     return data.decode(errors="replace").strip().replace("\n", " ")[:n]
 
 
+
+def candidate_ir_cmd(compiler: str | Path, src: str | Path, include: str | Path, ll: str | Path) -> list[str]:
+    return [str(compiler), "-std=gnu11", str(src), "-I", str(include), "-o", str(ll)]
+
+
+def link_ir_cmd(clang: str, ll: str | Path, out: str | Path) -> list[str]:
+    return [clang, "-std=gnu11", "-O0", "-w", str(ll), "-o", str(out), "-lm"]
+
+
+def reference_cmd(clang: str, src: str | Path, include: str | Path, out: str | Path) -> list[str]:
+    return [clang, "-std=gnu11", "-O0", "-w", "-I", str(include), str(src), "-o", str(out), "-lm"]
+
+
 def one_seed(seed: str, work: Path) -> tuple[str, str]:
     """Return (status, detail). status is pass, fail, or panic."""
     src = work / f"{seed}.c"
@@ -173,7 +186,7 @@ def one_seed(seed: str, work: Path) -> tuple[str, str]:
     if rc != 0 or not src.is_file():
         return "fail", f"csmith failed ({rc}): {clip(err)}"
     rc, _, err = run(
-        [str(COMPILER), str(src), "-I", str(INCLUDE), "-o", str(ll)],
+        candidate_ir_cmd(COMPILER, src, INCLUDE, ll),
         COMPILE_TIMEOUT,
         cwd=work,
     )
@@ -183,14 +196,14 @@ def one_seed(seed: str, work: Path) -> tuple[str, str]:
     if rc != 0:
         return "fail", f"compiler failed ({rc}): {clip(err)}"
     rc, _, err = run(
-        [CLANG, "-std=c11", "-O0", "-w", str(ll), "-o", str(mine), "-lm"],
+        link_ir_cmd(CLANG, ll, mine),
         COMPILE_TIMEOUT,
         cwd=work,
     )
     if rc != 0:
         return "fail", f"clang rejected IR ({rc}): {clip(err)}"
     rc, _, err = run(
-        [CLANG, "-std=c11", "-O0", "-w", "-I", str(INCLUDE), str(src), "-o", str(ref), "-lm"],
+        reference_cmd(CLANG, src, INCLUDE, ref),
         COMPILE_TIMEOUT,
         cwd=work,
     )

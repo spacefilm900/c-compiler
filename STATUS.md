@@ -294,9 +294,9 @@ Csmith, One True AWK, the AWK Builder suites, `gcc.c-torture/execute`, and a per
 
 ### Csmith
 
-Pin `30dccd73b78652c4719f36572994778a5b233a4e` (tag `csmith-2.3.0`). Every seed uses the options in `harness/run_csmith.py`: no packed structs (`#pragma pack` is ignored), `main(void)`, and size caps so a program finishes in seconds. The program is compiled with this compiler and with `clang -std=c11 -O0`, then both binaries run under an 8 second timeout, `RLIMIT_CPU`, and a 2 GiB address-space limit. Exit status and stdout are compared. The checksum line is the one Csmith's `main` prints.
+Pin `30dccd73b78652c4719f36572994778a5b233a4e` (tag `csmith-2.3.0`). Every seed uses the options in `harness/run_csmith.py`: no packed structs (`#pragma pack` is ignored), `main(void)`, and size caps so a program finishes in seconds. The program is compiled with this compiler at `-std=gnu11` and with `clang -std=gnu11 -O0`, both binaries are linked with `-lm`, and then both run under an 8 second timeout, `RLIMIT_CPU`, and a 2 GiB address-space limit. Exit status and stdout are compared. The checksum line is the one Csmith's `main` prints.
 
-CI runs the 40 seeds in `harness/csmith_seeds.txt`. The wall-clock limit is twice the CPU limit, so a program that burns CPU dies from `SIGXCPU` on both sides instead of one side winning a race with the parent's timeout. A local batch is `python3 harness/run_csmith.py --count 500`. It is not part of CI.
+CI runs the 40 seeds in `harness/csmith_seeds.txt`. The wall-clock limit is twice the CPU limit, so a program that burns CPU dies from `SIGXCPU` on both sides instead of one side winning a race with the parent's timeout. A local batch is `python3 harness/run_csmith.py --count 500`. It is not part of CI. A larger coverage campaign, at `-O0` and `-O2`, is `tools/csmith_campaign.py`; see `tests/external/README.md`.
 
 Local result on this machine, Ubuntu Clang 18.1.3, after nested bit-field initializers: **25 passed, 15 known failures, 0 unexpected**, out of 40 seeds. The 15 failures are stricter pointer constraints than Clang's warnings, plus seeds 7, 19, and 37, which are inconclusive: both binaries are killed by the CPU limit and print no checksum, so they are not counted as a pass. Seeds 21 and 22 were a file-scope initializer of a nested bit-field struct; they pass and were removed from `harness/csmith_known_failures.txt`. No checksum mismatch in the batch.
 
@@ -368,9 +368,35 @@ The numbers below are from the agent VM (Linux 6.12.113+, x86_64, Ubuntu Clang 1
 
 The timing table above is from before this compiler could build awk. The compile now succeeds, and the two awk binaries agree on `bugs-fixed` and on `testdir`.
 
+## Csmith coverage campaign
+
+The in-tree runner is `tools/csmith_campaign.py`. It always links executables with `-lm`, at both `-O0` and `-O2`. Default mode is `gnu11`: the candidate is compiled with `-std=gnu11`, and GCC and Clang run in their default GNU mode, without `-pedantic-errors`. Csmith 2.3.0 is given the same size caps as `harness/run_csmith.py`, plus `--no-packed-struct` and `--no-argc`, so programs usually finish in seconds and layouts stay comparable. `--mode strict` is available for a C11 comparison. The script can be sharded with `--seed-start` and `--count` on a shared `--out` directory, and it skips a seed that already has a complete result. Command construction, the `-lm` fix, and classification are tested in `tools/test_csmith_campaign.py`, which the CI check job now runs.
+
+The CI runner `harness/run_csmith.py` now also compiles the candidate and the Clang reference with `-std=gnu11`, and still links with `-lm`. On the 40 seeds in `harness/csmith_seeds.txt` the result was unchanged: **25 passed, 15 known failures, 0 unexpected**, in about a minute, so the known-failure list and the job's runtime stay the same.
+
+A local campaign of seeds 1–2000, at both `-O0` and `-O2`, was run once on 13 November 2026 (Europe/London) against compiler `e5316b1667bb4ae746bd5b713ceb3a1abf922239`, Clang 19.1.7, and GCC 14.2.0, used only as black-box oracles. Evidence is in `/workspace/csmith-coverage-2026-11-13`. Totals:
+
+| Class | `-O0` | `-O2` |
+| --- | ---: | ---: |
+| Valid differential comparisons | 1,492 | 1,490 |
+| `agreement` | 1,486 | 1,490 |
+| `candidate-wrong-output` | 6 | 0 |
+| `candidate-rejects-valid-gnu-c` | 508 | 505 |
+| `reference-disagreement` | 0 | 5 |
+| `candidate-crash-or-ice` / `candidate-bad-ir` / `candidate-timeout` / `reference-timeout` / `invalid-program` | 0 | 0 |
+
+Two classes of candidate defect were recorded and not fixed:
+
+1. **Wrong output at `-O0` only** (seeds 121, 755, 819, 1468, 1841, 1855). The final checksum matches GCC and Clang, but this compiler also prints Csmith's `transparent_crc` traces even though `print_hash_value` is 0. A minimised program (`reports/csmith-coverage/repro-struct-return-flag.c`) shows the same thing: after a discarded return of a bit-field struct, a later call that passes that 0 as the third argument (after an integer and a pointer) takes the true branch. Linking the same IR at `-O2` agrees with the references.
+2. **Valid GNU C rejected** (508 seeds at `-O0`, of which 418 are incompatible pointer comparisons and 90 are incompatible pointer assignments). GCC and Clang accept and run these in GNU mode. This compiler's `-std=gnu11` still diagnoses them, because that mode currently allows only equality between a `void *` and a function pointer. Minimised reproducers: `reports/csmith-coverage/repro-pointer-compare.c` and `reports/csmith-coverage/repro-pointer-assign.c`.
+
+The five `-O2` reference disagreements (seeds 568, 1085, 1502, 1562, 1810) are cases where GCC and Clang did not agree with each other, and are not counted as candidate defects.
+
+Commands and options are in `tests/external/README.md`. The compiler was not changed in this step.
+
 ## Next actions
 
-The testing stage is in place, and unmodified One True AWK builds with this compiler. The two awk binaries agree on `bugs-fixed` and on the upstream `testdir`, including the golden-file lines the Clang build also fails. The small C11 gaps in step 1 of `PLAN.md` are implemented: flexible array members, `u`/`U`/`u8` literals, `long double` aggregate returns, and file-scope initializers of a nested bit-field struct. Eight more gaps followed: `sizeof` in integer constant expressions, compound literals, non-prototype `int f();`, `_Static_assert` / `_Generic` / `_Alignof`, one `declare` per asm label, brace elision after a designator, UTF-8 and UCNs in literals, and prefixed character constants in `#if`. Variable-length arrays, old-style K&R definitions, and `_Alignas` remain. No new platform is started. The adversarial C11 challenge phase is closed: v0.6 was accepted as the final planned adversarial release, with 724/724 at both `-O0` and `-O2`, and pull request 27 merged (`d728a94`). The next steps in `PLAN.md` are a Csmith coverage campaign (at least 1,000 valid differential comparisons, and a fix for the missing `-lm` at `-O0` in our copy of the campaign script), then the GNU-compatibility cheap tier (`__typeof__`, statement expressions, `__attribute__` handling, case ranges, zero-length arrays, the `?:` shorthand, and more `__builtin_` functions, opt-in with `-std=gnu11`), then big programs on Linux (DOOM, Lua, SQLite), each with a per-program scorecard, with middle-tier GNU features (inline assembly, computed `goto`, vectors) only on demand and nested functions out of scope, then macOS on Apple Silicon.
+The testing stage is in place, and unmodified One True AWK builds with this compiler. The two awk binaries agree on `bugs-fixed` and on the upstream `testdir`, including the golden-file lines the Clang build also fails. The small C11 gaps in step 1 of `PLAN.md` are implemented: flexible array members, `u`/`U`/`u8` literals, `long double` aggregate returns, and file-scope initializers of a nested bit-field struct. Eight more gaps followed: `sizeof` in integer constant expressions, compound literals, non-prototype `int f();`, `_Static_assert` / `_Generic` / `_Alignof`, one `declare` per asm label, brace elision after a designator, UTF-8 and UCNs in literals, and prefixed character constants in `#if`. Variable-length arrays, old-style K&R definitions, and `_Alignas` remain. No new platform is started. The adversarial C11 challenge phase is closed: v0.6 was accepted as the final planned adversarial release, with 724/724 at both `-O0` and `-O2`, and pull request 27 merged (`d728a94`). The Csmith coverage step is done: a 2,000-seed campaign produced 1,492 valid differential comparisons at `-O0` and 1,490 at `-O2`, and `tools/csmith_campaign.py` always links with `-lm`. The next steps in `PLAN.md` are the GNU-compatibility cheap tier (`__typeof__`, statement expressions, `__attribute__` handling, case ranges, zero-length arrays, the `?:` shorthand, and more `__builtin_` functions, opt-in with `-std=gnu11`), then big programs on Linux (DOOM, Lua, SQLite), each with a per-program scorecard, with middle-tier GNU features (inline assembly, computed `goto`, vectors) only on demand and nested functions out of scope, then macOS on Apple Silicon.
 
 ## Eight C11 gaps record
 

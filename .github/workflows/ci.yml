@@ -61,6 +61,9 @@ jobs:
           make
           python3 harness/run_tests.py
 
+      - name: Csmith campaign script tests
+        run: python3 -m unittest tools/test_csmith_campaign.py
+
   wacc:
     name: writing-a-c-compiler suite
     runs-on: ubuntu-24.04
