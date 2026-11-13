@@ -4737,7 +4737,9 @@ fn flexible_member_named(ty: &CType, name: &str) -> bool {
         })
 }
 
-/// An integer constant expression with value 0, or that expression cast to `void *`.
+/// An integer constant expression with value 0, or that expression cast to
+/// `void *` (C11 6.3.2.3p3). A `void *` cast of a pointer, such as
+/// `(void *)(void *)0`, is a null pointer but not a null pointer constant.
 fn is_null_pointer_constant(expr: &Expr) -> bool {
     match expr {
         Expr::Cast { ty_name, expr, .. }
@@ -4745,12 +4747,17 @@ fn is_null_pointer_constant(expr: &Expr) -> bool {
                 .pointee()
                 .is_some_and(|pointee| pointee.is_void() && pointee.quals().is_empty()) =>
         {
-            is_null_pointer_constant(expr)
+            is_integer_zero(expr)
         }
-        _ => match eval_const_expr(expr) {
-            Ok(value) => value.ty.is_integer() && (value.bits & value.ty.mask()) == 0,
-            Err(_) => false,
-        },
+        _ => is_integer_zero(expr),
+    }
+}
+
+/// An integer constant expression with value 0.
+fn is_integer_zero(expr: &Expr) -> bool {
+    match eval_const_expr(expr) {
+        Ok(value) => value.ty.is_integer() && (value.bits & value.ty.mask()) == 0,
+        Err(_) => false,
     }
 }
 

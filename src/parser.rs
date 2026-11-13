@@ -4325,22 +4325,34 @@ fn check_uneval_compare(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Resul
 }
 
 /// A null pointer constant (C11 6.3.2.3p3): an integer constant expression
-/// with the value 0, or such an expression cast to `void *`.
+/// with the value 0, or such an expression cast to `void *`. A generic
+/// selection is classified by its selected expression; a `void *` cast of
+/// a pointer, such as `(void *)(void *)0`, is a null pointer but not a null
+/// pointer constant.
 fn uneval_null_constant(expr: &Expr, ty: &CType, env: Env) -> bool {
-    if let Expr::Cast {
-        ty_name,
-        expr: inner,
-        ..
-    } = expr
-    {
-        if ty_name
+    match expr {
+        Expr::Generic {
+            control, assocs, ..
+        } => select_generic(control, assocs, env).is_ok_and(|selected| {
+            rvalue_type(selected, env)
+                .is_ok_and(|selected_ty| uneval_null_constant(selected, &selected_ty, env))
+        }),
+        Expr::Cast {
+            ty_name,
+            expr: inner,
+            ..
+        } if ty_name
             .pointee()
-            .is_some_and(|pointee| pointee.is_void() && pointee.quals().is_empty())
+            .is_some_and(|pointee| pointee.is_void() && pointee.quals().is_empty()) =>
         {
-            return rvalue_type(inner, env)
-                .is_ok_and(|inner_ty| uneval_null_constant(inner, &inner_ty, env));
+            rvalue_type(inner, env).is_ok_and(|inner_ty| uneval_integer_zero(inner, &inner_ty, env))
         }
+        _ => uneval_integer_zero(expr, ty, env),
     }
+}
+
+/// An integer constant expression with the value 0.
+fn uneval_integer_zero(expr: &Expr, ty: &CType, env: Env) -> bool {
     ty.is_integer() && eval_ice(expr, env).is_ok_and(|value| value.bits & value.ty.mask() == 0)
 }
 
