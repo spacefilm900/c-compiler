@@ -82,6 +82,7 @@ pub fn analyze_dialect(
         variadic_fn: false,
         last_param: None,
         stmt_expr_seq: 0,
+        union_choice: Vec::new(),
         library_calls: std::collections::BTreeMap::new(),
         deprecated: unit
             .fn_attrs
@@ -188,6 +189,9 @@ fn case_key(bits: u64, ty: TypeName) -> i128 {
 struct Sema {
     /// Statement expressions checked so far, for their slot names.
     stmt_expr_seq: u32,
+    /// The member each union in the initializer being shaped holds so far:
+    /// byte offset of the union, its key, and the member index.
+    union_choice: Vec<(u64, UnionKey, usize)>,
     /// C library functions that a `__builtin_` forwarder calls, by symbol.
     library_calls: std::collections::BTreeMap<String, crate::builtins::LibSig>,
     /// Functions declared `deprecated`, by symbol, with the message.
@@ -713,6 +717,21 @@ impl Sema {
         line: usize,
         column: usize,
     ) -> Result<(CType, Vec<ElemStore>), Diagnostic> {
+        // A compound literal inside this initializer shapes its own
+        // initializer, with its own union member choices.
+        let outer = std::mem::take(&mut self.union_choice);
+        let shaped = self.shape_initializer_inner(ty, init, line, column);
+        self.union_choice = outer;
+        shaped
+    }
+
+    fn shape_initializer_inner(
+        &mut self,
+        ty: &CType,
+        init: &Init,
+        line: usize,
+        column: usize,
+    ) -> Result<(CType, Vec<ElemStore>), Diagnostic> {
         let mut ty = ty.clone();
         if let CType::Array(elem, None) = &ty {
             let elem = (**elem).clone();
@@ -745,6 +764,8 @@ impl Sema {
                 ty = CType::array(elem, Some(count));
             }
         }
+        // Length inference above walked the same items into scratch stores.
+        self.union_choice.clear();
         let mut stores = Vec::new();
         self.fill_object(&ty, init, 0, &mut stores, line, column)?;
         if stores.is_empty() && !ty.is_array() {
@@ -835,7 +856,7 @@ impl Sema {
                                 children: init_children(&child.ty, false),
                                 index: 0,
                                 base: child_base,
-                                is_union: child.ty.is_union(),
+                                union: union_key(&child.ty),
                             });
                             self.positional_one(&first, &mut frames, &mut scratch, elem)?;
                         } else if !advance_frames(&mut frames) {
@@ -848,7 +869,7 @@ impl Sema {
                             children: init_children(elem, false),
                             index: 0,
                             base: 0,
-                            is_union: elem.is_union(),
+                            union: union_key(&elem),
                         });
                         self.positional_one(&first, &mut frames, &mut scratch, elem)?;
                     }
@@ -1015,6 +1036,11 @@ impl Sema {
             // later items on top of the same bytes and steal them from the
             // enclosing initializer.
             let fields = initializable_fields(fields, ty.is_union());
+            if let Some(key) = union_key(ty) {
+                if *pos < items.len() && !fields.is_empty() {
+                    self.select_member(base, key, 0, stores);
+                }
+            }
             for field in &fields {
                 if *pos >= items.len() {
                     break;
@@ -1076,6 +1102,11 @@ impl Sema {
             let (line, column) = init_pos(init);
             return self.err(line, column, "struct initializer must be a brace list");
         };
+        if let Some(key) = union_key(ty) {
+            if !items.is_empty() && !fields.is_empty() {
+                self.select_member(base, key, 0, stores);
+            }
+        }
         let mut pos = 0usize;
         for field in &fields {
             if pos >= items.len() {
@@ -1208,7 +1239,7 @@ impl Sema {
             children: init_children(ty, false),
             index: 0,
             base,
-            is_union: ty.is_union(),
+            union: union_key(&ty),
         }];
         for item in items {
             if let Init::Designated {
@@ -1220,6 +1251,7 @@ impl Sema {
             {
                 let (child, mut frames_at) =
                     self.seek_designator(ty, base, designators, *line, *column)?;
+                self.select_frames(&frames_at, stores);
                 if self.elides_into(&child, init) {
                     // C11 6.7.9p17, p20: a designated aggregate whose
                     // initializer has no braces starts brace elision at its
@@ -1230,7 +1262,7 @@ impl Sema {
                         children: init_children(&child.ty, false),
                         index: 0,
                         base: child_base,
-                        is_union: child.ty.is_union(),
+                        union: union_key(&child.ty),
                     });
                     self.positional_one(init, &mut frames_at, stores, ty)?;
                     frames = frames_at;
@@ -1300,12 +1332,11 @@ impl Sema {
                         return self.err(*line, *column, "designator does not match this type");
                     }
                     let child = children[*index].clone();
-                    let is_union = current.is_union();
                     frames.push(InitFrame {
                         children,
                         index: *index,
                         base: current_base,
-                        is_union,
+                        union: union_key(&current),
                     });
                     if step + 1 == path.len() {
                         chosen = Some(child);
@@ -1344,7 +1375,7 @@ impl Sema {
                 children,
                 index,
                 base: current_base,
-                is_union: current.is_union(),
+                union: union_key(&current),
             });
             if nth + 1 == designators.len() {
                 return Ok((child, frames));
@@ -1389,6 +1420,10 @@ impl Sema {
             }
             let child = frame.children[frame.index].clone();
             let child_base = frame.base + child.offset;
+            if let Some(key) = frame.union {
+                let (union_base, member) = (frame.base, frame.index);
+                self.select_member(union_base, key, member, stores);
+            }
             let scalar =
                 child.ty.is_scalar() || child.field.as_ref().is_some_and(|f| f.is_bitfield());
             if scalar || self.opens_subobject(&child.ty, item) {
@@ -1417,7 +1452,7 @@ impl Sema {
                 children: nested,
                 index: 0,
                 base: child_base,
-                is_union: child.ty.is_union(),
+                union: union_key(&child.ty),
             });
             let _ = root;
         }
@@ -1472,6 +1507,48 @@ impl Sema {
             });
         }
         Ok(())
+    }
+
+    /// Record that the initializer for the union at byte `base` names
+    /// `member`. C11 6.7.9p17 and p19: when a designator names a different
+    /// member from the one initialized so far, that member is the one the
+    /// union holds, and its subobjects not named later are initialized as
+    /// for static storage (zero). Stores already made inside the union
+    /// belonged to the earlier member, so they are dropped, together with
+    /// the member choices of unions nested inside it.
+    fn select_member(
+        &mut self,
+        base: u64,
+        key: UnionKey,
+        member: usize,
+        stores: &mut Vec<ElemStore>,
+    ) {
+        let (id, size) = key;
+        let end = base + size;
+        let earlier = self
+            .union_choice
+            .iter()
+            .find(|(at, (other, _), _)| *at == base && *other == id)
+            .map(|(_, _, chosen)| *chosen);
+        if earlier == Some(member) {
+            return;
+        }
+        if earlier.is_some() {
+            stores.retain(|store| !store_within(store, base, end));
+            self.union_choice
+                .retain(|(at, (_, len), _)| !(*at >= base && *at + *len <= end));
+        }
+        self.union_choice.push((base, key, member));
+    }
+
+    /// [`Self::select_member`] for every union a designator or positional
+    /// walk passes through, outermost first.
+    fn select_frames(&mut self, frames: &[InitFrame], stores: &mut Vec<ElemStore>) {
+        for frame in frames {
+            if let Some(key) = frame.union {
+                self.select_member(frame.base, key, frame.index, stores);
+            }
+        }
     }
 
     fn check_stores(&mut self, stores: &mut [ElemStore]) -> Result<(), Diagnostic> {
@@ -4833,8 +4910,30 @@ struct InitFrame {
     index: usize,
     base: u64,
     /// A union initializes one member. The next positional item continues
-    /// after the union, not at another member of it.
-    is_union: bool,
+    /// after the union, not at another member of it. The key identifies the
+    /// union type and gives its size, for [`Sema::select_member`].
+    union: Option<UnionKey>,
+}
+
+/// Whether a store lies inside the bytes `base..end`.
+fn store_within(store: &ElemStore, base: u64, end: u64) -> bool {
+    if let Some(bits) = &store.bits {
+        let first = u64::from(bits.abs_bit / 8);
+        return first >= base && first < end;
+    }
+    let size = store.ty.size().unwrap_or(0);
+    store.offset >= base && store.offset < end && store.offset + size <= end
+}
+
+/// A union type's identity and size in bytes.
+type UnionKey = (u32, u64);
+
+fn union_key(ty: &CType) -> Option<UnionKey> {
+    if !ty.is_union() {
+        return None;
+    }
+    let handle = ty.struct_ref()?;
+    Some((handle.id(), ty.size().unwrap_or(0)))
 }
 
 /// Indexes through `init_children(..., true)` that reach `name`.
@@ -4898,7 +4997,7 @@ fn advance_frames(frames: &mut Vec<InitFrame>) -> bool {
         let Some(frame) = frames.last_mut() else {
             return false;
         };
-        if frame.is_union {
+        if frame.union.is_some() {
             frames.pop();
             continue;
         }
