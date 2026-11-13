@@ -21,6 +21,12 @@ tests/xabi/*_def.c is linked with the matching *_use.c in both directions:
 this compiler's IR with a Clang object, and the reverse. Both must match
 Clang compiling the two files together.
 
+tests/gnu/*.c are GNU C: this compiler runs with -std=gnu11 and Clang with
+-std=gnu11, and the two binaries must match. Each one is also compiled with
+this compiler's default (strict C11), where it must be rejected with a
+diagnostic and no crash, because every file there uses an extension that
+is a C11 constraint violation.
+
 Env: CC_UNDER_TEST, CLANG (default "clang"), TIMEOUT (seconds, default 10).
 Exit status 0 only if all tests pass.
 """
@@ -41,22 +47,36 @@ def run(cmd):
     except OSError as e:
         return "oserror", b"", str(e).encode()
 
-def test(src, tmp):
+def test(src, tmp, std="c11"):
     name = src.stem
     ll, a, b = tmp / f"{name}.ll", tmp / f"{name}.mine", tmp / f"{name}.ref"
-    rc, _, err = run([str(COMPILER), str(src), "-o", str(ll)])
+    ours = [str(COMPILER)] + ([f"-std={std}"] if std != "c11" else [])
+    rc, _, err = run(ours + [str(src), "-o", str(ll)])
     if rc != 0:
         return f"compiler failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
     rc, _, err = run([CLANG, "-w", str(ll), "-o", str(a), "-lm"])
     if rc != 0:
         return f"clang rejected IR ({rc}): {err.decode(errors='replace').strip()[:300]}"
-    rc, _, err = run([CLANG, "-w", "-std=c11", str(src), "-o", str(b), "-lm"])
+    rc, _, err = run([CLANG, "-w", f"-std={std}", str(src), "-o", str(b), "-lm"])
     if rc != 0:
         return f"oracle compile failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
     got, exp = run([str(a)]), run([str(b)])
     if got != exp:
         return f"mismatch: got exit={got[0]} out={got[1][:100]!r}, expected exit={exp[0]} out={exp[1][:100]!r}"
     return None
+
+def test_gnu(src, tmp):
+    """GNU C: differential at -std=gnu11, and rejected in strict C11."""
+    ll = tmp / f"{src.stem}.strict.ll"
+    rc, _, err = run([str(COMPILER), str(src), "-o", str(ll)])
+    if rc == 0:
+        return "strict C11 accepted a GNU-only program"
+    if not isinstance(rc, int) or rc < 0 or rc >= 100:
+        return f"strict C11 did not exit with a diagnostic ({rc})"
+    if b"error:" not in err:
+        return "strict C11 rejected the program without an error message"
+    return test(src, tmp, "gnu11")
+
 
 def test_cross(def_src, use_src, tmp):
     """Link one translation unit from this compiler with one from Clang.
@@ -106,18 +126,19 @@ def main():
     tests = sorted((ROOT / "tests").glob("*.c"))
     hosted = sorted((ROOT / "tests" / "hosted").glob("*.c"))
     crosses = sorted((ROOT / "tests" / "xabi").glob("*_def.c"))
+    gnu = sorted((ROOT / "tests" / "gnu").glob("*.c"))
     problems = []
     if not (COMPILER.is_file() and os.access(COMPILER, os.X_OK)):
         problems.append(f"compiler not found/executable: {COMPILER}")
     if shutil.which(CLANG) is None:
         problems.append(f"clang not found: {CLANG}")
-    total = len(tests) + len(hosted) + len(crosses)
+    total = len(tests) + len(hosted) + len(crosses) + len(gnu)
     if problems:
         for t in tests:
             print(f"FAIL {t.name}: " + "; ".join(problems))
         for t in hosted:
             print(f"FAIL {t.parent.name}/{t.name}: " + "; ".join(problems))
-        for t in crosses:
+        for t in crosses + gnu:
             print(f"FAIL {t.parent.name}/{t.name}: " + "; ".join(problems))
         print(f"\n0/{total} passed")
         return 1
@@ -140,6 +161,11 @@ def main():
                 r = f"missing {use.name}"
             else:
                 r = test_cross(t, use, tmp)
+            print(f"{'PASS' if r is None else 'FAIL'} {label}" + ("" if r is None else f": {r}"))
+            passed += r is None
+        for t in gnu:
+            r = test_gnu(t, tmp)
+            label = f"{t.parent.name}/{t.name}"
             print(f"{'PASS' if r is None else 'FAIL'} {label}" + ("" if r is None else f": {r}"))
             passed += r is None
     print(f"\n{passed}/{total} passed")

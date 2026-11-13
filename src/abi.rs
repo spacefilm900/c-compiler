@@ -523,7 +523,8 @@ fn collect_leaves(ty: &CType, base: u64, inherited: bool, out: &mut Vec<Leaf>) {
 /// uses that same rule, so `unsigned char[10]` is `i64` plus `i16`. A
 /// separate field that sits entirely in one eightbyte is that field's width
 /// when it is one aligned scalar (`char` before a `double` is `i8`), and
-/// `i64` when several fields share the eightbyte.
+/// otherwise the rest of the object, up to eight bytes: `i64` when the
+/// eightbyte is full, `i32` for the tail of a 12-byte struct.
 fn integer_piece(index: usize, eightbytes: usize, leaves: &[Leaf], size: u64) -> Option<RegPiece> {
     let start = index as u64 * 8;
     let limit = (start + 8).min(size);
@@ -554,8 +555,12 @@ fn integer_piece(index: usize, eightbytes: usize, leaves: &[Leaf], size: u64) ->
                 });
             }
         }
+        // Several fields, or one that is not an aligned scalar, share the
+        // eightbyte. The piece is the whole eightbyte, but only the bytes
+        // the object owns: the last eightbyte of a 12-byte struct is `i32`.
+        // A wider piece would load and store past the end of the object.
         return Some(RegPiece::Int {
-            bits: 64,
+            bits: ((limit - start) as u32) * 8,
             offset: start,
         });
     }
@@ -761,6 +766,58 @@ mod tests {
             classify_aggregate(&bytes(24)).unwrap(),
             AggAbi::Memory
         ));
+    }
+
+    #[test]
+    fn last_eightbyte_never_extends_past_the_object() {
+        // struct { int a; int b; short c; char d; } is 12 bytes: i64, i32.
+        // The second eightbyte has two fields, but only four bytes of it
+        // belong to the object.
+        let twelve = record(
+            120,
+            vec![
+                field("a", ints(TypeName::Int), 0),
+                field("b", ints(TypeName::Int), 4),
+                field("c", ints(TypeName::Short), 8),
+                field("d", ints(TypeName::Char), 10),
+            ],
+            12,
+            4,
+            false,
+        );
+        assert_eq!(direct(&twelve), vec!["i64".to_string(), "i32".to_string()]);
+
+        // struct { short a[4]; char b; char c; } is 10 bytes: i64, i16.
+        let ten = record(
+            121,
+            vec![
+                field("a", CType::array(ints(TypeName::Short), Some(4)), 0),
+                field("b", ints(TypeName::Char), 8),
+                field("c", ints(TypeName::Char), 9),
+            ],
+            10,
+            2,
+            false,
+        );
+        assert_eq!(direct(&ten), vec!["i64".to_string(), "i16".to_string()]);
+
+        // A 12-byte struct whose last storage unit holds an `int`
+        // bit-field (`signed f3 : 24` at byte 8) is i64, i32.
+        let mut f3 = field("f3", ints(TypeName::Int), 8);
+        f3.bit_width = Some(24);
+        f3.bit_offset = 64;
+        let bits = record(
+            122,
+            vec![
+                field("a", ints(TypeName::Int), 0),
+                field("b", ints(TypeName::Int), 4),
+                f3,
+            ],
+            12,
+            4,
+            false,
+        );
+        assert_eq!(direct(&bits), vec!["i64".to_string(), "i32".to_string()]);
     }
 
     #[test]

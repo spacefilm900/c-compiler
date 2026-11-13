@@ -1367,6 +1367,40 @@ pub fn void_function_ptr_mix(left: &CType, right: &CType) -> bool {
         || (right.is_void_pointer() && function_pointer(left))
 }
 
+/// Two pointers that a GNU-mode comparison accepts with a warning when C11
+/// does not (C11 6.5.8p2, 6.5.9p2 require compatible pointees). GCC and
+/// Clang, used as black-box oracles, compare any two pointers for equality
+/// and any two object pointers relationally in GNU mode. The caller keeps
+/// its own rule for relational comparison of function pointers.
+pub fn gnu_distinct_pointers(left: &CType, right: &CType) -> bool {
+    left.is_pointer() && right.is_pointer()
+}
+
+/// A pointer assignment that C11 6.5.16.1p1 does not allow but that GCC
+/// and Clang accept with a warning in GNU mode: the pointees differ only in
+/// the signedness of an integer type (`int *` from `unsigned *`, or plain
+/// `char` against `signed char` and `unsigned char`), or the destination
+/// pointee lacks a qualifier of the source pointee (`int *` from
+/// `const int *`, `void *` from `const int *`), or both. Only the first
+/// level of pointee is relaxed: `int **` from `unsigned **` stays an error,
+/// as it is in GCC 14. Function pointers are not covered.
+pub fn gnu_pointer_sign_or_qual_mix(dest: &CType, src: &CType) -> bool {
+    let (Some(dp), Some(sp)) = (dest.pointee(), src.pointee()) else {
+        return false;
+    };
+    if dp.is_func() || sp.is_func() {
+        return false;
+    }
+    let (du, su) = (dp.unqualified(), sp.unqualified());
+    if compatible(&du, &su) || du.is_void() || su.is_void() {
+        return true;
+    }
+    match (du.as_integer(), su.as_integer()) {
+        (Some(a), Some(b)) => a != TypeName::Bool && b != TypeName::Bool && a.size() == b.size(),
+        _ => false,
+    }
+}
+
 /// Two types are compatible (C11 6.2.7, 6.7.6, 6.7.3).
 ///
 /// Qualifiers must match at every level. Arrays are compatible when their

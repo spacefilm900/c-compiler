@@ -3000,6 +3000,21 @@ impl Sema {
             );
             return Ok(CType::int_type());
         }
+        if self.dialect.gnu() && gnu_distinct_pointers(&left_ty, &right_ty) {
+            self.warn(
+                line,
+                column,
+                format!(
+                    "'{}' compares distinct pointer types ({} and {}); \
+                     C11 {} does not allow this; accepted as a GNU extension (-std=gnu11)",
+                    op.as_str(),
+                    left_ty.display(),
+                    right_ty.display(),
+                    if equality { "6.5.9p2" } else { "6.5.8p2" }
+                ),
+            );
+            return Ok(CType::int_type());
+        }
         self.err(
             line,
             column,
@@ -4201,6 +4216,9 @@ impl Sema {
     /// is an error. Clang only warns for incompatible pointer types
     /// (`-Wincompatible-pointer-types`) and still emits code; this compiler
     /// rejects the program. A cast may drop qualifiers; that is not diagnosed.
+    /// With `-std=gnu11`, a pointee that differs only in integer signedness
+    /// or that drops qualifiers is accepted with a warning, as GCC and Clang
+    /// do in GNU mode; other pointer mismatches stay errors.
     fn can_assign(&self, dest: &CType, src: &Expr) -> Result<(), Diagnostic> {
         let src_ty = src.ty().expect("typed");
         if dest.is_arithmetic() && src_ty.is_arithmetic() {
@@ -4231,6 +4249,20 @@ impl Sema {
             && ((src_ty.is_pointer() && pointer_assignable(dest, &src_ty))
                 || is_null_pointer_constant(src))
         {
+            return Ok(());
+        }
+        if self.dialect.gnu() && gnu_pointer_sign_or_qual_mix(dest, &src_ty) {
+            self.warn(
+                src.line(),
+                src.column(),
+                format!(
+                    "assigning '{}' to '{}' changes the signedness or drops a qualifier \
+                     of the pointed-to type; C11 6.5.16.1p1 does not allow this; \
+                     accepted as a GNU extension (-std=gnu11)",
+                    src_ty.display(),
+                    dest.display()
+                ),
+            );
             return Ok(());
         }
         self.err(
@@ -7665,6 +7697,91 @@ int typed = _Generic(__builtin_offsetof(struct In, c), unsigned long: 1, default
         )
         .unwrap_err();
         assert!(err.contains("relational comparison"), "{err}");
+    }
+
+    #[test]
+    fn gnu_dialect_accepts_distinct_pointer_comparisons() {
+        // C11 6.5.8p2 and 6.5.9p2 need compatible pointee types (apart from
+        // qualifiers, void, and null pointer constants). GCC 14 and Clang 19
+        // accept distinct pointer types in GNU mode with a warning
+        // (black-box). -std=c11 keeps the error.
+        use crate::Dialect;
+        for source in [
+            "int g(int *i, unsigned *u) { return i == u; }",
+            "int g(int *i, unsigned *u) { return u != i; }",
+            "int g(int *i, unsigned *u) { return i < u; }",
+            "int g(int *i, unsigned *u) { return u >= i; }",
+            "int g(int **a, const int **b) { return a == b; }",
+            "int g(int **a, const int **b) { return a > b; }",
+            "int g(volatile unsigned char * volatile * volatile *a, unsigned char *** const b) { return a == b; }",
+            "struct S; int g(struct S **a, const struct S **b) { return a != b; }",
+            "int g(int *a, double *b) { return a == b; }",
+            "int g(int *a, int (*f)(void)) { return a == f; }",
+            "int g(int (*f)(int), int (*h)(void)) { return f == h; }",
+        ] {
+            let err = sema_dialect(source, Dialect::C11).unwrap_err();
+            assert!(err.contains("invalid operands to '"), "{source}: {err}");
+            let warnings = sema_dialect(source, Dialect::Gnu11).unwrap();
+            assert_eq!(warnings.len(), 1, "{source}: {warnings:?}");
+            assert!(
+                warnings[0].contains("warning:") && warnings[0].contains("distinct pointer types"),
+                "{source}: {warnings:?}"
+            );
+        }
+        // Relational comparison of function pointers stays an error, and a
+        // pointer against a non-null integer is not part of this extension.
+        for source in [
+            "int g(int (*f)(int), int (*h)(void)) { return f < h; }",
+            "int g(int *p) { return p == 5; }",
+        ] {
+            assert!(sema_dialect(source, Dialect::Gnu11).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn gnu_dialect_accepts_pointer_sign_and_qualifier_assignments() {
+        // C11 6.5.16.1p1 needs compatible pointees and every qualifier of the
+        // source pointee on the destination pointee. In GNU mode GCC 14 and
+        // Clang 19 accept a pointee that differs only in the signedness of
+        // an integer type, or that drops qualifiers, with a warning
+        // (black-box). The same rule covers initialization, arguments, and
+        // return. -std=c11 keeps the error.
+        use crate::Dialect;
+        for source in [
+            "void g(int *a, unsigned *b) { a = b; }",
+            "void g(unsigned *a, int *b) { a = b; }",
+            "void g(signed char *a, unsigned char *b) { a = b; }",
+            "void g(char *a, unsigned char *b) { a = b; }",
+            "void g(long *a, unsigned long *b) { a = b; }",
+            "void g(const int *a, unsigned *b) { a = b; }",
+            "void g(volatile int *a, volatile unsigned *b) { a = b; }",
+            "void g(unsigned *b) { int * volatile a = b; (void)a; }",
+            "void g(int *a, const int *b) { a = b; }",
+            "void g(void *a, const int *b) { a = b; }",
+            "void g(int *a, const unsigned *b) { a = b; }",
+            "int f(int *); int g(unsigned *b) { return f(b); }",
+            "int *g(unsigned *b) { return b; }",
+            "unsigned u; int *p = &u;",
+            "const char m[] = \"x\"; char *p = m;",
+        ] {
+            let err = sema_dialect(source, Dialect::C11).unwrap_err();
+            assert!(err.contains("incompatible types"), "{source}: {err}");
+            let warnings = sema_dialect(source, Dialect::Gnu11).unwrap();
+            assert_eq!(warnings.len(), 1, "{source}: {warnings:?}");
+            assert!(warnings[0].contains("warning:"), "{source}: {warnings:?}");
+        }
+        // GCC 14 rejects these even in GNU mode, so this compiler does too.
+        for source in [
+            "void g(int *a, long *b) { a = b; }",
+            "void g(int **a, unsigned **b) { a = b; }",
+            "void g(const int **a, int **b) { a = b; }",
+            "void g(int *a, double *b) { a = b; }",
+            "void g(int *a, int (*f)(void)) { a = f; }",
+            "void g(int *a) { a = 5; }",
+        ] {
+            let err = sema_dialect(source, Dialect::Gnu11).unwrap_err();
+            assert!(err.contains("incompatible"), "{source}: {err}");
+        }
     }
 
     #[test]

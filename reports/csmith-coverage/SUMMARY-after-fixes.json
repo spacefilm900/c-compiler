@@ -1,0 +1,36 @@
+{
+  "totals": {
+    "O0": {
+      "agreement": 1821,
+      "candidate-wrong-output": 0,
+      "candidate-crash-or-ice": 0,
+      "candidate-rejects-valid-gnu-c": 0,
+      "candidate-bad-ir": 0,
+      "candidate-timeout": 0,
+      "reference-timeout": 0,
+      "reference-crash": 179,
+      "reference-disagreement": 0,
+      "invalid-program": 0,
+      "generation-failed": 0
+    },
+    "O2": {
+      "agreement": 1822,
+      "candidate-wrong-output": 0,
+      "candidate-crash-or-ice": 0,
+      "candidate-rejects-valid-gnu-c": 0,
+      "candidate-bad-ir": 0,
+      "candidate-timeout": 0,
+      "reference-timeout": 0,
+      "reference-crash": 178,
+      "reference-disagreement": 0,
+      "invalid-program": 0,
+      "generation-failed": 0
+    }
+  },
+  "valid_comparisons": {
+    "O0": 1821,
+    "O2": 1822
+  },
+  "seed_count": 2000,
+  "record_count": 4000
+}
