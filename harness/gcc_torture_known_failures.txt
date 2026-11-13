@@ -27,7 +27,6 @@
 20000917-1.c compile-error
 20001009-2.c compile-error
 20001011-1.c compile-error
-20001017-2.c compile-error
 20001026-1.c old-style-decl
 20001101.c old-style-decl
 20001111-1.c builtin
@@ -267,7 +266,6 @@
 980506-3.c old-style-decl
 980526-1.c compile-error
 980526-3.c old-style-decl
-980617-1.c compile-error
 981130-1.c old-style-decl
 990106-1.c compile-error
 990130-1.c compile-error
