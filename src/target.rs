@@ -200,6 +200,14 @@ impl Target {
         !matches!(self, Target::Aarch64Linux)
     }
 
+    /// An unnamed bit-field, including a zero-width one, raises the
+    /// record's alignment to that of its declared type. AAPCS64 says so
+    /// for AArch64 Linux; System V AMD64 and Apple arm64 ignore unnamed
+    /// bit-fields for alignment (observed with Clang as a black box).
+    pub fn unnamed_bitfield_aligns(self) -> bool {
+        matches!(self, Target::Aarch64Linux)
+    }
+
     /// Function attributes every definition carries. Apple's arm64 ABI
     /// requires a valid frame record in x29 at all times, so frame
     /// pointers are kept in non-leaf functions.

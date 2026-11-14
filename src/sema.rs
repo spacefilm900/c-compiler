@@ -3953,6 +3953,7 @@ impl Sema<'_> {
             Symbol::Func(func) => (func.symbol, func.ret, func.params, func.variadic),
             Symbol::Var(_) => unreachable!("direct call is a function"),
         };
+        let unprototyped = matches!(self.lookup(&name), Some(Symbol::Func(func)) if !func.prototype);
         self.require_passed_aggregate(&ret, line, column, true)?;
         let arity = params.len();
         if variadic {
@@ -4009,7 +4010,7 @@ impl Sema<'_> {
                 name: fname,
                 ret: ret.clone(),
                 params,
-                variadic,
+                variadic: variadic && !(unprototyped && fixed_unprototyped_calls()),
                 indirect: false,
             });
         }
@@ -4442,7 +4443,6 @@ impl Sema<'_> {
         }
         let params = func.params.clone();
         let ret = func.ret.clone();
-        let variadic = func.variadic || !func.prototype;
         if let Expr::Call { args, .. } = expr {
             for (index, arg) in args.iter_mut().enumerate() {
                 self.check_expr(arg)?;
@@ -4463,7 +4463,7 @@ impl Sema<'_> {
                 name: String::new(),
                 ret: ret.clone(),
                 params,
-                variadic,
+                variadic: func.variadic || (!func.prototype && !fixed_unprototyped_calls()),
                 indirect: true,
             });
         }
@@ -8729,4 +8729,14 @@ int typed = _Generic(__builtin_offsetof(struct In, c), unsigned long: 1, default
         sema_ok("int f(void); int g(void) { return f == _Generic(0, int: (void *)0); }");
         sema_ok("int g(int *p) { return p == (void *)(void *)0; }");
     }
+}
+
+/// A call through a type without a prototype passes the promoted arguments
+/// as fixed arguments on AArch64, where variadic arguments travel
+/// differently (all on the stack for Apple arm64; in their own register
+/// save areas for AAPCS64). The callee is defined with fixed parameters,
+/// so the call must match that. On x86_64 the call stays variadic, which
+/// System V AMD64 passes identically apart from `%al`.
+fn fixed_unprototyped_calls() -> bool {
+    crate::target::current().is_aarch64()
 }

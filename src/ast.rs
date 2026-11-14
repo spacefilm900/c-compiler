@@ -626,11 +626,15 @@ pub fn layout_members(
     let mut places = Vec::with_capacity(members.len());
     let mut bit_pos: u64 = 0;
     let mut align = 1u32;
+    let unnamed_aligns = crate::target::current().unnamed_bitfield_aligns();
     for member in members {
         let field_align = member.align.max(1);
         if let Some(width) = member.bit_width {
             let unit_bits = member.size.max(1).saturating_mul(8);
             let align_bits = u64::from(field_align).saturating_mul(8);
+            if unnamed_aligns && !member.named {
+                align = align.max(field_align);
+            }
             if width == 0 {
                 bit_pos = align_up(bit_pos, align_bits)?;
                 places.push(LayoutPlace {
@@ -675,9 +679,13 @@ fn layout_union_members(members: &[LayoutMember]) -> Option<(Vec<LayoutPlace>, u
     let mut places = Vec::with_capacity(members.len());
     let mut align = 1u32;
     let mut size = 0u64;
+    let unnamed_aligns = crate::target::current().unnamed_bitfield_aligns();
     for member in members {
         let field_align = member.align.max(1);
         if let Some(width) = member.bit_width {
+            if unnamed_aligns && !member.named {
+                align = align.max(field_align);
+            }
             if width == 0 {
                 places.push(LayoutPlace {
                     offset: 0,
