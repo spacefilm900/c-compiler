@@ -417,3 +417,6 @@ jobs:
           scripts/fetch_sqlite.sh
           make
           python3 harness/run_sqlite.py --opt O0 --opt O2
+
+      - name: Compile-time guard (frontend vs clang -O0 on sqlite3.c and shell.c)
+        run: python3 tools/perf_guard.py
