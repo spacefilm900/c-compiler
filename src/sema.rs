@@ -2846,10 +2846,13 @@ impl Sema {
         let (line, column) = (*line, *column);
         let mut assocs = std::mem::take(assocs);
         // The controlling expression is not evaluated (C11 6.5.1.1p3), so
-        // a malformed __builtin_nan tag there makes no library call.
+        // a malformed __builtin_nan tag there makes no library call, and a
+        // label address there is no destination of a computed `goto`.
         let control_nan_calls = self.library_nan_calls.len();
+        let control_addr_labels = self.addr_labels.len();
         self.check_expr(control)?;
         self.library_nan_calls.truncate(control_nan_calls);
+        self.addr_labels.truncate(control_addr_labels);
         let raw = control.ty().expect("typed");
         let ty = match raw.peel() {
             CType::Array(elem, _) => CType::pointer((**elem).clone()),
@@ -2916,11 +2919,15 @@ impl Sema {
                 let strings = self.strings.len();
                 let seq = self.static_seq;
                 let nan_calls = self.library_nan_calls.len();
+                let addr_labels = self.addr_labels.len();
                 self.check_expr(&mut assoc.expr)?;
                 self.static_locals.truncate(locals);
                 self.strings.truncate(strings);
                 self.static_seq = seq;
                 self.library_nan_calls.truncate(nan_calls);
+                // `addr_labels` only grows, so a label address taken here
+                // is dropped with the association.
+                self.addr_labels.truncate(addr_labels);
             }
         }
         *expr = assocs.swap_remove(index).expr;

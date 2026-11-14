@@ -127,6 +127,19 @@ mod tests {
         // not a destination of the computed `goto`.
         let ir = gnu_ok("void f(void *p) { (void)sizeof(&&x); goto *p; x:; }").ir;
         assert!(ir.contains(", []"), "{ir}");
+        // Unselected `_Generic` associations and the controlling expression
+        // are not evaluated (C11 6.5.1.1p3); their statement expressions,
+        // and the labels in them, are dropped, so a label address there is
+        // no destination either. (Clang rejects this program because the
+        // indirect goto could enter a statement expression; this compiler
+        // accepts it, so it must at least emit valid IR.)
+        let ir = gnu_ok(
+            "int f(void *p) { int r = _Generic(0, int: 5, default: ({ hidden: (long)&&hidden; })); \
+             r += _Generic(({ ctl: &&ctl; }), void *: 1, default: 2); goto *p; one: return r; }",
+        )
+        .ir;
+        assert!(!ir.contains("%C.hidden") && !ir.contains("%C.ctl"), "{ir}");
+        assert!(ir.contains("indirectbr ptr") && ir.contains(", []"), "{ir}");
         // A label address is a `void *` value.
         gnu_ok("int f(void) { void *p = &&x; char *q = p; goto *q; x: return q != 0; }");
         for (source, want) in [
