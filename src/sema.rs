@@ -53,17 +53,12 @@ pub fn analyze_dialect(
             assign_slots(func);
         }
     }
-    let mut locs: HashMap<(usize, usize), std::rc::Rc<str>> = HashMap::new();
-    for token in tokens {
-        if token.kind != crate::token::TokenKind::Eof {
-            locs.insert((token.line, token.column), token.filename.clone());
-        }
-    }
     let mut sema = Sema {
         filename: filename.to_string(),
         dialect,
         warnings: RefCell::new(Vec::new()),
-        locs,
+        tokens,
+        locs: std::cell::OnceCell::new(),
         scopes: vec![HashMap::new()],
         loop_depth: 0,
         switches: Vec::new(),
@@ -214,7 +209,7 @@ struct Unevaluated {
     labels: HashSet<String>,
 }
 
-struct Sema {
+struct Sema<'t> {
     /// Statement expressions checked so far, for their slot names.
     stmt_expr_seq: u32,
     /// The member each union in the initializer being shaped holds so far:
@@ -234,7 +229,9 @@ struct Sema {
     /// Last token at each line and column. Included files override the main
     /// file when they share a coordinate; parser diagnostics resolve this
     /// more precisely from the token cursor.
-    locs: HashMap<(usize, usize), std::rc::Rc<str>>,
+    /// Built from `tokens` on the first diagnostic.
+    locs: std::cell::OnceCell<HashMap<(usize, usize), std::rc::Rc<str>>>,
+    tokens: &'t [crate::token::Token],
     scopes: Vec<HashMap<String, Symbol>>,
     loop_depth: u32,
     /// Innermost switch first at the end. A `case` or `default` belongs to
@@ -285,7 +282,20 @@ struct Sema {
     last_param: Option<String>,
 }
 
-impl Sema {
+impl Sema<'_> {
+    /// The file of the last token at each line and column.
+    fn locs(&self) -> &HashMap<(usize, usize), std::rc::Rc<str>> {
+        self.locs.get_or_init(|| {
+            let mut locs = HashMap::new();
+            for token in self.tokens {
+                if token.kind != crate::token::TokenKind::Eof {
+                    locs.insert((token.line, token.column), token.filename.clone());
+                }
+            }
+            locs
+        })
+    }
+
     fn declare_global(&mut self, decl: &mut GlobalDecl) -> Result<(), Diagnostic> {
         let name = decl.name.clone();
         let mut ty = decl.ty.clone();
@@ -5030,7 +5040,7 @@ impl Sema {
 
     fn warn(&self, line: usize, column: usize, message: impl Into<String>) {
         let file = self
-            .locs
+            .locs()
             .get(&(line, column))
             .map(|file| &**file)
             .unwrap_or(self.filename.as_str());
@@ -5046,7 +5056,7 @@ impl Sema {
         message: impl Into<String>,
     ) -> Result<T, Diagnostic> {
         let file = self
-            .locs
+            .locs()
             .get(&(line, column))
             .map(|file| &**file)
             .unwrap_or(self.filename.as_str());
@@ -5665,7 +5675,7 @@ impl UnionImages {
     fn finish(
         self,
         name: &str,
-        sema: &Sema,
+        sema: &Sema<'_>,
         folded: &mut Vec<(u64, ConstInit)>,
     ) -> Result<(), Diagnostic> {
         if let Some((line, column)) = self.bad {
