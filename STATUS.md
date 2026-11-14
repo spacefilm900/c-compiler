@@ -505,7 +505,7 @@ PLAN.md step 5, second program. Clean room: the fix below was written from the G
 - nine workload scripts of our own in `harness/lua/` (strings and patterns, tables and sorting, closures and errors, coroutines, garbage-collector stress with weak tables and finalizers, integer and float maths, `string.format` and parsing of floats, metatables and objects, and five classic benchmark kernels), compared byte for byte (stdout, stderr, exit status) and timed;
 - `luac -s` of all 42 Lua files (workloads and suite), whose output must be identical.
 
-`--std`, `--opt`, `--suite`, `--run-jobs`, `--json`, `--scorecard`, `--notes` and `--from-json` work as in the DOOM harness. `tools/test_run_lua.py` tests the outcome parsing, the verdict (a mixed build fails even when every output matches), the scorecard, and the Makefile-driven file lists. `make lua` fetches and runs it.
+`--std`, `--opt`, `--suite`, `--run-jobs`, `--json`, `--scorecard`, `--notes` and `--from-json` work as in the DOOM harness. `tools/test_run_lua.py` tests the outcome parsing, timeouts, `luac` failures and stale `luac` outputs, the verdict (a mixed build fails even when every output matches), the scorecard, and the Makefile-driven file lists. `make lua` fetches and runs it.
 
 **Defects.**
 
@@ -527,11 +527,11 @@ No ICE, bad IR, wrong output, crash, or performance defect was found. The first 
 | Official suite: user / portable / internal | OK / OK / OK (Clang OK) | OK / OK / OK (Clang OK) |
 | Workloads matching Clang byte for byte | 9 / 9 | 9 / 9 |
 | `luac -s` output identical | 42 / 42 | 42 / 42 |
-| Compile time, ours vs Clang (both configurations) | 26.4 s vs 9.0 s (2.95x) | 25.9 s vs 11.3 s (2.29x) |
-| Suite run time, ours vs Clang | 23.7 s vs 22.2 s (1.06x) | 12.7 s vs 12.7 s (1.00x) |
-| Workload run time, ours vs Clang | 11.3 s vs 10.0 s (1.13x) | 5.0 s vs 5.3 s (0.94x) |
+| Compile time, ours vs Clang (both configurations) | 16.3 s vs 3.3 s (4.92x) | 23.0 s vs 10.4 s (2.21x) |
+| Suite run time, ours vs Clang | 20.4 s vs 19.2 s (1.06x) | 12.3 s vs 12.4 s (1.00x) |
+| Workload run time, ours vs Clang | 11.5 s vs 9.6 s (1.21x) | 4.7 s vs 4.9 s (0.97x) |
 
-Run times are single runs and vary by about 10% between runs here.
+Run times are single runs and vary by about 10% between runs here. The two builds take turns to run first (Clang first for the user and internal suites and for every other workload, this compiler first for the rest). A timeout on either side is never a match, and a `luac -s` file matches only when both compilers' `luac` exit 0 and write identical bytes; old outputs are deleted before each run. The first version of this scorecard (compiler `ab7bcaa`, taken while a Csmith smoke run shared the machine, Clang always run first) had compile ratios of 2.95x and 2.29x; the `-O0` Clang compile time there was inflated by that load.
 
 **CI.** A new `lua test suite and workloads` job fetches Lua (cached by version and both SHA-256 sums), builds the compiler, and runs `python3 harness/run_lua.py --opt O0 --opt O2 --run-jobs "$(nproc)"`. Locally, with 8 cores and one suite run at a time, the whole run takes about two minutes.
 
