@@ -315,7 +315,7 @@ struct Macro {
 
 #[derive(Clone)]
 enum MacroEntry {
-    Defined(Macro),
+    Defined(Rc<Macro>),
     Undefined,
 }
 
@@ -356,7 +356,7 @@ struct Collected {
 enum Found {
     No,
     Special,
-    Macro(Macro),
+    Macro(Rc<Macro>),
 }
 
 enum Clause {
@@ -473,7 +473,7 @@ impl Processor {
         for (name, body) in BUILTINS {
             let mac = self.macro_from_parts(name, None, false, body_tokens(body)?, None)?;
             self.macros
-                .insert(mac.name.clone(), MacroEntry::Defined(mac));
+                .insert(mac.name.clone(), MacroEntry::Defined(Rc::new(mac)));
         }
         Ok(())
     }
@@ -495,7 +495,7 @@ impl Processor {
                 };
                 let mac = self.macro_from_parts(name, None, false, body, Some(&at))?;
                 self.macros
-                    .insert(mac.name.clone(), MacroEntry::Defined(mac));
+                    .insert(mac.name.clone(), MacroEntry::Defined(Rc::new(mac)));
                 Ok(())
             }
         }
@@ -521,7 +521,7 @@ impl Processor {
             }
             if self.tokens[self.index].kind == PpKind::Newline {
                 if !isolated {
-                    out.push(self.tokens[self.index].clone());
+                    out.push(self.take_current());
                 }
                 self.index += 1;
                 continue;
@@ -529,7 +529,7 @@ impl Processor {
             if self.try_expand(isolated)? {
                 continue;
             }
-            out.push(self.tokens[self.index].clone());
+            out.push(self.take_current());
             self.index += 1;
         }
         if !isolated && !self.cond.is_empty() {
@@ -544,6 +544,17 @@ impl Processor {
         Ok(out)
     }
 
+    /// The token at the cursor, about to be consumed. Its spelling is moved
+    /// out rather than copied: a consumed token is read again only for its
+    /// kind (`at_line_start`) or its position.
+    fn take_current(&mut self) -> PpToken {
+        let slot = &mut self.tokens[self.index];
+        let spelling = std::mem::take(&mut slot.spelling);
+        let mut tok = slot.clone();
+        tok.spelling = spelling;
+        tok
+    }
+
     fn at_line_start(&self) -> bool {
         self.index == 0 || self.tokens[self.index - 1].kind == PpKind::Newline
     }
@@ -553,11 +564,16 @@ impl Processor {
     }
 
     fn try_expand(&mut self, isolated: bool) -> Result<bool, Diagnostic> {
-        let tok = self.tokens[self.index].clone();
-        if tok.kind != PpKind::Ident || tok.hide.contains(&tok.spelling) {
+        let current = &self.tokens[self.index];
+        if current.kind != PpKind::Ident || current.hide.contains(&current.spelling) {
             return Ok(false);
         }
-        match self.lookup(&tok.spelling) {
+        let found = self.lookup(&current.spelling);
+        if matches!(found, Found::No) {
+            return Ok(false);
+        }
+        let tok = current.clone();
+        match found {
             Found::No => Ok(false),
             Found::Special => {
                 self.note_expansion(&tok)?;
@@ -647,7 +663,7 @@ impl Processor {
 
     fn lookup(&self, name: &str) -> Found {
         match self.macros.get(name) {
-            Some(MacroEntry::Defined(mac)) => Found::Macro(mac.clone()),
+            Some(MacroEntry::Defined(mac)) => Found::Macro(Rc::clone(mac)),
             Some(MacroEntry::Undefined) => Found::No,
             None if name == "__FILE__" || name == "__LINE__" => Found::Special,
             None => Found::No,
@@ -1398,7 +1414,7 @@ impl Processor {
             }
         }
         self.macros
-            .insert(mac.name.clone(), MacroEntry::Defined(mac));
+            .insert(mac.name.clone(), MacroEntry::Defined(Rc::new(mac)));
         Ok(())
     }
 
