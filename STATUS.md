@@ -663,6 +663,15 @@ Goal, approved by the owner: DOOM playable in a window on his Apple Silicon MacB
 - **Portability of the headless harness:** `dg_alloc.c` uses `MAP_FIXED_NOREPLACE` where it exists and otherwise passes the arena address as a hint and checks it (macOS); `run_doom.py` hashes WADs with `hashlib`; `fetch_freedoom.sh` falls back to `shasum -a 256`.
 - **macOS workflow:** a `doom` input on `workflow_dispatch` adds a job (never on push to `main`): `run_doom.py --opt O0 --opt O2` against Apple's Clang, `brew install sdl2`, `./tools/mac/play_doom.sh` with `SDL_VIDEODRIVER=dummy` and the test settings, and a non-failing launch in a real window. It uploads the scorecard, logs, and screenshots.
 
+Native Mac results (GitHub's `macos-26` Apple Silicon runner, Apple Clang 21.0.0, macOS 26.5 SDK, Homebrew `sdl2` = `sdl2-compat` 2.32.74), dispatched by hand on this branch:
+
+| Run | Head | Result | Wall time (native job, DOOM job) |
+| --- | --- | --- | --- |
+| 1 | `7836346` | native job passes. DOOM: every file compiles, but the link fails with 50 duplicate symbols from the SDK's inline header functions (fixed above); Apple Clang's own build plays all demos | 78 s (52 s, 75 s) |
+| 2 | `57dd90d` | **pass**: frame hashes 39,209/39,209 match Apple Clang at `-O0` and at `-O2` (all eight Freedoom demos to their end); `./tools/mac/play_doom.sh` builds and runs with the dummy driver (516 frames in 8 s, the scripted keys start E1M1 and fire); a real Cocoa window opened on the runner's desktop and drew 349 frames in 6 s (screenshot in the run's `doom-macos` artifact) | 111 s (42 s, 108 s) |
+
+The billing API reports 0 billable ms for these runs, as for the earlier macOS runs; rounded up per job they are 3 macOS minutes each (about 30 Linux-equivalent minutes each).
+
 Local results on Linux x86_64 (Clang 19): DOOM headless 39,209/39,209 frames match at `-O0` and `-O2`; the SDL2 build with SDL 2.32.4's headers and the dummy video driver starts, takes the scripted keys, starts E1M1, and the player fires (ammo 50 to 49 in the saved frame); the full build takes about 10 s.
 
 ## Next actions

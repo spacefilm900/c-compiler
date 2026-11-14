@@ -227,6 +227,9 @@ void DG_Init(void)
         fprintf(stderr, "DOOM: cannot open a window: %s\n", SDL_GetError());
         exit(1);
     }
+    /* Started from Terminal, the game is not the front app yet: bring the
+       window forward so it gets the keyboard. */
+    SDL_RaiseWindow(window);
     renderer = SDL_CreateRenderer(window, -1, 0);
     if (renderer == NULL) {
         fprintf(stderr, "DOOM: cannot draw in the window: %s\n", SDL_GetError());

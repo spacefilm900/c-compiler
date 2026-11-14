@@ -8,10 +8,10 @@ One command does the work: it checks your Mac has what it needs, builds
 this project's C compiler, uses it to compile DOOM, and opens the game in a
 window.
 
-> **Status.** Every step has run on GitHub's Apple Silicon Mac (macOS 26)
-> without a screen: the build, the start-up, the menus and the first
-> level, driven by scripted key presses. Nobody has played it by hand on
-> their own Mac yet. If a step goes wrong, see
+> **Status.** The build and the game have run on GitHub's Apple Silicon
+> Mac (macOS 26): `./tools/mac/play_doom.sh` built DOOM, opened its
+> window, and scripted key presses started the first level. Nobody has
+> played it by hand on their own Mac yet. If a step goes wrong, see
 > [If something goes wrong](#if-something-goes-wrong).
 
 **How long:** about 15 to 30 minutes the first time, mostly downloads.
