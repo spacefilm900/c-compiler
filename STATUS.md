@@ -676,7 +676,7 @@ The billing API reports 0 billable ms for these runs, as for the earlier macOS r
 
 Review fixes after CodeRabbit's review of `e230fd5`:
 
-- A function definition without an `__asm__` label now keeps the label of an earlier file-scope declaration (GCC manual, "Asm Labels"); before, `int f(void) __asm__("renamed"); int f(void) { ... }` defined `@f` while calls went to `@renamed`. The inline bookkeeping is per C name and marks every linker name the function was declared with. x86_64 IR on the 2,172 inputs is unchanged by this.
+- A function definition without an `__asm__` label now keeps the label of an earlier file-scope declaration (GCC manual, "Asm Labels"); before, `int f(void) __asm__("renamed"); int f(void) { ... }` defined `@f` while calls went to `@renamed`. The inline bookkeeping is per C name, and only the linker name the definition is emitted under is marked, so another C name sharing that name through an asm label is not affected. x86_64 IR on the 2,172 inputs is unchanged by this.
 - `__has_builtin` also answers 1 for `__builtin_inf`, `__builtin_huge_val`, `__builtin_nan` and their variants.
 - `dg_sdl.c`: a full key queue no longer looks empty; when full, a press is dropped and a release replaces the oldest event, so no key stays held.
 - `play_doom.sh`: a relative `DOOM_BUILD` is made absolute before the game starts in its saves folder, and cached objects are rebuilt when the optimisation level, Clang, or SDL flags change.

@@ -1769,6 +1769,7 @@ impl Parser<'_> {
         }
         if definition {
             seen.extern_inline_def = specs.inline_ && is_extern;
+            seen.def_symbol = Some(symbol.to_string());
         }
     }
 
@@ -1793,13 +1794,13 @@ impl Parser<'_> {
             } else {
                 seen.inline_ && !seen.external
             };
-            if inline_only {
-                for symbol in seen.symbols {
-                    self.fn_attrs
-                        .entry(symbol)
-                        .or_default()
-                        .available_externally = true;
-                }
+            // Only the symbol this C name's own definition is emitted under:
+            // another C name may share a linker name through an asm label.
+            if let (true, Some(symbol)) = (inline_only, seen.def_symbol) {
+                self.fn_attrs
+                    .entry(symbol)
+                    .or_default()
+                    .available_externally = true;
             }
         }
     }
@@ -5024,6 +5025,8 @@ struct InlineSeen {
     extern_inline_def: bool,
     /// The linker names the declarations used.
     symbols: Vec<String>,
+    /// The linker name the definition is emitted under, if there is one.
+    def_symbol: Option<String>,
 }
 
 struct Specs {

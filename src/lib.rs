@@ -498,5 +498,16 @@ mod tests {
         );
         assert!(ir.contains("call i32 @gee()"), "{ir}");
         assert!(!ir.contains("@f(") && !ir.contains("@g("), "{ir}");
+        // An inline-only declaration of another C name does not touch the
+        // external definition that shares its linker name.
+        let ir = compile(
+            "inline int alias(void) __asm__(\"impl\");\n\
+             int impl(void) { return 42; }\n\
+             int main(void) { return impl() != 42; }\n",
+            Dialect::C11,
+        )
+        .expect("accepted")
+        .ir;
+        assert!(ir.contains("define i32 @impl()"), "{ir}");
     }
 }
