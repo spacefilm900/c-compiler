@@ -41,7 +41,10 @@ pub fn classify(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
         return Err(AbiFail::Incomplete);
     }
     let size = bare.size().expect("complete aggregate");
-    let align = u64::from(bare.align());
+    let align = match use_as {
+        AggUse::Param => arg_align(&bare),
+        AggUse::Return => u64::from(bare.align()),
+    };
     if size == 0 {
         // A GNU empty struct carries no data. It is passed as one unused
         // general register so both sides agree on the argument count.
@@ -85,6 +88,19 @@ pub fn classify(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
         ty: "[2 x i64]".to_string(),
         size: 16,
     })
+}
+
+/// The alignment that places an argument in registers and on the stack.
+/// AArch64 Linux ignores an `aligned` attribute written on the record
+/// itself; Apple arm64 does not (both observed with Clang as a black box).
+pub fn arg_align(ty: &CType) -> u64 {
+    let bare = ty.unqualified();
+    match bare.struct_ref() {
+        Some(handle) if !crate::target::current().is_apple() => {
+            u64::from(handle.unadjusted_align())
+        }
+        _ => u64::from(bare.align()),
+    }
 }
 
 fn base_bytes(base: &str) -> u64 {
@@ -182,11 +198,26 @@ fn kind_ir(kind: FloatKind) -> &'static str {
 fn lower_part(ty: &CType) -> Result<Part, AbiFail> {
     if ty.unqualified().is_record() {
         return Ok(match classify(ty, AggUse::Param)? {
-            AggAbi::Coerce { ty: ir, size } => Part {
-                ir_type: ir,
-                attrs: String::new(),
-                kind: PartKind::Coerce { size },
-            },
+            AggAbi::Coerce { ty: ir, size } => {
+                // On AArch64 Linux an HFA that goes to the stack takes a slot
+                // aligned to its own alignment, at least 8 and at most 16
+                // (AAPCS64 stage C). LLVM needs that as `alignstack`, which
+                // Clang also writes; Apple's packed stack slots use the
+                // element alignment, the backend's default.
+                let attrs = if ir.starts_with('[')
+                    && !ir.ends_with("i64]")
+                    && !crate::target::current().is_apple()
+                {
+                    format!("alignstack({})", arg_align(ty).clamp(8, 16))
+                } else {
+                    String::new()
+                };
+                Part {
+                    ir_type: ir,
+                    attrs,
+                    kind: PartKind::Coerce { size },
+                }
+            }
             _ => Part {
                 ir_type: "ptr".to_string(),
                 attrs: String::new(),

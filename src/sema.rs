@@ -5426,6 +5426,9 @@ fn write_folded_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: u
         }
         ConstInit::Float(bits) => {
             let width = ty.size().unwrap_or(0) as usize;
+            let bits = &ty
+                .float_kind()
+                .map_or(*bits, |kind| crate::float::memory_bits(kind, *bits));
             for index in 0..width {
                 let at = offset + index;
                 if at < bytes.len() {
@@ -5553,7 +5556,7 @@ fn string_elem_ok(elem: &CType, enc: StrEnc) -> bool {
     match enc {
         StrEnc::Byte => elem.is_character(),
         StrEnc::Utf16 => elem.as_integer() == Some(TypeName::UShort),
-        StrEnc::Wchar => elem.as_integer() == Some(TypeName::Int),
+        StrEnc::Wchar => elem.as_integer() == Some(StrEnc::Wchar.elem()),
         StrEnc::Utf32 => elem.as_integer() == Some(TypeName::UInt),
     }
 }

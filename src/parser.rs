@@ -1320,6 +1320,7 @@ impl Parser<'_> {
         let natural = layout_members(&natural_spec, union_layout).ok_or_else(too_large)?;
         let (places, mut size, mut align) =
             layout_members(&spec, union_layout).ok_or_else(too_large)?;
+        let unadjusted_align = align;
         if let Some(extra) = record_align {
             align = align.max(extra);
             size = size.div_ceil(u64::from(align)) * u64::from(align);
@@ -1357,6 +1358,9 @@ impl Parser<'_> {
         }
         let llvm_name = self.alloc_llvm_name(kind, tag.unwrap_or("anon"));
         handle.complete(fields, size, align, llvm_name);
+        if unadjusted_align != align {
+            handle.set_unadjusted_align(unadjusted_align);
+        }
         self.structs.push(handle.clone());
         Ok(CType::Struct(handle))
     }
@@ -1807,6 +1811,23 @@ impl Parser<'_> {
                     );
                 }
             }
+            if name == "section" && crate::target::current().is_apple() {
+                let text = args.iter().find_map(|arg| match arg {
+                    AttrArg::Str(text) => Some(text.as_str()),
+                    _ => None,
+                });
+                // A Mach-O section is named "segment,section" (LLVM
+                // LangRef, "Global Variables"; the backend rejects others).
+                if text.is_some_and(|text| !text.contains(',')) {
+                    return Err(self.error_at(
+                        tok.line,
+                        tok.column,
+                        "argument to 'section' attribute is not valid for this target: \
+                         mach-o section specifier requires a segment and section \
+                         separated by a comma",
+                    ));
+                }
+            }
             self.attr_sink.push(Attr {
                 name,
                 args,
@@ -2056,7 +2077,14 @@ impl Parser<'_> {
             bytes.extend(tok.bytes.expect("string token"));
         }
         self.expect_skip(TokenKind::RParen, "')'")?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        let label = String::from_utf8_lossy(&bytes).into_owned();
+        // The label is the exact assembler name (GCC manual, "Controlling
+        // Names Used in Assembler Code"). Mach-O adds a `_` to every IR
+        // name; a leading \01 tells LLVM to use the name as written.
+        if crate::target::current().is_apple() {
+            return Ok(format!("\u{1}{label}"));
+        }
+        Ok(label)
     }
 
     /// `_Static_assert ( constant-expression , string-literal ) ;`

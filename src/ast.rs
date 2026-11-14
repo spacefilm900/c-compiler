@@ -349,6 +349,8 @@ struct StructBody {
     llvm_name: String,
     /// See [`StructRef::set_irregular`].
     irregular: bool,
+    /// See [`StructRef::unadjusted_align`]; 0 means the same as `align`.
+    unadjusted_align: u32,
 }
 
 impl PartialEq for StructRef {
@@ -378,6 +380,7 @@ impl StructRef {
                 align: 1,
                 llvm_name: String::new(),
                 irregular: false,
+                unadjusted_align: 0,
             })),
         }
     }
@@ -419,6 +422,24 @@ impl StructRef {
 
     pub fn align(&self) -> u32 {
         self.data.borrow().align
+    }
+
+    /// The alignment without an `aligned` attribute written on the record
+    /// itself (members' own alignments still count). AAPCS64 Linux uses it
+    /// to pick registers and stack slots for an argument; observed with
+    /// Clang as a black box, `struct { long a, b; } __attribute__((aligned
+    /// (16)))` goes in any two registers there, but in an even pair on Apple.
+    pub fn unadjusted_align(&self) -> u32 {
+        let body = self.data.borrow();
+        if body.unadjusted_align == 0 {
+            body.align
+        } else {
+            body.unadjusted_align
+        }
+    }
+
+    pub fn set_unadjusted_align(&self, align: u32) {
+        self.data.borrow_mut().unadjusted_align = align.max(1);
     }
 
     /// LLVM type name without the leading `%`, such as `struct.Node`.
@@ -853,7 +874,8 @@ impl StrEnc {
     }
 
     /// Element type of the array. `char16_t` and `char32_t` are the target's
-    /// unsigned 16-bit and 32-bit types. `wchar_t` is `int`.
+    /// unsigned 16-bit and 32-bit types. `wchar_t` is `int`, or `unsigned
+    /// int` where the target makes it unsigned (AArch64 Linux).
     pub fn elem(self) -> TypeName {
         match self {
             StrEnc::Byte => TypeName::Char,

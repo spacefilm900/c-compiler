@@ -6,7 +6,8 @@
 
 The test set is the one harness/run_tests.py uses on x86_64: tests/*.c,
 tests/hosted/*.c, the tests/xabi/ pairs (this compiler's object linked with
-Clang's in both directions), tests/gnu/*.c and tests/gnu/both/*.c. Each
+Clang's in both directions), tests/gnu/*.c, tests/gnu/both/*.c, and the
+AArch64 calling-convention tests in tests/arm64/ (pairs in tests/arm64/xabi/). Each
 program is compiled by this compiler and by Clang (the black-box oracle)
 for the same target, both binaries run under qemu-aarch64, and exit
 status, stdout and stderr must match.
@@ -267,6 +268,9 @@ def main():
         jobs.append((f"gnu/both/{t.name}", test_both, (t,)))
     for t in sorted((ROOT / "tests" / "arm64").glob("*.c")):
         jobs.append((f"arm64/{t.name}", test, (t,)))
+    for t in sorted((ROOT / "tests" / "arm64" / "xabi").glob("*_def.c")):
+        use = t.with_name(t.name[: -len("_def.c")] + "_use.c")
+        jobs.append((f"arm64/xabi/{t.name[: -len('_def.c')]}", test_cross, (t, use)))
     jobs = [j for j in jobs if args.filter in j[0]]
 
     known = known_failures(args.target)

@@ -4261,7 +4261,7 @@ fn aarch64_va_class(ty: &CType) -> A64Va {
     let bare = ty.unqualified();
     let size = bare.size().unwrap_or(8);
     let round8 = ((size + 7) & !7).max(8);
-    let align16 = bare.align() >= 16;
+    let align16 = crate::aapcs64::arg_align(&bare) >= 16;
     if bare.is_record() {
         if let Some((base, count)) = crate::aapcs64::hfa(&bare) {
             let unit = match base {
@@ -4576,6 +4576,9 @@ fn write_const_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: us
         ConstInit::Zero => true,
         ConstInit::Float(bits) => {
             let width = ty.size().unwrap_or(0) as usize;
+            let bits = &ty
+                .float_kind()
+                .map_or(*bits, |kind| crate::float::memory_bits(kind, *bits));
             for index in 0..width {
                 let at = offset + index;
                 if at < bytes.len() {
