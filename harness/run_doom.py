@@ -50,6 +50,7 @@ the two Freedoom WADs; a relative path is taken from the current directory).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -369,6 +370,13 @@ def summary(res: dict) -> str:
     return "\n".join(lines)
 
 
+def sha256(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
 def metadata() -> dict:
     def out(cmd: list[str]) -> str:
         try:
@@ -381,7 +389,7 @@ def metadata() -> dict:
         "date": time.strftime("%Y-%m-%d"),
         "compiler_commit": out(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"]),
         "doomgeneric_pin": pin.read_text().strip() if pin.is_file() else "",
-        "wads": [{"wad": w.name, "sha256": out(["sha256sum", str(w)]).split(" ")[0]} for w in WADS],
+        "wads": [{"wad": w.name, "sha256": sha256(w)} for w in WADS],
         "clang": out([CLANG, "--version"]).splitlines()[0] if out([CLANG, "--version"]) else "",
     }
 

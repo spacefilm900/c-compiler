@@ -1696,9 +1696,11 @@ impl Processor {
     /// defined or undefined as a macro is left to that macro.
     ///
     /// `__has_include` and `__has_include_next` search the include path the
-    /// same way `#include` would. The other queries answer 0: this compiler
-    /// claims no Clang feature, extension, or attribute, so a header takes
-    /// its plain C path (the one a compiler without the query would take).
+    /// same way `#include` would, and `__has_builtin` answers 1 for the
+    /// builtins this compiler implements. The other queries answer 0: this
+    /// compiler claims no Clang feature, extension, or attribute, so a
+    /// header takes its plain C path (the one a compiler without the query
+    /// would take).
     fn replace_has_queries(
         &mut self,
         tokens: Vec<PpToken>,
@@ -1762,6 +1764,12 @@ impl Processor {
                     None
                 };
                 self.search(&header, quote, at, after.as_deref()).is_ok()
+            } else if name == "__has_builtin" {
+                // 1 for a builtin this compiler implements, so a header
+                // uses it instead of a fallback (SDL's byte swaps fall back
+                // to inline assembly on x86_64).
+                matches!(inside, [arg] if arg.kind == PpKind::Ident
+                    && is_implemented_builtin(&arg.spelling))
             } else {
                 false
             };
@@ -2103,6 +2111,37 @@ fn arity_error(inv: &PpToken, name: &str, got: usize, need: usize, variadic: boo
         format!("macro '{name}' passed {got} arguments but takes {need}")
     };
     error_at(inv, message)
+}
+
+/// Whether `__has_builtin(name)` answers 1: the inline builtins, the
+/// builtins that forward to a library function, and the ones the parser and
+/// semantic analysis handle by name.
+fn is_implemented_builtin(name: &str) -> bool {
+    crate::builtins::Inline::from_name(name).is_some()
+        || crate::builtins::library(name).is_some()
+        || matches!(
+            name,
+            "__builtin_choose_expr"
+                | "__builtin_constant_p"
+                | "__builtin_isgreater"
+                | "__builtin_isgreaterequal"
+                | "__builtin_isless"
+                | "__builtin_islessequal"
+                | "__builtin_islessgreater"
+                | "__builtin_isunordered"
+                | "__builtin_memcpy"
+                | "__builtin_memmove"
+                | "__builtin_memset"
+                | "__builtin_offsetof"
+                | "__builtin_signbit"
+                | "__builtin_signbitf"
+                | "__builtin_signbitl"
+                | "__builtin_types_compatible_p"
+                | "__builtin_va_arg"
+                | "__builtin_va_copy"
+                | "__builtin_va_end"
+                | "__builtin_va_start"
+        )
 }
 
 /// The `#if` feature queries handled by `replace_has_queries`.
@@ -3625,7 +3664,9 @@ mod tests {
             #define HAS(h) __has_include(h)\n#if HAS(<n.h>)\nint via_macro;\n#endif\n\
             #define NAME <n.h>\n#if __has_include(NAME)\nint named;\n#endif\n\
             #if defined(__has_include) && defined __has_feature && !__has_feature(blocks) \\\n\
-              && !__has_attribute(availability) && !__has_builtin(__builtin_expect) \\\n\
+              && !__has_attribute(availability) && __has_builtin(__builtin_expect) \\\n\
+              && __has_builtin(__builtin_bswap16) && __has_builtin(__builtin_memcpy) \\\n\
+              && !__has_builtin(__builtin_no_such_thing) && !__has_builtin(memcpy) \\\n\
               && !__has_extension(x) && !__building_module(m)\nint plain_c;\n#endif\n\
             #include <n.h>\n#include <only.h>\n";
         let text = preprocess(source, "t.c", &options).unwrap();

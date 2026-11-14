@@ -16,6 +16,12 @@
  * one region mapped at a fixed address. Every allocation then lands at
  * the same address in every run and every build. free() does nothing:
  * the demo run allocates only a few megabytes in total.
+ *
+ * On macOS the C library keeps its own allocator for its internal use
+ * (symbols bind per library there), but every call DOOM makes comes
+ * here, which is what makes the frames repeatable. macOS has no
+ * MAP_FIXED_NOREPLACE, so the address is passed as a hint and the result
+ * checked: the arena is never mapped over anything already there.
  */
 
 #define _GNU_SOURCE
@@ -24,6 +30,15 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0
+#endif
+#ifdef MAP_FIXED_NOREPLACE
+#define ARENA_FIXED MAP_FIXED_NOREPLACE
+#else
+#define ARENA_FIXED 0
+#endif
 
 #define ARENA_ADDR ((uintptr_t)0x200000000000u)
 #define ARENA_SIZE ((size_t)1 << 30)
@@ -42,7 +57,7 @@ static void die(const char *msg, size_t len)
 static void arena_init(void)
 {
     void *p = mmap((void *)ARENA_ADDR, ARENA_SIZE, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | ARENA_FIXED, -1, 0);
     if (p != (void *)ARENA_ADDR)
         die("dg_alloc: cannot map the fixed arena\n", 37);
     arena_top = p;
