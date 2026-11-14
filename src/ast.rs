@@ -32,6 +32,10 @@ pub enum TypeName {
     ULong,
     LongLong,
     ULongLong,
+    /// GNU 128-bit integers (`__int128`, `unsigned __int128`, `__int128_t`,
+    /// `__uint128_t`). Size and alignment are 16. Rank is above `long long`.
+    Int128,
+    UInt128,
     /// `_Bool`. The object representation is one byte, and every stored value
     /// is 0 or 1. Rank is below `char`. Conversion to `_Bool` compares with 0
     /// rather than truncating (C11 6.3.1.2).
@@ -53,6 +57,8 @@ impl TypeName {
             TypeName::ULong => "unsigned long",
             TypeName::LongLong => "long long",
             TypeName::ULongLong => "unsigned long long",
+            TypeName::Int128 => "__int128",
+            TypeName::UInt128 => "unsigned __int128",
             TypeName::Bool => "_Bool",
         }
     }
@@ -75,6 +81,7 @@ impl TypeName {
                 | TypeName::Int
                 | TypeName::Long
                 | TypeName::LongLong
+                | TypeName::Int128
         )
     }
 
@@ -86,6 +93,7 @@ impl TypeName {
             TypeName::Short | TypeName::UShort => 16,
             TypeName::Int | TypeName::UInt => 32,
             TypeName::Long | TypeName::ULong | TypeName::LongLong | TypeName::ULongLong => 64,
+            TypeName::Int128 | TypeName::UInt128 => 128,
         }
     }
 
@@ -105,6 +113,7 @@ impl TypeName {
             8 => "i8",
             16 => "i16",
             32 => "i32",
+            128 => "i128",
             _ => "i64",
         }
     }
@@ -119,6 +128,7 @@ impl TypeName {
             TypeName::Int | TypeName::UInt => 3,
             TypeName::Long | TypeName::ULong => 4,
             TypeName::LongLong | TypeName::ULongLong => 5,
+            TypeName::Int128 | TypeName::UInt128 => 6,
         }
     }
 
@@ -149,6 +159,7 @@ impl TypeName {
             TypeName::Int => TypeName::UInt,
             TypeName::Long => TypeName::ULong,
             TypeName::LongLong => TypeName::ULongLong,
+            TypeName::Int128 => TypeName::UInt128,
             other => other,
         }
     }
@@ -186,9 +197,15 @@ impl TypeName {
     }
 
     /// Decimal spelling of `bits` interpreted as this type.
+    ///
+    /// Integer constants in the AST store 64 bits. A 128-bit type uses those
+    /// as the low 64 bits (the form that fits in a C integer constant).
     pub fn format_bits(self, bits: u64) -> String {
+        let width = self.width().min(64);
         if self.is_signed() {
-            sign_extend(bits, self.width()).to_string()
+            sign_extend(bits, width).to_string()
+        } else if self.width() > 64 {
+            bits.to_string()
         } else {
             (bits & self.mask()).to_string()
         }
@@ -1540,6 +1557,9 @@ pub fn width_mask(width: u32) -> u64 {
 
 /// Sign-extend the low `width` bits of `bits` to `i64`.
 pub fn sign_extend(bits: u64, width: u32) -> i64 {
+    if width >= 64 {
+        return bits as i64;
+    }
     let bits = bits & width_mask(width);
     let shift = 64 - width;
     ((bits << shift) as i64) >> shift
@@ -1560,6 +1580,15 @@ pub fn convert_bits(bits: u64, from: TypeName, to: TypeName) -> u64 {
             bits & from.mask() == 0
         };
         return u64::from(!zero);
+    }
+    if to.width() > 64 {
+        // The AST stores 64-bit constants. Extending to 128 bits leaves the
+        // high half zero, or sign-extended in IR at run time; here only the
+        // low 64 bits are kept.
+        if from.is_signed() && from.width() <= 64 {
+            return sign_extend(bits, from.width()) as u64;
+        }
+        return bits & from.mask();
     }
     let to_mask = to.mask();
     if to.width() <= from.width() {

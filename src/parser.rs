@@ -297,6 +297,13 @@ impl Parser<'_> {
     /// declarator list with another declarator. Pointer stars bind to each
     /// declarator, so `int *a, b;` declares one pointer and one `int`.
     fn parse_external(&mut self) -> Result<Vec<TopDecl>, Diagnostic> {
+        // Empty declaration at file scope. C11 6.7 does not allow a lone
+        // `;` here; Clang and GCC accept it (with -Wextra-semi). SQLite's
+        // shell writes `SQLITE_EXTENSION_INIT1;`, which expands to this.
+        if self.current().kind == TokenKind::Semi {
+            self.advance();
+            return Ok(Vec::new());
+        }
         if self.current().kind == TokenKind::KwStaticAssert {
             self.parse_static_assert()?;
             return Ok(Vec::new());
@@ -590,6 +597,14 @@ impl Parser<'_> {
                 TokenKind::KwEnum => {
                     self.note_enum(&mut flags)?;
                 }
+                TokenKind::Ident
+                    if matches!(
+                        token.spelling.as_str(),
+                        "__int128" | "__int128_t" | "__uint128_t"
+                    ) =>
+                {
+                    self.note_int128(&mut flags, &token)?;
+                }
                 TokenKind::Ident if token.spelling == "__builtin_va_list" => {
                     if flags.struct_ty.is_some()
                         || flags.bool_ty
@@ -746,6 +761,43 @@ impl Parser<'_> {
         }
         flags.any = true;
         flags.bool_ty = true;
+        flags.line = token.line;
+        flags.column = token.column;
+        Ok(())
+    }
+
+    fn note_int128(&mut self, flags: &mut SpecFlags, token: &Token) -> Result<(), Diagnostic> {
+        // `__int128` may be signed or unsigned, like `int`. It does not
+        // combine with `char`, `short`, `int`, `long`, `_Bool`, or a float.
+        if flags.bool_ty
+            || flags.float_ty.is_some()
+            || flags.struct_ty.is_some()
+            || flags.int128
+            || flags.void
+            || flags.char_
+            || flags.short != 0
+            || flags.int_
+            || flags.long != 0
+        {
+            return Err(self.error_at(
+                token.line,
+                token.column,
+                "invalid combination of type specifiers",
+            ));
+        }
+        if token.spelling == "__uint128_t" && flags.signed {
+            return Err(self.error_at(
+                token.line,
+                token.column,
+                "invalid combination of type specifiers",
+            ));
+        }
+        self.advance();
+        flags.any = true;
+        flags.int128 = true;
+        if token.spelling == "__uint128_t" {
+            flags.unsigned = true;
+        }
         flags.line = token.line;
         flags.column = token.column;
         Ok(())
@@ -1052,6 +1104,16 @@ impl Parser<'_> {
             flags.column,
             "invalid combination of type specifiers",
         );
+        if flags.int128 {
+            if flags.void || flags.char_ || flags.short != 0 || flags.int_ || flags.long != 0 {
+                return Err(bad);
+            }
+            return Ok(if flags.unsigned {
+                TypeName::UInt128
+            } else {
+                TypeName::Int128
+            });
+        }
         if flags.void {
             if flags.char_
                 || flags.short != 0
@@ -1595,7 +1657,12 @@ impl Parser<'_> {
                     | TokenKind::KwDouble
             )
             || (token.kind == TokenKind::Ident
-                && (self.is_typedef(&token.spelling) || token.spelling == "__builtin_va_list"))
+                && (self.is_typedef(&token.spelling)
+                    || token.spelling == "__builtin_va_list"
+                    || matches!(
+                        token.spelling.as_str(),
+                        "__int128" | "__int128_t" | "__uint128_t"
+                    )))
             || self.is_typeof_word(token)
             || matches!(token.spelling.as_str(), "__restrict" | "__restrict__")
                 && token.kind == TokenKind::Ident
@@ -4789,6 +4856,8 @@ struct SpecFlags {
     signed: bool,
     unsigned: bool,
     bool_ty: bool,
+    /// GNU `__int128` / `__int128_t` / `__uint128_t`.
+    int128: bool,
     float_ty: Option<FloatKind>,
     quals: Quals,
     struct_ty: Option<CType>,
@@ -4810,6 +4879,7 @@ impl SpecFlags {
             || self.long != 0
             || self.signed
             || self.unsigned
+            || self.int128
     }
 }
 
@@ -6508,6 +6578,11 @@ global int [] a =
         assert!(parse_err("enum { E = sizeof(struct Q) };").contains("incomplete type"));
         assert!(parse_err("int a[sizeof(int) - 5];").contains("array is too large"));
         assert!(parse_err("\"hi\";").contains("expected a type"));
+        assert!(parsed(";\nint x;\n").contains("global int x"));
+        assert!(parsed("__uint128_t x;\n").contains("global unsigned __int128 x"));
+        assert!(parsed("unsigned __int128 y;\n").contains("global unsigned __int128 y"));
+        assert!(parsed("__int128 z;\n").contains("global __int128 z"));
+        assert!(parse_err("int __int128 x;").contains("invalid combination"));
         assert!(parse_err("int main(void) { return a ? b; }").contains("expected ':'"));
         assert!(parsed("int add();\n").contains("add"));
         assert!(parse_err("int add(a, b);").contains("old-style function declarations"));

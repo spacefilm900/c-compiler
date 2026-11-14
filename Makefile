@@ -1,7 +1,7 @@
 # Build the compiler the harness expects at build/compiler.
 CARGO ?= cargo
 
-.PHONY: all test wacc csmith csmith-campaign otawk torture perf awk-extra doom lua clean
+.PHONY: all test wacc csmith csmith-campaign otawk torture perf awk-extra doom lua sqlite clean
 
 all: build/compiler
 
@@ -46,6 +46,10 @@ doom: build/compiler
 lua: build/compiler
 	scripts/fetch_lua.sh
 	python3 harness/run_lua.py
+
+sqlite: build/compiler
+	scripts/fetch_sqlite.sh
+	python3 harness/run_sqlite.py
 
 perf: build/compiler
 	python3 harness/perf.py

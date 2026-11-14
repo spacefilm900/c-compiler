@@ -6628,6 +6628,10 @@ fn eval_unary(op: UnaryOp, expr: &Expr) -> Result<CVal, ConstError> {
         return Err(ConstError::NotConst);
     }
     let value = promote_val(eval_const_expr(expr)?);
+    // 128-bit values are not stored in the 64-bit constant folder.
+    if value.ty.width() > 64 {
+        return Err(ConstError::NotConst);
+    }
     match op {
         UnaryOp::Plus => Ok(value),
         UnaryOp::Minus => negate(value),
@@ -6677,10 +6681,16 @@ fn eval_binop(op: BinOp, left: &Expr, right: &Expr) -> Result<CVal, ConstError> 
         _ => {
             let left = eval_const_expr(left)?;
             let right = eval_const_expr(right)?;
+            if left.ty.width() > 64 || right.ty.width() > 64 {
+                return Err(ConstError::NotConst);
+            }
             if matches!(op, BinOp::Shl | BinOp::Shr) {
                 return eval_shift(op, left, right);
             }
             let ty = left.ty.usual(right.ty);
+            if ty.width() > 64 {
+                return Err(ConstError::NotConst);
+            }
             let left = convert_bits(left.bits, left.ty, ty);
             let right = convert_bits(right.bits, right.ty, ty);
             if op.is_cmp() {
@@ -6818,6 +6828,9 @@ fn rem_signed(left: i128, right: i128, ty: TypeName) -> Result<CVal, ConstError>
 fn eval_shift(op: BinOp, left: CVal, right: CVal) -> Result<CVal, ConstError> {
     let left = promote_val(left);
     let right = promote_val(right);
+    if left.ty.width() > 64 {
+        return Err(ConstError::NotConst);
+    }
     let count = shift_count(&right, left.ty.width())?;
     let width = left.ty.width();
     if op == BinOp::Shr {

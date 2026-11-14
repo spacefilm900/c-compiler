@@ -152,3 +152,21 @@ python3 harness/run_lua.py --json out.json --scorecard out.md --notes reports/lu
 ```
 
 `scripts/fetch_lua.sh` downloads both tarballs (retrying, because lua.org sometimes drops connections), checks the SHA-256 sums, and unpacks them into `tests/external/lua/`. The workload scripts in `harness/lua/` are this repository's own. What is built, the three test-suite modes, and the comparisons are described in `harness/run_lua.py` and `STATUS.md`. Scorecards are in `reports/lua/`.
+
+## SQLite 3.54.1 amalgamation
+
+The third big program (PLAN.md step 5). The amalgamation comes from sqlite.org, is fetched and not vendored, and is a test input only: no SQLite code is copied into the compiler, and the tree is not patched.
+
+- Source: https://sqlite.org/2026/sqlite-amalgamation-3540100.zip (SQLite 3.54.1, 2026-10-16)
+- SHA-256: `0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9`
+- SHA3-256 (published on https://sqlite.org/download.html): `92281c86e2957f9b9305890f9ac04204caa7b677cc868dc326d942689df28e30`
+- Licence: public domain (the blessing is at the top of `sqlite3.h`)
+
+```sh
+scripts/fetch_sqlite.sh
+python3 harness/run_sqlite.py                       # -O0 and -O2, -std=gnu11
+python3 harness/run_sqlite.py --opt O0 --ci
+python3 harness/run_sqlite.py --json out.json --scorecard out.md --notes reports/sqlite/notes.md
+```
+
+`scripts/fetch_sqlite.sh` downloads the zip (retrying on both host names), checks both hashes, and unpacks it into `tests/external/sqlite/`. The SQL workloads in `harness/sqlite/` are this repository's own. What is built, how outputs and database files are compared, and the scorecard are described in `harness/run_sqlite.py` and `STATUS.md`. Scorecards are in `reports/sqlite/`.
