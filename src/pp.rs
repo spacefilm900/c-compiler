@@ -142,7 +142,7 @@ fn push_compiler(dirs: &mut Vec<PathBuf>, path: PathBuf) {
 fn run(source: &str, filename: &str, options: &PpOptions) -> Result<Vec<PpToken>, Diagnostic> {
     let mut processor = Processor::new(options)?;
     processor.push_main(filename);
-    processor.tokens = lex_source(source, filename, 0)?;
+    processor.tokens = crate::timing::lexing(|| lex_source(source, filename, 0))?;
     processor.expand_all(false)
 }
 
@@ -206,7 +206,7 @@ fn convert_token(tok: &PpToken) -> Result<Token, Diagnostic> {
         "%>" => "}",
         other => other,
     };
-    match crate::lexer::lex(spelling, &tok.display) {
+    match crate::timing::lexing(|| crate::lexer::lex(spelling, &tok.display)) {
         Ok(mut tokens) => {
             tokens.pop();
             if tokens.len() != 1 {
@@ -1121,7 +1121,7 @@ impl Processor {
             depth,
             found_dir: Some(found_dir),
         });
-        let mut included = lex_source(&text, &display, file_id)?;
+        let mut included = crate::timing::lexing(|| lex_source(&text, &display, file_id))?;
         // A header that does not end in a new-line must not continue into the
         // next line of the file that included it. Clang treats that end of
         // file as the end of the line.

@@ -24,6 +24,7 @@ options:
   -E              preprocess only
   -std=c11        strict ISO C11 (the default)
   -std=gnu11      C11 plus the GNU extensions this compiler supports
+  --time-phases   print frontend phase times as JSON on stderr
   -h, --help      show this help
 Compile a C subset to textual LLVM IR.";
 
@@ -31,6 +32,7 @@ struct Options {
     input: String,
     output: Option<String>,
     preprocess_only: bool,
+    time_phases: bool,
     pp: PpOptions,
     dialect: Dialect,
 }
@@ -72,11 +74,17 @@ pub fn run(args: &[String]) -> i32 {
         return 2;
     };
     match compile_dialect(&source, &options.input, &options.pp, options.dialect) {
-        Ok(compiled) => {
+        Ok(mut compiled) => {
             for warning in &compiled.warnings {
                 let _ = writeln!(io::stderr(), "{warning}");
             }
-            match fs::write(output, compiled.ir) {
+            let start = std::time::Instant::now();
+            let written = fs::write(output, &compiled.ir);
+            compiled.times.write = start.elapsed();
+            if options.time_phases {
+                let _ = writeln!(io::stderr(), "time-phases: {}", compiled.times.to_json());
+            }
+            match written {
                 Ok(()) => 0,
                 Err(err) => {
                     let _ = writeln!(io::stderr(), "{output}: error: {err}");
@@ -119,6 +127,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut input = None;
     let mut output = None;
     let mut preprocess_only = false;
+    let mut time_phases = false;
     let mut pp = PpOptions::default();
     let mut dialect = Dialect::default();
     let mut index = 1;
@@ -126,6 +135,12 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         let arg = &args[index];
         if arg == "-E" {
             preprocess_only = true;
+            index += 1;
+            continue;
+        }
+        if arg == "--time-phases" {
+            time_phases = true;
+            crate::timing::enable();
             index += 1;
             continue;
         }
@@ -178,6 +193,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         input,
         output,
         preprocess_only,
+        time_phases,
         pp,
         dialect,
     })
