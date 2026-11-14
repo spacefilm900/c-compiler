@@ -28,6 +28,12 @@ union U arr[2] = {[0].a.p = &x, [0].b.q = &y, [1].b.p = &y, [1].a.q = &x};
 /* A union nested in a union's member. */
 union I { struct { int *p; long z; } a; struct { long w; int *q; } b; };
 union O { union I i; long l[2]; } o1 = {.i.a.p = &x, .i.a.z = 5, .i.b.q = &y};
+/* A nested union of the same offset and size as the union around it:
+   switching the inner union's member keeps the outer union's choice, so a
+   later switch of the outer union still drops the inner stores. */
+union J { struct P a; struct P b; };
+union K { union J i; struct P c; } k1 = {.i.a.p = &x, .i.b.q = &y, .c.p = &x};
+union K k2 = {.i.a.p = &x, .i.b.q = &y, .i.b.p = &x};
 /* A bit-field record as a member. */
 struct BF { unsigned f : 3; unsigned g : 5; long pad; };
 union B { struct BF bf; struct { long m; long n; } s; } b1 = {.bf.f = 7, .bf.g = 9, .s.n = 1};
@@ -46,6 +52,7 @@ int main(void)
     struct S l4 = {.u.a.p = &x, .u.b.q = &y, .tail = 9};
     union O l5 = {.i.a.p = &x, .i.a.z = 5, .i.b.q = &y};
     union B l6 = {.bf.f = 7, .bf.g = 9, .s.n = 1};
+    union K l7 = {.i.a.p = &x, .i.b.q = &y, .c.p = &x};
     show("u1", &u1);
     show("u2", &u2);
     show("u3", &u3);
@@ -56,6 +63,9 @@ int main(void)
     printf("n1 %ld %ld\n", n1.t.k, n1.t.l);
     printf("o1 %ld %d\n", o1.i.b.w, *o1.i.b.q);
     printf("b1 %ld %ld\n", b1.s.m, b1.s.n);
+    printf("k1 %d %d\n", *k1.c.p, k1.c.q ? *k1.c.q : -1);
+    printf("k2 %d %d\n", *k2.i.b.p, *k2.i.b.q);
+    printf("l7 %d %d\n", *l7.c.p, l7.c.q ? *l7.c.q : -1);
     show("l1", &l1);
     show("l3", &l3);
     show("l4", &l4.u);
