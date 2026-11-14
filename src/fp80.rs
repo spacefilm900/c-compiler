@@ -281,21 +281,15 @@ pub enum Cmp {
     Ge,
 }
 
-pub fn from_int(bits: u64, src: TypeName) -> u128 {
+pub fn from_int(bits: u128, src: TypeName) -> u128 {
     let signed = src.is_signed();
     let wide = if signed {
         sign_extend(bits, src.width())
     } else {
         0
     };
-    let mag = if signed {
-        if wide == i64::MIN {
-            1u64 << 63
-        } else if wide < 0 {
-            (-wide) as u64
-        } else {
-            wide as u64
-        }
+    let mag: u128 = if signed {
+        wide.unsigned_abs()
     } else {
         bits & src.mask()
     };
@@ -303,14 +297,30 @@ pub fn from_int(bits: u64, src: TypeName) -> u128 {
         return 0;
     }
     let sign = signed && wide < 0;
-    let msb = 63 - mag.leading_zeros();
-    let sig = mag << (63 - msb);
-    pack(sign, msb as i32, sig)
+    let msb = 127 - mag.leading_zeros();
+    if msb <= 63 {
+        let sig = (mag as u64) << (63 - msb);
+        return pack(sign, msb as i32, sig);
+    }
+    let shift = msb - 63;
+    let mut sig = (mag >> shift) as u64;
+    let rest = mag & ((1u128 << shift) - 1);
+    let half = 1u128 << (shift - 1);
+    let mut exp = msb as i32;
+    if rest > half || (rest == half && (sig & 1) != 0) {
+        if sig == u64::MAX {
+            sig = 1u64 << 63;
+            exp += 1;
+        } else {
+            sig += 1;
+        }
+    }
+    pack(sign, exp, sig)
 }
 
-pub fn to_int(bits: u128, dest: TypeName) -> Option<u64> {
+pub fn to_int(bits: u128, dest: TypeName) -> Option<u128> {
     if dest == TypeName::Bool {
-        return Some(u64::from(!is_zero(bits)));
+        return Some(u128::from(!is_zero(bits)));
     }
     if is_nan(bits) || is_inf(bits) {
         return None;
@@ -319,46 +329,45 @@ pub fn to_int(bits: u128, dest: TypeName) -> Option<u64> {
     if part.sig == 0 {
         return Some(0);
     }
-    // value = sig * 2^scale, truncated toward zero.
+    // value = sig * 2^(exp-63) with a 64-bit significand, integer bit at 63.
     let exp = part.scale + 63;
     if exp < 0 {
         return Some(0);
     }
-    if exp >= 64 {
-        return None;
-    }
-    let mag = part.sig >> (63 - exp);
-    if dest.is_signed() {
-        if dest.width() >= 64 {
-            if part.sign {
-                if mag > (1u64 << 63) {
-                    return None;
-                }
-                if mag == (1u64 << 63) {
-                    return Some(i64::MIN as u64);
-                }
-                return Some((-(mag as i64)) as u64);
-            }
-            if mag >= (1u64 << 63) {
-                return None;
-            }
-            return Some(mag);
-        }
-        let limit = 1i64 << (dest.width() - 1);
-        let signed = if part.sign { -(mag as i64) } else { mag as i64 };
-        if signed < -limit || signed >= limit {
+    let mag: u128 = if exp <= 63 {
+        u128::from(part.sig >> (63 - exp))
+    } else {
+        let up = (exp - 63) as u32;
+        if up > 64 {
             return None;
         }
-        Some(signed as u64 & dest.mask())
+        (part.sig as u128) << up
+    };
+    if dest.is_signed() {
+        let (min, max) = crate::ast::signed_limits(dest.width());
+        let value = if part.sign {
+            if mag > 1u128 << 127 {
+                return None;
+            }
+            if mag == 1u128 << 127 {
+                i128::MIN
+            } else {
+                -(mag as i128)
+            }
+        } else if mag > i128::MAX as u128 {
+            return None;
+        } else {
+            mag as i128
+        };
+        if value < min || value > max {
+            return None;
+        }
+        Some((value as u128) & dest.mask())
     } else {
         if part.sign && mag != 0 {
             return None;
         }
-        if dest.width() >= 64 {
-            return Some(mag);
-        }
-        let limit = 1u64 << dest.width();
-        if mag >= limit {
+        if mag > dest.mask() {
             return None;
         }
         Some(mag)

@@ -395,7 +395,9 @@ def compare_workloads(ref_exe: Path, our_exe: Path | None, out: Path, ours_first
             output_match = (
                 not ref["timed_out"]
                 and not ours["timed_out"]
-                and (ours["rc"], ours["stdout"], ours["stderr"]) == (ref["rc"], ref["stdout"], ref["stderr"])
+                and ref["rc"] == 0
+                and ours["rc"] == 0
+                and (ours["stdout"], ours["stderr"]) == (ref["stdout"], ref["stderr"])
             )
             db_match = (
                 ref["db_exists"]
@@ -403,7 +405,7 @@ def compare_workloads(ref_exe: Path, our_exe: Path | None, out: Path, ours_first
                 and ref["db_sha256"] is not None
                 and ref["db_sha256"] == ours["db_sha256"]
             )
-            # A timeout or a missing database on either side is never a match.
+            # A timeout, a missing database, or a non-zero exit on either side is never a match.
             row["output_match"] = output_match
             row["db_match"] = db_match
             row["match"] = output_match and db_match

@@ -175,19 +175,26 @@ enum Symbol {
 /// conversion to `promoted` (C11 6.8.4.2).
 struct SwitchCtx {
     promoted: TypeName,
-    seen: HashSet<u64>,
-    /// GNU case ranges, as values of `promoted` widened to `i128`.
-    ranges: Vec<(i128, i128)>,
+    seen: HashSet<u128>,
+    /// GNU case ranges, as bit patterns of `promoted`.
+    ranges: Vec<(u128, u128)>,
     has_default: bool,
 }
 
-/// A case value of type `ty` as a number, for range comparisons.
-fn case_key(bits: u64, ty: TypeName) -> i128 {
+fn case_le(left: u128, right: u128, ty: TypeName) -> bool {
     if ty.is_signed() {
-        i128::from(sign_extend(bits, ty.width()))
+        sign_extend(left, ty.width()) <= sign_extend(right, ty.width())
     } else {
-        i128::from(bits & ty.mask())
+        (left & ty.mask()) <= (right & ty.mask())
     }
+}
+
+fn case_in_range(value: u128, low: u128, high: u128, ty: TypeName) -> bool {
+    case_le(low, value, ty) && case_le(value, high, ty)
+}
+
+fn ranges_overlap(low: u128, high: u128, other_low: u128, other_high: u128, ty: TypeName) -> bool {
+    case_le(low, other_high, ty) && case_le(other_low, high, ty)
 }
 
 /// Side state that checking an expression can record for IR lowering, as
@@ -854,9 +861,15 @@ impl Sema {
             if signed < 0 {
                 return self.err(line, column, "array designator is negative");
             }
-            Ok(signed as u64)
+            match u64::try_from(signed) {
+                Ok(bits) => Ok(bits),
+                Err(_) => self.err(line, column, "array designator is too large"),
+            }
         } else {
-            Ok(value.bits)
+            match u64::try_from(value.bits) {
+                Ok(bits) => Ok(bits),
+                Err(_) => self.err(line, column, "array designator is too large"),
+            }
         }
     }
 
@@ -2099,25 +2112,22 @@ impl Sema {
                 self.decay(expr)?;
                 let prom = self.switches.last().expect("switch").promoted;
                 let bits = self.case_value(expr, prom)?;
-                let key = case_key(bits, prom);
                 if let Some(high) = high {
                     self.check_expr(high)?;
                     self.decay(high)?;
                     let high_bits = self.case_value(high, prom)?;
-                    let high_key = case_key(high_bits, prom);
-                    if key > high_key {
+                    if !case_le(bits, high_bits, prom) {
                         // GCC and Clang warn and drop the label.
                         self.warn(line, column, "empty case range specified");
                     } else {
                         let ctx = self.switches.last().expect("switch");
-                        let clash = ctx
-                            .seen
-                            .iter()
-                            .any(|seen| (key..=high_key).contains(&case_key(*seen, prom)))
-                            || ctx
-                                .ranges
+                        let clash =
+                            ctx.seen
                                 .iter()
-                                .any(|(lo, hi)| *lo <= high_key && key <= *hi);
+                                .any(|seen| case_in_range(*seen, bits, high_bits, prom))
+                                || ctx.ranges.iter().any(|(lo, hi)| {
+                                    ranges_overlap(bits, high_bits, *lo, *hi, prom)
+                                });
                         if clash {
                             return self.err(line, column, "duplicate case value in case range");
                         }
@@ -2125,7 +2135,7 @@ impl Sema {
                             .last_mut()
                             .expect("switch")
                             .ranges
-                            .push((key, high_key));
+                            .push((bits, high_bits));
                     }
                     *value = Some(bits);
                     *high_value = Some(high_bits);
@@ -2137,7 +2147,7 @@ impl Sema {
                     .expect("switch")
                     .ranges
                     .iter()
-                    .any(|(lo, hi)| (*lo..=*hi).contains(&key));
+                    .any(|(lo, hi)| case_in_range(bits, *lo, *hi, prom));
                 if in_range || !self.switches.last_mut().expect("switch").seen.insert(bits) {
                     return self.err(
                         line,
@@ -4873,7 +4883,7 @@ impl Sema {
     /// destination that cannot represent the value keeps the low bits. Two
     /// labels that differ before that conversion and agree after it are
     /// duplicates.
-    fn case_value(&self, expr: &Expr, promoted: TypeName) -> Result<u64, Diagnostic> {
+    fn case_value(&self, expr: &Expr, promoted: TypeName) -> Result<u128, Diagnostic> {
         self.require_integer(expr)?;
         match eval_const_expr(expr) {
             Ok(value) => Ok(convert_bits(value.bits, value.ty, promoted)),
@@ -5293,7 +5303,7 @@ impl ByteImage {
         }
     }
 
-    fn pack_bits(&mut self, bit: u32, width: u32, value: u64) {
+    fn pack_bits(&mut self, bit: u32, width: u32, value: u128) {
         let first = (bit / 8) as usize;
         let last = ((bit + width).div_ceil(8)) as usize;
         self.clear_relocs(first, last.saturating_sub(first));
@@ -5349,11 +5359,11 @@ fn is_image_const(value: &ConstInit) -> bool {
     matches!(value, ConstInit::Bytes(_) | ConstInit::RelocBytes { .. })
 }
 
-fn pack_bits(bytes: &mut [u8], bit: u32, width: u32, value: u64) {
-    let mask = if width >= 64 {
-        u64::MAX
+fn pack_bits(bytes: &mut [u8], bit: u32, width: u32, value: u128) {
+    let mask = if width >= 128 {
+        u128::MAX
     } else {
-        (1u64 << width) - 1
+        (1u128 << width) - 1
     };
     let value = value & mask;
     for i in 0..width {
@@ -5899,7 +5909,9 @@ fn splice_bit_blobs(
 fn ptr_as_int(ptr: PtrConst, dest: TypeName) -> ConstInit {
     match ptr {
         PtrConst::Null => ConstInit::Int(0),
-        PtrConst::IntToPtr(bits) => ConstInit::Int(convert_bits(bits, TypeName::ULong, dest)),
+        PtrConst::IntToPtr(bits) => {
+            ConstInit::Int(convert_bits(u128::from(bits), TypeName::ULong, dest))
+        }
         other => ConstInit::PtrToInt {
             ptr: other,
             width: dest.width(),
@@ -6038,7 +6050,7 @@ fn int_expr_to_ptr(expr: &Expr) -> Result<PtrConst, ConstError> {
     if bits == 0 {
         Ok(PtrConst::Null)
     } else {
-        Ok(PtrConst::IntToPtr(bits))
+        Ok(PtrConst::IntToPtr(bits as u64))
     }
 }
 
@@ -6049,12 +6061,10 @@ fn narrow_ptr(ptr: PtrConst, int_ty: TypeName) -> Result<PtrConst, ConstError> {
     match ptr {
         PtrConst::Null => Ok(PtrConst::Null),
         PtrConst::IntToPtr(bits) => {
-            let narrowed = convert_bits(bits, TypeName::ULong, int_ty);
-            Ok(PtrConst::IntToPtr(convert_bits(
-                narrowed,
-                int_ty,
-                TypeName::ULong,
-            )))
+            let narrowed = convert_bits(u128::from(bits), TypeName::ULong, int_ty);
+            Ok(PtrConst::IntToPtr(
+                convert_bits(narrowed, int_ty, TypeName::ULong) as u64,
+            ))
         }
         // A file-scope address truncated to 32 bits is still a relocation.
         // Only the low bits survive, so it is not the original address constant.
@@ -6065,10 +6075,11 @@ fn narrow_ptr(ptr: PtrConst, int_ty: TypeName) -> Result<PtrConst, ConstError> {
 fn const_index(expr: &Expr) -> Result<i64, ConstError> {
     let value = eval_const_expr(expr)?;
     if value.ty.is_signed() {
-        Ok(sign_extend(value.bits, value.ty.width()))
+        i64::try_from(sign_extend(value.bits, value.ty.width()))
+            .map_err(|_| ConstError::Overflow(value.ty))
     } else {
         let bits = value.bits & value.ty.mask();
-        if bits > i64::MAX as u64 {
+        if bits > i64::MAX as u128 {
             Err(ConstError::Overflow(value.ty))
         } else {
             Ok(bits as i64)
@@ -6237,13 +6248,13 @@ enum ConstError {
 }
 
 struct CVal {
-    bits: u64,
+    bits: u128,
     ty: TypeName,
 }
 
 fn c_int(value: i32) -> CVal {
     CVal {
-        bits: value as u32 as u64,
+        bits: value as u32 as u128,
         ty: TypeName::Int,
     }
 }
@@ -6523,7 +6534,7 @@ fn eval_real_binop(op: BinOp, left: &Expr, right: &Expr) -> Result<NumConst, Con
 fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
     match expr {
         Expr::Int { bits, value_ty, .. } => Ok(CVal {
-            bits: *bits & value_ty.mask(),
+            bits: u128::from(*bits) & value_ty.mask(),
             ty: *value_ty,
         }),
         Expr::Float { .. } => Err(ConstError::NotConst),
@@ -6533,7 +6544,7 @@ fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
                 SizeofOperand::Expr(inner) => inner.ty().expect("sizeof operand is typed").size(),
             };
             Ok(CVal {
-                bits: size.ok_or(ConstError::NotConst)?,
+                bits: u128::from(size.ok_or(ConstError::NotConst)?),
                 ty: TypeName::ULong,
             })
         }
@@ -6628,10 +6639,6 @@ fn eval_unary(op: UnaryOp, expr: &Expr) -> Result<CVal, ConstError> {
         return Err(ConstError::NotConst);
     }
     let value = promote_val(eval_const_expr(expr)?);
-    // 128-bit values are not stored in the 64-bit constant folder.
-    if value.ty.width() > 64 {
-        return Err(ConstError::NotConst);
-    }
     match op {
         UnaryOp::Plus => Ok(value),
         UnaryOp::Minus => negate(value),
@@ -6654,7 +6661,7 @@ fn promote_val(value: CVal) -> CVal {
 
 fn negate(value: CVal) -> Result<CVal, ConstError> {
     if value.ty.is_signed() {
-        let signed = sign_extend(value.bits, value.ty.width()) as i128;
+        let signed = sign_extend(value.bits, value.ty.width());
         bits_from_signed(signed.wrapping_neg(), value.ty)
     } else {
         Ok(CVal {
@@ -6681,16 +6688,10 @@ fn eval_binop(op: BinOp, left: &Expr, right: &Expr) -> Result<CVal, ConstError> 
         _ => {
             let left = eval_const_expr(left)?;
             let right = eval_const_expr(right)?;
-            if left.ty.width() > 64 || right.ty.width() > 64 {
-                return Err(ConstError::NotConst);
-            }
             if matches!(op, BinOp::Shl | BinOp::Shr) {
                 return eval_shift(op, left, right);
             }
             let ty = left.ty.usual(right.ty);
-            if ty.width() > 64 {
-                return Err(ConstError::NotConst);
-            }
             let left = convert_bits(left.bits, left.ty, ty);
             let right = convert_bits(right.bits, right.ty, ty);
             if op.is_cmp() {
@@ -6701,7 +6702,7 @@ fn eval_binop(op: BinOp, left: &Expr, right: &Expr) -> Result<CVal, ConstError> 
     }
 }
 
-fn compare(op: BinOp, left: u64, right: u64, ty: TypeName) -> bool {
+fn compare(op: BinOp, left: u128, right: u128, ty: TypeName) -> bool {
     if ty.is_signed() {
         let left = sign_extend(left, ty.width());
         let right = sign_extend(right, ty.width());
@@ -6729,10 +6730,10 @@ fn compare(op: BinOp, left: u64, right: u64, ty: TypeName) -> bool {
     }
 }
 
-fn arith(op: BinOp, left: u64, right: u64, ty: TypeName) -> Result<CVal, ConstError> {
+fn arith(op: BinOp, left: u128, right: u128, ty: TypeName) -> Result<CVal, ConstError> {
     if ty.is_signed() {
-        let left = sign_extend(left, ty.width()) as i128;
-        let right = sign_extend(right, ty.width()) as i128;
+        let left = sign_extend(left, ty.width());
+        let right = sign_extend(right, ty.width());
         let value = match op {
             BinOp::Add => left.checked_add(right),
             BinOp::Sub => left.checked_sub(right),
@@ -6781,20 +6782,18 @@ fn arith(op: BinOp, left: u64, right: u64, ty: TypeName) -> Result<CVal, ConstEr
 }
 
 fn bits_from_signed(value: i128, ty: TypeName) -> Result<CVal, ConstError> {
-    let width = ty.width();
-    let min = -((1i128) << (width - 1));
-    let max = ((1i128) << (width - 1)) - 1;
+    let (min, max) = crate::ast::signed_limits(ty.width());
     if value < min || value > max {
         return Err(ConstError::Overflow(ty));
     }
     Ok(CVal {
-        bits: (value as u64) & ty.mask(),
+        bits: (value as u128) & ty.mask(),
         ty,
     })
 }
 
 fn signed_min(ty: TypeName) -> i128 {
-    -((1i128) << (ty.width() - 1))
+    crate::ast::signed_limits(ty.width()).0
 }
 
 /// `MIN / -1` and `MIN % -1` are not representable (C11 6.5.5).
@@ -6828,22 +6827,19 @@ fn rem_signed(left: i128, right: i128, ty: TypeName) -> Result<CVal, ConstError>
 fn eval_shift(op: BinOp, left: CVal, right: CVal) -> Result<CVal, ConstError> {
     let left = promote_val(left);
     let right = promote_val(right);
-    if left.ty.width() > 64 {
-        return Err(ConstError::NotConst);
-    }
     let count = shift_count(&right, left.ty.width())?;
     let width = left.ty.width();
     if op == BinOp::Shr {
         let bits = if left.ty.is_signed() {
             let shifted = sign_extend(left.bits, width) >> count;
-            shifted as u64 & left.ty.mask()
+            shifted as u128 & left.ty.mask()
         } else {
             (left.bits & left.ty.mask()) >> count
         };
         return Ok(CVal { bits, ty: left.ty });
     }
     if left.ty.is_signed() {
-        let signed = sign_extend(left.bits, width) as i128;
+        let signed = sign_extend(left.bits, width);
         if signed < 0 {
             return Err(ConstError::Shift);
         }
@@ -6859,13 +6855,13 @@ fn eval_shift(op: BinOp, left: CVal, right: CVal) -> Result<CVal, ConstError> {
 fn shift_count(count: &CVal, width: u32) -> Result<u32, ConstError> {
     if count.ty.is_signed() {
         let signed = sign_extend(count.bits, count.ty.width());
-        if signed < 0 || signed >= i64::from(width) {
+        if signed < 0 || signed >= i128::from(width) {
             return Err(ConstError::Shift);
         }
         Ok(signed as u32)
     } else {
         let unsigned = count.bits & count.ty.mask();
-        if unsigned >= u64::from(width) {
+        if unsigned >= u128::from(width) {
             return Err(ConstError::Shift);
         }
         Ok(unsigned as u32)
@@ -7624,9 +7620,9 @@ int quiet = 0 && (2147483647 + 1);
         assert_eq!(value("zero"), Some(0));
         assert_eq!(value("missing"), None);
         assert_eq!(value("h"), Some(0));
-        assert_eq!(value("m"), Some(i32::MIN as u32 as u64));
-        assert_eq!(value("d"), Some((-2i32) as u32 as u64));
-        assert_eq!(value("s"), Some((-1i32) as u32 as u64));
+        assert_eq!(value("m"), Some(i32::MIN as u32 as u128));
+        assert_eq!(value("d"), Some((-2i32) as u32 as u128));
+        assert_eq!(value("s"), Some((-1i32) as u32 as u128));
         assert_eq!(value("quiet"), Some(0));
         let hidden = unit
             .globals
@@ -7694,10 +7690,10 @@ int uneval_call = 1 ? 4 : foo();
                 .int_init()
         };
         assert_eq!(value("bits"), Some((6 & 3) | (1 ^ 4)));
-        assert_eq!(value("tilde"), Some((-1i32) as u32 as u64));
+        assert_eq!(value("tilde"), Some((-1i32) as u32 as u128));
         assert_eq!(value("shl"), Some(16));
-        assert_eq!(value("shr"), Some((-4i32) as u32 as u64));
-        assert_eq!(value("wide"), Some((i32::MIN >> 1) as u32 as u64));
+        assert_eq!(value("shr"), Some((-4i32) as u32 as u128));
+        assert_eq!(value("wide"), Some((i32::MIN >> 1) as u32 as u128));
         assert_eq!(value("pick"), Some(7));
         assert_eq!(value("other"), Some(5));
         assert_eq!(value("quiet_or"), Some(1));
@@ -7796,7 +7792,7 @@ int cond_cmp = (1 ? -1 : 1u) > 0;
         assert_eq!(value("w"), Some(0));
         assert_eq!(value("nested"), Some(8));
         assert_eq!(value("sz"), Some(4));
-        assert_eq!(value("wide"), Some(1u64 << 40));
+        assert_eq!(value("wide"), Some(1u128 << 40));
         assert_eq!(value("cond_ul"), Some(4294967295));
         assert_eq!(value("cond_cmp"), Some(1));
 

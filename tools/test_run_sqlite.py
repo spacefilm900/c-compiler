@@ -3,8 +3,8 @@
 
 They use made-up results only: nothing is compiled or run except a short
 timeout check. A workload matches only when neither side timed out, both
-exit codes and captured bytes agree, and the two database files exist and
-are identical. The whole run passes only when every level was built by
+exits are zero, the captured bytes agree, and the two database files exist
+and are identical. The whole run passes only when every level was built by
 this compiler alone.
 """
 
@@ -14,6 +14,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -95,13 +96,14 @@ class WorkloadFiles(unittest.TestCase):
     def test_stale_database_is_deleted(self):
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
-            stale = scratch / "demo.db"
+            work = scratch / "w"
+            work.mkdir()
+            stale = work / "demo.db"
             stale.write_bytes(b"OLD")
-            (scratch / "demo.db-journal").write_bytes(b"J")
+            (work / "demo.db-journal").write_bytes(b"J")
             exe = scratch / "false-sqlite"
-            # A stand-in that exits 0 and writes a new database named as $4? We
-            # call sqlite3 as: exe -batch -init /dev/null -bail DB. Provide a
-            # tiny script that copies its stdin and creates the db path (argv 5).
+            # sqlite3 is invoked as: exe -batch -init /dev/null -bail DB.
+            # argv[5] is the database path.
             exe.write_text(
                 "#!/bin/sh\n"
                 "db=$5\n"
@@ -112,16 +114,11 @@ class WorkloadFiles(unittest.TestCase):
             exe.chmod(0o755)
             script = scratch / "demo.sql"
             script.write_text("SELECT 1;\n")
-            # The harness uses a subdirectory; pass scratch itself as the work dir.
-            work = scratch / "w"
-            # Point the script stem at demo so the db is demo.db
-            script2 = work / "demo.sql"
-            # run_workload uses scratch / (stem + '.db')
             res = run_sqlite.run_workload(exe, script, work, 5)
             self.assertTrue(res["db_exists"])
             self.assertEqual(Path(res["db"]).read_bytes(), b"NEW")
             self.assertFalse((work / "demo.db-journal").exists())
-
+            self.assertFalse(stale.exists() and stale.read_bytes() == b"OLD")
 
 class Verdict(unittest.TestCase):
     def test_full_and_matching_passes(self):
@@ -154,18 +151,52 @@ class Scorecard(unittest.TestCase):
 
 
 class TimeoutMatch(unittest.TestCase):
+    def _rows(self, result):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            (work / "01.sql").write_text("SELECT 1;\n")
+            original = run_sqlite.WORKLOADS
+            run_sqlite.WORKLOADS = work
+            try:
+                with mock.patch.object(run_sqlite, "run_workload", return_value=result):
+                    return run_sqlite.compare_workloads(
+                        Path("/bin/true"), Path("/bin/true"), work, False
+                    )
+            finally:
+                run_sqlite.WORKLOADS = original
+
     def test_timeout_never_counts_as_a_match(self):
-        # Directly exercise the rule used by compare_workloads: both sides
-        # timing out with the same bytes is still not a match.
-        ref = {"rc": 124, "stdout": b"", "stderr": b"timed out\n", "timed_out": True, "db_exists": False, "db_sha256": None}
-        ours = dict(ref)
-        output_match = (
-            not ref["timed_out"]
-            and not ours["timed_out"]
-            and (ours["rc"], ours["stdout"], ours["stderr"]) == (ref["rc"], ref["stdout"], ref["stderr"])
-        )
-        self.assertFalse(output_match)
+        timeout = {
+            "rc": 124,
+            "stdout": b"",
+            "stderr": b"timed out\n",
+            "timed_out": True,
+            "seconds": 1.0,
+            "db_exists": False,
+            "db_sha256": None,
+            "db_size": 0,
+            "db": "",
+        }
+        rows = self._rows(timeout)
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]["match"])
+        self.assertFalse(rows[0]["output_match"])
+
+    def test_nonzero_exit_is_never_a_match(self):
+        failed = {
+            "rc": 1,
+            "stdout": b"ok\n",
+            "stderr": b"",
+            "timed_out": False,
+            "seconds": 0.1,
+            "db_exists": True,
+            "db_sha256": "abc",
+            "db_size": 3,
+            "db": "x.db",
+        }
+        rows = self._rows(failed)
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]["match"])
+        self.assertFalse(rows[0]["output_match"])
 
 
-if __name__ == "__main__":
-    unittest.main()

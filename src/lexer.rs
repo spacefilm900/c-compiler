@@ -814,7 +814,7 @@ impl Lexer<'_> {
         self.bump();
         let value = self.char_body(line, column, 8)?;
         let spelling = self.source[start..self.index].to_string();
-        let bits = crate::ast::sign_extend(u64::from(value), 8) as u32 as u64;
+        let bits = crate::ast::sign_extend(u128::from(value), 8) as u32 as u64;
         self.push_int(&spelling, bits, TypeName::Int, line, column);
         Ok(())
     }

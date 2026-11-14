@@ -132,7 +132,7 @@ impl TypeName {
         }
     }
 
-    pub fn mask(self) -> u64 {
+    pub fn mask(self) -> u128 {
         width_mask(self.width())
     }
 
@@ -197,15 +197,9 @@ impl TypeName {
     }
 
     /// Decimal spelling of `bits` interpreted as this type.
-    ///
-    /// Integer constants in the AST store 64 bits. A 128-bit type uses those
-    /// as the low 64 bits (the form that fits in a C integer constant).
-    pub fn format_bits(self, bits: u64) -> String {
-        let width = self.width().min(64);
+    pub fn format_bits(self, bits: u128) -> String {
         if self.is_signed() {
-            sign_extend(bits, width).to_string()
-        } else if self.width() > 64 {
-            bits.to_string()
+            sign_extend(bits, self.width()).to_string()
         } else {
             (bits & self.mask()).to_string()
         }
@@ -1547,22 +1541,33 @@ pub fn composite(left: &CType, right: &CType) -> CType {
     base.with_quals(left.quals())
 }
 
-pub fn width_mask(width: u32) -> u64 {
-    if width >= 64 {
-        u64::MAX
+pub fn width_mask(width: u32) -> u128 {
+    if width >= 128 {
+        u128::MAX
     } else {
-        (1u64 << width) - 1
+        (1u128 << width) - 1
     }
 }
 
-/// Sign-extend the low `width` bits of `bits` to `i64`.
-pub fn sign_extend(bits: u64, width: u32) -> i64 {
-    if width >= 64 {
-        return bits as i64;
+/// Sign-extend the low `width` bits of `bits` to `i128`.
+pub fn sign_extend(bits: u128, width: u32) -> i128 {
+    if width >= 128 {
+        return bits as i128;
     }
     let bits = bits & width_mask(width);
-    let shift = 64 - width;
-    ((bits << shift) as i64) >> shift
+    let shift = 128 - width;
+    ((bits << shift) as i128) >> shift
+}
+
+/// Inclusive signed limits of an integer type of `width` bits.
+pub fn signed_limits(width: u32) -> (i128, i128) {
+    if width >= 128 {
+        (i128::MIN, i128::MAX)
+    } else {
+        let min = -((1i128) << (width - 1));
+        let max = ((1i128) << (width - 1)) - 1;
+        (min, max)
+    }
 }
 
 /// Convert `bits` from `from` to `to` (C11 6.3.1.3).
@@ -1571,7 +1576,7 @@ pub fn sign_extend(bits: u64, width: u32) -> i64 {
 /// destination that cannot represent the value is implementation-defined;
 /// this target keeps the low bits and reads them as two's complement, which
 /// is what Clang does on `x86_64-pc-linux-gnu`.
-pub fn convert_bits(bits: u64, from: TypeName, to: TypeName) -> u64 {
+pub fn convert_bits(bits: u128, from: TypeName, to: TypeName) -> u128 {
     // C11 6.3.1.2: any nonzero value becomes 1. Truncation would turn 2 into 0.
     if to == TypeName::Bool && from != TypeName::Bool {
         let zero = if from.is_signed() {
@@ -1579,23 +1584,14 @@ pub fn convert_bits(bits: u64, from: TypeName, to: TypeName) -> u64 {
         } else {
             bits & from.mask() == 0
         };
-        return u64::from(!zero);
-    }
-    if to.width() > 64 {
-        // The AST stores 64-bit constants. Extending to 128 bits leaves the
-        // high half zero, or sign-extended in IR at run time; here only the
-        // low 64 bits are kept.
-        if from.is_signed() && from.width() <= 64 {
-            return sign_extend(bits, from.width()) as u64;
-        }
-        return bits & from.mask();
+        return u128::from(!zero);
     }
     let to_mask = to.mask();
     if to.width() <= from.width() {
         return bits & to_mask;
     }
     if from.is_signed() {
-        (sign_extend(bits, from.width()) as u64) & to_mask
+        (sign_extend(bits, from.width()) as u128) & to_mask
     } else {
         bits & from.mask()
     }
@@ -1833,12 +1829,12 @@ pub enum PtrConst {
     },
 }
 
-/// Constant initializer value. Integers keep the low bits of their type.
-/// `Zero` is the all-zero value of whatever type it is attached to.
+/// Constant initializer value. Integers keep the bit pattern of their type
+/// (up to 128 bits). `Zero` is the all-zero value of whatever type it is attached to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConstInit {
     Zero,
-    Int(u64),
+    Int(u128),
     /// IEEE bits of a `float` (low 32), `double` (low 64), or the 80-bit
     /// extended pattern of a `long double`. The destination type selects
     /// the width.
@@ -1883,7 +1879,9 @@ pub struct CallRes {
 #[derive(Debug, Clone)]
 pub enum Expr {
     Int {
-        /// Low bits of the value. The high bits above [`TypeName::width`] are zero.
+        /// Low bits of the value. A C integer constant fits in 64 bits; a
+        /// 128-bit value arises from a conversion or an operation, and is
+        /// stored in the constant folders as [`u128`], not here.
         bits: u64,
         /// Type of the literal or character constant (C11 6.4.4.1, 6.4.4.4).
         value_ty: TypeName,
@@ -2585,9 +2583,9 @@ pub enum Stmt {
     /// `high_value` its converted value.
     Case {
         expr: Expr,
-        value: Option<u64>,
+        value: Option<u128>,
         high: Option<Expr>,
-        high_value: Option<u64>,
+        high_value: Option<u128>,
         stmt: Box<Stmt>,
         line: usize,
         column: usize,
@@ -2776,7 +2774,7 @@ impl VarAttrs {
 impl IrGlobal {
     /// Low bits of an integer definition. `None` when the global is not an
     /// integer constant (a pointer, an aggregate, or an external declaration).
-    pub fn int_init(&self) -> Option<u64> {
+    pub fn int_init(&self) -> Option<u128> {
         match &self.init {
             Some(ConstInit::Int(bits)) => Some(*bits),
             Some(ConstInit::Zero) if self.ty.is_integer() => Some(0),
@@ -3039,7 +3037,11 @@ fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
         Expr::Int { bits, value_ty, .. } => put(
             out,
             indent,
-            &format!("{} {}", value_ty.as_str(), value_ty.format_bits(*bits)),
+            &format!(
+                "{} {}",
+                value_ty.as_str(),
+                value_ty.format_bits(u128::from(*bits))
+            ),
         ),
         Expr::Float { bits, kind, .. } => put(
             out,
@@ -3393,5 +3395,24 @@ mod tests {
         assert!(a.field("y").is_none());
         assert_eq!(CType::Struct(a.clone()).display(), "struct S");
         assert_eq!(CType::Struct(a).ir_type(), "%struct.S");
+    }
+
+    #[test]
+    fn convert_bits_extends_to_128() {
+        use super::{convert_bits, TypeName};
+        // `__uint128_t a = -1;` keeps 128 one-bits.
+        let all_ones = convert_bits(u128::from((-1i32) as u32), TypeName::Int, TypeName::UInt128);
+        assert_eq!(all_ones, u128::MAX);
+        // `__uint128_t b = 0xffffffffffffffffULL;` zero-extends.
+        let ull_max = convert_bits(u64::MAX as u128, TypeName::ULongLong, TypeName::UInt128);
+        assert_eq!(ull_max, u64::MAX as u128);
+        // signed `__int128` from -1 is also all ones.
+        let signed = convert_bits(u128::from((-1i32) as u32), TypeName::Int, TypeName::Int128);
+        assert_eq!(signed, u128::MAX);
+        // Narrowing drops the high half.
+        assert_eq!(
+            convert_bits(u128::MAX, TypeName::UInt128, TypeName::ULongLong),
+            u64::MAX as u128
+        );
     }
 }

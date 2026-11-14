@@ -700,7 +700,7 @@ struct Gen {
     intrinsics: std::collections::BTreeSet<String>,
     /// GNU case ranges of the switch being collected: low and high bits
     /// and the case block.
-    switch_ranges: Vec<(u64, u64, String)>,
+    switch_ranges: Vec<(u128, u128, String)>,
 }
 
 /// One store of an automatic aggregate initializer, evaluated and waiting
@@ -1978,7 +1978,7 @@ impl Gen {
         ty: TypeName,
         value: &str,
         default_dest: &str,
-        cases: &[(u64, String)],
+        cases: &[(u128, String)],
     ) {
         let ir = ty.ir_type();
         self.emit(&format!("  switch {ir} {value}, label %{default_dest} ["));
@@ -1997,7 +1997,7 @@ impl Gen {
     fn collect_switch_targets(
         &mut self,
         stmt: &Stmt,
-        cases: &mut Vec<(u64, String)>,
+        cases: &mut Vec<(u128, String)>,
         default_label: &mut Option<String>,
         labels: &mut Vec<String>,
     ) {
@@ -2319,7 +2319,7 @@ impl Gen {
             return Some(self.record_ptr(expr));
         }
         match expr {
-            Expr::Int { bits, value_ty, .. } => Some(value_ty.format_bits(*bits)),
+            Expr::Int { bits, value_ty, .. } => Some(value_ty.format_bits(u128::from(*bits))),
             Expr::Float { bits, kind, .. } => Some(crate::float::llvm_const(*kind, *bits)),
             Expr::LabelAddr { name, func, .. } => {
                 let func = func.as_deref().expect("label address in a function");
@@ -2445,7 +2445,7 @@ impl Gen {
                     SizeofOperand::Expr(inner) => inner.ty().expect("typed").size(),
                 }
                 .expect("sizeof of a complete type");
-                Some(TypeName::ULong.format_bits(size))
+                Some(TypeName::ULong.format_bits(u128::from(size)))
             }
             Expr::Cast { ty_name, expr, .. } => {
                 if ty_name.is_void() {

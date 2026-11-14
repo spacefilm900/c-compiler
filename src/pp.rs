@@ -1998,9 +1998,9 @@ fn val_from_compiler(tok: &Token) -> Val {
     let ty = tok.int_ty.unwrap_or(TypeName::Int);
     let raw = tok.value.unwrap_or(0);
     let bits = if ty.is_signed() {
-        sign_extend(raw, ty.width()) as u64
+        sign_extend(u128::from(raw), ty.width()) as u64
     } else {
-        raw & ty.mask()
+        (u128::from(raw) & ty.mask()) as u64
     };
     // `#if` uses `intmax_t` for every integer constant that fits in it, even
     // when the phase-7 type is a narrower unsigned type (`0xFFFFFFFF` is

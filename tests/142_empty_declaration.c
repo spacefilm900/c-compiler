@@ -3,8 +3,6 @@
    SQLITE_EXTENSION_INIT1; to this form. */
 
 ;
-#define SQLITE_EXTENSION_INIT1
-SQLITE_EXTENSION_INIT1;
 int x;
 ;
 int main(void) {

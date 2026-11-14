@@ -112,6 +112,20 @@ mod tests {
     }
 
     #[test]
+    fn empty_file_scope_declaration_from_an_empty_macro() {
+        // SQLite's shell writes SQLITE_EXTENSION_INIT1; after the macro
+        // expands to nothing. The smoke test has no directives, so the
+        // preprocessor path is checked here.
+        let ir = compile(
+            "#define SQLITE_EXTENSION_INIT1\nSQLITE_EXTENSION_INIT1;\nint x;\nint main(void) { return x; }\n",
+            Dialect::C11,
+        )
+        .unwrap_or_else(|err| panic!("{err}"))
+        .ir;
+        assert!(ir.contains("@x"), "{ir}");
+    }
+
+    #[test]
     fn static_function_used_only_unevaluated_needs_no_definition() {
         // tests/141_unevaluated_static_use.c checks the accepted forms
         // against Clang; an evaluated use, including the selected
