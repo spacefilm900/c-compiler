@@ -135,3 +135,20 @@ python3 harness/run_doom.py --json out.json --scorecard out.md --notes reports/d
 ```
 
 The headless backend (`harness/doom/dg_headless.c`) and the fixed-address allocator (`harness/doom/dg_alloc.c`) are this repository's own code. How the run is made deterministic, the graded per-file, mixed, and full builds, and the scorecard are described in `harness/run_doom.py` and `STATUS.md`. Scorecards are in `reports/doom/`.
+
+## Lua 5.4.7 and its test suite
+
+The second big program (PLAN.md step 5). Both inputs come from lua.org, are fetched and not vendored, and are test inputs only: no Lua code is copied into the compiler, and the trees are not patched.
+
+- Source: https://www.lua.org/ftp/lua-5.4.7.tar.gz, SHA-256 `9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30`
+- Test suite: https://www.lua.org/tests/lua-5.4.7-tests.tar.gz, SHA-256 `8a4898ffe4c7613c8009327a0722db7a41ef861d526c77c5b46114e59ebf811e`
+- Licence: MIT, Copyright (C) 1994-2024 Lua.org, PUC-Rio (the notice is at the end of `src/lua.h` and in `all.lua`)
+
+```sh
+scripts/fetch_lua.sh
+python3 harness/run_lua.py                       # -O0 and -O2, -std=gnu11
+python3 harness/run_lua.py --opt O2 --suite user --run-jobs 4
+python3 harness/run_lua.py --json out.json --scorecard out.md --notes reports/lua/notes.md
+```
+
+`scripts/fetch_lua.sh` downloads both tarballs (retrying, because lua.org sometimes drops connections), checks the SHA-256 sums, and unpacks them into `tests/external/lua/`. The workload scripts in `harness/lua/` are this repository's own. What is built, the three test-suite modes, and the comparisons are described in `harness/run_lua.py` and `STATUS.md`. Scorecards are in `reports/lua/`.

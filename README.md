@@ -57,13 +57,14 @@ python3 harness/run_tests.py
 
 `cargo test` runs the lexer, parser, diagnostic, and IR unit tests, and compares every `tests/*.c` program with Clang. `harness/run_tests.py` is the project differential runner: it compiles each `tests/*.c` with this compiler and with Clang, links both, and compares exit status, stdout, and stderr.
 
-The external suites (Csmith, One True AWK, the AWK Builder suites, `gcc.c-torture/execute`, and DOOM) and the performance script are described in [tests/external/README.md](tests/external/README.md) and [STATUS.md](STATUS.md).
+The external suites (Csmith, One True AWK, the AWK Builder suites, `gcc.c-torture/execute`, DOOM, and Lua) and the performance script are described in [tests/external/README.md](tests/external/README.md) and [STATUS.md](STATUS.md).
 
 ```sh
 make csmith
 make otawk
 make torture
 make doom
+make lua
 make perf
 make awk-extra
 ```
@@ -71,6 +72,8 @@ make awk-extra
 ### Big programs
 
 DOOM is the first real program. `make doom` fetches [doomgeneric](https://github.com/ozkl/doomgeneric) at a pinned commit and the free [Freedoom](https://freedoom.github.io/) game data, builds DOOM twice (with this compiler and with Clang), plays the same recorded demos in both with no window, and checks that every frame is identical. It builds with this compiler alone, and all eight Freedoom demos (four in each of `freedoom1.wad` and `freedoom2.wad`, 39,209 frames) match Clang frame for frame at `-O0` and `-O2`. The per-program scorecards are in [reports/doom/](reports/doom/): `baseline.md` is the first run, kept unchanged, and `scorecard.md` is the current one.
+
+Lua is the second. `make lua` fetches the Lua 5.4.7 release and its official test suite from lua.org (both checked by SHA-256), builds Lua twice (with this compiler in `-std=gnu11` mode, because Lua's interpreter loop uses GNU computed `goto` when the compiler says it is GNU-compatible, and with Clang), and compares the two. Both the normal build and a build with Lua's internal self-checks turned on pass the official test suite in three modes, nine workload scripts of our own give byte-for-byte the same output, and `luac` produces identical bytecode, at `-O0` and `-O2`. Scorecards are in [reports/lua/](reports/lua/).
 
 On the machine where system `cargo` is Rust 1.85.1 and has no clippy component, the clippy check that passed was:
 
@@ -136,6 +139,7 @@ These follow the public GCC manual, with GCC 14 and Clang 19 used only as black 
 - Zero-length arrays `T a[0]`, including as the last member of a struct; the array adds no size.
 - `x ?: y`, which evaluates `x` once and yields it when nonzero.
 - Empty initializers `= {}`, treated as `= {0}`.
+- Labels as values: `&&label` is the address of a label in the current function, of type `void *`, and `goto *expr;` jumps to it. A label address is a constant in a block-scope `static` initializer, so a dispatch table such as Lua's `static const void *const disptab[] = { &&L_OP_MOVE, ... };` works. A computed `goto` may reach any label of the function whose address is taken. Differences of label addresses (`&&a - &&b`) are not supported.
 
 **In both modes** (these spellings are reserved for the implementation, C11 7.1.3):
 
@@ -145,7 +149,7 @@ These follow the public GCC manual, with GCC 14 and Clang 19 used only as black 
 - Builtins lowered to LLVM: `__builtin_expect`, `__builtin_unreachable`, `__builtin_trap`, `__builtin_clz` / `ctz` / `popcount` / `parity` / `ffs` / `clrsb` with their `l` and `ll` forms, `__builtin_bswap16` / `32` / `64`, `__builtin_alloca`, `__builtin_prefetch` (no code), `__builtin_assume_aligned`, `__builtin_return_address(0)`, `__builtin_frame_address(0)`, `__builtin_isnan` / `isinf` / `isfinite` / `isnormal`, the `va_*` builtins, and the overflow builtins: generic `__builtin_add_overflow` / `sub` / `mul` on any integer operands, and the typed `__builtin_sadd_overflow`, `__builtin_uaddl_overflow`, `__builtin_smulll_overflow`, and the rest of that family.
 - Library forwarders: `__builtin_abort`, `__builtin_exit`, `__builtin_printf`, `__builtin_memcpy` and the other string and memory functions, `__builtin_malloc`, `__builtin_abs` / `labs`, the `<ctype.h>` functions, and the `<math.h>` functions with their `f` and `l` forms (for example `__builtin_fabs`, `__builtin_sqrtf`). Each is a call to the library function of the same name without the prefix, with that function's standard prototype. GCC accepts some forwarders that Clang does not, such as `__builtin_exit` and the `<ctype.h>` ones; for those, the output was checked against GCC.
 
-Not yet: `__builtin_object_size`, `__builtin_classify_type`, `__builtin_*_overflow_p`, `__builtin_setjmp` / `longjmp`, `__builtin_apply`, vector types, inline assembly, computed `goto`, nested functions, range designators, implicit `int` and implicit function declarations, and K&R definitions.
+Not yet: `__builtin_object_size`, `__builtin_classify_type`, `__builtin_*_overflow_p`, `__builtin_setjmp` / `longjmp`, `__builtin_apply`, vector types, inline assembly, nested functions, range designators, implicit `int` and implicit function declarations, and K&R definitions.
 
 ## Not accepted
 
@@ -153,7 +157,7 @@ Unsupported or invalid input is a diagnostic. It is not ignored and it is not lo
 
 Trigraphs are not recognized. `_Pragma` is rejected or left as an ordinary token. `__DATE__` and `__TIME__` are not predefined. `L`, `u`, `U`, and `u8` string literals are accepted, as are `L`, `u`, and `U` character constants. `wchar_t` is `int`, `char16_t` is unsigned 16-bit, `char32_t` is unsigned 32-bit, and a `u8` string is an array of `char`. `u8'...'` is rejected. Inside a character constant or string literal, a non-ASCII source character (UTF-8) or a universal character name (`\u`, `\U`) is encoded for the prefix: UTF-8 for an unprefixed or `u8` string, UTF-16 for `u`, UTF-32 for `U` and `L`. A character constant whose character needs more than one code unit is a diagnostic. A prefixed character constant in `#if` has the value and type it has in program text, so `L'\400'` is 256. Binary literals and non-ASCII bytes outside literals and comments are errors. An integer suffix that is not in the C11 grammar (`1Ll`, `1uu`) is a diagnostic. An integer constant that fits in no type on the C11 6.4.4.1 list is a diagnostic, including a decimal value that does not fit in signed `long long`. Multi-character character constants and hex or octal escapes outside `unsigned char` are diagnostics. A wide hex escape must fit in `unsigned int`.
 
-The parser or checker rejects variable-length arrays, a `static` or `extern` declaration in a `for` header, a `static` function declaration at block scope, old-style K&R definitions and identifier lists (`int f(a, b);`), nested functions, a variadic function with no named parameter (`int f(...);`), an incomplete struct or union passed or returned at a definition or a call, empty structs and unions, a GNU range designator (`[0 ... 3]`, in both modes), computed `goto`, and a label followed by a declaration (`case 1: int x;`). An untagged unnamed struct or union member is anonymous: its members are members of the enclosing type. A tagged unnamed member is still a diagnostic. Arithmetic on `void *` is rejected; Clang warns and treats the size as 1. A global initializer that is not an integer or floating constant expression, an address constant, or a constant brace list of those is a diagnostic. Assignment, `++`/`--`, calls, and the comma operator are not allowed in that constant expression when they are evaluated (C11 6.6). An evaluated division by zero is a diagnostic, and so is an evaluated signed constant whose result does not fit in its type (C11 6.6p4), including `INT_MIN / -1` and `1 << 31`. `int f();` declares a function without a prototype: a call applies the default argument promotions, and compatibility with a prototype follows C11 6.7.6.3p15. Compound literals, `_Generic`, `_Static_assert`, and `_Alignof(type-name)` are supported. Other C11 keywords (`_Alignas`, `_Atomic`, `_Complex`, `_Thread_local`) are recognized so they produce a specific "not supported" diagnostic, and `__STDC_NO_ATOMICS__`, `__STDC_NO_COMPLEX__`, `__STDC_NO_THREADS__`, and `__STDC_NO_VLA__` are predefined. The `__builtin_*` functions this compiler knows are listed under [GNU extensions](#gnu-extensions); any other `__builtin_*` name is an ordinary undeclared identifier.
+The parser or checker rejects variable-length arrays, a `static` or `extern` declaration in a `for` header, a `static` function declaration at block scope, old-style K&R definitions and identifier lists (`int f(a, b);`), nested functions, a variadic function with no named parameter (`int f(...);`), an incomplete struct or union passed or returned at a definition or a call, empty structs and unions, a GNU range designator (`[0 ... 3]`, in both modes), computed `goto` and `&&label` in strict C11 (they need `-std=gnu11`), and a label followed by a declaration (`case 1: int x;`). An untagged unnamed struct or union member is anonymous: its members are members of the enclosing type. A tagged unnamed member is still a diagnostic. Arithmetic on `void *` is rejected; Clang warns and treats the size as 1. A global initializer that is not an integer or floating constant expression, an address constant, or a constant brace list of those is a diagnostic. Assignment, `++`/`--`, calls, and the comma operator are not allowed in that constant expression when they are evaluated (C11 6.6). An evaluated division by zero is a diagnostic, and so is an evaluated signed constant whose result does not fit in its type (C11 6.6p4), including `INT_MIN / -1` and `1 << 31`. `int f();` declares a function without a prototype: a call applies the default argument promotions, and compatibility with a prototype follows C11 6.7.6.3p15. Compound literals, `_Generic`, `_Static_assert`, and `_Alignof(type-name)` are supported. Other C11 keywords (`_Alignas`, `_Atomic`, `_Complex`, `_Thread_local`) are recognized so they produce a specific "not supported" diagnostic, and `__STDC_NO_ATOMICS__`, `__STDC_NO_COMPLEX__`, `__STDC_NO_THREADS__`, and `__STDC_NO_VLA__` are predefined. The `__builtin_*` functions this compiler knows are listed under [GNU extensions](#gnu-extensions); any other `__builtin_*` name is an ordinary undeclared identifier.
 
 ## Layout
 
@@ -163,7 +167,8 @@ The parser or checker rejects variable-length arrays, a `static` or `extern` dec
 - `tests/` — C programs for the differential harness; `tests/inc/` holds headers those programs include
 - `harness/run_tests.py` — Clang oracle
 - `harness/run_doom.py`, `harness/doom/` — DOOM harness and its headless backend
-- `reports/` — scorecards and campaign reports (`reports/doom/` for DOOM)
+- `harness/run_lua.py`, `harness/lua/` — Lua harness and its workload scripts
+- `reports/` — scorecards and campaign reports (`reports/doom/` for DOOM, `reports/lua/` for Lua)
 - `PLAN.md` — staged plan (unchanged starter plan)
 - `STATUS.md` — what this milestone actually does
 - `DESIGN.md` — design decisions
@@ -171,4 +176,4 @@ The parser or checker rejects variable-length arrays, a `static` or `extern` dec
 
 ## Licence
 
-The compiler is MIT (see [LICENSE](LICENSE)). The Writing a C Compiler test suite is third-party (MIT, Copyright (c) 2023 Nora Sandler), downloaded at a pinned commit and not stored in this repo (see [tests/external/README.md](tests/external/README.md)). So are doomgeneric (GPL-2.0) and the Freedoom game data (BSD), which are test inputs only.
+The compiler is MIT (see [LICENSE](LICENSE)). The Writing a C Compiler test suite is third-party (MIT, Copyright (c) 2023 Nora Sandler), downloaded at a pinned commit and not stored in this repo (see [tests/external/README.md](tests/external/README.md)). So are doomgeneric (GPL-2.0), the Freedoom game data (BSD), and Lua 5.4.7 with its test suite (MIT), which are test inputs only.
