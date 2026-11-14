@@ -13,6 +13,8 @@
 //! that follow the invocation.
 
 use std::collections::{HashMap, HashSet};
+
+use crate::fxhash::{FxHashMap, FxHashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -252,10 +254,10 @@ fn error_at(tok: &PpToken, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(&*tok.display, tok.line, tok.column, message)
 }
 
-type Hide = Rc<HashSet<String>>;
+type Hide = Rc<FxHashSet<String>>;
 
 fn hide_empty() -> Hide {
-    Rc::new(HashSet::new())
+    Rc::new(FxHashSet::default())
 }
 
 fn hide_with(hide: &Hide, name: &str) -> Hide {
@@ -386,7 +388,7 @@ enum Clause {
 struct Processor {
     tokens: Vec<PpToken>,
     index: usize,
-    macros: HashMap<String, MacroEntry>,
+    macros: FxHashMap<String, MacroEntry>,
     files: Vec<FileInfo>,
     once: HashSet<PathBuf>,
     cond: Vec<Cond>,
@@ -404,7 +406,7 @@ impl Processor {
         let mut processor = Self {
             tokens: Vec::new(),
             index: 0,
-            macros: HashMap::new(),
+            macros: FxHashMap::default(),
             files: Vec::new(),
             once: HashSet::new(),
             cond: Vec::new(),
@@ -1569,8 +1571,19 @@ fn retarget(tokens: &mut [PpToken], inv: &PpToken) {
 
 fn paint(tokens: &mut [PpToken], base: &Hide, name: &str) {
     let extra = hide_with(base, name);
+    // Neighbouring tokens usually share one hide set (they came from the
+    // same body or argument), so the last union is reused instead of
+    // building an equal set again.
+    let mut last: Option<(Hide, Hide)> = None;
     for tok in tokens {
-        tok.hide = hide_union(&tok.hide, &extra);
+        if let Some((from, to)) = &last {
+            if Rc::ptr_eq(from, &tok.hide) {
+                tok.hide = Rc::clone(to);
+                continue;
+            }
+        }
+        let union = hide_union(&tok.hide, &extra);
+        last = Some((std::mem::replace(&mut tok.hide, Rc::clone(&union)), union));
     }
 }
 

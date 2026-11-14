@@ -12,6 +12,7 @@ pub mod dialect;
 pub mod driver;
 pub mod float;
 mod fp80;
+pub(crate) mod fxhash;
 pub mod irgen;
 pub mod lexer;
 pub mod parser;
