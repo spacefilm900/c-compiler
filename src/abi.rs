@@ -15,6 +15,7 @@
 //! `sret` return slot.
 
 use crate::ast::{align_up, CType, FloatKind};
+use crate::target::Abi;
 
 /// Why an aggregate cannot be lowered yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,15 +91,25 @@ pub enum AggAbi {
     /// eightbytes are `X87` followed by `X87UP` (a `long double` aggregate).
     /// The same class is passed in memory, so parameters never use this.
     X87,
+    /// AAPCS64: one LLVM value of type `ty` whose bytes are the start of
+    /// the object's representation (`i64`, `[2 x i64]`, `i128`, an exact
+    /// `iN` return, or an HFA `[N x float]`). `size` is the store size of
+    /// `ty`, which may exceed the object's size; the extra bytes are
+    /// unspecified.
+    Coerce { ty: String, size: u64 },
+    /// AAPCS64: a parameter larger than 16 bytes is copied by the caller,
+    /// and a pointer to the copy is passed (no `byval`).
+    Indirect,
 }
 
 impl AggAbi {
     /// LLVM type of a register return: one piece, or an anonymous struct of them.
     pub fn direct_type(&self) -> Option<String> {
-        let AggAbi::Direct(pieces) = self else {
-            return None;
-        };
-        Some(pieces_type(pieces))
+        match self {
+            AggAbi::Direct(pieces) => Some(pieces_type(pieces)),
+            AggAbi::Coerce { ty, .. } => Some(ty.clone()),
+            _ => None,
+        }
     }
 }
 
@@ -128,6 +139,11 @@ pub enum PartKind {
     Scalar,
     Piece(RegPiece),
     Byval,
+    /// AAPCS64 [`AggAbi::Coerce`]: the whole aggregate as one LLVM value
+    /// whose type has `size` bytes.
+    Coerce { size: u64 },
+    /// AAPCS64 [`AggAbi::Indirect`]: a pointer to a caller-made copy.
+    Indirect,
 }
 
 /// Lowered signature of a C function. `params[i]` is the LLVM expansion of
@@ -159,6 +175,9 @@ pub enum AggUse {
 }
 
 pub fn function_sig(ret: &CType, params: &[CType]) -> Result<FnSig, AbiFail> {
+    if let Abi::Aapcs64 { .. } = crate::target::current().abi() {
+        return crate::aapcs64::function_sig(ret, params);
+    }
     let (ret_type, ret_prefix, ret_agg, sret_attrs) = lower_return(ret)?;
     // Six general registers. The hidden sret pointer takes the first.
     let mut free_int = if sret_attrs.is_some() { 5 } else { 6 };
@@ -262,6 +281,7 @@ fn lower_return(ty: &CType) -> Result<(String, String, Option<AggAbi>, Option<St
             )),
             AggAbi::Direct(pieces) => Ok((pieces_type(pieces), String::new(), Some(agg), None)),
             AggAbi::X87 => Ok(("x86_fp80".to_string(), String::new(), Some(agg), None)),
+            AggAbi::Coerce { .. } | AggAbi::Indirect => unreachable!("AAPCS64 class on System V"),
         };
     }
     let prefix = match ty.abi_attr() {
@@ -275,7 +295,9 @@ fn lower_param(ty: &CType) -> Result<Vec<Part>, AbiFail> {
     if ty.unqualified().is_record() {
         let agg = classify_for(ty, AggUse::Param)?;
         return Ok(match agg {
-            AggAbi::Memory | AggAbi::X87 => vec![memory_part(ty)],
+            AggAbi::Memory | AggAbi::X87 | AggAbi::Indirect | AggAbi::Coerce { .. } => {
+                vec![memory_part(ty)]
+            }
             AggAbi::Direct(pieces) => pieces
                 .into_iter()
                 .map(|piece| Part {
@@ -304,6 +326,9 @@ pub fn classify_aggregate(ty: &CType) -> Result<AggAbi, AbiFail> {
 }
 
 pub fn classify_for(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
+    if let Abi::Aapcs64 { .. } = crate::target::current().abi() {
+        return crate::aapcs64::classify(ty, use_as);
+    }
     let bare = ty.unqualified();
     if !bare.is_record() {
         return Ok(AggAbi::Memory);

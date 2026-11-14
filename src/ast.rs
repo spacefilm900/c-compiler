@@ -12,6 +12,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use crate::target::LongDouble;
 
 /// Integer and `void` types on `x86_64-pc-linux-gnu` (LP64).
 ///
@@ -71,12 +72,15 @@ impl TypeName {
         !self.is_void()
     }
 
-    /// `char` is signed on this target.
+    /// Plain `char` is signed on x86_64 and Apple arm64, and unsigned on
+    /// AArch64 Linux ([`crate::target::Target::char_is_signed`]).
     pub fn is_signed(self) -> bool {
+        if self == TypeName::Char {
+            return crate::target::current().char_is_signed();
+        }
         matches!(
             self,
-            TypeName::Char
-                | TypeName::SChar
+            TypeName::SChar
                 | TypeName::Short
                 | TypeName::Int
                 | TypeName::Long
@@ -188,8 +192,15 @@ impl TypeName {
     /// 32 bits to 32 bits: sign-extend signed types, zero-extend unsigned
     /// types. LLVM spells that `signext` / `zeroext` on the parameter or
     /// return. `int` and wider types are passed as themselves.
+    ///
+    /// Apple arm64 has the same rule. AAPCS64 itself (AArch64 Linux) leaves
+    /// the upper bits unspecified, so nothing is added there.
     pub fn abi_attr(self) -> Option<&'static str> {
+        if !crate::target::current().extends_narrow_args() {
+            return None;
+        }
         match self {
+            TypeName::Char if !self.is_signed() => Some("zeroext"),
             TypeName::Char | TypeName::SChar | TypeName::Short => Some("signext"),
             TypeName::Bool | TypeName::UChar | TypeName::UShort => Some("zeroext"),
             _ => None,
@@ -766,7 +777,10 @@ impl FloatKind {
         match self {
             FloatKind::Float => 4,
             FloatKind::Double => 8,
-            FloatKind::LongDouble => 16,
+            FloatKind::LongDouble => match crate::target::current().long_double() {
+                LongDouble::Double => 8,
+                LongDouble::X87 | LongDouble::Quad => 16,
+            },
         }
     }
 
@@ -778,8 +792,31 @@ impl FloatKind {
         match self {
             FloatKind::Float => "float",
             FloatKind::Double => "double",
-            FloatKind::LongDouble => "x86_fp80",
+            FloatKind::LongDouble => match crate::target::current().long_double() {
+                LongDouble::X87 => "x86_fp80",
+                LongDouble::Double => "double",
+                LongDouble::Quad => "fp128",
+            },
         }
+    }
+
+    /// The kind whose format this kind uses on the current target: `long
+    /// double` is computed as `double` where the two share a format (Apple
+    /// arm64). Constant folding and IR conversions use this, while the C
+    /// type system still keeps `long double` distinct from `double`.
+    pub fn repr(self) -> FloatKind {
+        if self == FloatKind::LongDouble
+            && crate::target::current().long_double() == LongDouble::Double
+        {
+            FloatKind::Double
+        } else {
+            self
+        }
+    }
+
+    /// `long double` is the x87 extended format on this target.
+    pub fn is_x87(self) -> bool {
+        self == FloatKind::LongDouble && crate::target::current().long_double() == LongDouble::X87
     }
 }
 
@@ -813,7 +850,8 @@ impl StrEnc {
         match self {
             StrEnc::Byte => TypeName::Char,
             StrEnc::Utf16 => TypeName::UShort,
-            StrEnc::Wchar => TypeName::Int,
+            StrEnc::Wchar if crate::target::current().wchar_is_signed() => TypeName::Int,
+            StrEnc::Wchar => TypeName::UInt,
             StrEnc::Utf32 => TypeName::UInt,
         }
     }

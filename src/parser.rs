@@ -2383,9 +2383,38 @@ impl Parser<'_> {
     /// `__builtin_va_list` is `[1 x struct __va_list_tag]`, the SysV register
     /// save descriptor. As a parameter the array decays to a pointer, which
     /// is what `vprintf` takes.
+    ///
+    /// On Apple arm64 it is `char *`. On AArch64 Linux it is the AAPCS64
+    /// structure `struct __va_list { void *__stack; void *__gr_top;
+    /// void *__vr_top; int __gr_offs; int __vr_offs; }`, passed by value.
     fn builtin_va_list(&mut self) -> CType {
         if let Some(ty) = &self.va_list {
             return ty.clone();
+        }
+        match crate::target::current() {
+            crate::target::Target::Arm64Apple { .. } => {
+                let ty = CType::pointer(CType::from_name(TypeName::Char));
+                self.va_list = Some(ty.clone());
+                return ty;
+            }
+            crate::target::Target::Aarch64Linux => {
+                let handle = self.declare_fresh_tag("__va_list", RecordKind::Struct);
+                let void_ptr = || CType::pointer(CType::Void);
+                let fields = vec![
+                    StructField::plain("__stack", void_ptr(), 0),
+                    StructField::plain("__gr_top", void_ptr(), 8),
+                    StructField::plain("__vr_top", void_ptr(), 16),
+                    StructField::plain("__gr_offs", CType::from_name(TypeName::Int), 24),
+                    StructField::plain("__vr_offs", CType::from_name(TypeName::Int), 28),
+                ];
+                let llvm_name = self.alloc_llvm_name(RecordKind::Struct, "__va_list");
+                handle.complete(fields, 32, 8, llvm_name);
+                self.structs.push(handle.clone());
+                let ty = CType::Struct(handle);
+                self.va_list = Some(ty.clone());
+                return ty;
+            }
+            crate::target::Target::X86_64Linux => {}
         }
         let handle = self.declare_fresh_tag("__va_list_tag", RecordKind::Struct);
         let fields = vec![

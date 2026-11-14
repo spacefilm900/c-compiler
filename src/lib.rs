@@ -4,6 +4,7 @@
 //! Language Reference, and the System V ABI. It is not derived from Clang
 //! or GCC.
 
+pub mod aapcs64;
 pub mod abi;
 pub mod ast;
 pub mod builtins;
@@ -18,6 +19,7 @@ pub mod lexer;
 pub mod parser;
 pub mod pp;
 pub mod sema;
+pub mod target;
 pub mod timing;
 pub mod token;
 
@@ -25,6 +27,7 @@ pub use diag::{Diagnostic, Warning};
 pub use dialect::Dialect;
 pub use driver::run;
 pub use pp::PpOptions;
+pub use target::Target;
 
 /// Lex, parse, check, and render `source` as a textual LLVM IR module.
 ///
@@ -86,6 +89,7 @@ fn compile_impl(
     leak: bool,
 ) -> Result<Output, Diagnostic> {
     use std::time::Instant;
+    target::set(options.target);
     let mut times = timing::PhaseTimes::default();
     timing::take_lex();
     let start = Instant::now();

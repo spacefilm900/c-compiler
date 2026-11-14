@@ -4558,6 +4558,26 @@ impl Sema<'_> {
     }
 
     fn check_va_list_arg(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        if crate::target::current().is_aarch64() {
+            // The va_list is an object (`char *` on Apple, the AAPCS64
+            // structure on Linux), not an array, so the builtins take its
+            // address explicitly.
+            self.check_expr(expr)?;
+            let ty = expr.ty().expect("typed");
+            if !(va_list_object(&ty) && expr.is_lvalue()) {
+                return self.err(
+                    expr.line(),
+                    expr.column(),
+                    format!("expected a va_list, found '{}'", ty.display()),
+                );
+            }
+            let line = expr.line();
+            let column = expr.column();
+            let inner = std::mem::replace(expr, Expr::int(0, TypeName::Int, line, column));
+            *expr = Expr::unary(UnaryOp::Addr, inner, line, column);
+            expr.set_ty(CType::pointer(ty));
+            return Ok(());
+        }
         self.check_expr(expr)?;
         self.decay(expr)?;
         let ty = expr.ty().expect("typed");
@@ -5429,6 +5449,19 @@ fn write_folded_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: u
         }
         _ => false,
     }
+}
+
+/// A `va_list` object on AArch64: `char *` on Apple, `struct __va_list`
+/// on Linux.
+fn va_list_object(ty: &CType) -> bool {
+    let bare = ty.unqualified();
+    if crate::target::current().is_apple() {
+        return bare
+            .pointee()
+            .is_some_and(|pointee| pointee.unqualified() == CType::from_name(TypeName::Char));
+    }
+    bare.struct_ref()
+        .is_some_and(|handle| handle.tag() == "__va_list")
 }
 
 fn va_list_pointee(ty: &CType) -> bool {
