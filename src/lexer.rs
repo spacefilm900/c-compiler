@@ -981,10 +981,8 @@ impl Lexer<'_> {
         let Some(triple) = self.three_bytes() else {
             return false;
         };
-        let (kind, spelling) = match &triple {
-            b"<<=" => (TokenKind::ShlEq, "<<="),
-            b">>=" => (TokenKind::ShrEq, ">>="),
-            _ => return false,
+        let Some((kind, spelling)) = three_char_kind(&triple) else {
+            return false;
         };
         self.bump();
         self.bump();
@@ -1001,27 +999,8 @@ impl Lexer<'_> {
         let Some(pair) = self.two_bytes() else {
             return false;
         };
-        let (kind, spelling) = match &pair {
-            b"==" => (TokenKind::Eq, "=="),
-            b"!=" => (TokenKind::Ne, "!="),
-            b"<=" => (TokenKind::Le, "<="),
-            b">=" => (TokenKind::Ge, ">="),
-            b"&&" => (TokenKind::AndAnd, "&&"),
-            b"||" => (TokenKind::OrOr, "||"),
-            b"++" => (TokenKind::PlusPlus, "++"),
-            b"--" => (TokenKind::MinusMinus, "--"),
-            b"<<" => (TokenKind::Shl, "<<"),
-            b">>" => (TokenKind::Shr, ">>"),
-            b"+=" => (TokenKind::PlusEq, "+="),
-            b"-=" => (TokenKind::MinusEq, "-="),
-            b"*=" => (TokenKind::StarEq, "*="),
-            b"/=" => (TokenKind::SlashEq, "/="),
-            b"%=" => (TokenKind::PercentEq, "%="),
-            b"&=" => (TokenKind::AmpEq, "&="),
-            b"|=" => (TokenKind::PipeEq, "|="),
-            b"^=" => (TokenKind::CaretEq, "^="),
-            b"->" => (TokenKind::Arrow, "->"),
-            _ => return false,
+        let Some((kind, spelling)) = two_char_kind(&pair) else {
+            return false;
         };
         self.bump();
         self.bump();
@@ -1034,35 +1013,98 @@ impl Lexer<'_> {
     }
 
     fn one_char(&mut self, byte: u8, line: usize, column: usize) -> bool {
-        let (kind, spelling) = match byte {
-            b'+' => (TokenKind::Plus, "+"),
-            b'-' => (TokenKind::Minus, "-"),
-            b'*' => (TokenKind::Star, "*"),
-            b'/' => (TokenKind::Slash, "/"),
-            b'%' => (TokenKind::Percent, "%"),
-            b'=' => (TokenKind::Assign, "="),
-            b'<' => (TokenKind::Lt, "<"),
-            b'>' => (TokenKind::Gt, ">"),
-            b'!' => (TokenKind::Bang, "!"),
-            b'&' => (TokenKind::Amp, "&"),
-            b'|' => (TokenKind::Pipe, "|"),
-            b'^' => (TokenKind::Caret, "^"),
-            b'~' => (TokenKind::Tilde, "~"),
-            b'(' => (TokenKind::LParen, "("),
-            b')' => (TokenKind::RParen, ")"),
-            b'{' => (TokenKind::LBrace, "{"),
-            b'}' => (TokenKind::RBrace, "}"),
-            b'[' => (TokenKind::LBrack, "["),
-            b']' => (TokenKind::RBrack, "]"),
-            b';' => (TokenKind::Semi, ";"),
-            b',' => (TokenKind::Comma, ","),
-            b'?' => (TokenKind::Question, "?"),
-            b':' => (TokenKind::Colon, ":"),
-            _ => return false,
+        let Some((kind, spelling)) = one_char_kind(byte) else {
+            return false;
         };
         self.bump();
         self.push(kind, spelling, line, column);
         true
+    }
+}
+
+/// `<<=` and `>>=`.
+fn three_char_kind(bytes: &[u8; 3]) -> Option<(TokenKind, &'static str)> {
+    Some(match bytes {
+        b"<<=" => (TokenKind::ShlEq, "<<="),
+        b">>=" => (TokenKind::ShrEq, ">>="),
+        _ => return None,
+    })
+}
+
+fn two_char_kind(bytes: &[u8; 2]) -> Option<(TokenKind, &'static str)> {
+    Some(match bytes {
+        b"==" => (TokenKind::Eq, "=="),
+        b"!=" => (TokenKind::Ne, "!="),
+        b"<=" => (TokenKind::Le, "<="),
+        b">=" => (TokenKind::Ge, ">="),
+        b"&&" => (TokenKind::AndAnd, "&&"),
+        b"||" => (TokenKind::OrOr, "||"),
+        b"++" => (TokenKind::PlusPlus, "++"),
+        b"--" => (TokenKind::MinusMinus, "--"),
+        b"<<" => (TokenKind::Shl, "<<"),
+        b">>" => (TokenKind::Shr, ">>"),
+        b"+=" => (TokenKind::PlusEq, "+="),
+        b"-=" => (TokenKind::MinusEq, "-="),
+        b"*=" => (TokenKind::StarEq, "*="),
+        b"/=" => (TokenKind::SlashEq, "/="),
+        b"%=" => (TokenKind::PercentEq, "%="),
+        b"&=" => (TokenKind::AmpEq, "&="),
+        b"|=" => (TokenKind::PipeEq, "|="),
+        b"^=" => (TokenKind::CaretEq, "^="),
+        b"->" => (TokenKind::Arrow, "->"),
+        _ => return None,
+    })
+}
+
+fn one_char_kind(byte: u8) -> Option<(TokenKind, &'static str)> {
+    Some(match byte {
+        b'+' => (TokenKind::Plus, "+"),
+        b'-' => (TokenKind::Minus, "-"),
+        b'*' => (TokenKind::Star, "*"),
+        b'/' => (TokenKind::Slash, "/"),
+        b'%' => (TokenKind::Percent, "%"),
+        b'=' => (TokenKind::Assign, "="),
+        b'<' => (TokenKind::Lt, "<"),
+        b'>' => (TokenKind::Gt, ">"),
+        b'!' => (TokenKind::Bang, "!"),
+        b'&' => (TokenKind::Amp, "&"),
+        b'|' => (TokenKind::Pipe, "|"),
+        b'^' => (TokenKind::Caret, "^"),
+        b'~' => (TokenKind::Tilde, "~"),
+        b'(' => (TokenKind::LParen, "("),
+        b')' => (TokenKind::RParen, ")"),
+        b'{' => (TokenKind::LBrace, "{"),
+        b'}' => (TokenKind::RBrace, "}"),
+        b'[' => (TokenKind::LBrack, "["),
+        b']' => (TokenKind::RBrack, "]"),
+        b';' => (TokenKind::Semi, ";"),
+        b',' => (TokenKind::Comma, ","),
+        b'?' => (TokenKind::Question, "?"),
+        b':' => (TokenKind::Colon, ":"),
+        _ => return None,
+    })
+}
+
+/// The token kind [`lex`] gives `spelling` when it is exactly one
+/// identifier, keyword, or punctuator, without running the lexer. `None`
+/// means the full lexer is needed (numbers, literals, or anything else).
+pub(crate) fn simple_kind(spelling: &str) -> Option<TokenKind> {
+    let bytes = spelling.as_bytes();
+    let (&first, rest) = bytes.split_first()?;
+    if is_ident_start(first) {
+        if !rest.iter().all(|&b| is_ident_cont(b)) {
+            return None;
+        }
+        // An encoding prefix is only special right before a quote.
+        return Some(keyword(spelling).unwrap_or(TokenKind::Ident));
+    }
+    match bytes {
+        b"..." => Some(TokenKind::Ellipsis),
+        b"." => Some(TokenKind::Dot),
+        [a, b, c] => three_char_kind(&[*a, *b, *c]).map(|(kind, _)| kind),
+        [a, b] => two_char_kind(&[*a, *b]).map(|(kind, _)| kind),
+        [a] => one_char_kind(*a).map(|(kind, _)| kind),
+        _ => None,
     }
 }
 
@@ -1103,6 +1145,74 @@ fn is_ident_cont(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simple_kind_agrees_with_the_lexer() {
+        let words = [
+            "x",
+            "_y9",
+            "int",
+            "while",
+            "_Bool",
+            "__const__",
+            "L",
+            "u8",
+            "<<=",
+            ">>=",
+            "...",
+            ".",
+            "->",
+            "==",
+            "!=",
+            "<=",
+            ">=",
+            "&&",
+            "||",
+            "++",
+            "--",
+            "<<",
+            ">>",
+            "+=",
+            "-=",
+            "*=",
+            "/=",
+            "%=",
+            "&=",
+            "|=",
+            "^=",
+            "+",
+            "-",
+            "*",
+            "/",
+            "%",
+            "=",
+            "<",
+            ">",
+            "!",
+            "&",
+            "|",
+            "^",
+            "~",
+            "(",
+            ")",
+            "{",
+            "}",
+            "[",
+            "]",
+            ";",
+            ",",
+            "?",
+            ":",
+        ];
+        for word in words {
+            let lexed = lex(word, "t.c").unwrap();
+            assert_eq!(lexed.len(), 2, "{word}");
+            assert_eq!(simple_kind(word), Some(lexed[0].kind), "{word}");
+        }
+        for other in ["1", "1.5", "'a'", "\"s\"", "#", "##", "%:", "+-", "9x", ""] {
+            assert_eq!(simple_kind(other), None, "{other}");
+        }
+    }
 
     fn tokens(source: &str) -> Vec<Token> {
         let mut toks = lex(source, "t.c").unwrap();

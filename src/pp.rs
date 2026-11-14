@@ -206,6 +206,24 @@ fn convert_token(tok: &PpToken) -> Result<Token, Diagnostic> {
         "%>" => "}",
         other => other,
     };
+    // Identifiers, keywords, and punctuators are most tokens; they need no
+    // value, so the full lexer is skipped for them.
+    if matches!(tok.kind, PpKind::Ident | PpKind::Punct) {
+        if let Some(kind) = crate::timing::lexing(|| crate::lexer::simple_kind(spelling)) {
+            return Ok(Token {
+                kind,
+                spelling: spelling.to_string(),
+                line: tok.line,
+                column: tok.column,
+                filename: Rc::clone(&tok.display),
+                value: None,
+                float_hi: 0,
+                int_ty: None,
+                float_kind: None,
+                bytes: None,
+            });
+        }
+    }
     match crate::timing::lexing(|| crate::lexer::lex_shared(spelling, &tok.display)) {
         Ok(mut tokens) => {
             tokens.pop();
