@@ -294,6 +294,84 @@ fn target_macros(target: Target) -> Vec<(&'static str, &'static str)> {
             ("__LDBL_MANT_DIG__", "113"),
         ]),
     }
+    // The floating characteristics GCC's manual lists among its common
+    // predefined macros, with the values of include/float.h. macOS's
+    // <math.h> uses `__FLT_MIN__` and friends directly.
+    out.extend([
+        ("__FLT_RADIX__", "2"),
+        ("__FLT_MANT_DIG__", "24"),
+        ("__FLT_DIG__", "6"),
+        ("__FLT_MIN_EXP__", "(-125)"),
+        ("__FLT_MIN_10_EXP__", "(-37)"),
+        ("__FLT_MAX_EXP__", "128"),
+        ("__FLT_MAX_10_EXP__", "38"),
+        ("__FLT_DECIMAL_DIG__", "9"),
+        ("__FLT_MAX__", "0x1.fffffep+127F"),
+        ("__FLT_MIN__", "0x1p-126F"),
+        ("__FLT_EPSILON__", "0x1p-23F"),
+        ("__FLT_DENORM_MIN__", "0x1p-149F"),
+        ("__DBL_MANT_DIG__", "53"),
+        ("__DBL_DIG__", "15"),
+        ("__DBL_MIN_EXP__", "(-1021)"),
+        ("__DBL_MIN_10_EXP__", "(-307)"),
+        ("__DBL_MAX_EXP__", "1024"),
+        ("__DBL_MAX_10_EXP__", "308"),
+        ("__DBL_DECIMAL_DIG__", "17"),
+        ("__DBL_MAX__", "0x1.fffffffffffffp+1023"),
+        ("__DBL_MIN__", "0x1p-1022"),
+        ("__DBL_EPSILON__", "0x1p-52"),
+        ("__DBL_DENORM_MIN__", "0x1p-1074"),
+    ]);
+    match target.long_double() {
+        LongDouble::Double => out.extend([
+            ("__LDBL_DIG__", "15"),
+            ("__LDBL_MIN_EXP__", "(-1021)"),
+            ("__LDBL_MIN_10_EXP__", "(-307)"),
+            ("__LDBL_MAX_EXP__", "1024"),
+            ("__LDBL_MAX_10_EXP__", "308"),
+            ("__LDBL_DECIMAL_DIG__", "17"),
+            ("__LDBL_MAX__", "0x1.fffffffffffffp+1023L"),
+            ("__LDBL_MIN__", "0x1p-1022L"),
+            ("__LDBL_EPSILON__", "0x1p-52L"),
+            ("__LDBL_DENORM_MIN__", "0x1p-1074L"),
+        ]),
+        LongDouble::Quad => out.extend([
+            ("__LDBL_DIG__", "33"),
+            ("__LDBL_MIN_EXP__", "(-16381)"),
+            ("__LDBL_MIN_10_EXP__", "(-4931)"),
+            ("__LDBL_MAX_EXP__", "16384"),
+            ("__LDBL_MAX_10_EXP__", "4932"),
+            ("__LDBL_DECIMAL_DIG__", "36"),
+            (
+                "__LDBL_MAX__",
+                "1.18973149535723176508575932662800702e+4932L",
+            ),
+            (
+                "__LDBL_MIN__",
+                "3.36210314311209350626267781732175260e-4932L",
+            ),
+            (
+                "__LDBL_EPSILON__",
+                "1.92592994438723585305597794258492732e-34L",
+            ),
+            (
+                "__LDBL_DENORM_MIN__",
+                "6.47517511943802511092443895822764655e-4966L",
+            ),
+        ]),
+        LongDouble::X87 => out.extend([
+            ("__LDBL_DIG__", "18"),
+            ("__LDBL_MIN_EXP__", "(-16381)"),
+            ("__LDBL_MIN_10_EXP__", "(-4931)"),
+            ("__LDBL_MAX_EXP__", "16384"),
+            ("__LDBL_MAX_10_EXP__", "4932"),
+            ("__LDBL_DECIMAL_DIG__", "21"),
+            ("__LDBL_MAX__", "1.18973149535723176502e+4932L"),
+            ("__LDBL_MIN__", "3.36210314311209350626e-4932L"),
+            ("__LDBL_EPSILON__", "1.08420217248550443401e-19L"),
+            ("__LDBL_DENORM_MIN__", "3.64519953188247460253e-4951L"),
+        ]),
+    }
     out
 }
 

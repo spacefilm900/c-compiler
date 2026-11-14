@@ -250,16 +250,12 @@ eeprof-1.c runtime
 fprintf-1.c compile-error
 fprintf-chk-1.c compile-error
 ieee/920810-1.c old-style-decl
-ieee/acc2.c compile-error
 ieee/cdivchkd.c complex
 ieee/cdivchkf.c complex
 ieee/cdivchkld.c complex
 ieee/fp-cmp-7.c builtin
 ieee/fp-cmp-cond-1.c builtin
 ieee/pr108540-1.c compile-error
-ieee/pr109008.c compile-error
-ieee/pr30704.c compile-error
-ieee/pr36332.c builtin
 ieee/pr50310.c compile-error
 ieee/pr72824-2.c compile-error
 inst-check.c compile-error
@@ -314,7 +310,6 @@ pr22061-3.c vla
 pr22061-4.c vla
 pr23135.c compile-error
 pr23324.c compile-error
-pr23941.c compile-error
 pr24135.c compile-error
 pr28865.c flexible-array
 pr28982b.c compile-error
@@ -326,7 +321,6 @@ pr34971.c runtime
 pr38151.c compile-error
 pr38533.c compile-error
 pr38969.c compile-error
-pr39228.c builtin
 pr40022.c compile-error
 pr40657.c compile-error
 pr41239.c compile-error
@@ -367,7 +361,6 @@ pr57344-3.c compile-error
 pr57344-4.c compile-error
 pr58277-1.c asm
 pr58419.c compile-error
-pr59643.c compile-error
 pr60003.c builtin
 pr60960.c compile-error
 pr63641.c compile-error
