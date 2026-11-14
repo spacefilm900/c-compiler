@@ -61,6 +61,29 @@ pub fn compile_dialect(
     options: &PpOptions,
     dialect: Dialect,
 ) -> Result<Output, Diagnostic> {
+    compile_impl(source, filename, options, dialect, false)
+}
+
+/// Like [`compile_dialect`] for a process that exits right afterwards: the
+/// token list and the syntax tree are not freed, because the operating
+/// system reclaims them faster than freeing millions of small allocations
+/// one by one.
+pub fn compile_and_exit(
+    source: &str,
+    filename: &str,
+    options: &PpOptions,
+    dialect: Dialect,
+) -> Result<Output, Diagnostic> {
+    compile_impl(source, filename, options, dialect, true)
+}
+
+fn compile_impl(
+    source: &str,
+    filename: &str,
+    options: &PpOptions,
+    dialect: Dialect,
+    leak: bool,
+) -> Result<Output, Diagnostic> {
     use std::time::Instant;
     let mut times = timing::PhaseTimes::default();
     timing::take_lex();
@@ -80,6 +103,10 @@ pub fn compile_dialect(
     let start = Instant::now();
     let ir = irgen::render(&unit, filename);
     times.irgen = start.elapsed();
+    if leak {
+        std::mem::forget(unit);
+        std::mem::forget(tokens);
+    }
     Ok(Output {
         ir,
         warnings,

@@ -10,7 +10,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use crate::compile_dialect;
+use crate::compile_and_exit;
 use crate::dialect::Dialect;
 use crate::pp::{preprocess, CliMacro, PpOptions};
 
@@ -73,7 +73,7 @@ pub fn run(args: &[String]) -> i32 {
         let _ = writeln!(io::stderr(), "{USAGE}");
         return 2;
     };
-    match compile_dialect(&source, &options.input, &options.pp, options.dialect) {
+    match compile_and_exit(&source, &options.input, &options.pp, options.dialect) {
         Ok(mut compiled) => {
             for warning in &compiled.warnings {
                 let _ = writeln!(io::stderr(), "{warning}");
