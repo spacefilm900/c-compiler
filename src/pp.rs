@@ -595,6 +595,8 @@ impl Processor {
             ("__STDC_NO_THREADS__", "1"),
             ("__STDC_NO_VLA__", "1"),
             ("__STRICT_ANSI__", "1"),
+            ("__LP64__", "1"),
+            ("_LP64", "1"),
             ("__CHAR_BIT__", "8"),
             ("__SIZEOF_SHORT__", "2"),
             ("__SIZEOF_INT__", "4"),

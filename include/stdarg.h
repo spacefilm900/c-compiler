@@ -1,8 +1,11 @@
-/* Compiler-provided <stdarg.h> for the x86_64 System V ABI.
+/* Compiler-provided <stdarg.h>.
  *
- * __builtin_va_list is the one-element array of the register-save
- * descriptor { gp_offset, fp_offset, overflow_arg_area, reg_save_area }.
- * As a parameter it decays to a pointer, which is what vprintf expects.
+ * On x86_64 System V, __builtin_va_list is the one-element array of the
+ * register-save descriptor { gp_offset, fp_offset, overflow_arg_area,
+ * reg_save_area }; as a parameter it decays to a pointer, which is what
+ * vprintf expects. On Apple arm64 it is `char *`, and on AArch64 Linux it
+ * is the AAPCS64 structure { __stack, __gr_top, __vr_top, __gr_offs,
+ * __vr_offs }, passed by value.
  * stdio.h includes this with __need___va_list set and must not define
  * the name va_list. The macros are the same builtins the host <stdarg.h>
  * expands to.

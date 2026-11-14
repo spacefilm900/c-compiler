@@ -765,7 +765,7 @@ mod tests {
     fn direct(ty: &CType) -> Vec<String> {
         match classify_aggregate(ty).unwrap() {
             AggAbi::Direct(pieces) => pieces.into_iter().map(|piece| piece.ir_type()).collect(),
-            AggAbi::Memory | AggAbi::X87 => panic!("expected registers"),
+            _ => panic!("expected registers"),
         }
     }
 

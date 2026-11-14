@@ -357,7 +357,15 @@ mod tests {
         );
         assert_eq!(coerce(&ld, AggUse::Param), "[2 x double]");
         target::set(Target::Aarch64Linux);
+        let ld = record(
+            vec![
+                ("a", CType::Float(FloatKind::LongDouble)),
+                ("b", CType::Float(FloatKind::LongDouble)),
+            ],
+            false,
+        );
         assert_eq!(coerce(&ld, AggUse::Param), "[2 x fp128]");
+        assert_eq!(coerce(&ld, AggUse::Return), "[2 x fp128]");
         target::set(Target::host());
     }
 }

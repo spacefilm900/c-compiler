@@ -1,8 +1,10 @@
-/* Compiler-provided <limits.h> for x86_64 System V (LP64).
+/* Compiler-provided <limits.h> for the LP64 targets (x86_64 Linux,
+ * Apple arm64, AArch64 Linux).
  *
  * This is the header a hosted compiler supplies. It is searched before
  * the C library, so a program's `#include <limits.h>` gets these macros.
- * `char` is signed. `long` and `long long` are both 64 bits.
+ * `char` is signed unless the target defines __CHAR_UNSIGNED__ (AArch64
+ * Linux). `long` and `long long` are both 64 bits.
  */
 #ifndef _LIMITS_H
 #define _LIMITS_H
@@ -13,8 +15,13 @@
 #define SCHAR_MIN (-128)
 #define SCHAR_MAX 127
 #define UCHAR_MAX 255
+#ifdef __CHAR_UNSIGNED__
+#define CHAR_MIN 0
+#define CHAR_MAX UCHAR_MAX
+#else
 #define CHAR_MIN SCHAR_MIN
 #define CHAR_MAX SCHAR_MAX
+#endif
 
 #define SHRT_MIN (-32767 - 1)
 #define SHRT_MAX 32767
