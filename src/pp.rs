@@ -373,6 +373,9 @@ struct Processor {
     once: HashSet<PathBuf>,
     cond: Vec<Cond>,
     expansions: u32,
+    /// Free slots `splice` last put in front of the cursor when it rebuilt
+    /// the token vector.
+    headroom: usize,
     include_dirs: Vec<PathBuf>,
     system_dirs: Vec<PathBuf>,
     max_depth: usize,
@@ -388,6 +391,7 @@ impl Processor {
             once: HashSet::new(),
             cond: Vec::new(),
             expansions: 0,
+            headroom: 0,
             include_dirs: options.include_dirs.clone(),
             system_dirs: options.system_dirs.clone(),
             max_depth: options.max_include_depth,
@@ -591,10 +595,54 @@ impl Processor {
         Ok(())
     }
 
+    /// Insert `repl` so that it is read next.
+    ///
+    /// Tokens before `self.index` have been consumed. Only the one just
+    /// before the cursor is still read (by `at_line_start` and
+    /// `directive_token`), so the replacement is written over the consumed
+    /// prefix, with that token copied in front of it. Inserting in the
+    /// middle of the vector instead would move the whole rest of the file
+    /// on every macro expansion. When the prefix is too short the vector
+    /// is rebuilt with free slots in front.
     fn splice(&mut self, repl: Vec<PpToken>) {
         let at = self.index;
-        self.tokens.splice(at..at, repl);
-        self.index = at;
+        let n = repl.len();
+        if at == 0 {
+            self.tokens.splice(0..0, repl);
+            return;
+        }
+        if n >= at {
+            // Room for this replacement and as much again, so a run of
+            // nested expansions at the cursor rebuilds only now and then.
+            self.headroom = 2 * n + 64;
+            let filler = PpToken {
+                kind: PpKind::Placemarker,
+                spelling: String::new(),
+                display: String::new(),
+                file_id: 0,
+                line: 0,
+                column: 0,
+                leading_space: false,
+                hide: hide_empty(),
+            };
+            let tail = self.tokens.split_off(at);
+            let previous = self.tokens.pop().expect("at > 0");
+            let mut rebuilt = Vec::with_capacity(self.headroom + 1 + tail.len());
+            rebuilt.resize(self.headroom, filler);
+            rebuilt.push(previous);
+            rebuilt.extend(tail);
+            self.tokens = rebuilt;
+            self.index = self.headroom + 1;
+        }
+        let at = self.index;
+        let start = at - n;
+        if n > 0 {
+            self.tokens[start - 1] = self.tokens[at - 1].clone();
+        }
+        for (slot, tok) in self.tokens[start..at].iter_mut().zip(repl) {
+            *slot = tok;
+        }
+        self.index = start;
     }
 
     fn lookup(&self, name: &str) -> Found {
@@ -2928,6 +2976,19 @@ mod tests {
     fn splices_lines_and_drops_comments() {
         let text = pp("int ab\\\nc = 1; // hidden\\\nstill\n/* a \\\nb */ int y;\n");
         assert_eq!(squash(&text), "int abc = 1; int y;");
+    }
+
+    #[test]
+    fn expansions_longer_than_the_consumed_prefix() {
+        // The first token of the file expands to more tokens than have been
+        // read, and each of those expands again, so `splice` has to make
+        // room in front of the cursor several times over.
+        let text = pp("#define A B B B B\n#define B C C C C\n#define C 1\nA\n#define E\nE # x\n#define F(p) p p p p p p p p\nF(F(F(2)))\n");
+        let flat = squash(&text);
+        assert!(flat.starts_with(&"1 ".repeat(16)), "{flat}");
+        // A '#' that comes out of an expansion does not start a directive.
+        assert!(flat.contains("# x"), "{flat}");
+        assert_eq!(flat.matches('2').count(), 512, "{flat}");
     }
 
     #[test]
