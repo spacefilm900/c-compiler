@@ -23,7 +23,19 @@ pub fn parse_dialect(
     filename: &str,
     dialect: Dialect,
 ) -> Result<TranslationUnit, Diagnostic> {
+    parse_with(tokens, filename, dialect, false)
+}
+
+/// Like [`parse_dialect`]; `gnu89_inline` selects GNU89 `inline`
+/// semantics (`-fgnu89-inline`), see [`Parser::mark_inline_definitions`].
+pub fn parse_with(
+    tokens: &[Token],
+    filename: &str,
+    dialect: Dialect,
+    gnu89_inline: bool,
+) -> Result<TranslationUnit, Diagnostic> {
     Parser {
+        gnu89_inline,
         tokens,
         dialect,
         index: 0,
@@ -40,6 +52,7 @@ pub fn parse_dialect(
         attr_sink: Vec::new(),
         warnings: Vec::new(),
         fn_attrs: HashMap::new(),
+        inline_seen: HashMap::new(),
         var_attrs: HashMap::new(),
         stmt_expr_depth: 0,
     }
@@ -48,6 +61,8 @@ pub fn parse_dialect(
 
 struct Parser<'a> {
     tokens: &'a [Token],
+    /// `-fgnu89-inline`: every function has `gnu_inline` semantics.
+    gnu89_inline: bool,
     dialect: Dialect,
     index: usize,
     filename: &'a str,
@@ -80,6 +95,8 @@ struct Parser<'a> {
     /// Warnings, such as an unknown attribute.
     warnings: Vec<Warning>,
     fn_attrs: HashMap<String, FnAttrs>,
+    /// How each function's file-scope declarations use `inline`.
+    inline_seen: HashMap<String, InlineSeen>,
     var_attrs: HashMap<String, VarAttrs>,
     /// Statement expressions being parsed, innermost last.
     stmt_expr_depth: usize,
@@ -133,6 +150,7 @@ fn attr_class(name: &str) -> AttrClass {
         | "unused"
         | "used"
         | "always_inline"
+        | "gnu_inline"
         | "noinline"
         | "section"
         | "weak"
@@ -160,7 +178,6 @@ fn attr_class(name: &str) -> AttrClass {
         | "sentinel"
         | "no_instrument_function"
         | "artificial"
-        | "gnu_inline"
         | "externally_visible"
         | "flatten"
         | "noclone"
@@ -280,6 +297,7 @@ impl Parser<'_> {
             decls.extend(self.parse_external()?);
         }
         self.pop_tags();
+        self.mark_inline_definitions();
         Ok(TranslationUnit {
             decls,
             globals: Vec::new(),
@@ -409,6 +427,7 @@ impl Parser<'_> {
             .clone()
             .unwrap_or_else(|| declarator.name.clone());
         self.note_fn_attrs(&symbol, &specs.attrs, &declarator.attrs);
+        self.note_inline(&symbol, &specs, true);
         let body = self.parse_compound_scoped(false)?;
         self.pop_tags();
 
@@ -452,6 +471,7 @@ impl Parser<'_> {
                 .clone()
                 .unwrap_or_else(|| declarator.name.clone());
             self.note_fn_attrs(&symbol, &specs.attrs, &declarator.attrs);
+            self.note_inline(&symbol, specs, false);
             self.bind_ordinary(
                 &declarator.name,
                 Some(ty),
@@ -572,8 +592,11 @@ impl Parser<'_> {
                     self.note_storage(&mut flags, Storage::Typedef, &token, where_)?;
                 }
                 TokenKind::KwInline => {
-                    // Accepted and ignored. `static inline` stays `static`.
+                    // A function specifier. It does not change the type;
+                    // see [`Parser::note_inline`] for what it does to a
+                    // definition's linkage.
                     self.bump();
+                    flags.inline_ = true;
                 }
                 TokenKind::KwNoreturn => {
                     // A function specifier. It does not change the type.
@@ -696,6 +719,7 @@ impl Parser<'_> {
             }
         }
         Ok(Specs {
+            inline_: flags.inline_,
             storage: flags.storage,
             storage_at: flags.storage_at,
             ty,
@@ -970,7 +994,7 @@ impl Parser<'_> {
         let token = self.current().clone();
         self.bump();
         match token.spelling.as_str() {
-            "__inline" | "__inline__" => {}
+            "__inline" | "__inline__" => flags.inline_ = true,
             "__restrict" | "__restrict__" => self.note_restrict(flags, &token)?,
             "__extension__" => {}
             _ => unreachable!("ident specifier"),
@@ -1712,6 +1736,51 @@ impl Parser<'_> {
         }
     }
 
+    /// Record how a file-scope declaration or definition of a function uses
+    /// `inline` and `extern`, for [`Parser::mark_inline_definitions`].
+    fn note_inline(&mut self, symbol: &str, specs: &Specs, definition: bool) {
+        let seen = self.inline_seen.entry(symbol.to_string()).or_default();
+        let is_extern = specs.storage == Storage::Extern;
+        if specs.inline_ {
+            seen.inline_ = true;
+        }
+        if !specs.inline_ || is_extern {
+            seen.external = true;
+        }
+        if definition {
+            seen.extern_inline_def = specs.inline_ && is_extern;
+        }
+    }
+
+    /// Mark the functions whose definition here is not an external one.
+    /// C11 6.7.4p7: when every file-scope declaration of a function has
+    /// `inline` and none has `extern`, its definition is an inline
+    /// definition. With GCC's `gnu_inline` attribute (GCC manual, "Common
+    /// Function Attributes"), an `extern inline` definition is used only
+    /// for inlining, and a plain `inline` one is an external definition.
+    /// `-fgnu89-inline` gives every function the `gnu_inline` semantics.
+    /// `static` functions have internal linkage and are not affected.
+    fn mark_inline_definitions(&mut self) {
+        for (symbol, seen) in std::mem::take(&mut self.inline_seen) {
+            let gnu = self.gnu89_inline
+                || self
+                    .fn_attrs
+                    .get(&symbol)
+                    .is_some_and(|attrs| attrs.gnu_inline);
+            let inline_only = if gnu {
+                seen.extern_inline_def
+            } else {
+                seen.inline_ && !seen.external
+            };
+            if inline_only {
+                self.fn_attrs
+                    .entry(symbol)
+                    .or_default()
+                    .available_externally = true;
+            }
+        }
+    }
+
     /// Merge a function declaration's attributes into those of its symbol.
     fn note_fn_attrs(&mut self, symbol: &str, spec_attrs: &[Attr], decl_attrs: &[Attr]) {
         let attrs: Vec<Attr> = spec_attrs.iter().chain(decl_attrs).cloned().collect();
@@ -1961,6 +2030,7 @@ impl Parser<'_> {
             match attr.name.as_str() {
                 "noreturn" => out.noreturn = true,
                 "always_inline" => out.always_inline = true,
+                "gnu_inline" => out.gnu_inline = true,
                 "noinline" => out.noinline = true,
                 "cold" => out.cold = true,
                 "hot" => out.hot = true,
@@ -4920,7 +4990,20 @@ fn retarget(from: LitPrefix, bytes: &[u8], dest: LitPrefix) -> Vec<u8> {
     out
 }
 
+/// See [`Parser::note_inline`].
+#[derive(Debug, Default)]
+struct InlineSeen {
+    /// Some file-scope declaration has `inline`.
+    inline_: bool,
+    /// Some file-scope declaration lacks `inline` or has `extern`.
+    external: bool,
+    /// The definition is declared `extern inline`.
+    extern_inline_def: bool,
+}
+
 struct Specs {
+    /// The `inline` function specifier.
+    inline_: bool,
     storage: Storage,
     storage_at: Option<(usize, usize)>,
     ty: CType,
@@ -4972,6 +5055,8 @@ struct SpecFlags {
     introduced_tag: bool,
     anon_record: bool,
     any: bool,
+    /// The `inline` function specifier.
+    inline_: bool,
     line: usize,
     column: usize,
 }

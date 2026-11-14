@@ -2816,6 +2816,16 @@ pub struct FnAttrs {
     /// (`destructor`).
     pub constructor: bool,
     pub destructor: bool,
+    /// `gnu_inline`: an `extern inline` definition is for inlining only
+    /// (GCC manual, "Common Function Attributes").
+    pub gnu_inline: bool,
+    /// The definition in this translation unit is not an external
+    /// definition: a C11 inline definition (6.7.4p7) or a `gnu_inline`
+    /// `extern inline` one. It is emitted `available_externally` (LLVM
+    /// LangRef), so calls may inline it and otherwise call the external
+    /// definition another translation unit or library provides. Set by the
+    /// parser once the whole translation unit is read.
+    pub available_externally: bool,
 }
 
 impl FnAttrs {
@@ -2837,6 +2847,8 @@ impl FnAttrs {
         }
         self.constructor |= other.constructor;
         self.destructor |= other.destructor;
+        self.gnu_inline |= other.gnu_inline;
+        self.available_externally |= other.available_externally;
     }
 }
 

@@ -53,6 +53,11 @@ pub struct PpOptions {
     /// and [`crate::compile_dialect`] passes it on to the rest of the
     /// frontend.
     pub target: Target,
+    /// `-fgnu89-inline`: GNU89 `inline` semantics (GCC manual, "Options
+    /// Controlling C Dialect"). The preprocessor defines
+    /// `__GNUC_GNU_INLINE__` instead of `__GNUC_STDC_INLINE__`, and
+    /// [`crate::compile_dialect`] tells the parser.
+    pub gnu89_inline: bool,
 }
 
 impl Default for PpOptions {
@@ -63,6 +68,7 @@ impl Default for PpOptions {
             definitions: Vec::new(),
             max_include_depth: DEFAULT_INCLUDE_DEPTH,
             target: Target::build_default(),
+            gnu89_inline: false,
         }
     }
 }
@@ -665,6 +671,13 @@ impl Processor {
             in_if: false,
         };
         processor.install_builtins()?;
+        if options.gnu89_inline {
+            processor.apply_cli(&CliMacro::Undef("__GNUC_STDC_INLINE__".to_string()))?;
+            processor.apply_cli(&CliMacro::Define {
+                name: "__GNUC_GNU_INLINE__".to_string(),
+                replacement: None,
+            })?;
+        }
         for definition in &options.definitions {
             processor.apply_cli(definition)?;
         }

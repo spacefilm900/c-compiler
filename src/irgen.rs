@@ -508,6 +508,9 @@ fn render_function(
     gen.addr_labels = func.addr_labels.iter().map(|name| c_label(name)).collect();
     let linkage = match func.linkage {
         Linkage::Internal => "internal ",
+        Linkage::External if attrs.is_some_and(|attrs| attrs.available_externally) => {
+            "available_externally "
+        }
         Linkage::External if attrs.is_some_and(|attrs| attrs.weak) => "weak ",
         Linkage::External => "",
     };

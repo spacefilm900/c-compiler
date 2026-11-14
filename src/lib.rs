@@ -99,7 +99,7 @@ fn compile_impl(
     times.lex = timing::take_lex();
     times.preprocess = start.elapsed().saturating_sub(times.lex);
     let start = Instant::now();
-    let mut unit = parser::parse_dialect(&tokens, filename, dialect)?;
+    let mut unit = parser::parse_with(&tokens, filename, dialect, options.gnu89_inline)?;
     times.parse = start.elapsed();
     let start = Instant::now();
     let mut warnings = std::mem::take(&mut unit.warnings);
@@ -412,5 +412,66 @@ mod tests {
             .expect("accepted")
             .to_string();
         assert!(err.contains("statement expression"), "{err}");
+    }
+
+    /// C11 6.7.4p7 inline definitions, GCC's `gnu_inline`, and
+    /// `-fgnu89-inline`: which definitions are external ones.
+    #[test]
+    fn inline_definitions_are_not_external() {
+        let source = "inline int f(void) { return 1; }\n\
+            extern inline int g(void) { return 2; }\n\
+            int h(void);\n\
+            inline int h(void) { return 3; }\n\
+            static inline int s(void) { return 4; }\n\
+            extern __inline __attribute__((__gnu_inline__)) __attribute__((__always_inline__))\n\
+            int k(void) { return 5; }\n\
+            __inline __attribute__((__gnu_inline__)) int m(void) { return 6; }\n\
+            inline int n(void);\n\
+            int n(void) { return 7; }\n\
+            int main(void) { return f() + g() + h() + s() + k() + m() + n(); }\n";
+        let linkage = |ir: &str, name: &str| -> String {
+            let line = ir
+                .lines()
+                .find(|line| line.starts_with("define") && line.contains(&format!("@{name}(")))
+                .unwrap_or_else(|| panic!("no definition of {name}: {ir}"));
+            line.split_whitespace().nth(1).unwrap_or("").to_string()
+        };
+        let c11 = compile(source, Dialect::C11).expect("accepted").ir;
+        for (name, want) in [
+            ("f", "available_externally"),
+            ("g", "i32"),
+            ("h", "i32"),
+            ("s", "internal"),
+            ("k", "available_externally"),
+            ("m", "i32"),
+            ("n", "i32"),
+        ] {
+            assert_eq!(linkage(&c11, name), want, "{name}: {c11}");
+        }
+        assert!(c11.contains("@k() alwaysinline"), "{c11}");
+        let options = PpOptions {
+            gnu89_inline: true,
+            ..PpOptions::default()
+        };
+        let gnu89 = compile_dialect(source, "t.c", &options, Dialect::C11)
+            .expect("accepted")
+            .ir;
+        for (name, want) in [
+            ("f", "i32"),
+            ("g", "available_externally"),
+            ("h", "i32"),
+            ("s", "internal"),
+            ("k", "available_externally"),
+            ("m", "i32"),
+        ] {
+            assert_eq!(linkage(&gnu89, name), want, "{name}: {gnu89}");
+        }
+        let text = pp::preprocess(
+            "#ifdef __GNUC_GNU_INLINE__\ngnu\n#endif\n#ifdef __GNUC_STDC_INLINE__\nstdc\n#endif\n",
+            "t.c",
+            &options,
+        )
+        .expect("preprocessed");
+        assert!(text.contains("gnu") && !text.contains("stdc"), "{text}");
     }
 }

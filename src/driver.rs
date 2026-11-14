@@ -27,6 +27,8 @@ options:
   -E              preprocess only
   -std=c11        strict ISO C11 (the default)
   -std=gnu11      C11 plus the GNU extensions this compiler supports
+  -fgnu89-inline  GNU89 inline semantics: plain `inline` definitions are
+                  external, `extern inline` ones are only for inlining
   -target TRIPLE  compile for TRIPLE (also --target=TRIPLE): x86_64-linux-gnu,
                   arm64-apple-macos[VERSION], or aarch64-linux-gnu;
                   the default is the host
@@ -165,6 +167,11 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         if let Some(name) = arg.strip_prefix("-std=") {
             dialect = Dialect::from_std(name)
                 .ok_or_else(|| format!("unsupported -std value '{name}'; use c11 or gnu11"))?;
+            index += 1;
+            continue;
+        }
+        if arg == "-fgnu89-inline" || arg == "-fno-gnu89-inline" {
+            pp.gnu89_inline = arg == "-fgnu89-inline";
             index += 1;
             continue;
         }
