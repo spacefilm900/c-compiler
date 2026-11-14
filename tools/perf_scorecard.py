@@ -9,20 +9,50 @@ from the line '## Notes' on).
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 PERF = Path(__file__).resolve().parent.parent / "reports" / "perf"
 PHASES = ["lex", "preprocess", "parse", "sema", "irgen", "write"]
 
 
-def main() -> None:
+def rev(data: dict) -> str:
+    """The measured compiler's revision; older files only record `commit`."""
+    return data.get("compiler_rev", data["commit"])
+
+
+def check_units(before: dict, after: dict) -> list[str]:
+    """Differences between the two runs' groups and files, as messages."""
+    problems = []
+    for name in sorted(set(before["groups"]) | set(after["groups"])):
+        if name not in before["groups"] or name not in after["groups"]:
+            which = "baseline" if name not in before["groups"] else "after"
+            problems.append(f"input {name} is missing from the {which} run")
+            continue
+        b = set(before["groups"][name]["units"])
+        a = set(after["groups"][name]["units"])
+        if b != a:
+            problems.append(
+                f"input {name} covers different files: only in baseline {sorted(b - a)}, "
+                f"only in after {sorted(a - b)}"
+            )
+    if before["opts"] != after["opts"]:
+        problems.append(f"optimisation levels differ: {before['opts']} vs {after['opts']}")
+    return problems
+
+
+def main() -> int:
     before = json.loads((PERF / "baseline.json").read_text())
     after = json.loads((PERF / "after.json").read_text())
+    problems = check_units(before, after)
+    if problems:
+        for problem in problems:
+            print(f"perf_scorecard: {problem}", file=sys.stderr)
+        print("perf_scorecard: the runs are not comparable; no scorecard written", file=sys.stderr)
+        return 1
     opts = before["opts"]
     rows = {}
     for name, g in before["groups"].items():
-        if name not in after["groups"]:
-            continue
         b, a = g["total"], after["groups"][name]["total"]
         row = {
             "tus": len(g["units"]),
@@ -40,8 +70,8 @@ def main() -> None:
             }
         rows[name] = row
     data = {
-        "before_commit": before["commit"],
-        "after_commit": after["commit"],
+        "before_commit": rev(before),
+        "after_commit": rev(after),
         "clang": after["clang"],
         "machine": after["machine"],
         "runs": after["runs"],
@@ -59,7 +89,7 @@ def main() -> None:
     out = [
         "# Compile-time performance scorecard",
         "",
-        f"- Before: `{before['commit']}` ([baseline.md](baseline.md), frozen); after: `{after['commit']}` ([after.md](after.md))",
+        f"- Before: `{rev(before)}` ([baseline.md](baseline.md), frozen); after: `{rev(after)}` ([after.md](after.md))",
         f"- Reference: {after['clang']}",
         f"- Machine: {after['machine']}",
         f"- Median of {after['runs']} runs per TU; group rows sum the TUs; peak memory is the largest TU",
@@ -99,7 +129,8 @@ def main() -> None:
         )
     out.append("")
     md.write_text("\n".join(out) + ("\n" + notes if notes else ""))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

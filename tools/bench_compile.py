@@ -27,6 +27,12 @@ Inputs (all optional, a group is skipped when its tree is missing):
 Usage:
   tools/bench_compile.py [--runs 3] [--opt O0 --opt O2] [--input NAME ...]
                          [--json OUT.json] [--md OUT.md] [--label TEXT]
+                         [--compiler-rev REV]
+
+--compiler-rev names the revision the measured executable was built from.
+It is recorded separately from the benchmark checkout's commit. Without it,
+the checkout commit is assumed when CC_UNDER_TEST is unset (build/compiler
+from this tree), and "unknown" is recorded when CC_UNDER_TEST is set.
 
 Env: CC_UNDER_TEST (default build/compiler), CLANG (default clang).
 """
@@ -177,6 +183,15 @@ def clang_version() -> str:
     return out.splitlines()[0] if out else "unknown"
 
 
+def compiler_rev(given: str | None, checkout: str) -> str:
+    """The measured compiler's revision, kept apart from the checkout's."""
+    if given:
+        return given
+    if "CC_UNDER_TEST" in os.environ:
+        return "unknown"
+    return checkout
+
+
 def git_head() -> str:
     out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True)
     return out.stdout.strip() or "unknown"
@@ -188,7 +203,8 @@ def markdown(data: dict) -> str:
         f"# Compile-time benchmark: {data['label']}",
         "",
         f"- Date: {data['date']}",
-        f"- Compiler commit: `{data['commit']}`",
+        f"- Measured compiler revision: `{data['compiler_rev']}`",
+        f"- Benchmark checkout commit: `{data['commit']}`",
         f"- Reference: {data['clang']}",
         f"- Machine: {data['machine']}",
         f"- Runs per TU: {data['runs']} (median kept)",
@@ -232,12 +248,14 @@ def main() -> int:
     ap.add_argument("--json", type=Path)
     ap.add_argument("--md", type=Path)
     ap.add_argument("--label", default="run")
+    ap.add_argument("--compiler-rev", help="revision the measured compiler was built from")
     args = ap.parse_args()
     opts = args.opt or ["O0", "O2"]
     data = {
         "label": args.label,
         "date": time.strftime("%Y-%m-%d"),
         "commit": git_head(),
+        "compiler_rev": compiler_rev(args.compiler_rev, git_head()),
         "compiler": COMPILER,
         "clang": clang_version(),
         "machine": f"{platform.machine()}, {os.cpu_count()} CPUs, {platform.platform()}",
