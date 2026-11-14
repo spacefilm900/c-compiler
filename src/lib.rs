@@ -123,6 +123,10 @@ mod tests {
         assert!(ir.contains("blockaddress(@f, %C.b)"), "{ir}");
         assert!(ir.contains("indirectbr ptr"), "{ir}");
         assert!(ir.contains("[label %C.a, label %C.b]"), "{ir}");
+        // A label address only inside `sizeof` is not evaluated, so it is
+        // not a destination of the computed `goto`.
+        let ir = gnu_ok("void f(void *p) { (void)sizeof(&&x); goto *p; x:; }").ir;
+        assert!(ir.contains(", []"), "{ir}");
         // A label address is a `void *` value.
         gnu_ok("int f(void) { void *p = &&x; char *q = p; goto *q; x: return q != 0; }");
         for (source, want) in [

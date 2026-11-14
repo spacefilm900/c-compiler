@@ -139,7 +139,7 @@ These follow the public GCC manual, with GCC 14 and Clang 19 used only as black 
 - Zero-length arrays `T a[0]`, including as the last member of a struct; the array adds no size.
 - `x ?: y`, which evaluates `x` once and yields it when nonzero.
 - Empty initializers `= {}`, treated as `= {0}`.
-- Labels as values: `&&label` is the address of a label in the current function, of type `void *`, and `goto *expr;` jumps to it. A label address is a constant in a block-scope `static` initializer, so a dispatch table such as Lua's `static const void *const disptab[] = { &&L_OP_MOVE, ... };` works. A computed `goto` may reach any label of the function whose address is taken. Differences of label addresses (`&&a - &&b`) are not supported.
+- Labels as values: `&&label` is the address of a label in the current function, of type `void *`, and `goto *expr;` jumps to it. A label address is a constant in a block-scope `static` initializer, so a dispatch table such as Lua's `static const void *const disptab[] = { &&L_OP_MOVE, ... };` works. A computed `goto` may reach any label of the function whose address is taken (an address taken only inside `sizeof` does not count). Differences of label addresses (`&&a - &&b`) are not supported. Use a label address only to jump to it or to compare it with a null pointer: LLVM, the backend, leaves an equality test between two label addresses undefined, so such a comparison compiles but its result is not promised.
 
 **In both modes** (these spellings are reserved for the implementation, C11 7.1.3):
 

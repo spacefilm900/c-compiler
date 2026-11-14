@@ -140,14 +140,16 @@ def run(cmd: list[str], timeout: float, **kw) -> tuple[int, str, float]:
 def run_bytes(cmd: list[str], timeout: float, cwd: Path | None = None) -> dict:
     """Run a program, keeping stdout and stderr as bytes."""
     start = time.perf_counter()
+    timed_out = False
     try:
         proc = subprocess.run(
             cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=timeout, check=False, cwd=cwd
         )
         rc, out, err = proc.returncode, proc.stdout, proc.stderr
     except subprocess.TimeoutExpired as exc:
+        timed_out = True
         rc, out, err = 124, exc.stdout or b"", (exc.stderr or b"") + f"timed out after {timeout}s\n".encode()
-    return {"rc": rc, "stdout": out, "stderr": err, "seconds": time.perf_counter() - start}
+    return {"rc": rc, "stdout": out, "stderr": err, "seconds": time.perf_counter() - start, "timed_out": timed_out}
 
 
 def clang_obj(src: Path, obj: Path, opt: str, std: str, flags: list[str]) -> dict:
@@ -230,9 +232,16 @@ def build(config: str, opt: str, std: str, out: Path, jobs: int) -> dict:
 def suite_outcome(res: dict) -> dict:
     text = res["stdout"].decode("utf-8", "replace") + res["stderr"].decode("utf-8", "replace")
     files = FILE_LINE.findall(text)
-    ok = res["rc"] == 0 and FINAL_OK in text
+    ok = not res.get("timed_out", False) and res["rc"] == 0 and FINAL_OK in text
     tail = "" if ok else text.strip()[-1500:]
-    return {"rc": res["rc"], "final_ok": ok, "files": files, "seconds": res["seconds"], "tail": tail}
+    return {
+        "rc": res["rc"],
+        "final_ok": ok,
+        "timed_out": res.get("timed_out", False),
+        "files": files,
+        "seconds": res["seconds"],
+        "tail": tail,
+    }
 
 
 def run_suite(exe: Path, setting: str, timeout: float) -> dict:
@@ -251,16 +260,20 @@ def luac_files() -> list[Path]:
 
 
 def compare_luac(ref: Path, ours: Path, scratch: Path) -> dict:
-    """`luac -s` of every Lua file by both builds; outputs must be identical."""
+    """`luac -s` of every Lua file by both builds. A file matches only when
+    both runs exit 0 within the time limit, both write their output, and
+    the two outputs are identical; anything else is a difference."""
     scratch.mkdir(parents=True, exist_ok=True)
     same, differ = 0, []
     for i, src in enumerate(luac_files()):
         outs = []
         for tag, exe in (("ref", ref), ("ours", ours)):
             dest = scratch / f"{i}-{tag}.luac"
+            dest.unlink(missing_ok=True)
             res = run_bytes([str(exe), "-s", "-o", str(dest), str(src)], 60)
-            outs.append((res["rc"], dest.read_bytes() if dest.is_file() else b"", res["stderr"]))
-        if outs[0] == outs[1]:
+            ok = res["rc"] == 0 and not res["timed_out"] and dest.is_file()
+            outs.append(dest.read_bytes() if ok else None)
+        if outs[0] is not None and outs[0] == outs[1]:
             same += 1
         else:
             differ.append(src.name)
@@ -271,13 +284,16 @@ def level(opt: str, std: str, out: Path, jobs: int, run_jobs: int, suites: list[
     builds = {c: build(c, opt, std, out, jobs) for c in ("release", "ltests")}
     result: dict = {"opt": opt, "builds": builds}
     tasks = []
-    for name, config, setting in SUITES:
+    for index, (name, config, setting) in enumerate(SUITES):
         if name not in suites:
             continue
         b = builds[config]
-        tasks.append((name, "ref", Path(b["ref_dir"]) / "lua", setting))
+        pair = [(name, "ref", Path(b["ref_dir"]) / "lua", setting)]
         if b["link_ok"]:
-            tasks.append((name, "ours", Path(b["our_dir"]) / "lua", setting))
+            pair.append((name, "ours", Path(b["our_dir"]) / "lua", setting))
+        # Alternate which build runs first (with --run-jobs 1 they run in
+        # this order).
+        tasks += pair[::-1] if index % 2 == 1 else pair
     with ThreadPoolExecutor(max_workers=max(1, run_jobs)) as pool:
         done = dict(zip([(t[0], t[1]) for t in tasks], pool.map(lambda t: run_suite(t[2], t[3], 1800), tasks)))
     suite_rows = []
@@ -296,14 +312,30 @@ def level(opt: str, std: str, out: Path, jobs: int, run_jobs: int, suites: list[
     rel = builds["release"]
     ref_lua, our_lua = Path(rel["ref_dir"]) / "lua", Path(rel["our_dir"]) / "lua"
     rows = []
-    for script in sorted(WORKLOADS.glob("*.lua")):
-        ref = run_bytes([str(ref_lua), script.name], 600, cwd=WORKLOADS)
-        row = {"workload": script.name, "clang_seconds": ref["seconds"], "rc": ref["rc"]}
-        if rel["link_ok"]:
+    for index, script in enumerate(sorted(WORKLOADS.glob("*.lua"))):
+        # Alternate which build runs first, so neither one always runs on a
+        # warmer (or busier) machine.
+        ours_first = index % 2 == 1 and rel["link_ok"]
+        if ours_first:
             ours = run_bytes([str(our_lua), script.name], 600, cwd=WORKLOADS)
+        ref = run_bytes([str(ref_lua), script.name], 600, cwd=WORKLOADS)
+        row = {
+            "workload": script.name,
+            "clang_seconds": ref["seconds"],
+            "rc": ref["rc"],
+            "first": "ours" if ours_first else "clang",
+        }
+        if rel["link_ok"]:
+            if not ours_first:
+                ours = run_bytes([str(our_lua), script.name], 600, cwd=WORKLOADS)
             row["ours_seconds"] = ours["seconds"]
             row["ours_rc"] = ours["rc"]
-            row["match"] = (ours["rc"], ours["stdout"], ours["stderr"]) == (ref["rc"], ref["stdout"], ref["stderr"])
+            # A run that timed out never matches, even if both did.
+            row["match"] = (
+                not ref["timed_out"]
+                and not ours["timed_out"]
+                and (ours["rc"], ours["stdout"], ours["stderr"]) == (ref["rc"], ref["stdout"], ref["stderr"])
+            )
             if not row["match"]:
                 row["first_difference"] = first_difference(ref["stdout"] + ref["stderr"], ours["stdout"] + ours["stderr"])
         else:
@@ -476,7 +508,10 @@ def render_scorecard(payload: dict, title: str, notes: str = "") -> str:
         "Compile time is the sum over all files of both configurations: this",
         "compiler plus Clang turning its IR into an object, against Clang",
         "compiling the C directly. Run times are wall-clock times of the",
-        "three test-suite runs and of all the workloads at that level.",
+        "three test-suite runs and of all the workloads at that level. The",
+        "two builds take turns to run first: Clang first for the user and",
+        "internal suites and for every other workload in name order, this",
+        "compiler first for the rest.",
         "",
     ]
     lines += workload_table(levels)

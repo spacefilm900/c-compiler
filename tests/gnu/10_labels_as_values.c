@@ -2,14 +2,16 @@
    `&&label` is the address of a label, of type `void *`, and `goto *expr;`
    jumps to it. Lua 5.4's interpreter loop (lvm.c with ljumptab.h) builds a
    static table of label addresses inside the function and dispatches with
-   `goto *disptab[op];`, which this test models. GNU C only. */
+   `goto *disptab[op];`, which this test models (written out, without
+   Lua's macros). GNU C only.
+
+   Label addresses are only jumped to or compared with null here: the LLVM
+   Language Reference makes an equality test between two label addresses
+   (`blockaddress` values) undefined, so this compiler does not promise it. */
 
 int printf(const char *, ...);
 
 enum { OP_PUSH, OP_ADD, OP_MUL, OP_DUP, OP_JNZ, OP_DEC, OP_SWAP, OP_ACC, OP_HALT, NUM_OPS };
-
-#define vmdispatch(o) goto *disptab[o]
-#define vmcase(l) L_##l:
 
 /* A static, const table of label addresses inside the function, as Lua
    writes it. */
@@ -21,65 +23,63 @@ static long run(const int *code) {
     long stack[16];
     int sp = 0;
     int pc = 0;
-    vmdispatch(code[pc]);
-    vmcase(OP_PUSH) {
+    goto *disptab[code[pc]];
+    L_OP_PUSH: {
         stack[sp++] = code[pc + 1];
         pc += 2;
-        vmdispatch(code[pc]);
+        goto *disptab[code[pc]];
     }
-    vmcase(OP_ADD) {
+    L_OP_ADD: {
         sp--;
         stack[sp - 1] += stack[sp];
         pc++;
-        vmdispatch(code[pc]);
+        goto *disptab[code[pc]];
     }
-    vmcase(OP_MUL) {
+    L_OP_MUL: {
         sp--;
         stack[sp - 1] *= stack[sp];
         pc++;
-        vmdispatch(code[pc]);
+        goto *disptab[code[pc]];
     }
-    vmcase(OP_DUP) {
+    L_OP_DUP: {
         stack[sp] = stack[sp - 1];
         sp++;
         pc++;
-        vmdispatch(code[pc]);
+        goto *disptab[code[pc]];
     }
-    vmcase(OP_JNZ) {
+    L_OP_JNZ: {
         if (stack[--sp] != 0)
             pc = code[pc + 1];
         else
             pc += 2;
-        vmdispatch(code[pc]);
+        goto *disptab[code[pc]];
     }
-    vmcase(OP_DEC) {
+    L_OP_DEC: {
         stack[sp - 1]--;
         pc++;
-        vmdispatch(code[pc]);
+        goto *disptab[code[pc]];
     }
-    vmcase(OP_SWAP) {
+    L_OP_SWAP: {
         long t = stack[sp - 1];
         stack[sp - 1] = stack[sp - 2];
         stack[sp - 2] = t;
         pc++;
-        vmdispatch(code[pc]);
+        goto *disptab[code[pc]];
     }
-    vmcase(OP_ACC) {
+    L_OP_ACC: {
         stack[sp - 2] += stack[sp - 1];
         pc++;
-        vmdispatch(code[pc]);
+        goto *disptab[code[pc]];
     }
-    vmcase(OP_HALT) {
+    L_OP_HALT: {
         return stack[sp - 1];
     }
 }
 
-/* An automatic table, label addresses in variables, and comparisons. */
+/* An automatic table, and label addresses in variables. */
 static int classify(int n) {
     void *targets[3] = {&&zero, &&small, &&big};
     void *p = n == 0 ? targets[0] : n < 10 ? targets[1] : targets[2];
-    if (p == &&big)
-        printf("big chosen for %d\n", n);
     goto *p;
 zero:
     return 100;
@@ -111,13 +111,15 @@ done:
     return 0;
 }
 
-/* The same label address is the same pointer every time. */
-static void *addr_of_mark(void) {
-    goto skip;
-mark:
+/* A label address is not a null pointer (comparison with null is
+   defined). */
+static int not_null(void) {
+    void *p = &&mark;
+    if (p != 0)
+        goto *p;
     return 0;
-skip:
-    return &&mark;
+mark:
+    return 1;
 }
 
 int main(void) {
@@ -136,7 +138,6 @@ int main(void) {
         printf("classify(%d) = %d\n", i, classify(i));
     printf("only_indirect = %d %d\n", only_indirect(1), only_indirect(0));
     printf("depth = %d\n", depth(7));
-    printf("same address = %d\n", addr_of_mark() == addr_of_mark());
-    printf("not null = %d\n", addr_of_mark() != 0);
+    printf("not null = %d\n", not_null());
     return 0;
 }

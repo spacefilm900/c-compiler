@@ -68,6 +68,65 @@ class Outcome(unittest.TestCase):
         self.assertIn("assertion failed", res["tail"])
 
 
+    def test_timeout_never_passes(self):
+        res = run_lua.suite_outcome(
+            {"rc": 0, "stdout": b"final OK !!!\n", "stderr": b"", "seconds": 1.0, "timed_out": True}
+        )
+        self.assertFalse(res["final_ok"])
+
+
+class RunBytes(unittest.TestCase):
+    def test_timeout_is_reported(self):
+        res = run_lua.run_bytes(["sleep", "5"], 0.2)
+        self.assertTrue(res["timed_out"])
+        self.assertFalse(run_lua.run_bytes(["true"], 5)["timed_out"])
+
+
+def fake_luac(directory: Path, name: str, body: str) -> Path:
+    """A stand-in for luac: `luac -s -o DEST SRC` runs `body` with $3 = DEST."""
+    exe = directory / name
+    exe.write_text("#!/bin/sh\n" + body + "\n")
+    exe.chmod(0o755)
+    return exe
+
+
+class Luac(unittest.TestCase):
+    def compare(self, ref_body: str, ours_body: str, stale: bool = False) -> dict:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            src = tmp_path / "a.lua"
+            src.write_text("return 1\n")
+            ref = fake_luac(tmp_path, "ref", ref_body)
+            ours = fake_luac(tmp_path, "ours", ours_body)
+            scratch = tmp_path / "scratch"
+            if stale:
+                scratch.mkdir()
+                (scratch / "0-ref.luac").write_bytes(b"old")
+                (scratch / "0-ours.luac").write_bytes(b"old")
+            old = run_lua.luac_files
+            run_lua.luac_files = lambda: [src]
+            try:
+                return run_lua.compare_luac(ref, ours, scratch)
+            finally:
+                run_lua.luac_files = old
+
+    def test_identical_output_matches(self):
+        res = self.compare('printf x > "$3"', 'printf x > "$3"')
+        self.assertEqual((res["matching"], res["differ"]), (1, []))
+
+    def test_both_failing_is_a_difference(self):
+        res = self.compare("exit 1", "exit 1")
+        self.assertEqual((res["matching"], res["differ"]), (0, ["a.lua"]))
+
+    def test_one_failing_is_a_difference(self):
+        res = self.compare('printf x > "$3"', 'printf x > "$3"; exit 2')
+        self.assertEqual(res["differ"], ["a.lua"])
+
+    def test_stale_outputs_are_not_reused(self):
+        res = self.compare("exit 0", "exit 0", stale=True)
+        self.assertEqual(res["differ"], ["a.lua"])
+
+
 class Verdict(unittest.TestCase):
     def test_full_and_matching_passes(self):
         self.assertEqual(run_lua.verdict([level()]), (True, "LUA: PASS"))

@@ -2785,7 +2785,9 @@ impl Sema {
                 if !self.labels.contains_key(name.as_str()) {
                     return self.err(*line, *column, format!("use of undeclared label '{name}'"));
                 }
-                if !self.addr_labels.contains(name) {
+                // An unevaluated `sizeof` operand emits no code, so its
+                // label address is no destination of a computed `goto`.
+                if self.sizeof_depth == 0 && !self.addr_labels.contains(name) {
                     self.addr_labels.push(name.clone());
                 }
                 *func = Some(self.current_symbol.clone());
