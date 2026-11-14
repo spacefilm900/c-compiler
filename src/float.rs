@@ -491,7 +491,7 @@ fn pack(exp_field: u32, frac: u64, is_f32: bool) -> u64 {
 /// every other integer the result is `None` when the value is not finite or
 /// does not fit. C leaves that case undefined; a constant initializer
 /// rejects it.
-pub fn real_to_int(bits: u128, kind: FloatKind, dest: TypeName) -> Option<u64> {
+pub fn real_to_int(bits: u128, kind: FloatKind, dest: TypeName) -> Option<u128> {
     if kind == FloatKind::LongDouble {
         return crate::fp80::to_int(bits, dest);
     }
@@ -501,7 +501,7 @@ pub fn real_to_int(bits: u128, kind: FloatKind, dest: TypeName) -> Option<u64> {
         FloatKind::LongDouble => unreachable!("long double is handled above"),
     };
     if dest == TypeName::Bool {
-        return Some(u64::from(value != 0.0));
+        return Some(u128::from(value != 0.0));
     }
     if !value.is_finite() {
         return None;
@@ -525,24 +525,41 @@ pub fn real_to_int(bits: u128, kind: FloatKind, dest: TypeName) -> Option<u64> {
         return None;
     }
     let bits = if dest.is_signed() {
-        truncated as i64 as u64
+        truncated as i128 as u128
     } else {
-        truncated as u64
+        truncated as u128
     };
     Some(bits & dest.mask())
 }
 
-fn convert_wide(truncated: f64, dest: TypeName) -> Option<u64> {
+fn convert_wide(truncated: f64, dest: TypeName) -> Option<u128> {
+    // 2^63, 2^64, 2^127, and 2^128 are exact in f64.
     if dest.is_signed() {
-        // 2^63 is the first f64 that is not representable as i64.
-        if truncated < i64::MIN as f64 || truncated >= 9_223_372_036_854_775_808.0 {
+        let max = if dest.width() >= 128 {
+            170141183460469231731687303715884105728.0
+        } else {
+            9_223_372_036_854_775_808.0
+        };
+        let min = if dest.width() >= 128 {
+            i128::MIN as f64
+        } else {
+            i64::MIN as f64
+        };
+        if truncated < min || truncated >= max {
             return None;
         }
-        Some(truncated as i64 as u64)
-    } else if !(0.0..18_446_744_073_709_551_616.0).contains(&truncated) {
-        None
+        Some(truncated as i128 as u128)
     } else {
-        Some(truncated as u64)
+        let max = if dest.width() >= 128 {
+            340282366920938463463374607431768211456.0
+        } else {
+            18_446_744_073_709_551_616.0
+        };
+        if !(0.0..max).contains(&truncated) {
+            None
+        } else {
+            Some(truncated as u128)
+        }
     }
 }
 
@@ -550,7 +567,7 @@ fn convert_wide(truncated: f64, dest: TypeName) -> Option<u64> {
 ///
 /// The cast goes straight to the destination format. Rounding through
 /// `f64` and then to `f32` can change a value that is not a tie in `f32`.
-pub fn int_to_real(bits: u64, src: TypeName, dest: FloatKind) -> u128 {
+pub fn int_to_real(bits: u128, src: TypeName, dest: FloatKind) -> u128 {
     if dest == FloatKind::LongDouble {
         return crate::fp80::from_int(bits, src);
     }
@@ -842,7 +859,7 @@ mod tests {
         let neg_bits = negate(FloatKind::Double, one_point_nine);
         assert_eq!(
             real_to_int(neg_bits, FloatKind::Double, TypeName::Int),
-            Some((-1i32) as u32 as u64)
+            Some((-1i32) as u32 as u128)
         );
         assert_eq!(
             real_to_int(neg_bits, FloatKind::Double, TypeName::UInt),
@@ -869,7 +886,7 @@ mod tests {
         )
         .is_none());
         assert_eq!(
-            int_to_real(u64::MAX, TypeName::ULong, FloatKind::Double),
+            int_to_real(u128::from(u64::MAX), TypeName::ULong, FloatKind::Double),
             u128::from((u64::MAX as f64).to_bits())
         );
         assert_eq!(
@@ -895,7 +912,7 @@ mod tests {
         );
         let wide = 4_611_686_293_305_294_849u64;
         assert_eq!(
-            int_to_real(wide, TypeName::LongLong, FloatKind::Float),
+            int_to_real(u128::from(wide), TypeName::LongLong, FloatKind::Float),
             u128::from((wide as i64 as f32).to_bits())
         );
     }

@@ -18,7 +18,7 @@ Approved by the owner on 2026-11-09 (pull request 1).
 
 The compiler writes textual LLVM IR. `PLAN.md` also allows building IR through the LLVM libraries; the implementation, the CLI in `BOT.md`, and the driver write text. The contract is `build/compiler INPUT.c -o OUTPUT.ll` (and `-E` for preprocessed text). Success exits 0. Failure exits non-zero, prints one diagnostic to stderr, and does not create the output file.
 
-LLVM (`clang`, and optionally `opt` / `llc`) optimizes that IR and generates native code. There is no custom backend. `PLAN.md` keeps LLVM as the backend until a solid release; a small non-optimising backend of our own may be considered only after 0.1, alongside LLVM. The module uses opaque pointers, so Clang/LLVM must be 15 or newer.
+LLVM (`clang`, and optionally `opt` / `llc`) optimizes that IR and generates native code. There is no custom backend. `PLAN.md` keeps LLVM as the backend until a solid release; a small non-optimising backend of our own may be considered only after 0.1, alongside LLVM. The module uses opaque pointers (LLVM 15+), and a 128-bit argument must never be split between a register and the stack (LLVM 18+), so Clang/LLVM must be 18 or newer.
 
 Approved by the owner on 2026-11-09 (pull request 1).
 
@@ -86,7 +86,7 @@ Approved by the owner on 2026-11-09 (pull request 9).
 
 `.github/workflows/ci.yml` runs on `push` and `pull_request`. Permissions are `contents: read`. A newer push to the same ref cancels the older run. The runner is `ubuntu-24.04`. Actions are pinned to commit SHAs.
 
-- `fmt, clippy, tests, harness` (20 minutes): Rust 1.85.1 with `rustfmt` and `clippy`, apt packages `clang`, `llvm`, `make`, and `python3`, a check that Clang's major version is at least 15, then `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo test --offline --lib`, `make`, and `python3 harness/run_tests.py`.
+- `fmt, clippy, tests, harness` (20 minutes): Rust 1.85.1 with `rustfmt` and `clippy`, apt packages `clang`, `llvm`, `make`, and `python3`, a check that Clang's major version is at least 18, then `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo test --offline --lib`, `make`, and `python3 harness/run_tests.py`.
 - `writing-a-c-compiler suite` (30 minutes): the same toolchain, a cache of the fetched suite keyed by the pinned commit, `scripts/fetch_wacc_tests.sh`, `make`, and `python3 harness/run_wacc.py`.
 
 Completed runs are recorded in `STATUS.md`. The workflow file was approved by the owner on 2026-11-09 (pull request 1). The suite job was approved by the owner on 2026-11-09 (pull request 9).

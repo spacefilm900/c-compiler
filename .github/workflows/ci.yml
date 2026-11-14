@@ -41,8 +41,8 @@ jobs:
           make --version
           python3 --version
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
@@ -62,7 +62,7 @@ jobs:
           python3 harness/run_tests.py
 
       - name: Csmith campaign script tests
-        run: python3 -m unittest tools/test_csmith_campaign.py tools/test_run_doom.py tools/test_run_lua.py
+        run: python3 -m unittest tools/test_csmith_campaign.py tools/test_run_doom.py tools/test_run_lua.py tools/test_run_sqlite.py
 
   wacc:
     name: writing-a-c-compiler suite
@@ -91,8 +91,8 @@ jobs:
           make --version
           python3 --version
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
@@ -130,8 +130,8 @@ jobs:
           set -euo pipefail
           scripts/ci-apt-install.sh clang llvm make python3 g++
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
@@ -169,8 +169,8 @@ jobs:
           set -euo pipefail
           scripts/ci-apt-install.sh clang llvm make python3 bison
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
@@ -227,8 +227,8 @@ jobs:
           set -euo pipefail
           scripts/ci-apt-install.sh clang llvm make python3
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
@@ -269,8 +269,8 @@ jobs:
           set -euo pipefail
           scripts/ci-apt-install.sh clang llvm make python3 bison
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
@@ -315,8 +315,8 @@ jobs:
           set -euo pipefail
           scripts/ci-apt-install.sh clang llvm make python3 unzip
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
@@ -361,8 +361,8 @@ jobs:
           set -euo pipefail
           scripts/ci-apt-install.sh clang llvm make python3
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
@@ -378,3 +378,42 @@ jobs:
           scripts/fetch_lua.sh
           make
           python3 harness/run_lua.py --opt O0 --opt O2 --run-jobs "$(nproc)"
+
+  sqlite:
+    name: sqlite shell workloads
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+          components: rustfmt, clippy
+
+      - name: Install Clang, LLVM, make, Python, and unzip
+        run: |
+          set -euo pipefail
+          scripts/ci-apt-install.sh clang llvm make python3 unzip
+          major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
+            exit 1
+          fi
+
+      - name: Cache the SQLite 3.54.1 amalgamation
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: tests/external/sqlite
+          key: sqlite-3.54.1-0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9-92281c86e2957f9b9305890f9ac04204caa7b677cc868dc326d942689df28e30-${{ runner.os }}
+
+      - name: Build SQLite both ways and compare workloads at -O0 and -O2
+        run: |
+          set -euo pipefail
+          scripts/fetch_sqlite.sh
+          make
+          python3 harness/run_sqlite.py --opt O0 --opt O2

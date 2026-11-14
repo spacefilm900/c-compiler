@@ -218,7 +218,7 @@ impl Inline {
     /// bit operation.
     pub fn fold(self, bits: u64) -> Option<u64> {
         let width = |ty: TypeName| ty.width();
-        let mask = |ty: TypeName| ty.mask();
+        let mask = |ty: TypeName| ty.mask() as u64;
         Some(match self {
             Inline::Clz(ty) => {
                 let value = bits & mask(ty);

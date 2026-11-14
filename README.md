@@ -14,7 +14,7 @@ The decisions behind this compiler are in [DESIGN.md](DESIGN.md).
 
 ## Build
 
-Emitting IR does not need Clang. Running the result does. The IR uses opaque pointers, the triple `x86_64-pc-linux-gnu`, and that triple's System V data layout, so Clang/LLVM must be 15 or newer.
+Emitting IR does not need Clang. Running the result does. The IR uses opaque pointers, the triple `x86_64-pc-linux-gnu`, and that triple's System V data layout. Clang/LLVM must be **18 or newer**: opaque pointers need 15, and LLVM 15–17 x86-64 backends split an `i128` argument between the last free GP register and the stack instead of passing it wholly on the stack as System V requires (fixed in LLVM 18). This compiler passes `__int128` as a plain `i128` and its `va_arg` reads a stack-passed one as 16 bytes from the overflow area, so on LLVM 15–17 a variadic `__int128` after five GP arguments would read the wrong value. `harness/run_tests.py` and CI refuse an older Clang.
 
 `rust-toolchain.toml` pins Rust **1.85.1** with the `rustfmt` and `clippy` components. That matches the system `cargo` used for the local unit tests. On that machine, plain `cargo clippy` is not installed; clippy is the rustup command below.
 
@@ -27,7 +27,7 @@ make
 
 `make` (GNU make 4.4.1 locally) writes `build/compiler`.
 
-Local execution used Debian Clang/LLVM **19.1.7**. Put that install's `bin` directory on `PATH` (set this to your path). Any Clang/LLVM 15 or newer on `PATH` is enough for the harness.
+Local execution used Debian Clang/LLVM **19.1.7**. Put that install's `bin` directory on `PATH` (set this to your path). Any Clang/LLVM 18 or newer on `PATH` is enough for the harness (for example a recent Homebrew `llvm`).
 
 ## Contract
 
@@ -57,7 +57,7 @@ python3 harness/run_tests.py
 
 `cargo test` runs the lexer, parser, diagnostic, and IR unit tests, and compares every `tests/*.c` program with Clang. `harness/run_tests.py` is the project differential runner: it compiles each `tests/*.c` with this compiler and with Clang, links both, and compares exit status, stdout, and stderr.
 
-The external suites (Csmith, One True AWK, the AWK Builder suites, `gcc.c-torture/execute`, DOOM, and Lua) and the performance script are described in [tests/external/README.md](tests/external/README.md) and [STATUS.md](STATUS.md).
+The external suites (Csmith, One True AWK, the AWK Builder suites, `gcc.c-torture/execute`, DOOM, Lua, and SQLite) and the performance script are described in [tests/external/README.md](tests/external/README.md) and [STATUS.md](STATUS.md).
 
 ```sh
 make csmith
@@ -65,6 +65,7 @@ make otawk
 make torture
 make doom
 make lua
+make sqlite
 make perf
 make awk-extra
 ```
@@ -74,6 +75,8 @@ make awk-extra
 DOOM is the first real program. `make doom` fetches [doomgeneric](https://github.com/ozkl/doomgeneric) at a pinned commit and the free [Freedoom](https://freedoom.github.io/) game data, builds DOOM twice (with this compiler and with Clang), plays the same recorded demos in both with no window, and checks that every frame is identical. It builds with this compiler alone, and all eight Freedoom demos (four in each of `freedoom1.wad` and `freedoom2.wad`, 39,209 frames) match Clang frame for frame at `-O0` and `-O2`. The per-program scorecards are in [reports/doom/](reports/doom/): `baseline.md` is the first run, kept unchanged, and `scorecard.md` is the current one.
 
 Lua is the second. `make lua` fetches the Lua 5.4.7 release and its official test suite from lua.org (both checked by SHA-256), builds Lua twice (with this compiler in `-std=gnu11` mode, because Lua's interpreter loop uses GNU computed `goto` when the compiler says it is GNU-compatible, and with Clang), and compares the two. Both the normal build and a build with Lua's internal self-checks turned on pass the official test suite in three modes, nine workload scripts of our own give byte-for-byte the same output, and `luac` produces identical bytecode, at `-O0` and `-O2`. Scorecards are in [reports/lua/](reports/lua/).
+
+SQLite is the third. `make sqlite` fetches the SQLite 3.54.1 amalgamation from sqlite.org (checked by SHA-256 and SHA3-256), builds the command-line shell twice (with this compiler and with Clang, `-std=gnu11 -D_DEFAULT_SOURCE`, FTS5, RTree, and the math functions), and runs ten deterministic SQL workloads. Our compiler builds both `sqlite3.c` and `shell.c` alone, and every workload matches Clang byte for byte at `-O0` and `-O2`, including the database files. Scorecards are in [reports/sqlite/](reports/sqlite/).
 
 On the machine where system `cargo` is Rust 1.85.1 and has no clippy component, the clippy check that passed was:
 
@@ -87,7 +90,7 @@ Point `rustup` at your install (set this to your path). The numeric version of t
 
 `.github/workflows/ci.yml` runs on `push` and `pull_request`. The GitHub source of truth is `https://github.com/spacefilm900/c-compiler`. Observed Actions runs, including whether any run has completed, are recorded in `STATUS.md`.
 
-The workflow checks out the repo, installs Rust 1.85.1 (`rustfmt`, `clippy`), and installs Ubuntu 24.04 packages `clang`, `llvm`, `make`, and `python3`. It exits if `clang --version` reports a major version below 15. Then it runs `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo test --offline --lib`, `make`, and `python3 harness/run_tests.py`. The job token can read contents only. The job times out after 20 minutes, and a newer push to the same ref cancels the older run.
+The workflow checks out the repo, installs Rust 1.85.1 (`rustfmt`, `clippy`), and installs Ubuntu 24.04 packages `clang`, `llvm`, `make`, and `python3`. It exits if `clang --version` reports a major version below 18. Then it runs `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo test --offline --lib`, `make`, and `python3 harness/run_tests.py`. The job token can read contents only. The job times out after 20 minutes, and a newer push to the same ref cancels the older run.
 
 Actions are pinned to commits, not floating tags:
 
@@ -144,6 +147,8 @@ These follow the public GCC manual, with GCC 14 and Clang 19 used only as black 
 **In both modes** (these spellings are reserved for the implementation, C11 7.1.3):
 
 - `__attribute__((...))` on declarations, declarators, types, record members, functions, parameters, labels, and as a null statement. With meaning: `noreturn`, `unused`, `used` (`@llvm.used`), `aligned` / `aligned(N)` on objects, members, and struct or union types, `packed` on a struct or union or a member, `always_inline` / `noinline`, `section("name")`, `weak` (definitions and `extern_weak` declarations), `deprecated` / `deprecated("msg")` (a call warns), `cold` / `hot`, `const` / `pure` (LLVM `memory(none)` / `memory(read)`), `constructor` / `destructor`, and `mode(QI|HI|SI|DI|word|pointer|byte)`. Accepted and ignored: `format`, `nonnull`, `noclone`, `nothrow`, `returns_twice`, `malloc`, `warn_unused_result`, `visibility`, `may_alias`, `transparent_union`, and similar optimisation hints. An unknown attribute is ignored with the warning `unknown attribute 'X' ignored`. These are an error because ignoring them would change behaviour: `vector_size`, `cleanup`, `alias`, `ifunc`, `naked`, and `weakref`. `aligned` on a typedef is allowed only when it does not change the alignment, and a bit-field in a struct whose layout `packed` or `aligned` changes is an error.
+- `__int128`, `signed __int128`, `unsigned __int128`, `__int128_t`, and `__uint128_t`: 128-bit integers, size and alignment 16, lowered to LLVM `i128`; constant expressions keep all 128 bits. A parameter, return, or `va_arg` uses two general-purpose registers and 16-byte stack alignment. `__builtin_add_overflow` and friends accept 128-bit operands and destinations. Bit-fields of these types are not supported.
+- An empty declaration at file scope (a lone `;`). C11 does not allow it; Clang and GCC accept it.
 - `__extension__`, `__inline__` / `__inline`, `__signed__`, `__const__`, `__volatile__`, `__restrict__`, `__alignof__` (with a type or an expression), `__asm__` labels, and `__FUNCTION__`.
 - Builtins folded to constants: `__builtin_constant_p` (1 for an integer constant expression, a floating constant or a string literal, otherwise 0), `__builtin_types_compatible_p` (top-level qualifiers ignored), `__builtin_choose_expr`, `__builtin_offsetof`, and the bit builtins below when their operand is constant.
 - Builtins lowered to LLVM: `__builtin_expect`, `__builtin_unreachable`, `__builtin_trap`, `__builtin_clz` / `ctz` / `popcount` / `parity` / `ffs` / `clrsb` with their `l` and `ll` forms, `__builtin_bswap16` / `32` / `64`, `__builtin_alloca`, `__builtin_prefetch` (no code), `__builtin_assume_aligned`, `__builtin_return_address(0)`, `__builtin_frame_address(0)`, `__builtin_isnan` / `isinf` / `isfinite` / `isnormal`, the `va_*` builtins, and the overflow builtins: generic `__builtin_add_overflow` / `sub` / `mul` on any integer operands, and the typed `__builtin_sadd_overflow`, `__builtin_uaddl_overflow`, `__builtin_smulll_overflow`, and the rest of that family.
@@ -168,7 +173,8 @@ The parser or checker rejects variable-length arrays, a `static` or `extern` dec
 - `harness/run_tests.py` — Clang oracle
 - `harness/run_doom.py`, `harness/doom/` — DOOM harness and its headless backend
 - `harness/run_lua.py`, `harness/lua/` — Lua harness and its workload scripts
-- `reports/` — scorecards and campaign reports (`reports/doom/` for DOOM, `reports/lua/` for Lua)
+- `harness/run_sqlite.py`, `harness/sqlite/` — SQLite harness and its SQL workloads
+- `reports/` — scorecards and campaign reports (`reports/doom/` for DOOM, `reports/lua/` for Lua, `reports/sqlite/` for SQLite)
 - `PLAN.md` — staged plan (unchanged starter plan)
 - `STATUS.md` — what this milestone actually does
 - `DESIGN.md` — design decisions
@@ -176,4 +182,4 @@ The parser or checker rejects variable-length arrays, a `static` or `extern` dec
 
 ## Licence
 
-The compiler is MIT (see [LICENSE](LICENSE)). The Writing a C Compiler test suite is third-party (MIT, Copyright (c) 2023 Nora Sandler), downloaded at a pinned commit and not stored in this repo (see [tests/external/README.md](tests/external/README.md)). So are doomgeneric (GPL-2.0), the Freedoom game data (BSD), and Lua 5.4.7 with its test suite (MIT), which are test inputs only.
+The compiler is MIT (see [LICENSE](LICENSE)). The Writing a C Compiler test suite is third-party (MIT, Copyright (c) 2023 Nora Sandler), downloaded at a pinned commit and not stored in this repo (see [tests/external/README.md](tests/external/README.md)). So are doomgeneric (GPL-2.0), the Freedoom game data (BSD), Lua 5.4.7 with its test suite (MIT), and the SQLite 3.54.1 amalgamation (public domain), which are test inputs only.

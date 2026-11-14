@@ -700,7 +700,7 @@ struct Gen {
     intrinsics: std::collections::BTreeSet<String>,
     /// GNU case ranges of the switch being collected: low and high bits
     /// and the case block.
-    switch_ranges: Vec<(u64, u64, String)>,
+    switch_ranges: Vec<(u128, u128, String)>,
 }
 
 /// One store of an automatic aggregate initializer, evaluated and waiting
@@ -1189,7 +1189,15 @@ impl Gen {
                 if promoted.is_sse_float() {
                     free_sse = free_sse.saturating_sub(1);
                 } else if !promoted.is_long_double() {
-                    free_int = free_int.saturating_sub(1);
+                    // A 128-bit integer takes two GP registers. If only
+                    // one remains, the whole argument goes on the stack.
+                    // Only its own registers are given back (System V
+                    // AMD64 3.2.3), so a later argument can still use the
+                    // leftover register.
+                    let slots = if promoted.size() == Some(16) { 2 } else { 1 };
+                    if free_int >= slots {
+                        free_int -= slots;
+                    }
                 }
                 let value = self.convert(&value, &src, &promoted);
                 rendered.push(format!("{} {value}", promoted.ir_type()));
@@ -1942,7 +1950,7 @@ impl Gen {
                 let hit = self.fresh();
                 self.emit(&format!(
                     "  {hit} = icmp ule {ir} {diff}, {}",
-                    TypeName::ULongLong.format_bits(span)
+                    promoted.to_unsigned().format_bits(span)
                 ));
                 let next = self.label();
                 self.br_cond(&hit, &label, &next);
@@ -1978,7 +1986,7 @@ impl Gen {
         ty: TypeName,
         value: &str,
         default_dest: &str,
-        cases: &[(u64, String)],
+        cases: &[(u128, String)],
     ) {
         let ir = ty.ir_type();
         self.emit(&format!("  switch {ir} {value}, label %{default_dest} ["));
@@ -1997,7 +2005,7 @@ impl Gen {
     fn collect_switch_targets(
         &mut self,
         stmt: &Stmt,
-        cases: &mut Vec<(u64, String)>,
+        cases: &mut Vec<(u128, String)>,
         default_label: &mut Option<String>,
         labels: &mut Vec<String>,
     ) {
@@ -2214,6 +2222,20 @@ impl Gen {
         };
         let ap_ptr = self.gen_val(ap);
         let addr = self.va_arg_addr(&ap_ptr, type_arg);
+        // A 128-bit integer may come from the register save area, whose
+        // GP slots are only 8-byte aligned. The address is a phi of that
+        // slot and the overflow area, so the load claims 8, not 16.
+        if let VaClass::Gp { slots: 2, .. } = va_class(type_arg) {
+            if type_arg.align() > 8 {
+                let tmp = self.fresh();
+                self.emit(&format!(
+                    "  {tmp} = load{} {}, ptr {addr}, align 8",
+                    vol_attr(type_arg),
+                    type_arg.ir_type(),
+                ));
+                return tmp;
+            }
+        }
         self.load(type_arg, &addr)
     }
 
@@ -2319,7 +2341,7 @@ impl Gen {
             return Some(self.record_ptr(expr));
         }
         match expr {
-            Expr::Int { bits, value_ty, .. } => Some(value_ty.format_bits(*bits)),
+            Expr::Int { bits, value_ty, .. } => Some(value_ty.format_bits(u128::from(*bits))),
             Expr::Float { bits, kind, .. } => Some(crate::float::llvm_const(*kind, *bits)),
             Expr::LabelAddr { name, func, .. } => {
                 let func = func.as_deref().expect("label address in a function");
@@ -2445,7 +2467,7 @@ impl Gen {
                     SizeofOperand::Expr(inner) => inner.ty().expect("typed").size(),
                 }
                 .expect("sizeof of a complete type");
-                Some(TypeName::ULong.format_bits(size))
+                Some(TypeName::ULong.format_bits(u128::from(size)))
             }
             Expr::Cast { ty_name, expr, .. } => {
                 if ty_name.is_void() {
@@ -3369,6 +3391,9 @@ impl Gen {
             let src = args[index].ty().expect("typed");
             let ty = fixed.unwrap_or_else(|| src.as_integer().expect("integer operand"));
             let value = gen.convert(&value, &src, &CType::Int(ty));
+            if ty.width() == 128 {
+                return (value, ty);
+            }
             let wide = gen.fresh();
             let ext = if ty.is_signed() { "sext" } else { "zext" };
             gen.emit(&format!(
@@ -3389,6 +3414,14 @@ impl Gen {
         };
         let tir = target.ir_type();
         let tw = target.width();
+        if left_ty.width() == 128 || right_ty.width() == 128 || tw == 128 {
+            return self.gen_overflow_i256(
+                op,
+                [(&left, left_ty), (&right, right_ty)],
+                &dest_ptr,
+                target,
+            );
+        }
         let overflow = match op {
             OverflowOp::Add | OverflowOp::Sub => {
                 let exact = self.fresh();
@@ -3465,6 +3498,89 @@ impl Gen {
         };
         let tmp = self.fresh();
         self.emit(&format!("  {tmp} = zext i1 {overflow} to i8"));
+        tmp
+    }
+
+    /// Overflow checking for a 128-bit operand or destination.
+    ///
+    /// A same-width `sext`/`trunc` of `i128` is not valid LLVM, and an
+    /// `i128` add/sub/mul can wrap, so the overflow flag would be wrong.
+    /// Each operand is extended to `i256` (so mixed signs keep infinite
+    /// precision, as in `__builtin_add_overflow((__int128)-1, 1, &u128)`),
+    /// the operation is done there, and the exact result is tested against
+    /// the destination limits. The stored value is the low bits of that
+    /// exact result.
+    fn gen_overflow_i256(
+        &mut self,
+        op: crate::builtins::OverflowOp,
+        operands: [(&str, TypeName); 2],
+        dest_ptr: &str,
+        target: TypeName,
+    ) -> String {
+        use crate::builtins::OverflowOp;
+        let widen = |gen: &mut Self, value: &str, ty: TypeName| -> String {
+            let ext = if ty.is_signed() { "sext" } else { "zext" };
+            let wide = gen.fresh();
+            gen.emit(&format!("  {wide} = {ext} i128 {value} to i256"));
+            wide
+        };
+        let left = widen(self, operands[0].0, operands[0].1);
+        let right = widen(self, operands[1].0, operands[1].1);
+        let inst = match op {
+            OverflowOp::Add => "add",
+            OverflowOp::Sub => "sub",
+            OverflowOp::Mul => "mul",
+        };
+        let exact = self.fresh();
+        self.emit(&format!("  {exact} = {inst} i256 {left}, {right}"));
+        let limit = |gen: &mut Self, signed: bool, width: u32, min: bool| -> String {
+            if !signed && !min {
+                let sh = gen.fresh();
+                gen.emit(&format!("  {sh} = shl i256 1, {width}"));
+                let max = gen.fresh();
+                gen.emit(&format!("  {max} = sub i256 {sh}, 1"));
+                return max;
+            }
+            if signed && !min {
+                let sh = gen.fresh();
+                gen.emit(&format!("  {sh} = shl nsw i256 1, {}", width - 1));
+                let max = gen.fresh();
+                gen.emit(&format!("  {max} = sub i256 {sh}, 1"));
+                return max;
+            }
+            if signed && min {
+                let sh = gen.fresh();
+                gen.emit(&format!("  {sh} = shl nsw i256 1, {}", width - 1));
+                let v = gen.fresh();
+                gen.emit(&format!("  {v} = sub i256 0, {sh}"));
+                return v;
+            }
+            "0".to_string()
+        };
+        let tw = target.width();
+        let signed = target.is_signed();
+        let max = limit(self, signed, tw, false);
+        let pred_lo = if signed { "sge" } else { "uge" };
+        let pred_hi = if signed { "sle" } else { "ule" };
+        let ok_lo = self.fresh();
+        if signed {
+            let min = limit(self, signed, tw, true);
+            self.emit(&format!("  {ok_lo} = icmp {pred_lo} i256 {exact}, {min}"));
+        } else {
+            self.emit(&format!("  {ok_lo} = icmp {pred_lo} i256 {exact}, 0"));
+        }
+        let ok_hi = self.fresh();
+        self.emit(&format!("  {ok_hi} = icmp {pred_hi} i256 {exact}, {max}"));
+        let ok = self.fresh();
+        self.emit(&format!("  {ok} = and i1 {ok_lo}, {ok_hi}"));
+        let ov = self.fresh();
+        self.emit(&format!("  {ov} = xor i1 {ok}, true"));
+        let low = self.fresh();
+        let tir = target.ir_type();
+        self.emit(&format!("  {low} = trunc i256 {exact} to {tir}"));
+        self.store(&CType::Int(target), &low, dest_ptr);
+        let tmp = self.fresh();
+        self.emit(&format!("  {tmp} = zext i1 {ov} to i8"));
         tmp
     }
 
@@ -3815,9 +3931,11 @@ fn va_class(ty: &CType) -> VaClass {
             Ok(AggAbi::Direct(pieces)) => {
                 let sse = pieces.iter().filter(|piece| piece.is_sse()).count();
                 if sse == 0 {
+                    // In the overflow area the record keeps its own
+                    // alignment, which `_Alignas(16)` can raise above 8.
                     VaClass::Gp {
                         slots: pieces.len().max(1) as u32,
-                        stack_align: 8,
+                        stack_align: u64::from(bare.align()).max(8),
                         stack_size: stack.max(8),
                     }
                 } else if sse == pieces.len() && pieces.len() == 1 {
@@ -3846,9 +3964,12 @@ fn va_class(ty: &CType) -> VaClass {
         return VaClass::Fp;
     }
     let size = bare.size().unwrap_or(8);
+    // A 128-bit integer uses two general-purpose slots and 16-byte
+    // alignment (System V AMD64).
+    let (slots, stack_align) = if size == 16 { (2, 16) } else { (1, 8) };
     VaClass::Gp {
-        slots: 1,
-        stack_align: 8,
+        slots,
+        stack_align,
         stack_size: ((size + 7) & !7).max(8),
     }
 }

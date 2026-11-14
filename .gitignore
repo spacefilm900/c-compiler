@@ -17,3 +17,5 @@ platform.info
 tests/external/doomgeneric/
 tests/external/freedoom/
 tests/external/lua/
+
+tests/external/sqlite/

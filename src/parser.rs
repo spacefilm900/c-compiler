@@ -297,6 +297,13 @@ impl Parser<'_> {
     /// declarator list with another declarator. Pointer stars bind to each
     /// declarator, so `int *a, b;` declares one pointer and one `int`.
     fn parse_external(&mut self) -> Result<Vec<TopDecl>, Diagnostic> {
+        // Empty declaration at file scope. C11 6.7 does not allow a lone
+        // `;` here; Clang and GCC accept it (with -Wextra-semi). SQLite's
+        // shell writes `SQLITE_EXTENSION_INIT1;`, which expands to this.
+        if self.current().kind == TokenKind::Semi {
+            self.advance();
+            return Ok(Vec::new());
+        }
         if self.current().kind == TokenKind::KwStaticAssert {
             self.parse_static_assert()?;
             return Ok(Vec::new());
@@ -590,6 +597,14 @@ impl Parser<'_> {
                 TokenKind::KwEnum => {
                     self.note_enum(&mut flags)?;
                 }
+                TokenKind::Ident
+                    if matches!(
+                        token.spelling.as_str(),
+                        "__int128" | "__int128_t" | "__uint128_t"
+                    ) =>
+                {
+                    self.note_int128(&mut flags, &token)?;
+                }
                 TokenKind::Ident if token.spelling == "__builtin_va_list" => {
                     if flags.struct_ty.is_some()
                         || flags.bool_ty
@@ -746,6 +761,43 @@ impl Parser<'_> {
         }
         flags.any = true;
         flags.bool_ty = true;
+        flags.line = token.line;
+        flags.column = token.column;
+        Ok(())
+    }
+
+    fn note_int128(&mut self, flags: &mut SpecFlags, token: &Token) -> Result<(), Diagnostic> {
+        // `__int128` may be signed or unsigned, like `int`. It does not
+        // combine with `char`, `short`, `int`, `long`, `_Bool`, or a float.
+        if flags.bool_ty
+            || flags.float_ty.is_some()
+            || flags.struct_ty.is_some()
+            || flags.int128
+            || flags.void
+            || flags.char_
+            || flags.short != 0
+            || flags.int_
+            || flags.long != 0
+        {
+            return Err(self.error_at(
+                token.line,
+                token.column,
+                "invalid combination of type specifiers",
+            ));
+        }
+        if token.spelling == "__uint128_t" && flags.signed {
+            return Err(self.error_at(
+                token.line,
+                token.column,
+                "invalid combination of type specifiers",
+            ));
+        }
+        self.advance();
+        flags.any = true;
+        flags.int128 = true;
+        if token.spelling == "__uint128_t" {
+            flags.unsigned = true;
+        }
         flags.line = token.line;
         flags.column = token.column;
         Ok(())
@@ -1052,6 +1104,16 @@ impl Parser<'_> {
             flags.column,
             "invalid combination of type specifiers",
         );
+        if flags.int128 {
+            if flags.void || flags.char_ || flags.short != 0 || flags.int_ || flags.long != 0 {
+                return Err(bad);
+            }
+            return Ok(if flags.unsigned {
+                TypeName::UInt128
+            } else {
+                TypeName::Int128
+            });
+        }
         if flags.void {
             if flags.char_
                 || flags.short != 0
@@ -1595,7 +1657,12 @@ impl Parser<'_> {
                     | TokenKind::KwDouble
             )
             || (token.kind == TokenKind::Ident
-                && (self.is_typedef(&token.spelling) || token.spelling == "__builtin_va_list"))
+                && (self.is_typedef(&token.spelling)
+                    || token.spelling == "__builtin_va_list"
+                    || matches!(
+                        token.spelling.as_str(),
+                        "__int128" | "__int128_t" | "__uint128_t"
+                    )))
             || self.is_typeof_word(token)
             || matches!(token.spelling.as_str(), "__restrict" | "__restrict__")
                 && token.kind == TokenKind::Ident
@@ -1824,10 +1891,10 @@ impl Parser<'_> {
             if signed <= 0 {
                 u64::MAX
             } else {
-                signed as u64
+                u64::try_from(signed).unwrap_or(u64::MAX)
             }
         } else {
-            value.bits & value.ty.mask()
+            u64::try_from(value.bits & value.ty.mask()).unwrap_or(u64::MAX)
         };
         if !bits.is_power_of_two() || bits > (1 << 28) {
             return Err(self.error_at(
@@ -2194,6 +2261,16 @@ impl Parser<'_> {
                 format!("bit-field has non-integral type '{}'", ty.display()),
             ));
         };
+        // The backend stores bit-fields in a 64-bit container. A 128-bit
+        // declared type would drop bits above 64 and can emit a poison
+        // shift on a signed field.
+        if integer.width() > 64 {
+            return Err(self.error_at(
+                colon.line,
+                colon.column,
+                format!("bit-field of type '{}' is not supported", ty.display()),
+            ));
+        }
         let expr = self.parse_conditional()?;
         check_uneval(&expr, self.env())
             .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
@@ -2201,10 +2278,10 @@ impl Parser<'_> {
             .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
         let signed = if value.ty.is_signed() {
             sign_extend(value.bits, value.ty.width())
-        } else if value.bits > i64::MAX as u64 {
+        } else if value.bits > i64::MAX as u128 {
             return Err(self.error_at(expr.line(), expr.column(), "bit-field width is too large"));
         } else {
-            value.bits as i64
+            value.bits as i128
         };
         if signed < 0 {
             return Err(self.error_at(
@@ -2225,7 +2302,7 @@ impl Parser<'_> {
         } else {
             integer.width()
         };
-        if signed > i64::from(max) {
+        if signed > i128::from(max) {
             return Err(self.error_at(
                 expr.line(),
                 expr.column(),
@@ -4200,7 +4277,7 @@ impl Parser<'_> {
                                 (sign_extend(value.bits, value.ty.width()) as u64)
                                     .wrapping_mul(size)
                             } else {
-                                (value.bits & value.ty.mask()).wrapping_mul(size)
+                                (value.bits as u64).wrapping_mul(size)
                             };
                             offset = offset.wrapping_add(scaled);
                         }
@@ -4337,7 +4414,7 @@ impl Parser<'_> {
         if builtin == crate::builtins::Inline::Expect && args.len() == 2 {
             if let (Ok(value), Ok(_)) = (eval_ice(&args[0], env), eval_ice(&args[1], env)) {
                 let bits = convert_bits(value.bits, value.ty, TypeName::Long);
-                return Expr::int(bits, TypeName::Long, *line, *column);
+                return Expr::int(bits as u64, TypeName::Long, *line, *column);
             }
             return call;
         }
@@ -4351,7 +4428,7 @@ impl Parser<'_> {
             return call;
         };
         let bits = convert_bits(value.bits, value.ty, param);
-        let Some(result) = builtin.fold(bits) else {
+        let Some(result) = builtin.fold(bits as u64) else {
             return call;
         };
         let result_ty = builtin
@@ -4789,6 +4866,8 @@ struct SpecFlags {
     signed: bool,
     unsigned: bool,
     bool_ty: bool,
+    /// GNU `__int128` / `__int128_t` / `__uint128_t`.
+    int128: bool,
     float_ty: Option<FloatKind>,
     quals: Quals,
     struct_ty: Option<CType>,
@@ -4810,6 +4889,7 @@ impl SpecFlags {
             || self.long != 0
             || self.signed
             || self.unsigned
+            || self.int128
     }
 }
 
@@ -5017,7 +5097,7 @@ fn ice_message(err: BoundErr) -> &'static str {
 }
 
 struct BVal {
-    bits: u64,
+    bits: u128,
     ty: TypeName,
 }
 
@@ -5031,13 +5111,13 @@ fn fold_array_bound(expr: &Expr, env: Env) -> Result<u64, BoundErr> {
         if signed <= 0 {
             return Err(BoundErr::NonPositive);
         }
-        signed as u64
+        u64::try_from(signed).map_err(|_| BoundErr::TooBig)?
     } else {
         let unsigned = value.bits & value.ty.mask();
         if unsigned == 0 {
             return Err(BoundErr::NonPositive);
         }
-        unsigned
+        u64::try_from(unsigned).map_err(|_| BoundErr::TooBig)?
     };
     if count > u64::MAX / 8 {
         return Err(BoundErr::TooBig);
@@ -5048,7 +5128,7 @@ fn fold_array_bound(expr: &Expr, env: Env) -> Result<u64, BoundErr> {
 fn eval_ice(expr: &Expr, env: Env) -> Result<BVal, BoundErr> {
     match expr {
         Expr::Int { bits, value_ty, .. } => Ok(BVal {
-            bits: *bits & value_ty.mask(),
+            bits: u128::from(*bits) & value_ty.mask(),
             ty: *value_ty,
         }),
         Expr::Float { .. } => Err(BoundErr::NotConst),
@@ -5069,7 +5149,7 @@ fn eval_ice(expr: &Expr, env: Env) -> Result<BVal, BoundErr> {
             }
             let size = ty.size().ok_or(BoundErr::Incomplete)?;
             Ok(BVal {
-                bits: size,
+                bits: u128::from(size),
                 ty: TypeName::ULong,
             })
         }
@@ -5838,7 +5918,7 @@ fn infer_init_len(elem: &CType, init: &Init, env: Env) -> Option<u64> {
                 if at.ty.is_signed() && sign_extend(at.bits, at.ty.width()) < 0 {
                     return None;
                 }
-                index = at.bits & at.ty.mask();
+                index = u64::try_from(at.bits & at.ty.mask()).ok()?;
                 if designators.len() == 1 && !scalar && !matches!(**init, Init::List { .. }) {
                     // `[2] = x` for an aggregate element may start brace
                     // elision; the next positional items could belong to it.
@@ -5866,7 +5946,7 @@ fn eval_ice_unary(op: UnaryOp, expr: &Expr, env: Env) -> Result<BVal, BoundErr> 
         UnaryOp::Plus => Ok(value),
         UnaryOp::Minus => {
             if value.ty.is_signed() {
-                let signed = sign_extend(value.bits, value.ty.width()) as i128;
+                let signed = sign_extend(value.bits, value.ty.width());
                 bits_ice(signed.checked_neg().ok_or(BoundErr::Overflow)?, value.ty)
             } else {
                 Ok(BVal {
@@ -5878,7 +5958,7 @@ fn eval_ice_unary(op: UnaryOp, expr: &Expr, env: Env) -> Result<BVal, BoundErr> 
         // C11 6.5.3.3p5: the result is 1 if the operand compares equal
         // to 0, and 0 otherwise. The result has type `int`.
         UnaryOp::Not => Ok(BVal {
-            bits: u64::from(value.bits & value.ty.mask() == 0),
+            bits: u128::from(value.bits & value.ty.mask() == 0),
             ty: TypeName::Int,
         }),
         UnaryOp::BitNot => Ok(BVal {
@@ -5898,14 +5978,12 @@ fn promote_ice(value: BVal) -> BVal {
 }
 
 fn bits_ice(value: i128, ty: TypeName) -> Result<BVal, BoundErr> {
-    let width = ty.width();
-    let min = -((1i128) << (width - 1));
-    let max = ((1i128) << (width - 1)) - 1;
+    let (min, max) = crate::ast::signed_limits(ty.width());
     if value < min || value > max {
         return Err(BoundErr::Overflow);
     }
     Ok(BVal {
-        bits: (value as u64) & ty.mask(),
+        bits: (value as u128) & ty.mask(),
         ty,
     })
 }
@@ -5922,7 +6000,7 @@ fn eval_ice_bin(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Result<BVal, 
             }
             let right = eval_ice(right, env)?;
             Ok(BVal {
-                bits: u64::from(right.bits & right.ty.mask() != 0),
+                bits: u128::from(right.bits & right.ty.mask() != 0),
                 ty: TypeName::Int,
             })
         }
@@ -5936,7 +6014,7 @@ fn eval_ice_bin(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Result<BVal, 
             }
             let right = eval_ice(right, env)?;
             Ok(BVal {
-                bits: u64::from(right.bits & right.ty.mask() != 0),
+                bits: u128::from(right.bits & right.ty.mask() != 0),
                 ty: TypeName::Int,
             })
         }
@@ -5946,16 +6024,19 @@ fn eval_ice_bin(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Result<BVal, 
             let count = ice_shift_count(&right, left.ty.width())?;
             if op == BinOp::Shr {
                 let bits = if left.ty.is_signed() {
-                    (sign_extend(left.bits, left.ty.width()) >> count) as u64 & left.ty.mask()
+                    (sign_extend(left.bits, left.ty.width()) >> count) as u128 & left.ty.mask()
                 } else {
                     (left.bits & left.ty.mask()) >> count
                 };
                 return Ok(BVal { bits, ty: left.ty });
             }
             if left.ty.is_signed() {
-                let signed = sign_extend(left.bits, left.ty.width()) as i128;
+                let signed = sign_extend(left.bits, left.ty.width());
                 if signed < 0 {
                     return Err(BoundErr::Shift);
+                }
+                if !crate::ast::signed_shl_fits(signed, count, left.ty.width()) {
+                    return Err(BoundErr::Overflow);
                 }
                 bits_ice(signed << count, left.ty)
             } else {
@@ -5974,7 +6055,7 @@ fn eval_ice_bin(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Result<BVal, 
             if op.is_cmp() {
                 let bit = ice_compare(op, left, right, ty);
                 return Ok(BVal {
-                    bits: u64::from(bit),
+                    bits: u128::from(bit),
                     ty: TypeName::Int,
                 });
             }
@@ -5986,20 +6067,20 @@ fn eval_ice_bin(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Result<BVal, 
 fn ice_shift_count(count: &BVal, width: u32) -> Result<u32, BoundErr> {
     if count.ty.is_signed() {
         let signed = sign_extend(count.bits, count.ty.width());
-        if signed < 0 || signed >= i64::from(width) {
+        if signed < 0 || signed >= i128::from(width) {
             return Err(BoundErr::Shift);
         }
         Ok(signed as u32)
     } else {
         let unsigned = count.bits & count.ty.mask();
-        if unsigned >= u64::from(width) {
+        if unsigned >= u128::from(width) {
             return Err(BoundErr::Shift);
         }
         Ok(unsigned as u32)
     }
 }
 
-fn ice_compare(op: BinOp, left: u64, right: u64, ty: TypeName) -> bool {
+fn ice_compare(op: BinOp, left: u128, right: u128, ty: TypeName) -> bool {
     if ty.is_signed() {
         let left = sign_extend(left, ty.width());
         let right = sign_extend(right, ty.width());
@@ -6027,15 +6108,15 @@ fn ice_compare(op: BinOp, left: u64, right: u64, ty: TypeName) -> bool {
     }
 }
 
-fn ice_arith(op: BinOp, left: u64, right: u64, ty: TypeName) -> Result<BVal, BoundErr> {
+fn ice_arith(op: BinOp, left: u128, right: u128, ty: TypeName) -> Result<BVal, BoundErr> {
     if ty.is_signed() {
-        let left = sign_extend(left, ty.width()) as i128;
-        let right = sign_extend(right, ty.width()) as i128;
+        let left = sign_extend(left, ty.width());
+        let right = sign_extend(right, ty.width());
         if matches!(op, BinOp::Div | BinOp::Mod) && right == 0 {
             return Err(BoundErr::DivZero);
         }
         if matches!(op, BinOp::Div | BinOp::Mod)
-            && left == -((1i128) << (ty.width() - 1))
+            && left == crate::ast::signed_limits(ty.width()).0
             && right == -1
         {
             return Err(BoundErr::Overflow);
@@ -6122,12 +6203,12 @@ fn enum_int(value: BVal) -> Result<i32, ()> {
     let bits = value.bits & value.ty.mask();
     let signed = if value.ty.is_signed() {
         sign_extend(bits, value.ty.width())
-    } else if bits > i32::MAX as u64 {
+    } else if bits > i32::MAX as u128 {
         return Err(());
     } else {
-        bits as i64
+        bits as i128
     };
-    if !(i32::MIN as i64..=i32::MAX as i64).contains(&signed) {
+    if !(i32::MIN as i128..=i32::MAX as i128).contains(&signed) {
         return Err(());
     }
     Ok(signed as i32)
@@ -6508,6 +6589,31 @@ global int [] a =
         assert!(parse_err("enum { E = sizeof(struct Q) };").contains("incomplete type"));
         assert!(parse_err("int a[sizeof(int) - 5];").contains("array is too large"));
         assert!(parse_err("\"hi\";").contains("expected a type"));
+        assert!(parsed(";\nint x;\n").contains("global int x"));
+        assert!(parsed("__uint128_t x;\n").contains("global unsigned __int128 x"));
+        assert!(parsed("unsigned __int128 y;\n").contains("global unsigned __int128 y"));
+        assert!(parsed("__int128 z;\n").contains("global __int128 z"));
+        assert!(parse_err("int __int128 x;").contains("invalid combination"));
+        assert!(parsed(
+            "_Static_assert(((__uint128_t)-1 >> 63) != 1, \"ok\");\n_Static_assert(((__uint128_t)1 << 64) >> 64 == 1, \"shift\");\n"
+        )
+        .is_empty());
+        assert!(
+            parse_err("_Static_assert(((__uint128_t)-1 >> 63) == 1, \"bad\");")
+                .contains("static assertion failed: bad")
+        );
+        assert!(parse_err("struct S { unsigned __int128 f : 80; };")
+            .contains("bit-field of type 'unsigned __int128' is not supported"));
+        assert!(parse_err("struct S { __int128 f : 8; };")
+            .contains("bit-field of type '__int128' is not supported"));
+        assert!(
+            parse_err("_Static_assert((((__int128)1 << 126) << 2) == 0, \"z\");")
+                .contains("overflows")
+        );
+        assert!(
+            parse_err("_Static_assert(-(__int128)((__uint128_t)1 << 127) != 0, \"n\");")
+                .contains("overflows")
+        );
         assert!(parse_err("int main(void) { return a ? b; }").contains("expected ':'"));
         assert!(parsed("int add();\n").contains("add"));
         assert!(parse_err("int add(a, b);").contains("old-style function declarations"));

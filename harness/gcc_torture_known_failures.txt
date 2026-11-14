@@ -12,6 +12,12 @@
 # alignas 2, vector 1. 20060420-1.c (vector_size) and align-1.c (an
 # aligned typedef of int) passed before only because the attribute was
 # silently ignored; both attributes are now diagnosed.
+# After Lua (labels as values): 1320 passed, 426 known failures.
+# After SQLite: 1325 passed, 421 known failures, 0 unexpected, 1746 executed,
+# 144 builtins files skipped. Five compile-error tests now pass:
+# 20050106-1.c, builtin-bitops-1.c, pr34154.c, and pr37573.c (a trailing
+# `};` after a function is an empty file-scope declaration) and pr84748.c
+# (`__int128`).
 
 20000112-1.c old-style-decl
 20000223-1.c compile-error
@@ -65,7 +71,6 @@
 20041124-1.c compile-error
 20041201-1.c compile-error
 20041218-2.c vla
-20050106-1.c compile-error
 20050121-1.c complex
 20050203-1.c asm
 20050215-1.c runtime
@@ -224,7 +229,6 @@ bitfld-3.c runtime
 bitfld-5.c asm
 bswap-2.c compile-error
 built-in-setjmp.c builtin
-builtin-bitops-1.c compile-error
 builtin-types-compatible-p.c compile-error
 cmpdi-1.c compile-error
 cmpsf-1.c compile-error
@@ -318,9 +322,7 @@ pr30314.c compile-error
 pr31448-2.c builtin
 pr32244-1.c runtime
 pr33382.c flexible-array
-pr34154.c compile-error
 pr34971.c runtime
-pr37573.c compile-error
 pr38151.c compile-error
 pr38533.c compile-error
 pr38969.c compile-error
@@ -401,7 +403,6 @@ pr83362.c compile-error
 pr84478.c compile-error
 pr84521.c builtin
 pr84524.c compile-error
-pr84748.c compile-error
 pr85156.c compile-error
 pr85169.c compile-error
 pr85331.c compile-error
@@ -410,7 +411,6 @@ pr86714.c compile-error
 pr88904.c compile-error
 pr90025.c compile-error
 pr92618.c compile-error
-pr92904.c compile-error
 pr93213.c compile-error
 pr93945.c compile-error
 pr94130.c compile-error

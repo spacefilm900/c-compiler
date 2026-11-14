@@ -112,6 +112,98 @@ mod tests {
     }
 
     #[test]
+    fn empty_file_scope_declaration_from_an_empty_macro() {
+        // SQLite's shell writes SQLITE_EXTENSION_INIT1; after the macro
+        // expands to nothing. The smoke test has no directives, so the
+        // preprocessor path is checked here.
+        let ir = compile(
+            "#define SQLITE_EXTENSION_INIT1\nSQLITE_EXTENSION_INIT1;\nint x;\nint main(void) { return x; }\n",
+            Dialect::C11,
+        )
+        .unwrap_or_else(|err| panic!("{err}"))
+        .ir;
+        assert!(ir.contains("@x"), "{ir}");
+    }
+
+    #[test]
+    fn int128_va_arg_load_assumes_only_save_slot_alignment() {
+        // The register save area's GP slots are 8-byte aligned, so a
+        // 128-bit va_arg that may come from there must not claim 16.
+        let ir = compile(
+            "__int128 f(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); \
+             __int128 v = __builtin_va_arg(ap, __int128); __builtin_va_end(ap); return v; }",
+            Dialect::C11,
+        )
+        .unwrap_or_else(|err| panic!("{err}"))
+        .ir;
+        let phi = ir
+            .lines()
+            .position(|line| line.contains(" = phi ptr"))
+            .expect("va_arg phi");
+        let load = ir.lines().nth(phi + 1).expect("load after phi");
+        assert!(
+            load.contains("load i128") && load.ends_with("align 8"),
+            "{load}\n{ir}"
+        );
+    }
+
+    #[test]
+    fn int128_constant_overflows_and_bitfields_are_rejected() {
+        // Signed overflow in a constant is a constraint violation
+        // (C11 6.6, 6.5.7). Clang 19 warns and wraps; this compiler rejects.
+        for (source, want) in [
+            (
+                "static __int128 x = -(__int128)((__uint128_t)1 << 127);",
+                "overflows",
+            ),
+            (
+                "static __int128 x = ((__int128)1 << 126) << 2;",
+                "overflows",
+            ),
+            (
+                "int f(__int128 x) { switch (x) { case ((__int128)1 << 126) << 2: return 1; } return 0; }",
+                "overflows",
+            ),
+        ] {
+            let err = compile(source, Dialect::C11)
+                .err()
+                .unwrap_or_else(|| panic!("{source}: accepted"))
+                .to_string();
+            assert!(err.contains(want), "{source}: {err}");
+        }
+        // `parse_bit_width` is also covered in the parser tests; compile()
+        // is the full path, including a 128-bit named field of width 80.
+        let err = compile("struct S { unsigned __int128 f : 80; };", Dialect::C11)
+            .err()
+            .expect("128-bit bit-field accepted")
+            .to_string();
+        assert!(
+            err.contains("bit-field of type 'unsigned __int128' is not supported"),
+            "{err}"
+        );
+        // A representable 128-bit left shift still folds.
+        compile(
+            "static __int128 x = (__int128)1 << 126; int main(void) { return (int)(x != 0); }",
+            Dialect::C11,
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        // Overflow IR for 128-bit operands must not use a same-width cast.
+        let ir = compile(
+            "int f(__uint128_t a, __uint128_t b, __uint128_t *r) { return __builtin_add_overflow(a, b, r); }",
+            Dialect::C11,
+        )
+        .unwrap_or_else(|err| panic!("{err}"))
+        .ir;
+        assert!(
+            !ir.contains("sext i128 to i128")
+                && !ir.contains("zext i128 to i128")
+                && !ir.contains("trunc i128 to i128")
+                && ir.contains("i256"),
+            "{ir}"
+        );
+    }
+
+    #[test]
     fn static_function_used_only_unevaluated_needs_no_definition() {
         // tests/141_unevaluated_static_use.c checks the accepted forms
         // against Clang; an evaluated use, including the selected
