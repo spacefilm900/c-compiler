@@ -2261,6 +2261,16 @@ impl Parser<'_> {
                 format!("bit-field has non-integral type '{}'", ty.display()),
             ));
         };
+        // The backend stores bit-fields in a 64-bit container. A 128-bit
+        // declared type would drop bits above 64 and can emit a poison
+        // shift on a signed field.
+        if integer.width() > 64 {
+            return Err(self.error_at(
+                colon.line,
+                colon.column,
+                format!("bit-field of type '{}' is not supported", ty.display()),
+            ));
+        }
         let expr = self.parse_conditional()?;
         check_uneval(&expr, self.env())
             .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
@@ -6025,6 +6035,9 @@ fn eval_ice_bin(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Result<BVal, 
                 if signed < 0 {
                     return Err(BoundErr::Shift);
                 }
+                if !crate::ast::signed_shl_fits(signed, count, left.ty.width()) {
+                    return Err(BoundErr::Overflow);
+                }
                 bits_ice(signed << count, left.ty)
             } else {
                 Ok(BVal {
@@ -6588,6 +6601,18 @@ global int [] a =
         assert!(
             parse_err("_Static_assert(((__uint128_t)-1 >> 63) == 1, \"bad\");")
                 .contains("static assertion failed: bad")
+        );
+        assert!(parse_err("struct S { unsigned __int128 f : 80; };")
+            .contains("bit-field of type 'unsigned __int128' is not supported"));
+        assert!(parse_err("struct S { __int128 f : 8; };")
+            .contains("bit-field of type '__int128' is not supported"));
+        assert!(
+            parse_err("_Static_assert((((__int128)1 << 126) << 2) == 0, \"z\");")
+                .contains("overflows")
+        );
+        assert!(
+            parse_err("_Static_assert(-(__int128)((__uint128_t)1 << 127) != 0, \"n\");")
+                .contains("overflows")
         );
         assert!(parse_err("int main(void) { return a ? b; }").contains("expected ':'"));
         assert!(parsed("int add();\n").contains("add"));

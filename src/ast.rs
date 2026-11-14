@@ -1570,6 +1570,18 @@ pub fn signed_limits(width: u32) -> (i128, i128) {
     }
 }
 
+/// Whether `value << count` is representable in a signed integer of
+/// `width` bits (C11 6.5.7). `value` must already be in range for that
+/// type. A negative value, a count at or above `width`, or a product
+/// that does not fit is not representable.
+pub fn signed_shl_fits(value: i128, count: u32, width: u32) -> bool {
+    if value < 0 || count >= width {
+        return false;
+    }
+    let (_, max) = signed_limits(width);
+    value <= (max >> count)
+}
+
 /// Convert `bits` from `from` to `to` (C11 6.3.1.3).
 ///
 /// Unsigned destinations reduce the value modulo 2^width. A signed
@@ -3414,5 +3426,16 @@ mod tests {
             convert_bits(u128::MAX, TypeName::UInt128, TypeName::ULongLong),
             u64::MAX as u128
         );
+    }
+
+    #[test]
+    fn signed_shl_fits_rejects_a_lost_magnitude_bit() {
+        use super::signed_shl_fits;
+        assert!(signed_shl_fits(1, 126, 128));
+        assert!(!signed_shl_fits(1 << 126, 2, 128));
+        assert!(!signed_shl_fits(1, 127, 128));
+        assert!(signed_shl_fits(1, 30, 32));
+        assert!(!signed_shl_fits(1, 31, 32));
+        assert!(!signed_shl_fits(-1, 1, 128));
     }
 }

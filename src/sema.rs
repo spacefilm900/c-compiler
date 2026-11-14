@@ -6662,7 +6662,10 @@ fn promote_val(value: CVal) -> CVal {
 fn negate(value: CVal) -> Result<CVal, ConstError> {
     if value.ty.is_signed() {
         let signed = sign_extend(value.bits, value.ty.width());
-        bits_from_signed(signed.wrapping_neg(), value.ty)
+        bits_from_signed(
+            signed.checked_neg().ok_or(ConstError::Overflow(value.ty))?,
+            value.ty,
+        )
     } else {
         Ok(CVal {
             bits: value.bits.wrapping_neg() & value.ty.mask(),
@@ -6842,6 +6845,9 @@ fn eval_shift(op: BinOp, left: CVal, right: CVal) -> Result<CVal, ConstError> {
         let signed = sign_extend(left.bits, width);
         if signed < 0 {
             return Err(ConstError::Shift);
+        }
+        if !crate::ast::signed_shl_fits(signed, count, width) {
+            return Err(ConstError::Overflow(left.ty));
         }
         bits_from_signed(signed << count, left.ty)
     } else {
