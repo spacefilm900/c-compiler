@@ -140,14 +140,24 @@ static unsigned char doom_key(SDL_Keycode key)
     return 0;
 }
 
+/* One slot stays empty, so a full queue never looks empty. When it is
+   full, a key press is dropped, but a release makes room by dropping the
+   oldest event: losing a release would leave a key held down. */
 static void queue_key(int pressed, SDL_Keycode code)
 {
     unsigned char key = doom_key(code);
+    unsigned int next;
 
     if (key == 0)
         return;
+    next = (key_write + 1) % KEYQUEUE_SIZE;
+    if (next == key_read) {
+        if (pressed)
+            return;
+        key_read = (key_read + 1) % KEYQUEUE_SIZE;
+    }
     key_queue[key_write] = (unsigned short)((pressed << 8) | key);
-    key_write = (key_write + 1) % KEYQUEUE_SIZE;
+    key_write = next;
 }
 
 static void push_test_keys(void)

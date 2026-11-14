@@ -152,6 +152,8 @@ sh scripts/fetch_freedoom.sh
 SRC="$ROOT/tests/external/doomgeneric/doomgeneric"
 OUT=${DOOM_BUILD:-"$ROOT/build/doom-sdl"}
 mkdir -p "$OUT"
+# Absolute, because the game is started from its saves folder.
+OUT=$(CDPATH= cd -- "$OUT" && pwd)
 
 # The upstream Makefile's list of DOOM files, minus its X11 window code;
 # harness/doom/dg_sdl.c (this repository) is the window code instead.
@@ -165,6 +167,13 @@ fi
 
 step "Compiling DOOM with this project's compiler"
 DEFINES="-DNORMALUNIX -D_DEFAULT_SOURCE"
+# Objects are reused only if they were built the same way: a different
+# optimisation level, SDL, or Clang rebuilds everything.
+CONFIG="opt=$OPT clang=$CLANG defines=$DEFINES sdl=$SDL_CFLAGS"
+if [ "$(cat "$OUT/config" 2>/dev/null || true)" != "$CONFIG" ]; then
+    rm -f "$OUT"/*.o "$OUT"/*.ll
+    printf '%s\n' "$CONFIG" > "$OUT/config"
+fi
 compiled=0
 objects=()
 compile() {

@@ -2127,11 +2127,13 @@ fn arity_error(inv: &PpToken, name: &str, got: usize, need: usize, variadic: boo
 }
 
 /// Whether `__has_builtin(name)` answers 1: the inline builtins, the
-/// builtins that forward to a library function, and the ones the parser and
-/// semantic analysis handle by name.
+/// builtins that forward to a library function, the floating-format ones
+/// (`__builtin_inf`, `__builtin_huge_val`, `__builtin_nan` and their
+/// variants), and the ones the parser and semantic analysis handle by name.
 fn is_implemented_builtin(name: &str) -> bool {
     crate::builtins::Inline::from_name(name).is_some()
         || crate::builtins::library(name).is_some()
+        || crate::float::FpFormatBuiltin::from_name(name).is_some()
         || matches!(
             name,
             "__builtin_choose_expr"
@@ -3679,6 +3681,7 @@ mod tests {
             #if defined(__has_include) && defined __has_feature && !__has_feature(blocks) \\\n\
               && !__has_attribute(availability) && __has_builtin(__builtin_expect) \\\n\
               && __has_builtin(__builtin_bswap16) && __has_builtin(__builtin_memcpy) \\\n\
+              && __has_builtin(__builtin_nanf) && __has_builtin(__builtin_huge_val) \\\n\
               && !__has_builtin(__builtin_no_such_thing) && !__has_builtin(memcpy) \\\n\
               && !__has_extension(x) && !__building_module(m)\nint plain_c;\n#endif\n\
             #include <n.h>\n#include <only.h>\n";

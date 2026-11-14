@@ -670,7 +670,16 @@ Native Mac results (GitHub's `macos-26` Apple Silicon runner, Apple Clang 21.0.0
 | 1 | `7836346` | native job passes. DOOM: every file compiles, but the link fails with 50 duplicate symbols from the SDK's inline header functions (fixed above); Apple Clang's own build plays all demos | 78 s (52 s, 75 s) |
 | 2 | `57dd90d` | **pass**: frame hashes 39,209/39,209 match Apple Clang at `-O0` and at `-O2` (all eight Freedoom demos to their end); `./tools/mac/play_doom.sh` builds and runs with the dummy driver (516 frames in 8 s, the scripted keys start E1M1 and fire); a real Cocoa window opened on the runner's desktop and drew 349 frames in 6 s (screenshot in the run's `doom-macos` artifact) | 111 s (42 s, 108 s) |
 
+| 3 | `e230fd5` | **pass** on the PR's first head: 39,209/39,209 at `-O0` and `-O2`; dummy driver 516 frames; the real window (now raised with `SDL_RaiseWindow`, so it is the front app and gets the keyboard) drew 345 frames | 114 s (50 s, 110 s) |
+
 The billing API reports 0 billable ms for these runs, as for the earlier macOS runs; rounded up per job they are 3 macOS minutes each (about 30 Linux-equivalent minutes each).
+
+Review fixes after CodeRabbit's review of `e230fd5`:
+
+- A function definition without an `__asm__` label now keeps the label of an earlier file-scope declaration (GCC manual, "Asm Labels"); before, `int f(void) __asm__("renamed"); int f(void) { ... }` defined `@f` while calls went to `@renamed`. The inline bookkeeping is per C name and marks every linker name the function was declared with. x86_64 IR on the 2,172 inputs is unchanged by this.
+- `__has_builtin` also answers 1 for `__builtin_inf`, `__builtin_huge_val`, `__builtin_nan` and their variants.
+- `dg_sdl.c`: a full key queue no longer looks empty; when full, a press is dropped and a release replaces the oldest event, so no key stays held.
+- `play_doom.sh`: a relative `DOOM_BUILD` is made absolute before the game starts in its saves folder, and cached objects are rebuilt when the optimisation level, Clang, or SDL flags change.
 
 Local results on Linux x86_64 (Clang 19): DOOM headless 39,209/39,209 frames match at `-O0` and `-O2`; the SDL2 build with SDL 2.32.4's headers and the dummy video driver starts, takes the scripted keys, starts E1M1, and the player fires (ammo 50 to 49 in the saved frame); the full build takes about 10 s.
 

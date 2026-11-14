@@ -474,4 +474,29 @@ mod tests {
         .expect("preprocessed");
         assert!(text.contains("gnu") && !text.contains("stdc"), "{text}");
     }
+
+    /// A definition takes the `__asm__` label of an earlier declaration
+    /// (GCC manual, "Asm Labels"), and the inline rules see every
+    /// declaration of the function whatever its label.
+    #[test]
+    fn definition_keeps_an_earlier_asm_label() {
+        let ir = compile(
+            "int f(void) __asm__(\"renamed\");\n\
+             inline int f(void) { return 1; }\n\
+             inline int g(void) __asm__(\"gee\");\n\
+             inline int g(void) { return 2; }\n\
+             int main(void) { return f() + g(); }\n",
+            Dialect::C11,
+        )
+        .expect("accepted")
+        .ir;
+        assert!(ir.contains("define i32 @renamed()"), "{ir}");
+        assert!(ir.contains("call i32 @renamed()"), "{ir}");
+        assert!(
+            ir.contains("define available_externally i32 @gee()"),
+            "{ir}"
+        );
+        assert!(ir.contains("call i32 @gee()"), "{ir}");
+        assert!(!ir.contains("@f(") && !ir.contains("@g("), "{ir}");
+    }
 }
