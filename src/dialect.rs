@@ -24,6 +24,14 @@
 //! - Case ranges `case low ... high:`.
 //! - Zero-length arrays `T a[0]`, and empty initializers `{}`.
 //! - The conditional with an omitted middle operand, `x ?: y`.
+//! - Labels as values: the address of a label `&&label`, of type `void *`,
+//!   and the computed `goto *expr;` (GCC manual, "Labels as Values"). A
+//!   label address is a constant in a block-scope `static` initializer, as
+//!   in Lua's `lvm.c` jump table. Differences of label addresses
+//!   (`&&a - &&b`) are not supported. A label address should only be jumped
+//!   to or compared with a null pointer: the LLVM Language Reference makes
+//!   an equality test between two `blockaddress` values undefined, so such
+//!   a comparison is compiled but its result is not promised.
 //!
 //! The reserved spellings `__attribute__`, `__extension__`, `__inline__`,
 //! `__asm__` labels and the `__builtin_*` functions are

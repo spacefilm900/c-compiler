@@ -98,6 +98,8 @@ mod tests {
             "struct S { int n; int a[0]; };",
             "int f(int x) { return x ?: 2; }",
             "int a[2] = {};",
+            "void *f(void) { l: return &&l; }",
+            "void f(void *p) { goto *p; }",
         ] {
             assert!(strict_err(source).contains("error"), "{source}");
             gnu_ok(source);
@@ -105,6 +107,103 @@ mod tests {
         assert!(strict_err("__typeof__(1) x;").contains("-std=gnu11"));
         assert!(strict_err("int f(int x) { return x ?: 2; }").contains("-std=gnu11"));
         assert!(strict_err("int main(void) { return ({ 1; }); }").contains("-std=gnu11"));
+        assert!(strict_err("void *f(void) { l: return &&l; }").contains("-std=gnu11"));
+        assert!(strict_err("void f(void *p) { goto *p; }").contains("-std=gnu11"));
+    }
+
+    #[test]
+    fn static_function_used_only_unevaluated_needs_no_definition() {
+        // tests/141_unevaluated_static_use.c checks the accepted forms
+        // against Clang; an evaluated use, including the selected
+        // `_Generic` association, still needs the definition (C11 6.9p3).
+        for source in [
+            "static int g(void); int main(void) { return g(); }",
+            "static int g(void); int main(void) { return _Generic(0, int: g(), default: 0); }",
+            "static int g(void); int main(void) { return (int)sizeof(g()) + g(); }",
+        ] {
+            let err = compile(source, Dialect::C11)
+                .err()
+                .unwrap_or_else(|| panic!("{source}: accepted"))
+                .to_string();
+            assert!(err.contains("used but not defined"), "{source}: {err}");
+        }
+    }
+
+    #[test]
+    fn labels_as_values_and_computed_goto() {
+        // A static table of label addresses inside the function, as Lua's
+        // lvm.c builds it, and an indirect branch to every taken label.
+        let ir = gnu_ok(
+            "int f(int i) { static const void *const t[] = { &&a, &&b }; goto *t[i]; a: return 1; b: return 2; }",
+        )
+        .ir;
+        assert!(ir.contains("blockaddress(@f, %C.a)"), "{ir}");
+        assert!(ir.contains("blockaddress(@f, %C.b)"), "{ir}");
+        assert!(ir.contains("indirectbr ptr"), "{ir}");
+        assert!(ir.contains("[label %C.a, label %C.b]"), "{ir}");
+        // A label address only inside `sizeof` is not evaluated, so it is
+        // not a destination of the computed `goto`.
+        let ir = gnu_ok("void f(void *p) { (void)sizeof(&&x); goto *p; x:; }").ir;
+        assert!(ir.contains(", []"), "{ir}");
+        // Unselected `_Generic` associations and the controlling expression
+        // are not evaluated (C11 6.5.1.1p3); their statement expressions,
+        // and the labels in them, are dropped, so a label address there is
+        // no destination either. (Clang rejects this program because the
+        // indirect goto could enter a statement expression; this compiler
+        // accepts it, so it must at least emit valid IR.)
+        let ir = gnu_ok(
+            "int f(void *p) { int r = _Generic(0, int: 5, default: ({ hidden: (long)&&hidden; })); \
+             r += _Generic(({ ctl: &&ctl; }), void *: 1, default: 2); goto *p; one: return r; }",
+        )
+        .ir;
+        assert!(!ir.contains("%C.hidden") && !ir.contains("%C.ctl"), "{ir}");
+        assert!(ir.contains("indirectbr ptr") && ir.contains(", []"), "{ir}");
+        // A label inside an operand that is not evaluated is dropped with
+        // it, so a later `goto` or `&&` naming it is an error (Clang 19
+        // rejects these too), and the name still cannot be redefined.
+        for source in [
+            "int f(void) { (void)_Generic(0, int: 0, default: ({ h:; 1; })); goto h; }",
+            "int f(void) { (void)_Generic(({ h:; 1; }), int: 0); goto h; }",
+            "int f(void) { (void)sizeof(({ h:; 1; })); goto h; }",
+            "int f(void) { (void)_Generic(({ h:; 1; }), int: 0); void *p = &&h; goto *p; }",
+        ] {
+            let err = compile(source, Dialect::Gnu11)
+                .err()
+                .unwrap_or_else(|| panic!("{source}: accepted"))
+                .to_string();
+            assert!(
+                err.contains("cannot jump to label 'h'") && err.contains("not evaluated"),
+                "{source}: {err}"
+            );
+        }
+        let err = compile(
+            "int f(void) { (void)_Generic(({ h:; 1; }), int: 0); return ({ h:; 2; }); }",
+            Dialect::Gnu11,
+        )
+        .err()
+        .expect("redefined label")
+        .to_string();
+        assert!(err.contains("redefinition of label 'h'"), "{err}");
+        // A label address is a `void *` value.
+        gnu_ok("int f(void) { void *p = &&x; char *q = p; goto *q; x: return q != 0; }");
+        for (source, want) in [
+            (
+                "void f(void) { void *p = &&nowhere; }",
+                "undeclared label 'nowhere'",
+            ),
+            ("void f(void) { goto *1; }", "pointer"),
+            ("void *p = &&x;", "outside a function"),
+            (
+                "int f(void) { static char *t = (char *)&&x + 1; x: return 0; }",
+                "constant",
+            ),
+        ] {
+            let err = compile(source, Dialect::Gnu11)
+                .err()
+                .unwrap_or_else(|| panic!("accepted: {source}"))
+                .to_string();
+            assert!(err.contains(want), "{source}: {err}");
+        }
     }
 
     #[test]
