@@ -397,6 +397,12 @@ impl StructRef {
         self.id
     }
 
+    /// Identity of the shared record body, unique among live records even
+    /// when ids are reused (as hand-built test types do).
+    pub fn body_key(&self) -> usize {
+        Rc::as_ptr(&self.data) as usize
+    }
+
     pub fn tag(&self) -> String {
         self.data.borrow().tag.clone()
     }

@@ -209,8 +209,14 @@ int __apple_vfprintf(FILE *stream, const char *fmt, va_list ap) {
     if (n >= 0 && (size_t)n >= sizeof big) {
         /* Longer than the buffer: format again into one that fits. */
         text = malloc((size_t)n + 1);
-        if (!text) n = -1;
-        else engine(text, (size_t)n + 1, fmt, again);
+        if (!text) {
+            n = -1;
+        } else if (engine(text, (size_t)n + 1, fmt, again) < 0) {
+            /* The second pass failed too: nothing usable to write. */
+            free(text);
+            text = big;
+            n = -1;
+        }
     }
     va_end(again);
     /* Byte-counted, so a %c of 0 is written too. */

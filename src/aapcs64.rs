@@ -120,8 +120,8 @@ fn base_bytes(base: &str) -> u64 {
 /// `float[2]` arrays is two floats; padding is not allowed).
 pub fn hfa(ty: &CType) -> Option<(&'static str, u64)> {
     let size = ty.size()?;
-    let mut leaves: Vec<(u64, &'static str)> = Vec::new();
-    if !float_leaves(ty, 0, &mut leaves) || leaves.is_empty() {
+    let mut leaves: Leaves = Vec::new();
+    if !float_leaves(ty, 0, &mut leaves, &mut LeafMemo::new()) || leaves.is_empty() {
         return None;
     }
     let base = leaves[0].1;
@@ -150,14 +150,19 @@ pub fn hfa(ty: &CType) -> Option<(&'static str, u64)> {
     }
 }
 
-/// Collect `(offset, LLVM type)` for every floating scalar. Returns false
-/// when the object has any other kind of data.
-fn float_leaves(ty: &CType, base: u64, out: &mut Vec<(u64, &'static str)>) -> bool {
+/// Floating leaves of one record at offset 0, cached per record so that
+/// nested unions (whose alternatives repeat the same positions) are walked
+/// once per record type instead of once per path.
+type Leaves = Vec<(u64, &'static str)>;
+type LeafMemo = std::collections::HashMap<usize, Option<Leaves>>;
+
+/// Collect the distinct `(offset, LLVM type)` pairs of the floating
+/// scalars. Returns false when the object has any other kind of data, mixes
+/// floating types, or has more than four positions; none of those is an
+/// HFA, so the list never holds more than four entries.
+fn float_leaves(ty: &CType, base: u64, out: &mut Leaves, memo: &mut LeafMemo) -> bool {
     match ty.peel() {
-        CType::Float(kind) => {
-            out.push((base, kind_ir(*kind)));
-            true
-        }
+        CType::Float(kind) => add_leaf(out, base, kind_ir(*kind)),
         CType::Array(elem, Some(len)) => {
             let Some(elem_size) = elem.size() else {
                 return false;
@@ -167,38 +172,50 @@ fn float_leaves(ty: &CType, base: u64, out: &mut Vec<(u64, &'static str)>) -> bo
                 return false;
             }
             for index in 0..*len {
-                if !float_leaves(elem, base + index * elem_size, out) {
+                if !float_leaves(elem, base + index * elem_size, out, memo) {
                     return false;
                 }
             }
             true
         }
         CType::Struct(handle) => {
-            let fields = handle.fields().unwrap_or_default();
-            for field in &fields {
-                if field.bit_width.is_some() {
-                    return false;
+            let id = handle.body_key();
+            let leaves = match memo.get(&id) {
+                Some(cached) => cached.clone(),
+                None => {
+                    let mut own = Vec::new();
+                    let ok = handle.fields().unwrap_or_default().iter().all(|field| {
+                        field.bit_width.is_none()
+                            && float_leaves(&field.ty, field.offset, &mut own, memo)
+                    });
+                    let result = ok.then_some(own);
+                    memo.insert(id, result.clone());
+                    result
                 }
-                if !float_leaves(&field.ty, base + field.offset, out) {
-                    return false;
-                }
-                // Union alternatives overlap: only distinct positions
-                // count toward the limit of four.
-                if distinct_offsets(out) > 4 {
-                    return false;
-                }
+            };
+            match leaves {
+                Some(leaves) => leaves
+                    .iter()
+                    .all(|(offset, kind)| add_leaf(out, base + offset, kind)),
+                None => false,
             }
-            true
         }
         _ => false,
     }
 }
 
-fn distinct_offsets(leaves: &[(u64, &'static str)]) -> usize {
-    let mut offsets: Vec<u64> = leaves.iter().map(|(offset, _)| *offset).collect();
-    offsets.sort_unstable();
-    offsets.dedup();
-    offsets.len()
+/// Add one leaf, skipping a repeat of a position already seen (union
+/// alternatives overlap). Fails on a second floating type or a fifth
+/// position.
+fn add_leaf(out: &mut Leaves, offset: u64, kind: &'static str) -> bool {
+    if out.iter().any(|(_, seen)| *seen != kind) {
+        return false;
+    }
+    if out.iter().any(|(seen, _)| *seen == offset) {
+        return true;
+    }
+    out.push((offset, kind));
+    out.len() <= 4
 }
 
 fn kind_ir(kind: FloatKind) -> &'static str {

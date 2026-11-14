@@ -274,3 +274,30 @@ fn review_fixes_on_arm64() {
         "{module}"
     );
 }
+
+#[test]
+fn nested_union_hfa_is_linear() {
+    // Each level is a union of two copies of the level below: 2^40 paths
+    // to the same two float positions. The check must stay fast and still
+    // find the HFA.
+    let mut source = String::from("union U0 { float a[2]; };\n");
+    for level in 1..=40 {
+        let below = level - 1;
+        source.push_str(&format!(
+            "union U{level} {{ union U{below} x; union U{below} y; }};\n"
+        ));
+    }
+    source.push_str("union U40 f(union U40 u) { return u; }\n");
+    let start = std::time::Instant::now();
+    for target in [APPLE, Target::Aarch64Linux] {
+        let module = ir(target, &source);
+        assert!(module.contains("define [2 x float] @f("), "{module}");
+    }
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    // A union mixing float and double positions is still not an HFA.
+    let module = ir(
+        APPLE,
+        "union M { float a; double b; };\nunion M m(union M u) { return u; }\n",
+    );
+    assert!(!module.contains("define [1 x"), "{module}");
+}
