@@ -1353,6 +1353,9 @@ fn record_spelling(handle: &StructRef) -> String {
     let tag = handle.tag();
     if tag.is_empty() {
         word.to_string()
+    } else if tag == "_Float16" {
+        // The parser's stand-in for `_Float16` (see `Parser::float16`).
+        tag
     } else {
         format!("{word} {tag}")
     }

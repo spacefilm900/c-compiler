@@ -62,7 +62,7 @@ impl Default for PpOptions {
             system_dirs: default_system_dirs(),
             definitions: Vec::new(),
             max_include_depth: DEFAULT_INCLUDE_DEPTH,
-            target: Target::host(),
+            target: Target::build_default(),
         }
     }
 }
@@ -115,7 +115,7 @@ pub fn preprocess_tokens(
 }
 
 fn default_system_dirs() -> Vec<PathBuf> {
-    system_dirs_for(Target::host(), None)
+    system_dirs_for(Target::build_default(), None)
 }
 
 /// The `#include <...>` search list for `target`.
@@ -292,6 +292,84 @@ fn target_macros(target: Target) -> Vec<(&'static str, &'static str)> {
         LongDouble::Quad => out.extend([
             ("__SIZEOF_LONG_DOUBLE__", "16"),
             ("__LDBL_MANT_DIG__", "113"),
+        ]),
+    }
+    // The floating characteristics GCC's manual lists among its common
+    // predefined macros, with the values of include/float.h. macOS's
+    // <math.h> uses `__FLT_MIN__` and friends directly.
+    out.extend([
+        ("__FLT_RADIX__", "2"),
+        ("__FLT_MANT_DIG__", "24"),
+        ("__FLT_DIG__", "6"),
+        ("__FLT_MIN_EXP__", "(-125)"),
+        ("__FLT_MIN_10_EXP__", "(-37)"),
+        ("__FLT_MAX_EXP__", "128"),
+        ("__FLT_MAX_10_EXP__", "38"),
+        ("__FLT_DECIMAL_DIG__", "9"),
+        ("__FLT_MAX__", "0x1.fffffep+127F"),
+        ("__FLT_MIN__", "0x1p-126F"),
+        ("__FLT_EPSILON__", "0x1p-23F"),
+        ("__FLT_DENORM_MIN__", "0x1p-149F"),
+        ("__DBL_MANT_DIG__", "53"),
+        ("__DBL_DIG__", "15"),
+        ("__DBL_MIN_EXP__", "(-1021)"),
+        ("__DBL_MIN_10_EXP__", "(-307)"),
+        ("__DBL_MAX_EXP__", "1024"),
+        ("__DBL_MAX_10_EXP__", "308"),
+        ("__DBL_DECIMAL_DIG__", "17"),
+        ("__DBL_MAX__", "0x1.fffffffffffffp+1023"),
+        ("__DBL_MIN__", "0x1p-1022"),
+        ("__DBL_EPSILON__", "0x1p-52"),
+        ("__DBL_DENORM_MIN__", "0x1p-1074"),
+    ]);
+    match target.long_double() {
+        LongDouble::Double => out.extend([
+            ("__LDBL_DIG__", "15"),
+            ("__LDBL_MIN_EXP__", "(-1021)"),
+            ("__LDBL_MIN_10_EXP__", "(-307)"),
+            ("__LDBL_MAX_EXP__", "1024"),
+            ("__LDBL_MAX_10_EXP__", "308"),
+            ("__LDBL_DECIMAL_DIG__", "17"),
+            ("__LDBL_MAX__", "0x1.fffffffffffffp+1023L"),
+            ("__LDBL_MIN__", "0x1p-1022L"),
+            ("__LDBL_EPSILON__", "0x1p-52L"),
+            ("__LDBL_DENORM_MIN__", "0x1p-1074L"),
+        ]),
+        LongDouble::Quad => out.extend([
+            ("__LDBL_DIG__", "33"),
+            ("__LDBL_MIN_EXP__", "(-16381)"),
+            ("__LDBL_MIN_10_EXP__", "(-4931)"),
+            ("__LDBL_MAX_EXP__", "16384"),
+            ("__LDBL_MAX_10_EXP__", "4932"),
+            ("__LDBL_DECIMAL_DIG__", "36"),
+            (
+                "__LDBL_MAX__",
+                "1.18973149535723176508575932662800702e+4932L",
+            ),
+            (
+                "__LDBL_MIN__",
+                "3.36210314311209350626267781732175260e-4932L",
+            ),
+            (
+                "__LDBL_EPSILON__",
+                "1.92592994438723585305597794258492732e-34L",
+            ),
+            (
+                "__LDBL_DENORM_MIN__",
+                "6.47517511943802511092443895822764655e-4966L",
+            ),
+        ]),
+        LongDouble::X87 => out.extend([
+            ("__LDBL_DIG__", "18"),
+            ("__LDBL_MIN_EXP__", "(-16381)"),
+            ("__LDBL_MIN_10_EXP__", "(-4931)"),
+            ("__LDBL_MAX_EXP__", "16384"),
+            ("__LDBL_MAX_10_EXP__", "4932"),
+            ("__LDBL_DECIMAL_DIG__", "21"),
+            ("__LDBL_MAX__", "1.18973149535723176502e+4932L"),
+            ("__LDBL_MIN__", "3.36210314311209350626e-4932L"),
+            ("__LDBL_EPSILON__", "1.08420217248550443401e-19L"),
+            ("__LDBL_DENORM_MIN__", "3.64519953188247460253e-4951L"),
         ]),
     }
     out
@@ -509,6 +587,9 @@ struct FileInfo {
     /// Directory the file was found in, for `#include_next`. None for the
     /// main source file.
     found_dir: Option<PathBuf>,
+    /// A system header: found in a system directory, or found next to the
+    /// system header that included it with `#include "..."`.
+    system: bool,
 }
 
 struct Cond {
@@ -562,6 +643,9 @@ struct Processor {
     include_dirs: Vec<PathBuf>,
     system_dirs: Vec<PathBuf>,
     max_depth: usize,
+    /// Expanding an `#if` line: the operand of a `defined` that a macro
+    /// produced is kept as written (see `expand_all`).
+    in_if: bool,
 }
 
 impl Processor {
@@ -578,6 +662,7 @@ impl Processor {
             include_dirs: options.include_dirs.clone(),
             system_dirs: options.system_dirs.clone(),
             max_depth: options.max_include_depth,
+            in_if: false,
         };
         processor.install_builtins()?;
         for definition in &options.definitions {
@@ -677,6 +762,7 @@ impl Processor {
             canonical,
             depth: 0,
             found_dir: None,
+            system: false,
         });
     }
 
@@ -692,6 +778,25 @@ impl Processor {
                     out.push(self.take_current());
                 }
                 self.index += 1;
+                continue;
+            }
+            if self.in_if && self.tokens[self.index].spelling == "defined" {
+                // `defined` that came out of a macro in an `#if` line. C11
+                // 6.10.1p4 leaves this undefined; GCC's manual documents
+                // that it is evaluated like a written `defined`, and system
+                // headers rely on it (macOS's `__is_modern_darwin`), so the
+                // identifier after it, in parentheses or not, is not
+                // expanded.
+                out.push(self.take_current());
+                self.index += 1;
+                if self.index < self.tokens.len() && self.tokens[self.index].is_lparen() {
+                    out.push(self.take_current());
+                    self.index += 1;
+                }
+                if self.index < self.tokens.len() && self.tokens[self.index].kind == PpKind::Ident {
+                    out.push(self.take_current());
+                    self.index += 1;
+                }
                 continue;
             }
             if self.try_expand(isolated)? {
@@ -842,7 +947,7 @@ impl Processor {
         match self.macros.get(name) {
             Some(MacroEntry::Defined(_)) => true,
             Some(MacroEntry::Undefined) => false,
-            None => name == "__FILE__" || name == "__LINE__",
+            None => name == "__FILE__" || name == "__LINE__" || is_has_query(name),
         }
     }
 
@@ -1162,7 +1267,7 @@ impl Processor {
             .first()
             .is_some_and(|tok| tok.is_lparen() && !tok.leading_space)
         {
-            parse_function_header(rest)?
+            parse_function_header(rest, self.files[at.file_id as usize].system)?
         } else {
             ParsedFn {
                 params: None,
@@ -1347,11 +1452,15 @@ impl Processor {
         let text = read_source(&path, at)?;
         let file_id = self.files.len() as u32;
         let display: Rc<str> = Rc::from(path.display().to_string());
+        let parent = &self.files[at.file_id as usize];
+        let system = self.system_dirs.contains(&found_dir)
+            || (quote && parent.system && parent.real_path.parent() == Some(found_dir.as_path()));
         self.files.push(FileInfo {
             real_path: path,
             canonical,
             depth,
             found_dir: Some(found_dir),
+            system,
         });
         let mut included = crate::timing::lexing(|| lex_source(&text, &display, file_id))?;
         // A header that does not end in a new-line must not continue into the
@@ -1561,8 +1670,16 @@ impl Processor {
     }
 
     fn eval_line(&mut self, tokens: Vec<PpToken>, at: &PpToken) -> Result<bool, Diagnostic> {
+        let tokens = self.replace_has_queries(tokens, at)?;
         let replaced = replace_defined(&tokens, |name| self.is_defined(name))?;
-        let expanded = self.expand_list(replaced)?;
+        self.in_if = true;
+        let expanded = self.expand_list(replaced);
+        self.in_if = false;
+        let expanded = expanded?;
+        // `defined` and the feature queries can also come from a macro
+        // (macOS's `__is_modern_darwin`, glibc's `__glibc_has_attribute`).
+        let expanded = replace_defined(&expanded, |name| self.is_defined(name))?;
+        let expanded = self.replace_has_queries(expanded, at)?;
         let zeroed = replace_idents(expanded);
         if zeroed.is_empty() {
             return Err(error_at(at, "expected an expression"));
@@ -1570,6 +1687,88 @@ impl Processor {
         let expr = parse_if_expr(&zeroed)?;
         let value = eval_expr(&expr)?;
         Ok(value.bits != 0)
+    }
+
+    /// Replace the feature queries that system headers test in `#if`
+    /// (Apple's SDK among them; C23 6.10.1 standardises `__has_include`)
+    /// with 0 or 1, before macro expansion so that a header name in
+    /// `__has_include(<a/b.h>)` is not expanded. A query the program has
+    /// defined or undefined as a macro is left to that macro.
+    ///
+    /// `__has_include` and `__has_include_next` search the include path the
+    /// same way `#include` would. The other queries answer 0: this compiler
+    /// claims no Clang feature, extension, or attribute, so a header takes
+    /// its plain C path (the one a compiler without the query would take).
+    fn replace_has_queries(
+        &mut self,
+        tokens: Vec<PpToken>,
+        at: &PpToken,
+    ) -> Result<Vec<PpToken>, Diagnostic> {
+        let mut out = Vec::with_capacity(tokens.len());
+        let mut index = 0;
+        while index < tokens.len() {
+            let tok = &tokens[index];
+            let query = tok.kind == PpKind::Ident
+                && is_has_query(&tok.spelling)
+                && !self.macros.contains_key(&tok.spelling)
+                && !(index > 0 && tokens[index - 1].spelling == "defined")
+                && !(index > 1
+                    && tokens[index - 1].is_lparen()
+                    && tokens[index - 2].spelling == "defined");
+            if !query {
+                out.push(tok.clone());
+                index += 1;
+                continue;
+            }
+            let name = tok.spelling.as_str();
+            if index + 1 >= tokens.len() || !tokens[index + 1].is_lparen() {
+                return Err(error_at(tok, format!("missing '(' after '{name}'")));
+            }
+            let open = index + 1;
+            let mut depth = 0usize;
+            let mut close = None;
+            for (offset, inner) in tokens[open..].iter().enumerate() {
+                if inner.is_lparen() {
+                    depth += 1;
+                } else if inner.is_rparen() {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + offset);
+                        break;
+                    }
+                }
+            }
+            let Some(close) = close else {
+                return Err(error_at(tok, format!("missing ')' after '{name}'")));
+            };
+            let inside = &tokens[open + 1..close];
+            let value = if name.starts_with("__has_include") {
+                // `__has_include(MACRO)`: the file name comes from a macro,
+                // as for `#include MACRO` (C11 6.10.2p4).
+                let expanded;
+                let inside = if starts_header(inside) {
+                    inside
+                } else {
+                    expanded = self.expand_list(inside.to_vec())?;
+                    &expanded[..]
+                };
+                let (header, quote, consumed) = header_from(inside, tok)?;
+                if consumed != inside.len() || header.is_empty() {
+                    return Err(error_at(tok, format!("'{name}' expects one file name")));
+                }
+                let after = if name == "__has_include_next" {
+                    self.files[at.file_id as usize].found_dir.clone()
+                } else {
+                    None
+                };
+                self.search(&header, quote, at, after.as_deref()).is_ok()
+            } else {
+                false
+            };
+            out.push(number_token(tok, if value { "1" } else { "0" }));
+            index = close + 1;
+        }
+        Ok(out)
     }
 
     fn install(&mut self, mac: Macro, at: &PpToken, force: bool) -> Result<(), Diagnostic> {
@@ -1906,6 +2105,24 @@ fn arity_error(inv: &PpToken, name: &str, got: usize, need: usize, variadic: boo
     error_at(inv, message)
 }
 
+/// The `#if` feature queries handled by `replace_has_queries`.
+fn is_has_query(name: &str) -> bool {
+    matches!(
+        name,
+        "__has_include"
+            | "__has_include_next"
+            | "__has_feature"
+            | "__has_extension"
+            | "__has_attribute"
+            | "__has_c_attribute"
+            | "__has_cpp_attribute"
+            | "__has_declspec_attribute"
+            | "__has_builtin"
+            | "__has_warning"
+            | "__building_module"
+    )
+}
+
 fn replace_defined(
     tokens: &[PpToken],
     defined: impl Fn(&str) -> bool,
@@ -2052,10 +2269,16 @@ struct ParsedFn {
     body: Vec<PpToken>,
 }
 
-fn parse_function_header(rest: &[PpToken]) -> Result<ParsedFn, Diagnostic> {
+/// `system` allows GNU's named variadic parameter (`#define F(args...)`,
+/// in GCC's manual under "Variadic Macros") in a system header, where
+/// Linux's own headers use it. In a program it stays an error, since C11
+/// 6.10.3 has only `...`. The name is rewritten to `__VA_ARGS__` in the
+/// body.
+fn parse_function_header(rest: &[PpToken], system: bool) -> Result<ParsedFn, Diagnostic> {
     let mut index = 1;
     let mut params = Vec::new();
     let mut variadic = false;
+    let mut va_name: Option<String> = None;
     if index < rest.len() && rest[index].is_rparen() {
         index += 1;
         return Ok(ParsedFn {
@@ -2098,6 +2321,20 @@ fn parse_function_header(rest: &[PpToken]) -> Result<ParsedFn, Diagnostic> {
         }
         params.push(name);
         index += 1;
+        if system
+            && index < rest.len()
+            && rest[index].kind == PpKind::Punct
+            && rest[index].spelling == "..."
+        {
+            va_name = params.pop();
+            variadic = true;
+            index += 1;
+            if index >= rest.len() || !rest[index].is_rparen() {
+                return Err(error_at(&rest[index - 1], "expected ')' after '...'"));
+            }
+            index += 1;
+            break;
+        }
         if index >= rest.len() {
             return Err(error_at(
                 rest.last().unwrap(),
@@ -2120,10 +2357,18 @@ fn parse_function_header(rest: &[PpToken]) -> Result<ParsedFn, Diagnostic> {
             "expected ',' or ')' in macro parameter list",
         ));
     }
+    let mut body = rest[index..].to_vec();
+    if let Some(va_name) = va_name {
+        for tok in &mut body {
+            if tok.kind == PpKind::Ident && tok.spelling == va_name {
+                tok.spelling = "__VA_ARGS__".to_string();
+            }
+        }
+    }
     Ok(ParsedFn {
         params: Some(params),
         variadic,
-        body: rest[index..].to_vec(),
+        body,
     })
 }
 
@@ -3351,6 +3596,99 @@ mod tests {
             .push(CliMacro::Undef("NAME".to_string()));
         let err = preprocess("#include <n.h>\n", "t.c", &options).unwrap();
         assert!(err.contains("int from_header = NAME;"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn has_include_and_feature_queries() {
+        let dir = std::env::temp_dir().join(format!("cc-pp-has-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("b")).unwrap();
+        std::fs::write(
+            dir.join("a/n.h"),
+            "#if __has_include_next(<n.h>)\nint next;\n#endif\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("b/n.h"), "").unwrap();
+        std::fs::write(
+            dir.join("a/only.h"),
+            "#if !__has_include_next(<only.h>)\nint last;\n#endif\n",
+        )
+        .unwrap();
+        let options = PpOptions {
+            system_dirs: vec![dir.join("a"), dir.join("b")],
+            ..PpOptions::default()
+        };
+        let source =
+            "#if __has_include(<n.h>) && !__has_include(<missing.h>)\nint found;\n#endif\n\
+            #define HAS(h) __has_include(h)\n#if HAS(<n.h>)\nint via_macro;\n#endif\n\
+            #define NAME <n.h>\n#if __has_include(NAME)\nint named;\n#endif\n\
+            #if defined(__has_include) && defined __has_feature && !__has_feature(blocks) \\\n\
+              && !__has_attribute(availability) && !__has_builtin(__builtin_expect) \\\n\
+              && !__has_extension(x) && !__building_module(m)\nint plain_c;\n#endif\n\
+            #include <n.h>\n#include <only.h>\n";
+        let text = preprocess(source, "t.c", &options).unwrap();
+        for want in [
+            "int found;",
+            "int via_macro;",
+            "int plain_c;",
+            "int next;",
+            "int last;",
+        ] {
+            assert!(text.contains(want), "{want}: {text}");
+        }
+        // A program's own definition of a query name wins.
+        let text = preprocess(
+            "#define __has_feature(x) 1\n#if __has_feature(anything)\nint own;\n#endif\n",
+            "t.c",
+            &options,
+        )
+        .unwrap();
+        assert!(text.contains("int own;"), "{text}");
+        let err = preprocess("#if __has_include(<n.h>\n#endif\n", "t.c", &options).unwrap_err();
+        assert!(err.to_string().contains("missing ')'"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn named_variadic_parameter_only_in_system_headers() {
+        let dir = std::env::temp_dir().join(format!("cc-pp-namedva-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let header = "#define GROUP(TAG, MEMBERS...) struct TAG { MEMBERS }\n\
+                      #define SHOW(fmt, args...) show(fmt, ## args)\n";
+        std::fs::write(dir.join("sys.h"), header).unwrap();
+        // A header reached with `#include "..."` from a system header in a
+        // subdirectory is a system header too.
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/outer.h"), "#include \"inner.h\"\n").unwrap();
+        std::fs::write(dir.join("sub/inner.h"), "#define INNER(a...) inner(a)\n").unwrap();
+        std::fs::write(dir.join("user.h"), header).unwrap();
+        let options = PpOptions {
+            system_dirs: vec![dir.clone()],
+            ..PpOptions::default()
+        };
+        let text = preprocess(
+            "#include <sys.h>\n#include <sub/outer.h>\nGROUP(g, int a; int b;);\n\
+             SHOW(\"x\");\nSHOW(\"y\", 1, 2);\nINNER(3, 4);\n",
+            "t.c",
+            &options,
+        )
+        .unwrap();
+        let text = squash(&text);
+        assert!(text.contains("struct g { int a; int b; };"), "{text}");
+        assert!(text.contains("show(\"x\");"), "{text}");
+        assert!(text.contains("show(\"y\", 1, 2);"), "{text}");
+        assert!(text.contains("inner(3, 4);"), "{text}");
+        // In a header found through -I it is still an error.
+        let options = PpOptions {
+            include_dirs: vec![dir.clone()],
+            system_dirs: Vec::new(),
+            ..PpOptions::default()
+        };
+        let err = preprocess("#include \"user.h\"\n", "t.c", &options).unwrap_err();
+        assert!(err.to_string().contains("macro parameter list"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

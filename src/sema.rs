@@ -8307,6 +8307,10 @@ int main(void) {
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "reads the host glibc <math.h>"
+    )]
     fn math_format_builtins_are_constant_floats() {
         // C11 7.12p3–p5 and GCC "Floating-Point Format Builtins": these
         // names are constant expressions of the documented types, so they

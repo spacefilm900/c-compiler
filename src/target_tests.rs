@@ -301,3 +301,47 @@ fn nested_union_hfa_is_linear() {
     );
     assert!(!module.contains("define [1 x"), "{module}");
 }
+
+#[test]
+fn macos_sdk_header_constructs() {
+    // `defined` produced by a macro in `#if` (the SDK's `__is_modern_darwin`).
+    let module = ir(
+        APPLE,
+        "#define MODERN(v) (__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ >= (v) || defined(DRIVERKIT))\n\
+         #define COMPAT() defined(SWIFT_X) && (!defined(EPOCH) || (EPOCH < 1))\n\
+         #if MODERN(100000) && !COMPAT()\nint modern;\n#endif\n",
+    );
+    assert!(module.contains("@modern"), "{module}");
+    // `_Float16` in declarations only (the SDK's <math.h>).
+    let module = ir(
+        APPLE,
+        "extern _Float16 __fabsf16(_Float16);\nint main(void) { return 0; }\n",
+    );
+    assert!(module.contains("define i32 @main"), "{module}");
+    assert!(err(APPLE, "_Float16 h;\n").contains("incomplete type '_Float16'"));
+    // The floating characteristics follow the target's long double.
+    for (target, ldbl, dig) in [
+        (APPLE, "53", "15"),
+        (Target::Aarch64Linux, "113", "33"),
+        (Target::X86_64Linux, "64", "18"),
+    ] {
+        let module = ir(
+            target,
+            "int same = __FLT_MIN__ == 0x1p-126F && __DBL_MIN__ == 0x1p-1022 \
+               && __DBL_DENORM_MIN__ == 0x1p-1074 && __FLT_MANT_DIG__ == 24;\n\
+             int mant = __LDBL_MANT_DIG__;\nint dig = __LDBL_DIG__;\n",
+        );
+        assert!(
+            module.contains("@same = global i32 1"),
+            "{target:?}: {module}"
+        );
+        assert!(
+            module.contains(&format!("@mant = global i32 {ldbl}")),
+            "{target:?}"
+        );
+        assert!(
+            module.contains(&format!("@dig = global i32 {dig}")),
+            "{target:?}"
+        );
+    }
+}
