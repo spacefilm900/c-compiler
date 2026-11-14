@@ -98,6 +98,8 @@ mod tests {
             "struct S { int n; int a[0]; };",
             "int f(int x) { return x ?: 2; }",
             "int a[2] = {};",
+            "void *f(void) { l: return &&l; }",
+            "void f(void *p) { goto *p; }",
         ] {
             assert!(strict_err(source).contains("error"), "{source}");
             gnu_ok(source);
@@ -105,6 +107,36 @@ mod tests {
         assert!(strict_err("__typeof__(1) x;").contains("-std=gnu11"));
         assert!(strict_err("int f(int x) { return x ?: 2; }").contains("-std=gnu11"));
         assert!(strict_err("int main(void) { return ({ 1; }); }").contains("-std=gnu11"));
+        assert!(strict_err("void *f(void) { l: return &&l; }").contains("-std=gnu11"));
+        assert!(strict_err("void f(void *p) { goto *p; }").contains("-std=gnu11"));
+    }
+
+    #[test]
+    fn labels_as_values_and_computed_goto() {
+        // A static table of label addresses inside the function, as Lua's
+        // lvm.c builds it, and an indirect branch to every taken label.
+        let ir = gnu_ok(
+            "int f(int i) { static const void *const t[] = { &&a, &&b }; goto *t[i]; a: return 1; b: return 2; }",
+        )
+        .ir;
+        assert!(ir.contains("blockaddress(@f, %C.a)"), "{ir}");
+        assert!(ir.contains("blockaddress(@f, %C.b)"), "{ir}");
+        assert!(ir.contains("indirectbr ptr"), "{ir}");
+        assert!(ir.contains("[label %C.a, label %C.b]"), "{ir}");
+        // A label address is a `void *` value.
+        gnu_ok("int f(void) { void *p = &&x; char *q = p; goto *q; x: return q != 0; }");
+        for (source, want) in [
+            ("void f(void) { void *p = &&nowhere; }", "undeclared label 'nowhere'"),
+            ("void f(void) { goto *1; }", "pointer"),
+            ("void *p = &&x;", "outside a function"),
+            ("int f(void) { static void *t = &&x + 1; x: return 0; }", "constant"),
+        ] {
+            let err = compile(source, Dialect::Gnu11)
+                .err()
+                .unwrap_or_else(|| panic!("accepted: {source}"))
+                .to_string();
+            assert!(err.contains(want), "{source}: {err}");
+        }
     }
 
     #[test]
