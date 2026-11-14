@@ -44,10 +44,14 @@ jobs:
           sw_vers
           uname -m
           rustc --version
-          xcrun --sdk macosx --show-sdk-path
-          clang="$(xcrun -f clang)"
-          echo "CLANG=${clang}" >> "$GITHUB_ENV"
-          "${clang}" --version
+          # /usr/bin/clang is Apple's driver shim; it finds the SDK the
+          # same way a user's Terminal does. SDKROOT makes the choice
+          # explicit for both compilers.
+          sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          echo "SDKROOT=${sdk}" >> "$GITHUB_ENV"
+          echo "CLANG=/usr/bin/clang" >> "$GITHUB_ENV"
+          echo "${sdk}"
+          /usr/bin/clang --version
           python3 --version
 
       - name: Build
@@ -68,6 +72,7 @@ jobs:
           test "${out}" = "Hello from the clean-room compiler on macOS"
 
       - name: Differential harness with Apple Clang as the oracle
+        if: success() || failure()
         env:
           KNOWN_FAILURES: harness/macos_known_failures.txt
         run: python3 harness/run_tests.py

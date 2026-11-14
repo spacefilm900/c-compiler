@@ -17,7 +17,17 @@ for h in assert ctype errno fenv float inttypes iso646 limits locale math \
             ok=$((ok + 1))
         else
             bad=$((bad + 1))
-            echo "FAIL <$h.h> -std=$std: $(printf '%s\n' "$err" | grep -m1 'error')"
+            first="$(printf '%s\n' "$err" | grep -m1 'error')"
+            echo "FAIL <$h.h> -std=$std: $first"
+            # Show the lines around the error once per header.
+            if [ "$std" = c11 ]; then
+                file="${first%%:*}"
+                line="$(printf '%s\n' "$first" | cut -d: -f2)"
+                case "$line" in
+                    ''|*[!0-9]*) ;;
+                    *) [ -f "$file" ] && sed -n "$((line > 4 ? line - 4 : 1)),$((line + 2))p" "$file" | sed 's/^/    | /' ;;
+                esac
+            fi
         fi
     done
 done
