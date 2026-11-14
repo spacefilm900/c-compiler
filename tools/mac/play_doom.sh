@@ -146,8 +146,8 @@ make -s build/compiler
 COMPILER="$ROOT/build/compiler"
 
 step "Fetching the DOOM source code (doomgeneric) and the Freedoom game data"
-scripts/fetch_doomgeneric.sh
-scripts/fetch_freedoom.sh
+sh scripts/fetch_doomgeneric.sh
+sh scripts/fetch_freedoom.sh
 
 SRC="$ROOT/tests/external/doomgeneric/doomgeneric"
 OUT=${DOOM_BUILD:-"$ROOT/build/doom-sdl"}
