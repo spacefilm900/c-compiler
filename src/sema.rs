@@ -77,8 +77,9 @@ pub fn analyze_dialect(
         static_seq: 0,
         library_nan_calls: Vec::new(),
         object_decls: HashMap::new(),
-        sizeof_depth: 0,
+        unevaluated_depth: 0,
         labels: HashMap::new(),
+        dropped_labels: HashMap::new(),
         addr_labels: Vec::new(),
         current_symbol: String::new(),
         variadic_fn: false,
@@ -189,6 +190,23 @@ fn case_key(bits: u64, ty: TypeName) -> i128 {
     }
 }
 
+/// Side state that checking an expression can record for IR lowering, as
+/// it stood before an operand that is not evaluated (C11 6.5.1.1p3,
+/// 6.5.3.4p2). Such an operand is checked for its constraints and then
+/// dropped, so everything it recorded is rolled back
+/// ([`Sema::end_unevaluated`]). Symbols it declares (a block-scope
+/// `extern` or function declaration) stay declared, as in C, and emit at
+/// most an unused external declaration; warnings stay too.
+struct Unevaluated {
+    static_locals: usize,
+    strings: usize,
+    static_seq: u32,
+    library_nan_calls: usize,
+    library_calls: std::collections::BTreeMap<String, crate::builtins::LibSig>,
+    addr_labels: usize,
+    labels: HashSet<String>,
+}
+
 struct Sema {
     /// Statement expressions checked so far, for their slot names.
     stmt_expr_seq: u32,
@@ -239,10 +257,16 @@ struct Sema {
     /// Where each file-scope object, or block-scope `extern` object, was
     /// first declared.
     object_decls: HashMap<String, (usize, usize)>,
-    /// Nesting depth of `sizeof` operands, which are not evaluated.
-    sizeof_depth: u32,
+    /// Nesting depth of operands that are not evaluated: `sizeof`, and a
+    /// `_Generic` controlling expression or unselected association.
+    unevaluated_depth: u32,
     /// Labels defined in the function being checked. A `goto` names one of them.
     labels: HashMap<String, (usize, usize)>,
+    /// Labels of the function being checked that are defined inside an
+    /// operand that is not evaluated (`sizeof`, a `_Generic` controlling
+    /// expression or unselected association). That code is dropped, so
+    /// no `goto` may name them; they still have function scope.
+    dropped_labels: HashMap<String, (usize, usize)>,
     /// Labels of the function being checked whose address `&&` takes (GNU),
     /// in order of first use.
     addr_labels: Vec<String>,
@@ -494,6 +518,7 @@ impl Sema {
         }
         let body = func.body.as_mut().expect("defined function");
         self.labels.clear();
+        self.dropped_labels.clear();
         self.addr_labels.clear();
         self.current_symbol = func.symbol.clone();
         self.collect_labels(body)?;
@@ -506,6 +531,7 @@ impl Sema {
         self.variadic_fn = false;
         self.last_param = None;
         self.labels.clear();
+        self.dropped_labels.clear();
         func.addr_labels = std::mem::take(&mut self.addr_labels);
         self.current_symbol.clear();
         Ok(())
@@ -1919,7 +1945,14 @@ impl Sema {
         }
     }
 
+    /// A use in an operand that is not evaluated emits no reference, so a
+    /// `static` function used only there needs no definition (C11 6.9p3
+    /// names `sizeof`; a `_Generic` operand that is not evaluated is the
+    /// same, and Clang 19 and GCC 14 accept it).
     fn note_use(&mut self, name: &str, line: usize, column: usize) {
+        if self.unevaluated_depth > 0 {
+            return;
+        }
         if let Some(Symbol::Func(func)) = self.scopes.first_mut().expect("file scope").get_mut(name)
         {
             if !func.used {
@@ -2184,7 +2217,7 @@ impl Sema {
             Stmt::Label { stmt, .. } => self.check_stmt(stmt),
             Stmt::Goto { name, line, column } => {
                 if !self.labels.contains_key(name) {
-                    return self.err(*line, *column, format!("use of undeclared label '{name}'"));
+                    return self.err(*line, *column, self.missing_label(name));
                 }
                 Ok(())
             }
@@ -2205,6 +2238,59 @@ impl Sema {
         }
     }
 
+    /// The diagnostic for a `goto` or `&&` naming a label that is not
+    /// defined where code is emitted.
+    fn missing_label(&self, name: &str) -> String {
+        if self.dropped_labels.contains_key(name) {
+            format!(
+                "cannot jump to label '{name}': it is inside an operand that is not evaluated \
+                 (sizeof, or a _Generic controlling expression or unselected association)"
+            )
+        } else {
+            format!("use of undeclared label '{name}'")
+        }
+    }
+
+    /// Start checking an operand that is not evaluated.
+    fn begin_unevaluated(&mut self) -> Unevaluated {
+        self.unevaluated_depth += 1;
+        Unevaluated {
+            static_locals: self.static_locals.len(),
+            strings: self.strings.len(),
+            static_seq: self.static_seq,
+            library_nan_calls: self.library_nan_calls.len(),
+            library_calls: self.library_calls.clone(),
+            addr_labels: self.addr_labels.len(),
+            labels: self.labels.keys().cloned().collect(),
+        }
+    }
+
+    /// Roll back what an operand that is not evaluated recorded: private
+    /// globals (block-scope `static` objects, file-scope compound literals,
+    /// string literals) and their numbering, library calls, label
+    /// addresses, and labels. Those labels are dropped with the code, so
+    /// they move to `dropped_labels`, where a later `goto` finds them and
+    /// is rejected rather than branching to a block that is never emitted.
+    fn end_unevaluated(&mut self, saved: Unevaluated) {
+        self.unevaluated_depth -= 1;
+        self.static_locals.truncate(saved.static_locals);
+        self.strings.truncate(saved.strings);
+        self.static_seq = saved.static_seq;
+        self.library_nan_calls.truncate(saved.library_nan_calls);
+        self.library_calls = saved.library_calls;
+        self.addr_labels.truncate(saved.addr_labels);
+        let added: Vec<String> = self
+            .labels
+            .keys()
+            .filter(|name| !saved.labels.contains(*name))
+            .cloned()
+            .collect();
+        for name in added {
+            let at = self.labels.remove(&name).expect("label just listed");
+            self.dropped_labels.insert(name, at);
+        }
+    }
+
     /// Labels have function scope (C11 6.2.1). A name may be used before it
     /// is defined, and two labels with the same name are a constraint violation.
     fn collect_labels(&mut self, compound: &Compound) -> Result<(), Diagnostic> {
@@ -2222,7 +2308,7 @@ impl Sema {
                 line,
                 column,
             } => {
-                if self.labels.contains_key(name) {
+                if self.labels.contains_key(name) || self.dropped_labels.contains_key(name) {
                     return self.err(*line, *column, format!("redefinition of label '{name}'"));
                 }
                 self.labels.insert(name.clone(), (*line, *column));
@@ -2783,11 +2869,11 @@ impl Sema {
                     );
                 }
                 if !self.labels.contains_key(name.as_str()) {
-                    return self.err(*line, *column, format!("use of undeclared label '{name}'"));
+                    return self.err(*line, *column, self.missing_label(name));
                 }
                 // An unevaluated `sizeof` operand emits no code, so its
                 // label address is no destination of a computed `goto`.
-                if self.sizeof_depth == 0 && !self.addr_labels.contains(name) {
+                if self.unevaluated_depth == 0 && !self.addr_labels.contains(name) {
                     self.addr_labels.push(name.clone());
                 }
                 *func = Some(self.current_symbol.clone());
@@ -2845,14 +2931,13 @@ impl Sema {
         };
         let (line, column) = (*line, *column);
         let mut assocs = std::mem::take(assocs);
-        // The controlling expression is not evaluated (C11 6.5.1.1p3), so
-        // a malformed __builtin_nan tag there makes no library call, and a
-        // label address there is no destination of a computed `goto`.
-        let control_nan_calls = self.library_nan_calls.len();
-        let control_addr_labels = self.addr_labels.len();
-        self.check_expr(control)?;
-        self.library_nan_calls.truncate(control_nan_calls);
-        self.addr_labels.truncate(control_addr_labels);
+        // The controlling expression is not evaluated (C11 6.5.1.1p3): it
+        // is checked for its type and constraints, then nothing it recorded
+        // for IR lowering is kept.
+        let saved = self.begin_unevaluated();
+        let checked = self.check_expr(control);
+        self.end_unevaluated(saved);
+        checked?;
         let raw = control.ty().expect("typed");
         let ty = match raw.peel() {
             CType::Array(elem, _) => CType::pointer((**elem).clone()),
@@ -2915,19 +3000,10 @@ impl Sema {
                 // Constraints are checked, but unselected associations are
                 // not evaluated and must not leave IR artifacts behind
                 // (C11 6.5.1.1p3).
-                let locals = self.static_locals.len();
-                let strings = self.strings.len();
-                let seq = self.static_seq;
-                let nan_calls = self.library_nan_calls.len();
-                let addr_labels = self.addr_labels.len();
-                self.check_expr(&mut assoc.expr)?;
-                self.static_locals.truncate(locals);
-                self.strings.truncate(strings);
-                self.static_seq = seq;
-                self.library_nan_calls.truncate(nan_calls);
-                // `addr_labels` only grows, so a label address taken here
-                // is dropped with the association.
-                self.addr_labels.truncate(addr_labels);
+                let saved = self.begin_unevaluated();
+                let checked = self.check_expr(&mut assoc.expr);
+                self.end_unevaluated(saved);
+                checked?;
             }
         }
         *expr = assocs.swap_remove(index).expr;
@@ -3703,9 +3779,10 @@ impl Sema {
             let sized = match operand {
                 SizeofOperand::Type(ty) => ty.clone(),
                 SizeofOperand::Expr(inner) => {
-                    self.sizeof_depth += 1;
+                    // Not evaluated (C11 6.5.3.4p2): only the type is kept.
+                    let saved = self.begin_unevaluated();
                     let checked = self.check_expr(inner);
-                    self.sizeof_depth -= 1;
+                    self.end_unevaluated(saved);
                     checked?;
                     if is_bitfield(inner) {
                         return self.err(line, column, "sizeof applied to a bit-field");
@@ -4222,7 +4299,7 @@ impl Sema {
         // becomes a call of the C library function (IR lowering). A file
         // object with that name is checked once the whole unit is seen.
         if let Some(lib) = fp.libm_nan() {
-            if self.sizeof_depth == 0
+            if self.unevaluated_depth == 0
                 && !self.current_func.is_empty()
                 && crate::float::nan_tag_from_expr(&args[0]).is_none()
             {
