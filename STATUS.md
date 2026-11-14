@@ -610,12 +610,14 @@ How it is tested (no Mac):
 
 | Check | Result |
 | --- | --- |
-| `harness/run_arm64_ir.py`: lowered signatures of every function in the calling-convention battery and in every test program both compilers accept, against Clang, per target | Apple 432, AArch64 Linux 444 signatures, **0 differ** |
+| `harness/run_arm64_ir.py`: lowered signatures of every function in the calling-convention battery and in every test program both compilers accept, against Clang, per target | Apple 434, AArch64 Linux 446 signatures, **0 differ** |
 | same script: `llc -mtriple=... -filetype=obj` on this compiler's IR (Mach-O for Apple) | Apple **159 built**, 1 rejected by both compilers (ELF section name); Linux **158 built**, 2 rejected by both (`typedef int wchar_t`) |
 | `harness/run_cross.py --target aarch64-linux-gnu`: `tests/*.c`, hosted, GNU, cross-ABI pairs (this compiler's object linked with Clang's both ways), `tests/arm64/`, static AArch64 glibc under `qemu-aarch64` | **178/181**, 3 known (two tests declare `wchar_t` as `int`; `0.1L` folded in double precision) |
 | `harness/run_cross.py --target arm64-apple-macos`: the same programs through the Apple proxy below | **179/181**, 2 known (a test that dumps 10 bytes of `long double`; an ELF section name) |
 | `harness/run_cross.py --torture` (report only, not in CI) | AArch64 Linux 1,328/1,746 pass, no failure outside the x86_64 known list; Apple proxy 1,320/1,746, 9 outside it, all proxy limits (glibc's `long double` functions and asm-label redirects) or `pr92904.c` (a variadic struct aligned to 32, which Clang's own Apple code also fails) |
 | unit tests (`src/target_tests.rs`, `src/target.rs`, `src/aapcs64.rs`, driver) | target parsing, headers, macros, type model, aggregate lowering, prototype-less calls, `va_list`, bit-field layout, Mach-O names |
+
+Review fixes on pull request 36 (CodeRabbit): a union whose alternatives overlap counts distinct positions toward the HFA limit (`union { float a[3]; float b[3]; }` is `[3 x float]`); the address of a function with an Apple asm label is quoted in the IR; `__builtin_isnormal` on binary128 uses its own minimum normal; a coerced load or store of a packed member uses alignment 1; `-target arm64-apple-macos13.2.1` (a non-zero patch level) is rejected instead of dropped; x86_64 cross headers are found on a non-x86_64 host; the harnesses fail on a compiler panic, a qemu start failure, or a time-out instead of comparing them; and the Apple stdio shim handles negative `*` precision, `%ls`/`%lc`, `%hn`-style counts, conversions longer than 4 KiB, and zero bytes. Objects with an asm label (`extern int v __asm__("x")`) still use their C name, as before on x86_64.
 
 The Apple proxy: both compilers emit IR for `arm64-apple-macosx`; LLVM then builds it for `arm64-apple-darwin-elf`, which keeps Apple's calling convention but writes ELF, and the objects are linked with the AArch64 glibc and run under qemu. glibc's variadic `printf` family cannot be called with Apple's convention, so calls to it are renamed to a small Apple-convention shim (`harness/arm64/`).
 

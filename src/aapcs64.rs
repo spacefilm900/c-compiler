@@ -162,7 +162,8 @@ fn float_leaves(ty: &CType, base: u64, out: &mut Vec<(u64, &'static str)>) -> bo
             let Some(elem_size) = elem.size() else {
                 return false;
             };
-            if out.len() as u64 + *len > 4 {
+            // More than four elements are more than four positions.
+            if *len > 4 {
                 return false;
             }
             for index in 0..*len {
@@ -181,7 +182,9 @@ fn float_leaves(ty: &CType, base: u64, out: &mut Vec<(u64, &'static str)>) -> bo
                 if !float_leaves(&field.ty, base + field.offset, out) {
                     return false;
                 }
-                if out.len() > 4 {
+                // Union alternatives overlap: only distinct positions
+                // count toward the limit of four.
+                if distinct_offsets(out) > 4 {
                     return false;
                 }
             }
@@ -189,6 +192,13 @@ fn float_leaves(ty: &CType, base: u64, out: &mut Vec<(u64, &'static str)>) -> bo
         }
         _ => false,
     }
+}
+
+fn distinct_offsets(leaves: &[(u64, &'static str)]) -> usize {
+    let mut offsets: Vec<u64> = leaves.iter().map(|(offset, _)| *offset).collect();
+    offsets.sort_unstable();
+    offsets.dedup();
+    offsets.len()
 }
 
 fn kind_ir(kind: FloatKind) -> &'static str {

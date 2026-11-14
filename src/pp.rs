@@ -145,9 +145,14 @@ pub fn system_dirs_for(target: Target, sysroot: Option<&Path>) -> Vec<PathBuf> {
     let mut library: Vec<PathBuf> = Vec::new();
     match target {
         Target::X86_64Linux => {
-            let root = sysroot.map(Path::to_path_buf).unwrap_or_else(|| "/".into());
-            library.push(root.join("usr/include/x86_64-linux-gnu"));
-            library.push(root.join("usr/include"));
+            if sysroot.is_none() && Target::host() != Target::X86_64Linux {
+                // Debian/Ubuntu cross headers (libc6-dev-amd64-cross).
+                library.push("/usr/x86_64-linux-gnu/include".into());
+            } else {
+                let root = sysroot.map(Path::to_path_buf).unwrap_or_else(|| "/".into());
+                library.push(root.join("usr/include/x86_64-linux-gnu"));
+                library.push(root.join("usr/include"));
+            }
         }
         Target::Aarch64Linux => {
             if let Some(root) = sysroot {

@@ -174,8 +174,19 @@ def test(tc, src, work, std="c11"):
         if rc != 0:
             return f"{who} link failed ({rc}): {short(e)}"
     got, exp = tc.execute(a), tc.execute(b)
+    err = not_run(got, "ours") or not_run(exp, "oracle")
+    if err:
+        return err
     if got != exp:
         return mismatch(got, exp)
+    return None
+
+
+def not_run(result, who):
+    """An error string when the program did not run to an exit status
+    (qemu missing, or a time-out); such results are never compared."""
+    if result[0] in ("timeout", "oserror"):
+        return f"{who} did not run: {result[0]} {short(result[2])}".strip()
     return None
 
 
@@ -224,6 +235,9 @@ def test_cross(tc, def_src, use_src, work):
     if rc != 0:
         return f"oracle link failed: {short(e)}"
     expected = tc.execute(expected_bin)
+    err = not_run(expected, "oracle")
+    if err:
+        return err
     for label, pair in (("our-def", (objs["def"][0], objs["use"][1])),
                         ("our-use", (objs["def"][1], objs["use"][0])),
                         ("both-ours", (objs["def"][0], objs["use"][0]))):
@@ -232,6 +246,9 @@ def test_cross(tc, def_src, use_src, work):
         if rc != 0:
             return f"{label}: link failed: {short(e)}"
         got = tc.execute(binary)
+        err = not_run(got, label)
+        if err:
+            return err
         if got != expected:
             return f"{label}: {mismatch(got, expected)}"
     return None

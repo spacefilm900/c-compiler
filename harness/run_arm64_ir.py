@@ -56,6 +56,12 @@ def run(cmd, timeout=60):
     return p.returncode, p.stdout.decode(errors="replace"), p.stderr.decode(errors="replace")
 
 
+def crashed(rc, err):
+    """This compiler died instead of exiting with a diagnostic: a signal,
+    or a Rust panic (exit 101)."""
+    return rc < 0 or rc == 101 or "panicked" in err
+
+
 def split_top(text, sep=","):
     """Split at `sep` outside (), [], {} and <>."""
     out, depth, cur = [], 0, ""
@@ -124,7 +130,11 @@ def canon_param(param, types):
     return " ".join([ty] + attrs)
 
 
-def signatures(ir):
+def signatures(ir, local=None):
+    """Lowered signatures by function name. Names defined with internal or
+    private linkage are added to `local` when it is given."""
+    if local is None:
+        local = set()
     types = named_types(ir)
     sigs = {}
     for m in re.finditer(r"^define\s+(.*?)@([\w.$]+)\((.*)$", ir, re.M):
@@ -145,6 +155,8 @@ def signatures(ir):
             ret = "i8"
         ps = [canon_param(p, types) for p in split_top(params)]
         sigs[name] = " ".join([ret] + attrs) + " (" + ", ".join(ps) + ")"
+        if "internal" in words or "private" in words:
+            local.add(name)
     return sigs
 
 
@@ -176,17 +188,24 @@ def check_signatures(target, tmp, sysroot):
                            "-U__null_unspecified"]
         rc, _, err = run(cmd)
         rc2, _, err2 = run(oracle)
+        if crashed(rc, err):
+            return 0, [f"{src.name}: this compiler crashed ({rc}): {err.strip()[:300]}"]
         if src not in must and (rc or rc2):
             return 0, []
         if rc:
             return 0, [f"{src.name}: this compiler failed: {err.strip()[:300]}"]
         if rc2:
             return 0, [f"{src.name}: clang failed: {err2.strip()[:300]}"]
-        mine, theirs = signatures(ours.read_text()), signatures(ref.read_text())
+        local = set()
+        mine, theirs = signatures(ours.read_text()), signatures(ref.read_text(), local)
         compared, failures = 0, []
         for name in sorted(theirs):
             if name not in mine:
-                # Clang keeps unused static functions at -O0; this compiler may not.
+                # Clang keeps unused static functions at -O0; this compiler
+                # may drop them. An external definition must be there.
+                if name not in local:
+                    failures.append(f"{src.relative_to(ROOT)}: {name} is defined by Clang "
+                                    "but missing from this compiler's IR")
                 continue
             compared += 1
             if mine[name] != theirs[name]:
@@ -219,6 +238,8 @@ def check_llc(target, tmp, llc, sysroot):
             return "skip", None
         std = "gnu11" if "gnu" in src.parts else "c11"
         x86 = run([str(COMPILER), f"-std={std}", "-I", str(src.parent), str(src), "-o", os.devnull])
+        if crashed(x86[0], x86[2]):
+            return "fail", f"{src.relative_to(ROOT)}: x86_64 compile crashed ({x86[0]})"
         if x86[0]:
             return "skip", None  # an expected-error test
         ll = tmp / f"{target}-{src.parent.name}-{src.stem}.ll"
@@ -226,6 +247,8 @@ def check_llc(target, tmp, llc, sysroot):
         if sysroot is not None:
             cmd[1:1] = ["-isysroot", str(sysroot)]
         rc, _, err = run(cmd)
+        if crashed(rc, err):
+            return "fail", f"{src.relative_to(ROOT)}: compile crashed ({rc}): {err.strip()[:300]}"
         if rc:
             # A program the target itself rejects (an ELF section name on
             # Mach-O, say) passes when Clang rejects it too.

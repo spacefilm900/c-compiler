@@ -1,45 +1,44 @@
-/* va_list handed between functions, va_copy, function pointers to
+/* __builtin_va_list handed between functions, va_copy, function pointers to
    aggregate-returning functions, and calls without a prototype. The
-   va_list representation differs: char * on Apple arm64, a 32-byte
+   __builtin_va_list representation differs: char * on Apple arm64, a 32-byte
    structure on AAPCS64 Linux. */
-#include <stdarg.h>
-#include <stdio.h>
+int printf(const char *, ...);
 
 typedef struct { double x, y; } V2;
 typedef struct { long a, b, c; } Big;
 
-static double vsum(int n, va_list ap)
+static double vsum(int n, __builtin_va_list ap)
 {
     double s = 0;
     while (n-- > 0)
-        s = s * 3 + va_arg(ap, double);
+        s = s * 3 + __builtin_va_arg(ap, double);
     return s;
 }
 
 static double outer(int n, ...)
 {
-    va_list ap, again;
-    va_start(ap, n);
-    va_copy(again, ap);
+    __builtin_va_list ap, again;
+    __builtin_va_start(ap, n);
+    __builtin_va_copy(again, ap);
     double a = vsum(n, ap);
     double b = vsum(n, again);
-    va_end(again);
-    va_end(ap);
+    __builtin_va_end(again);
+    __builtin_va_end(ap);
     return a + b;
 }
 
 static long ints(int n, ...)
 {
-    va_list ap;
+    __builtin_va_list ap;
     long s = 0;
-    va_start(ap, n);
+    __builtin_va_start(ap, n);
     for (int i = 0; i < n; i++) {
         if (i % 2)
-            s += va_arg(ap, int) * 10;
+            s += __builtin_va_arg(ap, int) * 10;
         else
-            s += va_arg(ap, long long);
+            s += __builtin_va_arg(ap, long long);
     }
-    va_end(ap);
+    __builtin_va_end(ap);
     return s;
 }
 

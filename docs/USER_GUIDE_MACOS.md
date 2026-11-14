@@ -101,7 +101,7 @@ steps after the first run on a Mac.
 ## What has been checked without a Mac
 
 - For every function in the test programs, the arguments and results are
-  passed the way Clang passes them for `arm64-apple-macos` (432 functions).
+  passed the way Clang passes them for `arm64-apple-macos` (434 functions).
 - LLVM's `llc` builds the compiler's output into Mach-O objects (159
   programs).
 - The test programs run with Apple's calling convention under the

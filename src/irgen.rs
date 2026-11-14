@@ -758,7 +758,13 @@ impl Gen {
             .and_then(|name| self.renames.get(name))
         {
             Some(fresh) => llvm_global(fresh),
-            None => slot.to_string(),
+            // An Apple asm label starts with \01 and must be quoted.
+            None => match slot.strip_prefix('@') {
+                Some(name) if !name.starts_with('"') && !is_unquoted_llvm_name(name) => {
+                    llvm_global(name)
+                }
+                _ => slot.to_string(),
+            },
         }
     }
 
@@ -1399,7 +1405,8 @@ impl Gen {
             }
             (slot, align)
         } else {
-            (src.to_string(), ty.align())
+            // A member of a packed record may sit at any byte.
+            (src.to_string(), self.access_align(ty, src))
         };
         let vol = if volatile && size <= object {
             " volatile"
@@ -1420,7 +1427,7 @@ impl Gen {
         if size <= object {
             self.emit(&format!(
                 "  store {ir} {value}, ptr {dest}, align {}",
-                ty.align()
+                self.access_align(ty, dest)
             ));
             return;
         }
@@ -3667,7 +3674,14 @@ impl Gen {
                             self.emit(&format!("  {cmp} = fcmp olt {ir} {abs}, {inf}"));
                         }
                         _ => {
-                            let min = crate::float::llvm_const(kind, min_normal);
+                            // The threshold is the run-time format's, not
+                            // the folding precision's: binary128 `long
+                            // double` is normal down to 2^-16382.
+                            let min = if ir == "fp128" {
+                                "0xL00000000000000000001000000000000".to_string()
+                            } else {
+                                crate::float::llvm_const(kind, min_normal)
+                            };
                             let below = self.fresh();
                             self.emit(&format!("  {below} = fcmp olt {ir} {abs}, {inf}"));
                             let above = self.fresh();

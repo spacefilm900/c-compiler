@@ -20,8 +20,10 @@ typedef unsigned long size_t;
 typedef struct _IO_FILE FILE;
 extern FILE *stdout;
 extern FILE *stderr;
-int fputs(const char *, FILE *);
+size_t fwrite(const void *, size_t, size_t, FILE *);
 double nan(const char *);
+void *malloc(size_t);
+void free(void *);
 
 int __lx_fmt_ll(char *buf, size_t n, const char *spec, long long v);
 int __lx_fmt_d(char *buf, size_t n, const char *spec, double v);
@@ -49,6 +51,13 @@ static size_t text_len(const char *p) {
     size_t n = 0;
     while (p[n]) n++;
     return n;
+}
+
+static int format_one(char *buf, size_t n, const char *spec, int kind, long long ival,
+                      double dval, const void *pval) {
+    if (kind == 1) return __lx_fmt_d(buf, n, spec, dval);
+    if (kind == 2) return __lx_fmt_p(buf, n, spec, pval);
+    return __lx_fmt_ll(buf, n, spec, ival);
 }
 
 static int engine(char *out, size_t cap, const char *fmt, va_list ap) {
@@ -82,6 +91,12 @@ static int engine(char *out, size_t cap, const char *fmt, va_list ap) {
             if (*fmt == '*') {
                 int v = va_arg(ap, int);
                 char num[16];
+                if (part == 1 && v < 0) {
+                    /* A negative precision is taken as if omitted. */
+                    k--;
+                    fmt++;
+                    continue;
+                }
                 int m = __lx_fmt_ll(num, sizeof num, "%lld", v);
                 for (int i = 0; i < m && k < 40; i++) spec[k++] = num[i];
                 fmt++;
@@ -96,6 +111,10 @@ static int engine(char *out, size_t cap, const char *fmt, va_list ap) {
         else if (*fmt == 'j' || *fmt == 'z' || *fmt == 't') { fmt++; len = 6; }
         char conv = *fmt ? *fmt++ : 0;
         int n = 0;
+        int kind = 0; /* 0: __lx_fmt_ll, 1: __lx_fmt_d, 2: __lx_fmt_p */
+        long long ival = 0;
+        double dval = 0;
+        const void *pval = 0;
         switch (conv) {
         case 'd': case 'i': {
             long long v;
@@ -104,7 +123,7 @@ static int engine(char *out, size_t cap, const char *fmt, va_list ap) {
             if (len == 1) v = (short)v;
             if (len == 2) v = (signed char)v;
             spec[k++] = 'l'; spec[k++] = 'l'; spec[k++] = conv; spec[k] = 0;
-            n = __lx_fmt_ll(tmp, sizeof tmp, spec, v);
+            ival = v;
             break;
         }
         case 'u': case 'o': case 'x': case 'X': {
@@ -114,31 +133,41 @@ static int engine(char *out, size_t cap, const char *fmt, va_list ap) {
             if (len == 1) v = (unsigned short)v;
             if (len == 2) v = (unsigned char)v;
             spec[k++] = 'l'; spec[k++] = 'l'; spec[k++] = conv; spec[k] = 0;
-            n = __lx_fmt_ll(tmp, sizeof tmp, spec, (long long)v);
+            ival = (long long)v;
             break;
         }
         case 'c': {
+            /* int, or wint_t for %lc; both are read as int. */
             int v = va_arg(ap, int);
+            if (len == 3) spec[k++] = 'l';
             spec[k++] = 'c'; spec[k] = 0;
-            n = __lx_fmt_ll(tmp, sizeof tmp, spec, v);
+            ival = v;
             break;
         }
         case 'f': case 'F': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A': {
             /* long double is double on Apple arm64. */
             double v = va_arg(ap, double);
             spec[k++] = conv; spec[k] = 0;
-            n = __lx_fmt_d(tmp, sizeof tmp, spec, v);
+            kind = 1;
+            dval = v;
             break;
         }
         case 's': case 'p': {
             const void *v = va_arg(ap, const void *);
+            if (conv == 's' && len == 3) spec[k++] = 'l'; /* %ls: wchar_t * */
             spec[k++] = conv; spec[k] = 0;
-            n = __lx_fmt_p(tmp, sizeof tmp, spec, v);
+            kind = 2;
+            pval = v;
             break;
         }
         case 'n': {
-            int *p = va_arg(ap, int *);
-            *p = (int)s.len;
+            void *p = va_arg(ap, void *);
+            switch (len) {
+            case 1: *(short *)p = (short)s.len; break;
+            case 2: *(signed char *)p = (signed char)s.len; break;
+            case 3: case 4: case 6: *(long long *)p = (long long)s.len; break;
+            default: *(int *)p = (int)s.len; break;
+            }
             continue;
         }
         default:
@@ -146,8 +175,18 @@ static int engine(char *out, size_t cap, const char *fmt, va_list ap) {
             put(&s, spec, k);
             continue;
         }
+        n = format_one(tmp, sizeof tmp, spec, kind, ival, dval, pval);
         if (n < 0) return -1;
-        put(&s, tmp, (size_t)n < sizeof tmp ? (size_t)n : sizeof tmp - 1);
+        if ((size_t)n < sizeof tmp) {
+            put(&s, tmp, (size_t)n);
+        } else {
+            /* A conversion longer than tmp: format it again in full. */
+            char *wide = malloc((size_t)n + 1);
+            if (!wide) return -1;
+            format_one(wide, (size_t)n + 1, spec, kind, ival, dval, pval);
+            put(&s, wide, (size_t)n);
+            free(wide);
+        }
     }
     return (int)s.len;
 }
@@ -163,8 +202,20 @@ int __apple_vsprintf(char *out, const char *fmt, va_list ap) {
 static char big[1 << 16];
 
 int __apple_vfprintf(FILE *stream, const char *fmt, va_list ap) {
+    va_list again;
+    va_copy(again, ap);
     int n = engine(big, sizeof big, fmt, ap);
-    fputs(big, stream);
+    char *text = big;
+    if (n >= 0 && (size_t)n >= sizeof big) {
+        /* Longer than the buffer: format again into one that fits. */
+        text = malloc((size_t)n + 1);
+        if (!text) n = -1;
+        else engine(text, (size_t)n + 1, fmt, again);
+    }
+    va_end(again);
+    /* Byte-counted, so a %c of 0 is written too. */
+    if (n > 0 && fwrite(text, 1, (size_t)n, stream) != (size_t)n) n = -1;
+    if (text != big) free(text);
     return n;
 }
 

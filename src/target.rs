@@ -243,8 +243,13 @@ fn parse_apple_os(os: &str) -> Option<Target> {
         Some(text) => text.parse().ok()?,
         None => 0,
     };
+    // A patch level other than 0 is rejected rather than silently dropped
+    // from the triple and the deployment-target macros.
     if let Some(patch) = numbers.next() {
-        let _: u32 = patch.parse().ok()?;
+        let patch: u32 = patch.parse().ok()?;
+        if patch != 0 {
+            return None;
+        }
     }
     if numbers.next().is_some() || major < 11 {
         return None;
@@ -306,6 +311,7 @@ mod tests {
             Some(Target::Aarch64Linux)
         );
         assert_eq!(Target::parse("arm64-apple-macos10.15"), None);
+        assert_eq!(Target::parse("arm64-apple-macos13.2.1"), None);
         assert_eq!(Target::parse("arm64-apple-ios"), None);
         assert_eq!(Target::parse("riscv64-linux-gnu"), None);
         assert_eq!(Target::parse("x86_64-apple-darwin"), None);

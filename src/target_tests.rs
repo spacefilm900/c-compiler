@@ -238,3 +238,39 @@ fn binary128_constants_in_byte_images() {
         "{module}"
     );
 }
+
+#[test]
+fn review_fixes_on_arm64() {
+    // Overlapping union alternatives are three float positions: an HFA.
+    let union_hfa = "union U { float a[3]; float b[3]; };\nunion U f(union U u) { return u; }\n";
+    for target in [APPLE, Target::Aarch64Linux] {
+        let module = ir(target, union_hfa);
+        assert!(module.contains("define [3 x float] @f("), "{module}");
+    }
+    // The address of a function with an Apple asm label is quoted.
+    let module = ir(
+        APPLE,
+        "int f(void) __asm__(\"_f\");\nint (*g(void))(void) { return f; }\n",
+    );
+    assert!(module.contains("ret ptr @\"\\01_f\""), "{module}");
+    // binary128 is normal down to 2^-16382.
+    let module = ir(
+        Target::Aarch64Linux,
+        "int n(long double x) { return __builtin_isnormal(x); }\n",
+    );
+    assert!(
+        module.contains("0xL00000000000000000001000000000000"),
+        "{module}"
+    );
+    // A struct member of a packed record is loaded at its real alignment.
+    let module = ir(
+        APPLE,
+        "struct S { long x; };\nstruct __attribute__((packed)) P { char c; struct S s; };\n\
+         long h(struct S s);\nlong g(struct P *p) { return h(p->s); }\n",
+    );
+    let loads: Vec<&str> = module.lines().filter(|l| l.contains("load i64")).collect();
+    assert!(
+        !loads.is_empty() && loads.iter().all(|l| l.ends_with("align 1")),
+        "{module}"
+    );
+}
