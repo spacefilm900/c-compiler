@@ -1263,7 +1263,12 @@ impl Processor {
             .first()
             .is_some_and(|tok| tok.is_lparen() && !tok.leading_space)
         {
-            parse_function_header(rest)?
+            let file = &self.files[at.file_id as usize];
+            let system = file
+                .found_dir
+                .as_ref()
+                .is_some_and(|dir| self.system_dirs.contains(dir));
+            parse_function_header(rest, system)?
         } else {
             ParsedFn {
                 params: None,
@@ -1692,7 +1697,7 @@ impl Processor {
     /// claims no Clang feature, extension, or attribute, so a header takes
     /// its plain C path (the one a compiler without the query would take).
     fn replace_has_queries(
-        &self,
+        &mut self,
         tokens: Vec<PpToken>,
         at: &PpToken,
     ) -> Result<Vec<PpToken>, Diagnostic> {
@@ -1735,6 +1740,15 @@ impl Processor {
             };
             let inside = &tokens[open + 1..close];
             let value = if name.starts_with("__has_include") {
+                // `__has_include(MACRO)`: the file name comes from a macro,
+                // as for `#include MACRO` (C11 6.10.2p4).
+                let expanded;
+                let inside = if starts_header(inside) {
+                    inside
+                } else {
+                    expanded = self.expand_list(inside.to_vec())?;
+                    &expanded[..]
+                };
                 let (header, quote, consumed) = header_from(inside, tok)?;
                 if consumed != inside.len() || header.is_empty() {
                     return Err(error_at(tok, format!("'{name}' expects one file name")));
@@ -2252,10 +2266,16 @@ struct ParsedFn {
     body: Vec<PpToken>,
 }
 
-fn parse_function_header(rest: &[PpToken]) -> Result<ParsedFn, Diagnostic> {
+/// `system` allows GNU's named variadic parameter (`#define F(args...)`,
+/// in GCC's manual under "Variadic Macros") in a system header, where
+/// Linux's own headers use it. In a program it stays an error, since C11
+/// 6.10.3 has only `...`. The name is rewritten to `__VA_ARGS__` in the
+/// body.
+fn parse_function_header(rest: &[PpToken], system: bool) -> Result<ParsedFn, Diagnostic> {
     let mut index = 1;
     let mut params = Vec::new();
     let mut variadic = false;
+    let mut va_name: Option<String> = None;
     if index < rest.len() && rest[index].is_rparen() {
         index += 1;
         return Ok(ParsedFn {
@@ -2298,6 +2318,20 @@ fn parse_function_header(rest: &[PpToken]) -> Result<ParsedFn, Diagnostic> {
         }
         params.push(name);
         index += 1;
+        if system
+            && index < rest.len()
+            && rest[index].kind == PpKind::Punct
+            && rest[index].spelling == "..."
+        {
+            va_name = params.pop();
+            variadic = true;
+            index += 1;
+            if index >= rest.len() || !rest[index].is_rparen() {
+                return Err(error_at(&rest[index - 1], "expected ')' after '...'"));
+            }
+            index += 1;
+            break;
+        }
         if index >= rest.len() {
             return Err(error_at(
                 rest.last().unwrap(),
@@ -2320,10 +2354,18 @@ fn parse_function_header(rest: &[PpToken]) -> Result<ParsedFn, Diagnostic> {
             "expected ',' or ')' in macro parameter list",
         ));
     }
+    let mut body = rest[index..].to_vec();
+    if let Some(va_name) = va_name {
+        for tok in &mut body {
+            if tok.kind == PpKind::Ident && tok.spelling == va_name {
+                tok.spelling = "__VA_ARGS__".to_string();
+            }
+        }
+    }
     Ok(ParsedFn {
         params: Some(params),
         variadic,
-        body: rest[index..].to_vec(),
+        body,
     })
 }
 
@@ -3578,6 +3620,7 @@ mod tests {
         let source =
             "#if __has_include(<n.h>) && !__has_include(<missing.h>)\nint found;\n#endif\n\
             #define HAS(h) __has_include(h)\n#if HAS(<n.h>)\nint via_macro;\n#endif\n\
+            #define NAME <n.h>\n#if __has_include(NAME)\nint named;\n#endif\n\
             #if defined(__has_include) && defined __has_feature && !__has_feature(blocks) \\\n\
               && !__has_attribute(availability) && !__has_builtin(__builtin_expect) \\\n\
               && !__has_extension(x) && !__building_module(m)\nint plain_c;\n#endif\n\
@@ -3602,6 +3645,40 @@ mod tests {
         assert!(text.contains("int own;"), "{text}");
         let err = preprocess("#if __has_include(<n.h>\n#endif\n", "t.c", &options).unwrap_err();
         assert!(err.to_string().contains("missing ')'"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn named_variadic_parameter_only_in_system_headers() {
+        let dir = std::env::temp_dir().join(format!("cc-pp-namedva-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let header = "#define GROUP(TAG, MEMBERS...) struct TAG { MEMBERS }\n\
+                      #define SHOW(fmt, args...) show(fmt, ## args)\n";
+        std::fs::write(dir.join("sys.h"), header).unwrap();
+        std::fs::write(dir.join("user.h"), header).unwrap();
+        let options = PpOptions {
+            system_dirs: vec![dir.clone()],
+            ..PpOptions::default()
+        };
+        let text = preprocess(
+            "#include <sys.h>\nGROUP(g, int a; int b;);\nSHOW(\"x\");\nSHOW(\"y\", 1, 2);\n",
+            "t.c",
+            &options,
+        )
+        .unwrap();
+        let text = squash(&text);
+        assert!(text.contains("struct g { int a; int b; };"), "{text}");
+        assert!(text.contains("show(\"x\");"), "{text}");
+        assert!(text.contains("show(\"y\", 1, 2);"), "{text}");
+        // In a header found through -I it is still an error.
+        let options = PpOptions {
+            include_dirs: vec![dir.clone()],
+            system_dirs: Vec::new(),
+            ..PpOptions::default()
+        };
+        let err = preprocess("#include \"user.h\"\n", "t.c", &options).unwrap_err();
+        assert!(err.to_string().contains("macro parameter list"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
