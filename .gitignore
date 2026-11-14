@@ -16,3 +16,4 @@ reports/perf.json
 platform.info
 tests/external/doomgeneric/
 tests/external/freedoom/
+tests/external/lua/
