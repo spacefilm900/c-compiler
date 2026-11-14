@@ -25,8 +25,13 @@ case "$DEST" in
         ;;
 esac
 
+# Linux has sha256sum; macOS has shasum.
 sha256_of() {
-    sha256sum "$1" | cut -d ' ' -f 1
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d ' ' -f 1
+    else
+        shasum -a 256 "$1" | cut -d ' ' -f 1
+    fi
 }
 
 if [ -f "$DEST/freedoom1.wad" ] \

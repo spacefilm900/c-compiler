@@ -3,6 +3,9 @@
 # hand (Actions > macos > Run workflow, or `gh workflow run macos.yml`);
 # never on pull requests or other branches. Budget: about 6 minutes; the
 # first runs took under a minute.
+#
+# The DOOM job runs only when started by hand with the "doom" box ticked
+# (`gh workflow run macos.yml -f doom=true`), so merges to main stay cheap.
 
 name: macos
 
@@ -10,6 +13,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      doom:
+        description: "Also build DOOM natively: frame hashes against Apple clang at -O0 and -O2, and the SDL2 window build (docs/DOOM_ON_MAC.md)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -79,3 +87,94 @@ jobs:
       - name: SDK header report (does not fail the job)
         if: always()
         run: sh harness/macos/sdk_headers.sh
+
+  doom:
+    name: macOS arm64 DOOM (frame hashes vs Apple clang, SDL2 window build)
+    if: github.event_name == 'workflow_dispatch' && inputs.doom
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+
+      - name: Tools
+        run: |
+          set -euo pipefail
+          sw_vers
+          sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          echo "SDKROOT=${sdk}" >> "$GITHUB_ENV"
+          echo "CLANG=/usr/bin/clang" >> "$GITHUB_ENV"
+          /usr/bin/clang --version
+
+      - name: Build DOOM both ways and compare frame hashes at -O0 and -O2, every demo to its end
+        run: |
+          set -euo pipefail
+          scripts/fetch_doomgeneric.sh
+          scripts/fetch_freedoom.sh
+          make
+          python3 harness/run_doom.py --opt O0 --opt O2 --play-jobs "$(sysctl -n hw.ncpu)" \
+            --json build/doom-mac.json --scorecard build/doom-mac.md --title "DOOM on macOS arm64"
+
+      - name: Install SDL2 with Homebrew (docs/DOOM_ON_MAC.md)
+        if: success() || failure()
+        run: |
+          set -euo pipefail
+          brew install sdl2
+          sdl2-config --version --cflags --libs
+
+      # The command from the guide, with test settings: no screen (the dummy
+      # video driver), scripted key presses through SDL's event queue, a
+      # timed exit, and the last frame saved as a picture.
+      - name: Build and launch the SDL2 game with ./tools/mac/play_doom.sh
+        if: success() || failure()
+        env:
+          SDL_VIDEODRIVER: dummy
+          DOOM_EXIT_AFTER_MS: "8000"
+          DOOM_TEST_KEYS: "1"
+          DOOM_SCREENSHOT: ${{ github.workspace }}/build/doom-dummy.ppm
+        run: |
+          set -euo pipefail
+          ./tools/mac/play_doom.sh | tee build/doom-dummy.log
+          grep -q 'exiting after 8000 ms as asked' build/doom-dummy.log
+          test -s build/doom-dummy.ppm
+          sips -s format png build/doom-dummy.ppm --out build/doom-dummy.png
+          otool -L build/doom-sdl/doom
+
+      # The real macOS window (Cocoa) on the runner's desktop. A runner may
+      # not allow a window, so this step reports but does not fail the job.
+      - name: Launch in a real window for a few seconds (does not fail the job)
+        if: success() || failure()
+        continue-on-error: true
+        env:
+          DOOM_EXIT_AFTER_MS: "6000"
+          DOOM_TEST_KEYS: "1"
+          DOOM_SCREENSHOT: ${{ github.workspace }}/build/doom-window.ppm
+        run: |
+          set -euo pipefail
+          ./tools/mac/play_doom.sh | tee build/doom-window.log &
+          sleep 5
+          screencapture -x build/doom-desktop.png || echo "screencapture was not allowed"
+          wait
+          grep 'exiting after' build/doom-window.log
+
+      - name: Upload the DOOM report and pictures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: doom-macos
+          path: |
+            build/doom-mac.json
+            build/doom-mac.md
+            build/doom-*.log
+            build/doom-*.png
+          if-no-files-found: warn

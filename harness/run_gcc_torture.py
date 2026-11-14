@@ -9,7 +9,9 @@ compiler sources.
 
 The tests are GNU C, so this compiler runs with `-std=gnu11`, its opt-in
 GNU mode (see README). 20041212-1.c compares a `void *` with a function
-pointer, which strict C11 rejects.
+pointer, which strict C11 rejects. A test whose `dg-options` comment asks
+for `-fgnu89-inline` gets that option too: those tests rely on GNU89
+`inline` semantics, where a plain `inline` definition is an external one.
 
 The whole `builtins/` directory is skipped. GCC's harness links each
 of those tests with a `-lib.c` companion and `lib/main.c`; they are
@@ -32,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import resource
 import subprocess
 import sys
@@ -147,6 +150,17 @@ def tests() -> list[Path]:
     return found
 
 
+DG_OPTIONS = re.compile(r"\{\s*dg-options\s+\"([^\"]*)\"")
+
+
+def dg_flags(path: Path) -> list[str]:
+    """The options from a test's dg-options comments that this compiler
+    honours: only -fgnu89-inline."""
+    text = path.read_text(errors="replace")
+    words = [w for m in DG_OPTIONS.finditer(text) for w in m.group(1).split()]
+    return ["-fgnu89-inline"] if "-fgnu89-inline" in words else []
+
+
 def one_test(src: str) -> tuple[str, str, str]:
     """Return (rel, status, detail). status is pass, fail, or panic."""
     path = Path(src)
@@ -156,7 +170,8 @@ def one_test(src: str) -> tuple[str, str, str]:
         ll = work / "t.ll"
         exe = work / "t"
         rc, _, err = run(
-            [str(COMPILER), "-std=gnu11", str(path), "-o", str(ll)], COMPILE_TIMEOUT
+            [str(COMPILER), "-std=gnu11", *dg_flags(path), str(path), "-o", str(ll)],
+            COMPILE_TIMEOUT,
         )
         err_text = err.decode(errors="replace")
         if "panicked at" in err_text.lower():

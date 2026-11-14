@@ -133,12 +133,22 @@ are Linux-specific tests (a 10-byte `long double`, `<uchar.h>`, glibc's
 `__sysv_signal`, an ELF section name). `cargo test` skips 21 unit tests
 that build and run x86_64 Linux code.
 
-## 6. DOOM (later)
+## 6. DOOM
 
-DOOM, Lua, and SQLite already build with this compiler on Linux and match
-Clang's programs exactly. On the Mac the plan is the same harness
-(`make doom`), with the headless DOOM backend comparing frame hashes against
-a Clang build. That has not been tried yet.
+**To play DOOM in a window, follow [DOOM_ON_MAC.md](DOOM_ON_MAC.md)**: one
+command, `./tools/mac/play_doom.sh`, checks the tools, builds DOOM with this
+compiler and SDL2, and starts it with the free Freedoom game data (or your
+own WAD).
+
+The headless frame-hash check also runs natively on the Mac:
+
+```sh
+sh scripts/fetch_doomgeneric.sh && sh scripts/fetch_freedoom.sh
+python3 harness/run_doom.py --opt O0 --opt O2
+```
+
+It builds DOOM with this compiler and with Apple's Clang, plays every
+Freedoom demo to its end with both, and compares a hash of every frame.
 
 ## What has been checked without a Mac
 
@@ -159,4 +169,8 @@ requests because macOS minutes cost about ten times Linux minutes. It builds
 the compiler, runs the unit tests, builds and runs hello world, runs
 `run_tests.py` against Apple's Clang with the SDK's headers, C library, and
 Mach-O linker, and reports which SDK headers compile. A run takes under a
-minute. DOOM, Lua, and SQLite on the Mac are not covered yet.
+minute. Started by hand with the `doom` input
+(`gh workflow run macos.yml -f doom=true`), it also runs the DOOM frame-hash
+check against Apple's Clang and builds and launches the SDL2 game from
+[DOOM_ON_MAC.md](DOOM_ON_MAC.md) with no screen. Lua and SQLite on the Mac
+are not covered yet.
