@@ -412,6 +412,7 @@ impl Parser<'_> {
             storage: specs.storage,
             linkage: Linkage::External,
             symbol,
+            addr_labels: Vec::new(),
             line: declarator.line,
             column: declarator.column,
         }))
@@ -457,6 +458,7 @@ impl Parser<'_> {
                 storage: specs.storage,
                 linkage: Linkage::External,
                 symbol,
+                addr_labels: Vec::new(),
                 line: declarator.line,
                 column: declarator.column,
             }));
@@ -3135,6 +3137,7 @@ impl Parser<'_> {
             storage: specs.storage,
             linkage: Linkage::External,
             symbol,
+            addr_labels: Vec::new(),
             line: declarator.line,
             column: declarator.column,
         })
@@ -3324,7 +3327,22 @@ impl Parser<'_> {
     fn parse_goto(&mut self) -> Result<Stmt, Diagnostic> {
         let token = self.advance();
         if self.current().kind == TokenKind::Star {
-            return Err(self.error("computed goto is not supported"));
+            // `goto *expr;` (GCC manual, "Labels as Values").
+            let star = self.advance();
+            if !self.dialect.gnu() {
+                return Err(self.error_at(
+                    star.line,
+                    star.column,
+                    "computed goto is a GNU extension; use -std=gnu11",
+                ));
+            }
+            let expr = self.parse_expression()?;
+            self.expect(TokenKind::Semi, "';'")?;
+            return Ok(Stmt::GotoPtr {
+                expr,
+                line: token.line,
+                column: token.column,
+            });
         }
         if self.current().kind != TokenKind::Ident {
             return Err(self.error("expected a label name"));
@@ -3754,6 +3772,26 @@ impl Parser<'_> {
                 self.advance();
                 let expr = self.parse_unary()?;
                 Ok(Expr::unary(UnaryOp::Deref, expr, token.line, token.column))
+            }
+            // `&&label` (GCC manual, "Labels as Values"). As a unary
+            // operator `&&` is not C11, so strict mode rejects it.
+            TokenKind::AndAnd if self.lookahead() == TokenKind::Ident => {
+                if !self.dialect.gnu() {
+                    return Err(self.error_at(
+                        token.line,
+                        token.column,
+                        "label addresses ('&&label') are a GNU extension; use -std=gnu11",
+                    ));
+                }
+                self.advance();
+                let name = self.advance();
+                Ok(Expr::LabelAddr {
+                    name: name.spelling,
+                    func: None,
+                    line: token.line,
+                    column: token.column,
+                    ty: None,
+                })
             }
             _ => self.parse_postfix(),
         }
@@ -5092,7 +5130,9 @@ fn eval_ice(expr: &Expr, env: Env) -> Result<BVal, BoundErr> {
         | Expr::Member { .. }
         | Expr::VaArg { .. }
         | Expr::VaOp { .. } => Err(BoundErr::Vla),
-        Expr::CompoundLit { .. } | Expr::StmtExpr { .. } => Err(BoundErr::NotConst),
+        Expr::CompoundLit { .. } | Expr::StmtExpr { .. } | Expr::LabelAddr { .. } => {
+            Err(BoundErr::NotConst)
+        }
         Expr::Generic {
             control, assocs, ..
         } => {
@@ -5309,7 +5349,7 @@ fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
             None => Ok(()),
         },
         // Its names were resolved when the block was parsed.
-        Expr::StmtExpr { .. } => Ok(()),
+        Expr::StmtExpr { .. } | Expr::LabelAddr { .. } => Ok(()),
         Expr::CondShort {
             cond, else_expr, ..
         } => {
@@ -5620,6 +5660,7 @@ fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
         }
         Expr::Cast { ty_name, .. } => Ok(ty_name.unqualified()),
         Expr::StmtExpr { value_ty, .. } => value_ty.clone().ok_or(BoundErr::NotConst),
+        Expr::LabelAddr { .. } => Ok(CType::pointer(CType::Void)),
         Expr::Cond {
             then_expr: left,
             else_expr: right,

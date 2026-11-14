@@ -503,6 +503,7 @@ fn render_function(
         .collect();
     let mut gen = Gen::new(func.ret_type.clone(), sig.ret_agg.clone());
     gen.renames = renames.clone();
+    gen.addr_labels = func.addr_labels.iter().map(|name| c_label(name)).collect();
     let linkage = match func.linkage {
         Linkage::Internal => "internal ",
         Linkage::External if attrs.is_some_and(|attrs| attrs.weak) => "weak ",
@@ -607,7 +608,8 @@ fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, CType, u32)>) {
         | Stmt::Expr { .. }
         | Stmt::Break { .. }
         | Stmt::Continue { .. }
-        | Stmt::Goto { .. } => {}
+        | Stmt::Goto { .. }
+        | Stmt::GotoPtr { .. } => {}
     }
 }
 
@@ -655,6 +657,9 @@ fn has_func_symbol(unit: &TranslationUnit, name: &str) -> bool {
 }
 
 struct Gen {
+    /// IR blocks of the labels whose address `&&` takes (GNU). A computed
+    /// `goto` lists all of them as its possible destinations.
+    addr_labels: Vec<String>,
     lines: Vec<String>,
     tmp: u32,
     lab: u32,
@@ -710,6 +715,7 @@ enum PendingStore {
 impl Gen {
     fn new(ret_ty: CType, ret_agg: Option<AggAbi>) -> Self {
         Self {
+            addr_labels: Vec::new(),
             lines: Vec::new(),
             tmp: 0,
             lab: 0,
@@ -873,6 +879,22 @@ impl Gen {
             Stmt::Goto { name, .. } => {
                 self.ensure_block();
                 self.br(&c_label(name));
+            }
+            Stmt::GotoPtr { expr, .. } => {
+                // An indirect branch may reach any label whose address the
+                // function takes (LLVM LangRef, `indirectbr`).
+                self.ensure_block();
+                let target = self.gen_val(expr);
+                let dests: Vec<String> = self
+                    .addr_labels
+                    .iter()
+                    .map(|label| format!("label %{label}"))
+                    .collect();
+                self.emit(&format!(
+                    "  indirectbr ptr {target}, [{}]",
+                    dests.join(", ")
+                ));
+                self.terminated = true;
             }
             Stmt::Break { .. } => {
                 self.ensure_block();
@@ -2032,7 +2054,8 @@ impl Gen {
             | Stmt::Expr { .. }
             | Stmt::Break { .. }
             | Stmt::Continue { .. }
-            | Stmt::Goto { .. } => {}
+            | Stmt::Goto { .. }
+            | Stmt::GotoPtr { .. } => {}
         }
     }
 
@@ -2298,6 +2321,14 @@ impl Gen {
         match expr {
             Expr::Int { bits, value_ty, .. } => Some(value_ty.format_bits(*bits)),
             Expr::Float { bits, kind, .. } => Some(crate::float::llvm_const(*kind, *bits)),
+            Expr::LabelAddr { name, func, .. } => {
+                let func = func.as_deref().expect("label address in a function");
+                Some(format!(
+                    "blockaddress({}, %{})",
+                    llvm_global(renamed(func, &self.renames)),
+                    c_label(name)
+                ))
+            }
             Expr::Var { resolved, ty, .. } => {
                 let slot = &self.var_slot(&resolved.as_ref().expect("resolved variable").slot);
                 let ty = ty.clone().expect("typed variable");
@@ -4095,7 +4126,7 @@ fn write_const_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: us
             }
             true
         }
-        ConstInit::Ptr(PtrConst::Addr { .. })
+        ConstInit::Ptr(PtrConst::Addr { .. } | PtrConst::Label { .. })
         | ConstInit::PtrToInt { .. }
         | ConstInit::RelocBytes { .. } => false,
         ConstInit::Bytes(raw) => {
@@ -4328,6 +4359,11 @@ fn render_ptr(ptr: &PtrConst, renames: &Renames) -> String {
                 llvm_global(renamed(name, renames))
             )
         }
+        PtrConst::Label { func, label } => format!(
+            "blockaddress({}, %{})",
+            llvm_global(renamed(func, renames)),
+            c_label(label)
+        ),
     }
 }
 

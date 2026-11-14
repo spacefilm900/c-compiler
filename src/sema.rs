@@ -79,6 +79,8 @@ pub fn analyze_dialect(
         object_decls: HashMap::new(),
         sizeof_depth: 0,
         labels: HashMap::new(),
+        addr_labels: Vec::new(),
+        current_symbol: String::new(),
         variadic_fn: false,
         last_param: None,
         stmt_expr_seq: 0,
@@ -241,6 +243,11 @@ struct Sema {
     sizeof_depth: u32,
     /// Labels defined in the function being checked. A `goto` names one of them.
     labels: HashMap<String, (usize, usize)>,
+    /// Labels of the function being checked whose address `&&` takes (GNU),
+    /// in order of first use.
+    addr_labels: Vec<String>,
+    /// Linker name of the function being checked, for `blockaddress`.
+    current_symbol: String,
     /// The function being checked is variadic. `va_start` requires that.
     variadic_fn: bool,
     /// Name of the last named parameter, which `va_start` must name.
@@ -487,6 +494,8 @@ impl Sema {
         }
         let body = func.body.as_mut().expect("defined function");
         self.labels.clear();
+        self.addr_labels.clear();
+        self.current_symbol = func.symbol.clone();
         self.collect_labels(body)?;
         self.variadic_fn = func.variadic;
         self.last_param = func.params.last().and_then(|param| param.name.clone());
@@ -497,6 +506,8 @@ impl Sema {
         self.variadic_fn = false;
         self.last_param = None;
         self.labels.clear();
+        func.addr_labels = std::mem::take(&mut self.addr_labels);
+        self.current_symbol.clear();
         Ok(())
     }
 
@@ -1781,7 +1792,7 @@ impl Sema {
                         // Truncating it, in the cast or in the destination,
                         // cannot be folded. A 64-bit cast into a 64-bit
                         // object keeps every bit (`ptrtoint` to i64).
-                        if matches!(ptr, PtrConst::Addr { .. })
+                        if matches!(ptr, PtrConst::Addr { .. } | PtrConst::Label { .. })
                             && (cast_int.width() < 64 || dest_int.width() < 64)
                         {
                             return self.err(
@@ -2177,6 +2188,20 @@ impl Sema {
                 }
                 Ok(())
             }
+            Stmt::GotoPtr { expr, line, column } => {
+                let line = *line;
+                let column = *column;
+                self.check_expr(expr)?;
+                self.decay(expr)?;
+                if !expr.ty().is_some_and(|ty| ty.is_pointer()) {
+                    return self.err(
+                        line,
+                        column,
+                        "the operand of a computed 'goto' must be a pointer",
+                    );
+                }
+                Ok(())
+            }
         }
     }
 
@@ -2235,7 +2260,8 @@ impl Sema {
             | Stmt::Expr { .. }
             | Stmt::Break { .. }
             | Stmt::Continue { .. }
-            | Stmt::Goto { .. } => Ok(()),
+            | Stmt::Goto { .. }
+            | Stmt::GotoPtr { .. } => Ok(()),
         }
     }
 
@@ -2742,6 +2768,30 @@ impl Sema {
             Expr::Cond { .. } => self.check_cond(expr),
             Expr::CondShort { .. } => self.check_cond_short(expr),
             Expr::StmtExpr { .. } => self.check_stmt_expr(expr),
+            Expr::LabelAddr {
+                name,
+                func,
+                line,
+                column,
+                ..
+            } => {
+                if self.current_symbol.is_empty() {
+                    return self.err(
+                        *line,
+                        *column,
+                        "a label address ('&&label') is not allowed outside a function",
+                    );
+                }
+                if !self.labels.contains_key(name.as_str()) {
+                    return self.err(*line, *column, format!("use of undeclared label '{name}'"));
+                }
+                if !self.addr_labels.contains(name) {
+                    self.addr_labels.push(name.clone());
+                }
+                *func = Some(self.current_symbol.clone());
+                expr.set_ty(CType::pointer(CType::Void));
+                Ok(())
+            }
             Expr::Comma { .. } => self.check_comma(expr),
             Expr::Sizeof { .. } => self.check_sizeof(expr),
             Expr::Cast { .. } => self.check_cast(expr),
@@ -5119,7 +5169,8 @@ impl ByteImage {
     /// value has no object representation here (an aggregate).
     fn write(&mut self, ty: &CType, value: &ConstInit, offset: usize) -> bool {
         match value {
-            ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => {
+            ConstInit::Ptr(PtrConst::Addr { .. } | PtrConst::Label { .. })
+            | ConstInit::PtrToInt { .. } => {
                 let len = reloc_width(value) as usize;
                 self.clear_relocs(offset, len);
                 self.zero(offset, len);
@@ -5435,7 +5486,8 @@ fn union_bytes_ok(ty: &CType, value: &ConstInit) -> bool {
         // A null pointer and an integer converted to a pointer are bytes.
         // The address of an object needs a relocation.
         ConstInit::Ptr(PtrConst::Null | PtrConst::IntToPtr(_)) => true,
-        ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => !ty.is_union(),
+        ConstInit::Ptr(PtrConst::Addr { .. } | PtrConst::Label { .. })
+        | ConstInit::PtrToInt { .. } => !ty.is_union(),
         // Bytes are an object representation. Addresses in an image are
         // explicit relocations that the IR generator spells out.
         ConstInit::Bytes(_) | ConstInit::RelocBytes { .. } => true,
@@ -5461,7 +5513,7 @@ fn const_has_no_address(value: &ConstInit) -> bool {
     match value {
         ConstInit::Zero | ConstInit::Int(_) | ConstInit::Float(_) => true,
         ConstInit::Ptr(PtrConst::Null | PtrConst::IntToPtr(_)) => true,
-        ConstInit::Ptr(PtrConst::Addr { .. })
+        ConstInit::Ptr(PtrConst::Addr { .. } | PtrConst::Label { .. })
         | ConstInit::PtrToInt { .. }
         | ConstInit::RelocBytes { .. } => false,
         ConstInit::Bytes(_) => true,
@@ -5778,6 +5830,14 @@ fn eval_ptr(expr: &Expr) -> Result<PtrConst, ConstError> {
         return Ok(PtrConst::Null);
     }
     match expr {
+        Expr::LabelAddr {
+            name,
+            func: Some(func),
+            ..
+        } => Ok(PtrConst::Label {
+            func: func.clone(),
+            label: name.clone(),
+        }),
         Expr::Unary {
             op: UnaryOp::Addr,
             expr,
@@ -5864,6 +5924,9 @@ fn add_ptr_const(left: &Expr, right: &Expr, negate: bool) -> Result<PtrConst, Co
             }
         }
         PtrConst::IntToPtr(bits) => Ok(PtrConst::IntToPtr(bits.wrapping_add(delta as u64))),
+        // A label address is only ever used whole.
+        PtrConst::Label { .. } if delta == 0 => Ok(base),
+        PtrConst::Label { .. } => Err(ConstError::NotConst),
     }
 }
 
@@ -5909,7 +5972,7 @@ fn narrow_ptr(ptr: PtrConst, int_ty: TypeName) -> Result<PtrConst, ConstError> {
         }
         // A file-scope address truncated to 32 bits is still a relocation.
         // Only the low bits survive, so it is not the original address constant.
-        PtrConst::Addr { .. } => Err(ConstError::NotConst),
+        PtrConst::Addr { .. } | PtrConst::Label { .. } => Err(ConstError::NotConst),
     }
 }
 
@@ -6448,6 +6511,7 @@ fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
         | Expr::VaOp { .. }
         | Expr::Generic { .. }
         | Expr::StmtExpr { .. }
+        | Expr::LabelAddr { .. }
         | Expr::CompoundLit { .. } => Err(ConstError::NotConst),
         Expr::CondShort {
             cond,
@@ -6776,7 +6840,8 @@ fn number_stmt(stmt: &mut Stmt, next: &mut u32, prefix: &str) {
         | Stmt::Expr { .. }
         | Stmt::Break { .. }
         | Stmt::Continue { .. }
-        | Stmt::Goto { .. } => {}
+        | Stmt::Goto { .. }
+        | Stmt::GotoPtr { .. } => {}
     }
 }
 

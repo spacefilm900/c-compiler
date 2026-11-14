@@ -1796,6 +1796,12 @@ pub enum PtrConst {
     },
     /// Low 64 bits of an integer, converted with `inttoptr`.
     IntToPtr(u64),
+    /// The address of label `label` in the function whose linker name is
+    /// `func` (GNU `&&label`), an LLVM `blockaddress`.
+    Label {
+        func: String,
+        label: String,
+    },
 }
 
 /// Constant initializer value. Integers keep the low bits of their type.
@@ -2066,6 +2072,17 @@ pub enum Expr {
         column: usize,
         ty: Option<CType>,
     },
+    /// The GNU unary `&&label`, the address of a label in the current
+    /// function (GCC manual, "Labels as Values"). Its type is `void *`.
+    /// Semantic analysis fills `func` with the linker name of the enclosing
+    /// function, which an LLVM `blockaddress` constant names.
+    LabelAddr {
+        name: String,
+        func: Option<String>,
+        line: usize,
+        column: usize,
+        ty: Option<CType>,
+    },
 }
 
 /// One association of a generic selection. `ty` is `None` for `default`.
@@ -2323,7 +2340,8 @@ impl Expr {
             | Expr::Generic { line, .. }
             | Expr::CompoundLit { line, .. }
             | Expr::StmtExpr { line, .. }
-            | Expr::CondShort { line, .. } => *line,
+            | Expr::CondShort { line, .. }
+            | Expr::LabelAddr { line, .. } => *line,
         }
     }
 
@@ -2351,7 +2369,8 @@ impl Expr {
             | Expr::Generic { column, .. }
             | Expr::CompoundLit { column, .. }
             | Expr::StmtExpr { column, .. }
-            | Expr::CondShort { column, .. } => *column,
+            | Expr::CondShort { column, .. }
+            | Expr::LabelAddr { column, .. } => *column,
         }
     }
 
@@ -2379,7 +2398,8 @@ impl Expr {
             | Expr::Generic { ty, .. }
             | Expr::CompoundLit { ty, .. }
             | Expr::StmtExpr { ty, .. }
-            | Expr::CondShort { ty, .. } => ty.clone(),
+            | Expr::CondShort { ty, .. }
+            | Expr::LabelAddr { ty, .. } => ty.clone(),
         }
     }
 
@@ -2407,7 +2427,8 @@ impl Expr {
             | Expr::Generic { ty: slot, .. }
             | Expr::CompoundLit { ty: slot, .. }
             | Expr::StmtExpr { ty: slot, .. }
-            | Expr::CondShort { ty: slot, .. } => *slot = Some(ty),
+            | Expr::CondShort { ty: slot, .. }
+            | Expr::LabelAddr { ty: slot, .. } => *slot = Some(ty),
         }
     }
 
@@ -2577,6 +2598,13 @@ pub enum Stmt {
         line: usize,
         column: usize,
     },
+    /// The GNU computed goto `goto * expression ;` (GCC manual, "Labels as
+    /// Values"). The expression is a pointer, normally a label address.
+    GotoPtr {
+        expr: Expr,
+        line: usize,
+        column: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -2607,6 +2635,10 @@ pub struct FuncDef {
     /// Linker name. An `__asm__("...")` label replaces the C name. Calls and
     /// `declare` use this; lookup still uses [`FuncDef::name`].
     pub symbol: String,
+    /// Labels whose address is taken with `&&` (GNU), in order of first
+    /// use. A computed `goto` may reach any of them. Filled in by semantic
+    /// analysis.
+    pub addr_labels: Vec<String>,
     pub line: usize,
     pub column: usize,
 }
@@ -2966,6 +2998,10 @@ fn dump_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
             dump_stmt(out, stmt, indent + 1);
         }
         Stmt::Goto { name, .. } => put(out, indent, &format!("goto {name}")),
+        Stmt::GotoPtr { expr, .. } => {
+            put(out, indent, "goto *");
+            dump_expr(out, expr, indent + 1);
+        }
     }
 }
 
@@ -3045,6 +3081,7 @@ fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
             dump_expr(out, cond, indent + 1);
             dump_expr(out, else_expr, indent + 1);
         }
+        Expr::LabelAddr { name, .. } => put(out, indent, &format!("&&{name}")),
         Expr::StmtExpr { body, .. } => {
             put(out, indent, "({})");
             dump_compound(out, body, indent + 1);
