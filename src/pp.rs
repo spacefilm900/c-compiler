@@ -562,6 +562,9 @@ struct Processor {
     include_dirs: Vec<PathBuf>,
     system_dirs: Vec<PathBuf>,
     max_depth: usize,
+    /// Expanding an `#if` line: the operand of a `defined` that a macro
+    /// produced is kept as written (see `expand_all`).
+    in_if: bool,
 }
 
 impl Processor {
@@ -578,6 +581,7 @@ impl Processor {
             include_dirs: options.include_dirs.clone(),
             system_dirs: options.system_dirs.clone(),
             max_depth: options.max_include_depth,
+            in_if: false,
         };
         processor.install_builtins()?;
         for definition in &options.definitions {
@@ -692,6 +696,25 @@ impl Processor {
                     out.push(self.take_current());
                 }
                 self.index += 1;
+                continue;
+            }
+            if self.in_if && self.tokens[self.index].spelling == "defined" {
+                // `defined` that came out of a macro in an `#if` line. C11
+                // 6.10.1p4 leaves this undefined; GCC's manual documents
+                // that it is evaluated like a written `defined`, and system
+                // headers rely on it (macOS's `__is_modern_darwin`), so the
+                // identifier after it, in parentheses or not, is not
+                // expanded.
+                out.push(self.take_current());
+                self.index += 1;
+                if self.index < self.tokens.len() && self.tokens[self.index].is_lparen() {
+                    out.push(self.take_current());
+                    self.index += 1;
+                }
+                if self.index < self.tokens.len() && self.tokens[self.index].kind == PpKind::Ident {
+                    out.push(self.take_current());
+                    self.index += 1;
+                }
                 continue;
             }
             if self.try_expand(isolated)? {
@@ -1563,8 +1586,13 @@ impl Processor {
     fn eval_line(&mut self, tokens: Vec<PpToken>, at: &PpToken) -> Result<bool, Diagnostic> {
         let tokens = self.replace_has_queries(tokens, at)?;
         let replaced = replace_defined(&tokens, |name| self.is_defined(name))?;
-        let expanded = self.expand_list(replaced)?;
-        // A query can also come from a macro (glibc's `__glibc_has_attribute`).
+        self.in_if = true;
+        let expanded = self.expand_list(replaced);
+        self.in_if = false;
+        let expanded = expanded?;
+        // `defined` and the feature queries can also come from a macro
+        // (macOS's `__is_modern_darwin`, glibc's `__glibc_has_attribute`).
+        let expanded = replace_defined(&expanded, |name| self.is_defined(name))?;
         let expanded = self.replace_has_queries(expanded, at)?;
         let zeroed = replace_idents(expanded);
         if zeroed.is_empty() {

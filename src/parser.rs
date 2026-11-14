@@ -36,6 +36,7 @@ pub fn parse_dialect(
         defining: HashSet::new(),
         shadow_decl: None,
         va_list: None,
+        float16: None,
         attr_sink: Vec::new(),
         warnings: Vec::new(),
         fn_attrs: HashMap::new(),
@@ -67,6 +68,8 @@ struct Parser<'a> {
     /// The `[1 x struct __va_list_tag]` type, created the first time
     /// `__builtin_va_list` is named.
     va_list: Option<CType>,
+    /// See [`Parser::float16`].
+    float16: Option<CType>,
     /// `union tag` seen while an outer `struct tag` (or the reverse) is
     /// visible. A lone `union tag;` hides the outer tag. Using it as a type
     /// in the same declaration is an error.
@@ -605,7 +608,9 @@ impl Parser<'_> {
                 {
                     self.note_int128(&mut flags, &token)?;
                 }
-                TokenKind::Ident if token.spelling == "__builtin_va_list" => {
+                TokenKind::Ident
+                    if token.spelling == "__builtin_va_list" || token.spelling == "_Float16" =>
+                {
                     if flags.struct_ty.is_some()
                         || flags.bool_ty
                         || flags.float_ty.is_some()
@@ -615,7 +620,11 @@ impl Parser<'_> {
                     }
                     self.bump();
                     flags.any = true;
-                    flags.struct_ty = Some(self.builtin_va_list());
+                    flags.struct_ty = Some(if token.spelling == "_Float16" {
+                        self.float16()
+                    } else {
+                        self.builtin_va_list()
+                    });
                     flags.line = token.line;
                     flags.column = token.column;
                 }
@@ -1663,6 +1672,7 @@ impl Parser<'_> {
             || (token.kind == TokenKind::Ident
                 && (self.is_typedef(&token.spelling)
                     || token.spelling == "__builtin_va_list"
+                    || token.spelling == "_Float16"
                     || matches!(
                         token.spelling.as_str(),
                         "__int128" | "__int128_t" | "__uint128_t"
@@ -2415,6 +2425,21 @@ impl Parser<'_> {
     /// On Apple arm64 it is `char *`. On AArch64 Linux it is the AAPCS64
     /// structure `struct __va_list { void *__stack; void *__gr_top;
     /// void *__vr_top; int __gr_offs; int __vr_offs; }`, passed by value.
+    /// `_Float16` (ISO/IEC TS 18661-3, a reserved identifier in C11) is
+    /// accepted only so that declarations mentioning it parse: the macOS
+    /// SDK's <math.h> declares half-precision functions unconditionally.
+    /// It is an incomplete type, so a declaration is fine but an object,
+    /// a call, or any value of the type is rejected as incomplete.
+    fn float16(&mut self) -> CType {
+        if let Some(ty) = &self.float16 {
+            return ty.clone();
+        }
+        let handle = self.declare_fresh_tag("_Float16", RecordKind::Struct);
+        let ty = CType::Struct(handle);
+        self.float16 = Some(ty.clone());
+        ty
+    }
+
     fn builtin_va_list(&mut self) -> CType {
         if let Some(ty) = &self.va_list {
             return ty.clone();

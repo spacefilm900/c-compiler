@@ -1,3 +1,7 @@
 # Tests in harness/run_tests.py that may fail on macOS (Apple Silicon,
 # Apple Clang as the oracle). The macOS workflow passes this file as
 # KNOWN_FAILURES. One label per line, as run_tests.py prints it.
+112_longdouble.c        # dumps 10 bytes of a long double; it is 8 bytes (double) on Apple arm64
+116_uchar.c             # the macOS SDK has no <uchar.h>
+121_signal.c            # calls glibc's __sysv_signal through an asm label; not in macOS's libc
+gnu/both/01_attributes.c  # an ELF section name; Mach-O needs "segment,section"
