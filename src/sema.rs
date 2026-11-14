@@ -83,6 +83,7 @@ pub fn analyze_dialect(
         last_param: None,
         stmt_expr_seq: 0,
         union_choice: Vec::new(),
+        overridden: Vec::new(),
         library_calls: std::collections::BTreeMap::new(),
         deprecated: unit
             .fn_attrs
@@ -192,6 +193,9 @@ struct Sema {
     /// The member each union in the initializer being shaped holds so far:
     /// byte offset of the union, its key, and the member index.
     union_choice: Vec<(u64, UnionKey, usize)>,
+    /// Stores of union members that a later designator replaced, in the
+    /// initializer being shaped.
+    overridden: Vec<ElemStore>,
     /// C library functions that a `__builtin_` forwarder calls, by symbol.
     library_calls: std::collections::BTreeMap<String, crate::builtins::LibSig>,
     /// Functions declared `deprecated`, by symbol, with the message.
@@ -311,7 +315,7 @@ impl Sema {
         } else {
             None
         };
-        if let Some((shaped_ty, _)) = &shaped {
+        if let Some((shaped_ty, _, _)) = &shaped {
             ty = shaped_ty.clone();
         }
         if let Some(Symbol::Var(var)) = self.file_get(&name) {
@@ -354,12 +358,14 @@ impl Sema {
             self.reveal_file(&name);
             self.set_global_type(&name, ty.clone());
         }
-        if let Some((_, mut stores)) = shaped {
+        if let Some((_, mut stores, mut overridden)) = shaped {
             if matches!(self.global_state(&name), Some(GlobalState::Defined(_))) {
                 return self.err(decl.line, decl.column, format!("redefinition of '{name}'"));
             }
             self.check_stores(&mut stores)?;
+            self.check_stores(&mut overridden)?;
             let value = self.fold_stores(&name, &ty, &stores)?;
+            self.fold_overridden(&name, &overridden)?;
             self.set_global_state(&name, GlobalState::Defined(value));
         } else if decl.storage != Storage::Extern {
             self.upgrade_tentative(&name);
@@ -716,13 +722,26 @@ impl Sema {
         init: &Init,
         line: usize,
         column: usize,
-    ) -> Result<(CType, Vec<ElemStore>), Diagnostic> {
+    ) -> Result<Shaped, Diagnostic> {
         // A compound literal inside this initializer shapes its own
         // initializer, with its own union member choices.
         let outer = std::mem::take(&mut self.union_choice);
+        let outer_overridden = std::mem::take(&mut self.overridden);
         let shaped = self.shape_initializer_inner(ty, init, line, column);
         self.union_choice = outer;
-        shaped
+        let overridden = std::mem::replace(&mut self.overridden, outer_overridden);
+        let (ty, stores) = shaped?;
+        Ok((ty, stores, overridden))
+    }
+
+    /// C11 6.7.9p4: every expression in the initializer of an object with
+    /// static storage duration is a constant expression, including one whose
+    /// store a later designator overrode. Its value is not used.
+    fn fold_overridden(&self, name: &str, overridden: &[ElemStore]) -> Result<(), Diagnostic> {
+        for store in overridden {
+            self.fold_one(name, &store.expr, &store.ty)?;
+        }
+        Ok(())
     }
 
     fn shape_initializer_inner(
@@ -1528,17 +1547,32 @@ impl Sema {
         let earlier = self
             .union_choice
             .iter()
-            .find(|(at, (other, _), _)| *at == base && *other == id)
-            .map(|(_, _, chosen)| *chosen);
-        if earlier == Some(member) {
+            .position(|(at, (other, _), _)| *at == base && *other == id);
+        let Some(pos) = earlier else {
+            self.union_choice.push((base, key, member));
+            return;
+        };
+        if self.union_choice[pos].2 == member {
             return;
         }
-        if earlier.is_some() {
-            stores.retain(|store| !store_within(store, base, end));
-            self.union_choice
-                .retain(|(at, (_, len), _)| !(*at >= base && *at + *len <= end));
-        }
-        self.union_choice.push((base, key, member));
+        // The earlier member's stores are not part of the object, but their
+        // expressions are still checked (see `Shaped`).
+        let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(stores)
+            .into_iter()
+            .partition(|store| store_within(store, base, end));
+        *stores = kept;
+        self.overridden.extend(gone);
+        self.union_choice[pos].2 = member;
+        // A nested union is first chosen after the union around it, so the
+        // choices after this one that lie inside it are its descendants. An
+        // enclosing union of the same offset and size comes before it and
+        // keeps its choice.
+        let mut index = 0;
+        self.union_choice.retain(|(at, (_, len), _)| {
+            let keep = index <= pos || !(*at >= base && *at + *len <= end);
+            index += 1;
+            keep
+        });
     }
 
     /// [`Self::select_member`] for every union a designator or positional
@@ -2236,10 +2270,10 @@ impl Sema {
             file_visible: true,
         }));
         let init = decl.init.clone();
-        let (ty, stores) = if let Some(init) = &init {
+        let (ty, stores, mut overridden) = if let Some(init) = &init {
             self.shape_initializer(&decl.ty, init, decl.line, decl.column)?
         } else {
-            (decl.ty.clone(), Vec::new())
+            (decl.ty.clone(), Vec::new(), Vec::new())
         };
         if !ty.is_complete() {
             return self.err(decl.line, decl.column, incomplete_local(&decl.name, &ty));
@@ -2249,6 +2283,7 @@ impl Sema {
         if decl.init.is_some() {
             let mut stores = stores;
             self.check_stores(&mut stores)?;
+            self.check_stores(&mut overridden)?;
             decl.checked = Some(classify_init(&ty, stores));
         }
         Ok(())
@@ -2279,10 +2314,10 @@ impl Sema {
             file_visible: true,
         }));
         let init = decl.init.clone();
-        let (ty, stores) = if let Some(init) = &init {
+        let (ty, stores, mut overridden) = if let Some(init) = &init {
             self.shape_initializer(&decl.ty, init, decl.line, decl.column)?
         } else {
-            (decl.ty.clone(), Vec::new())
+            (decl.ty.clone(), Vec::new(), Vec::new())
         };
         if !ty.is_complete() {
             return self.err(decl.line, decl.column, incomplete_local(&decl.name, &ty));
@@ -2292,7 +2327,10 @@ impl Sema {
         let value = if decl.init.is_some() {
             let mut stores = stores;
             self.check_stores(&mut stores)?;
-            self.fold_stores(&decl.name, &ty, &stores)?
+            self.check_stores(&mut overridden)?;
+            let value = self.fold_stores(&decl.name, &ty, &stores)?;
+            self.fold_overridden(&decl.name, &overridden)?;
+            value
         } else {
             zero_const(&ty)
         };
@@ -2862,15 +2900,18 @@ impl Sema {
             );
         }
         let init = decl.init.clone().expect("compound literal initializer");
-        let (ty, mut stores) = self.shape_initializer(&decl.ty, &init, line, column)?;
+        let (ty, mut stores, mut overridden) =
+            self.shape_initializer(&decl.ty, &init, line, column)?;
         decl.ty = ty.clone();
         self.check_stores(&mut stores)?;
+        self.check_stores(&mut overridden)?;
         if !self.fn_name.is_empty() {
             decl.checked = Some(classify_init(&ty, stores));
             expr.set_ty(ty);
             return Ok(());
         }
         let value = self.fold_stores("compound literal", &ty, &stores)?;
+        self.fold_overridden("compound literal", &overridden)?;
         self.static_seq += 1;
         let symbol = format!(".compoundliteral.{}", self.static_seq);
         self.static_locals.push(IrGlobal {
@@ -4930,6 +4971,12 @@ fn store_within(store: &ElemStore, base: u64, end: u64) -> bool {
     let size = store.ty.size().unwrap_or(0);
     store.offset >= base && store.offset < end && store.offset + size <= end
 }
+
+/// A shaped initializer: the object's type (an array's length completed),
+/// the stores that make up its value, and the stores of union members that
+/// a later designator replaced. Those are not part of the value, but their
+/// expressions are still checked like the others (C11 6.7.9p2, p4).
+type Shaped = (CType, Vec<ElemStore>, Vec<ElemStore>);
 
 /// A union type's identity and size in bytes.
 type UnionKey = (u32, u64);
@@ -7070,6 +7117,34 @@ mod tests {
             sema_err("int k(); int k(int); int main(void) { return k(); }")
                 .contains("expects 1 argument")
         );
+    }
+
+    #[test]
+    fn checks_overridden_union_initializers() {
+        // C11 6.7.9: a store that a later designator for another union
+        // member replaces is not part of the value, but its expression is
+        // still checked, and in a static initializer it must be constant.
+        let union = "union U { int a; int b; };";
+        assert!(
+            sema_err(&format!("{union} union U u = {{.a = missing, .b = 1}};"))
+                .contains("undeclared identifier 'missing'")
+        );
+        assert!(sema_err(&format!(
+            "{union} int main(void) {{ union U u = {{.a = missing, .b = 1}}; return u.b; }}"
+        ))
+        .contains("undeclared identifier 'missing'"));
+        assert!(sema_err(&format!(
+            "{union} int main(void) {{ static union U u = {{.a = missing, .b = 1}}; return u.b; }}"
+        ))
+        .contains("undeclared identifier 'missing'"));
+        assert!(
+            sema_err(&format!("{union} int g; union U u = {{.a = g, .b = 1}};"))
+                .contains("not a constant expression")
+        );
+        assert!(sema_err(&format!(
+            "{union} struct S {{ int x; }}; union U u = {{.a = (struct S){{1}}, .b = 1}};"
+        ))
+        .contains("incompatible"));
     }
 
     #[test]
