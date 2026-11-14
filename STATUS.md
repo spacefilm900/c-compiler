@@ -482,8 +482,8 @@ That is 39,209 frames per level and 78,418 in all, every one identical to Clang'
 | --- | --- | --- |
 | Builds with this compiler alone | yes (82/82 files: 80 doomgeneric files plus the two harness files) | yes (82/82) |
 | Frames compared / matching Clang | 39,209 / 39,209 | 39,209 / 39,209 |
-| Compile time, ours vs Clang (sum over files) | 8.67 s vs 2.20 s (3.9x) | 12.37 s vs 5.79 s (2.1x) |
-| Run time, ours vs Clang (all eight demos, hashing included) | 43.26 s vs 44.66 s (0.97x) | 23.53 s vs 24.91 s (0.94x) |
+| Compile time, ours vs Clang (sum over files) | 9.26 s vs 2.52 s (3.7x) | 11.84 s vs 5.73 s (2.1x) |
+| Run time, ours vs Clang (all eight demos, hashing included) | 42.98 s vs 44.80 s (0.96x) | 23.48 s vs 24.12 s (0.97x) |
 
 About 7.1 s of our compile time is this compiler's preprocessor and frontend (about 90 ms a file); the rest is Clang turning the IR into objects. That is a tuning item for step 11, not a defect.
 

@@ -1,7 +1,7 @@
 # DOOM scorecard
 
-- Date: 2026-11-13
-- Compiler commit: `acc30df`
+- Date: 2026-11-14
+- Compiler commit: `214d2c2`
 - doomgeneric: `e257a09527062bfb986b6e5e0780839b6cbd5b71`
 - WAD: `freedoom1.wad` (SHA-256 `7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d`)
 - WAD: `freedoom2.wad` (SHA-256 `a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b`)
@@ -18,9 +18,9 @@
 | Frames matching Clang | 39209 | 39209 |
 | First mismatching frame | none | none |
 | Matches Clang | yes | yes |
-| Compile time, ours vs Clang | 8.67 s vs 2.20 s (3.94x) | 12.37 s vs 5.79 s (2.14x) |
-| of which our frontend | 7.14 s | 7.62 s |
-| Run time, ours vs Clang | 43.26 s vs 44.66 s (0.97x) | 23.53 s vs 24.91 s (0.94x) |
+| Compile time, ours vs Clang | 9.26 s vs 2.52 s (3.67x) | 11.84 s vs 5.73 s (2.07x) |
+| of which our frontend | 7.54 s | 7.37 s |
+| Run time, ours vs Clang | 42.98 s vs 44.80 s (0.96x) | 23.48 s vs 24.12 s (0.97x) |
 
 Compile time is the sum over all files of this compiler plus Clang turning
 its IR into an object, against Clang compiling the C directly. Run time is
@@ -46,10 +46,10 @@ Total frames compared, all demos and levels: 78418.
 | Id | Category | Where | Repro test | State |
 | --- | --- | --- | --- | --- |
 | DOOM-1 | frontend reject | `info.c`: the `states[]` table puts function addresses in the `actionf_t` union inside each struct element (`initializer of 'states' uses an address in a union`) | [tests/138_union_address_init.c](../../tests/138_union_address_init.c) | fixed |
-| DOOM-2 | wrong output (found in code review of the DOOM-1 fix, not by a demo) | a later designator that names another member of a union (`{ .a.p = &x, .b.q = &y }`) kept the earlier member's bytes or address; C11 6.7.9p17 and p19 make the rest of the newly named member zero. Static and automatic objects, with or without addresses; the plain-bytes and automatic cases predate DOOM-1 | [tests/139_union_member_switch.c](../../tests/139_union_member_switch.c) | fixed |
+| DOOM-2 | wrong output (found in code review of the DOOM-1 fix, not by a demo) | a later designator that names another member of a union (`{ .a.p = &x, .b.q = &y }`) kept the earlier member's bytes or address; C11 6.7.9p17 and p19 make the rest of the newly named member zero. Follow-up from a second review: an enclosing union of the same offset and size now keeps its choice when a nested union switches, and the replaced expressions are still checked (and must be constant in a static initializer). Static and automatic objects, with or without addresses; the plain-bytes and automatic cases predate DOOM-1 | [tests/139_union_member_switch.c](../../tests/139_union_member_switch.c) | fixed |
 | DOOM-3 | wrong output (found in code review of the DOOM-1 fix, not by a demo) | a static union whose first member holds a bit-field record, initialized through a longer member with an address: the address was attached to the shorter record's bytes, so the union came out too large and the field after it moved (`struct O { union U u; int tail; }` was 20 bytes, `tail` read 0) | [tests/140_union_bitfield_layout.c](../../tests/140_union_bitfield_layout.c) | fixed |
 | DOOM-H1 | harness, not a compiler defect | frames 1–27 and a few later frames changed between runs and between builds, because DOOM draws them from uninitialised memory that holds heap addresses | none; see [harness/doom/dg_alloc.c](../../harness/doom/dg_alloc.c) | fixed in the harness |
-| DOOM-H2 | harness, not a compiler defect | a cached doomgeneric tree was trusted from its `.pin` file alone; a relative `DOOM_WAD` was not found once the game ran in its temporary home; a compiler killed by a signal was recorded as a reject | none | fixed in the harness |
+| DOOM-H2 | harness, not a compiler defect | a cached doomgeneric tree was trusted from its `.pin` file alone; a relative `DOOM_WAD` was not found once the game ran in its temporary home; a compiler killed by a signal was recorded as a reject; a demo stopped at the `--frames` cap could be reported as a full pass | none | fixed in the harness |
 
 By category: frontend reject 1 (fixed); ICE 0; bad IR 0; wrong output 2 (fixed, found by review); crash 0; performance 0. The extra demos found no new defect.
 
