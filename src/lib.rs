@@ -126,10 +126,16 @@ mod tests {
         // A label address is a `void *` value.
         gnu_ok("int f(void) { void *p = &&x; char *q = p; goto *q; x: return q != 0; }");
         for (source, want) in [
-            ("void f(void) { void *p = &&nowhere; }", "undeclared label 'nowhere'"),
+            (
+                "void f(void) { void *p = &&nowhere; }",
+                "undeclared label 'nowhere'",
+            ),
             ("void f(void) { goto *1; }", "pointer"),
             ("void *p = &&x;", "outside a function"),
-            ("int f(void) { static char *t = (char *)&&x + 1; x: return 0; }", "constant"),
+            (
+                "int f(void) { static char *t = (char *)&&x + 1; x: return 0; }",
+                "constant",
+            ),
         ] {
             let err = compile(source, Dialect::Gnu11)
                 .err()
