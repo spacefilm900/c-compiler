@@ -783,8 +783,11 @@ impl Sema {
                 ty = CType::array(elem, Some(count));
             }
         }
-        // Length inference above walked the same items into scratch stores.
+        // Length inference above walked the same items into scratch stores,
+        // every element at offset 0. Its member choices and replaced stores
+        // belong to that scratch walk, not to this one.
         self.union_choice.clear();
+        self.overridden.clear();
         let mut stores = Vec::new();
         self.fill_object(&ty, init, 0, &mut stores, line, column)?;
         if stores.is_empty() && !ty.is_array() {
