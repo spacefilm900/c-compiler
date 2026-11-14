@@ -14,7 +14,9 @@ window, a fake clock, and no input. It plays a recorded demo with -timedemo
 freedoom1.wad and freedoom2.wad (DEMO1 to DEMO4 in each) is played to its
 natural end, where -timedemo reports "timed N gametics" and exits; --frames
 is only a safety cap. Both builds must end the same way after the same
-number of game tics, with the same hash for every frame.
+number of game tics, with the same hash for every frame. A demo that stops
+at the cap compared only a prefix: that is reported as incomplete and fails
+the run unless --allow-prefix is given, and then it is labelled prefix only.
 
 For each optimisation level the harness does three graded steps:
 
@@ -320,6 +322,26 @@ def level(
     return result
 
 
+def complete(lvl: dict) -> bool:
+    """Every demo at this level ran to its natural end (not the frame cap)."""
+    demos = lvl.get("demos", [])
+    return bool(demos) and all(d["end"] == "demo end" for d in demos)
+
+
+def verdict(levels: list[dict], allow_prefix: bool) -> tuple[bool, str]:
+    """Overall result. A demo stopped by --frames compared only a prefix."""
+    matched = all(lvl["build"] == "full" and bool(lvl.get("match")) for lvl in levels) and bool(levels)
+    capped = sum(1 for lvl in levels for d in lvl.get("demos", []) if d["end"] != "demo end")
+    if not matched:
+        return False, "DOOM: FAIL"
+    if capped == 0:
+        return True, "DOOM: PASS"
+    note = f"{capped} demo run(s) stopped at the frame cap"
+    if allow_prefix:
+        return True, f"DOOM: PASS (prefix only: {note})"
+    return False, f"DOOM: INCOMPLETE ({note}; frames matched, but not to the demo's end)"
+
+
 def summary(res: dict) -> str:
     c = res.get("compare", {})
     lines = [
@@ -389,7 +411,11 @@ def render_scorecard(payload: dict, title: str, notes: str = "") -> str:
         f"- Compiler commit: `{meta.get('compiler_commit', '')}`",
         f"- doomgeneric: `{meta.get('doomgeneric_pin', '')}`",
         *[f"- WAD: `{w['wad']}` (SHA-256 `{w['sha256']}`)" for w in meta.get("wads", [])],
-        "- Demos played with `-timedemo` to their natural end",
+        (
+            "- Demos played with `-timedemo` to their natural end"
+            if all(complete(lvl) for lvl in levels)
+            else f"- Some demos stopped at the frame cap of {payload['frames']}: prefix only, not a full demo"
+        ),
         f"- Reference: {meta.get('clang', 'clang')}, `-std=gnu11`, same optimisation level",
         f"- Frame cap per demo: {payload['frames']}; translation units: {total}; compile jobs: {payload.get('jobs', '')};"
         f" demo runs at once: {payload.get('play_jobs', 1)}",
@@ -402,7 +428,14 @@ def render_scorecard(payload: dict, title: str, notes: str = "") -> str:
         row("Frames compared", lambda l: str(l.get("compare", {}).get("reference_frames", 0))),
         row("Frames matching Clang", lambda l: str(l.get("compare", {}).get("matching", 0))),
         row("First mismatching frame", lambda l: str(l.get("compare", {}).get("first_mismatch") or "none")),
-        row("Matches Clang", lambda l: yes(bool(l.get("match")) and l["build"] == "full")),
+        row(
+            "Matches Clang",
+            lambda l: (
+                yes(bool(l.get("match")) and l["build"] == "full")
+                if complete(l) or not l.get("match")
+                else "prefix only"
+            ),
+        ),
         row("Compile time, ours vs Clang", lambda l: ratio(l["ours_compile_seconds"], l["clang_compile_seconds"])),
         row("of which our frontend", lambda l: f"{l['ours_frontend_seconds']:.2f} s"),
         row("Run time, ours vs Clang", lambda l: ratio(l.get("ours_run_seconds", 0.0), l["clang_run_seconds"])),
@@ -450,6 +483,8 @@ def demo_table(levels: list[dict]) -> list[str]:
             hit = next((d for d in lvl.get("demos", []) if (d["wad"], d["demo"]) == key), None)
             if hit is None:
                 cells.append("not run")
+            elif hit["match"] and hit["end"] != "demo end":
+                cells.append(f"prefix only ({hit['compare']['matching']} frames)")
             elif hit["match"]:
                 cells.append(f"yes ({hit['compare']['matching']} frames)")
             else:
@@ -498,6 +533,11 @@ def main() -> int:
         help="LEVEL or LEVEL:WAD/DEMO,... (repeatable; default O0 and O2 with every demo)",
     )
     ap.add_argument("--frames", type=int, default=100000, help="safety cap on frames per demo (default 100000)")
+    ap.add_argument(
+        "--allow-prefix",
+        action="store_true",
+        help="a demo stopped by --frames passes as a prefix comparison (labelled prefix only)",
+    )
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     ap.add_argument(
         "--play-jobs",
@@ -533,12 +573,10 @@ def main() -> int:
 
     files = sources()
     results = []
-    ok = True
     for opt, demos in parse_plan(args.opt):
         res = level(opt, files, args.out, demos, args.frames, args.jobs, args.play_jobs)
         print(summary(res), flush=True)
         results.append(res)
-        ok = ok and res["build"] == "full" and bool(res.get("match"))
     payload = {
         "meta": metadata(),
         "frames": args.frames,
@@ -553,7 +591,8 @@ def main() -> int:
     if args.scorecard:
         args.scorecard.parent.mkdir(parents=True, exist_ok=True)
         args.scorecard.write_text(render_scorecard(payload, args.title, notes))
-    print("DOOM: PASS" if ok else "DOOM: FAIL")
+    ok, text = verdict(results, args.allow_prefix)
+    print(text)
     return 0 if ok else 1
 
 
