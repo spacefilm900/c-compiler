@@ -35,13 +35,24 @@ both modes, -std=c11 and -std=gnu11.
 Env: CC_UNDER_TEST, CLANG (default "clang"), TIMEOUT (seconds, default 10).
 Exit status 0 only if all tests pass.
 """
-import os, shutil, subprocess, sys, tempfile
+import os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
 CLANG = os.environ.get("CLANG", "clang")
 TIMEOUT = float(os.environ.get("TIMEOUT", "10"))
+MIN_CLANG_MAJOR = 18
+
+def clang_major():
+    """Major version from `clang --version`, or None if it cannot be read."""
+    try:
+        out = subprocess.run([CLANG, "--version"], capture_output=True, text=True,
+                             timeout=TIMEOUT).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r"version (\d+)", out)
+    return int(m.group(1)) if m else None
 
 def run(cmd):
     try:
@@ -142,6 +153,13 @@ def main():
         problems.append(f"compiler not found/executable: {COMPILER}")
     if shutil.which(CLANG) is None:
         problems.append(f"clang not found: {CLANG}")
+    else:
+        major = clang_major()
+        if major is None or major < MIN_CLANG_MAJOR:
+            problems.append(
+                f"Clang/LLVM >= {MIN_CLANG_MAJOR} is required (LLVM 15-17 split an "
+                f"i128 argument between a register and the stack); got: {major}"
+            )
     total = len(tests) + len(hosted) + len(crosses) + len(gnu) + len(both)
     if problems:
         for t in tests:

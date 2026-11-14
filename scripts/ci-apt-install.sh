@@ -7,13 +7,15 @@
 set -eu
 
 # Link a versioned tool (clang-18, llvm-as-18, ...) to the unversioned name.
+# Only LLVM 18 or newer: older x86-64 backends split an i128 argument
+# between the last GP register and the stack (see README).
 find_tool() {
   cmd=$1
   if command -v "$cmd" >/dev/null 2>&1; then
     return 0
   fi
   ver=
-  for ver in 18 17 16 19 15; do
+  for ver in 18 19 20 21; do
     if command -v "$cmd-$ver" >/dev/null 2>&1; then
       sudo ln -sf "$(command -v "$cmd-$ver")" /usr/local/bin/"$cmd"
       return 0

@@ -14,7 +14,7 @@ The decisions behind this compiler are in [DESIGN.md](DESIGN.md).
 
 ## Build
 
-Emitting IR does not need Clang. Running the result does. The IR uses opaque pointers, the triple `x86_64-pc-linux-gnu`, and that triple's System V data layout, so Clang/LLVM must be 15 or newer.
+Emitting IR does not need Clang. Running the result does. The IR uses opaque pointers, the triple `x86_64-pc-linux-gnu`, and that triple's System V data layout. Clang/LLVM must be **18 or newer**: opaque pointers need 15, and LLVM 15–17 x86-64 backends split an `i128` argument between the last free GP register and the stack instead of passing it wholly on the stack as System V requires (fixed in LLVM 18). This compiler passes `__int128` as a plain `i128` and its `va_arg` reads a stack-passed one as 16 bytes from the overflow area, so on LLVM 15–17 a variadic `__int128` after five GP arguments would read the wrong value. `harness/run_tests.py` and CI refuse an older Clang.
 
 `rust-toolchain.toml` pins Rust **1.85.1** with the `rustfmt` and `clippy` components. That matches the system `cargo` used for the local unit tests. On that machine, plain `cargo clippy` is not installed; clippy is the rustup command below.
 
@@ -27,7 +27,7 @@ make
 
 `make` (GNU make 4.4.1 locally) writes `build/compiler`.
 
-Local execution used Debian Clang/LLVM **19.1.7**. Put that install's `bin` directory on `PATH` (set this to your path). Any Clang/LLVM 15 or newer on `PATH` is enough for the harness.
+Local execution used Debian Clang/LLVM **19.1.7**. Put that install's `bin` directory on `PATH` (set this to your path). Any Clang/LLVM 18 or newer on `PATH` is enough for the harness (for example a recent Homebrew `llvm`).
 
 ## Contract
 
@@ -90,7 +90,7 @@ Point `rustup` at your install (set this to your path). The numeric version of t
 
 `.github/workflows/ci.yml` runs on `push` and `pull_request`. The GitHub source of truth is `https://github.com/spacefilm900/c-compiler`. Observed Actions runs, including whether any run has completed, are recorded in `STATUS.md`.
 
-The workflow checks out the repo, installs Rust 1.85.1 (`rustfmt`, `clippy`), and installs Ubuntu 24.04 packages `clang`, `llvm`, `make`, and `python3`. It exits if `clang --version` reports a major version below 15. Then it runs `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo test --offline --lib`, `make`, and `python3 harness/run_tests.py`. The job token can read contents only. The job times out after 20 minutes, and a newer push to the same ref cancels the older run.
+The workflow checks out the repo, installs Rust 1.85.1 (`rustfmt`, `clippy`), and installs Ubuntu 24.04 packages `clang`, `llvm`, `make`, and `python3`. It exits if `clang --version` reports a major version below 18. Then it runs `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo test --offline --lib`, `make`, and `python3 harness/run_tests.py`. The job token can read contents only. The job times out after 20 minutes, and a newer push to the same ref cancels the older run.
 
 Actions are pinned to commits, not floating tags:
 

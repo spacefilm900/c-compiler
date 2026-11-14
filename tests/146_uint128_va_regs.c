@@ -43,7 +43,9 @@ static unsigned long long hi(__uint128_t v)
    registers are given back). GCC passes m.x in %r9, but the LLVM 19
    backend puts it on the stack while Clang's va_arg reads %r9, so only
    the SSE half and the values before it are compared here. A caller that
-   sent the whole struct to the stack would leave m.d unset in %xmm0. */
+   sent the whole struct to the stack would leave m.d unset in %xmm0.
+   LLVM 15-17 backends split the __int128 between %r9 and the stack, so
+   this test (and the compiler) needs LLVM 18 or newer. */
 static void spill_then_mix(int skip, ...)
 {
     __builtin_va_list ap;

@@ -41,8 +41,8 @@ jobs:
           make --version
           python3 --version
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
@@ -91,8 +91,8 @@ jobs:
           make --version
           python3 --version
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
@@ -130,8 +130,8 @@ jobs:
           set -euo pipefail
           scripts/ci-apt-install.sh clang llvm make python3 g++
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
@@ -169,8 +169,8 @@ jobs:
           set -euo pipefail
           scripts/ci-apt-install.sh clang llvm make python3 bison
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
@@ -227,8 +227,8 @@ jobs:
           set -euo pipefail
           scripts/ci-apt-install.sh clang llvm make python3
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
@@ -269,8 +269,8 @@ jobs:
           set -euo pipefail
           scripts/ci-apt-install.sh clang llvm make python3 bison
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
@@ -315,8 +315,8 @@ jobs:
           set -euo pipefail
           scripts/ci-apt-install.sh clang llvm make python3 unzip
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
@@ -361,8 +361,8 @@ jobs:
           set -euo pipefail
           scripts/ci-apt-install.sh clang llvm make python3
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
@@ -400,8 +400,8 @@ jobs:
           set -euo pipefail
           scripts/ci-apt-install.sh clang llvm make python3 unzip
           major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
-            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
             exit 1
           fi
 
