@@ -62,7 +62,7 @@ jobs:
           python3 harness/run_tests.py
 
       - name: Csmith campaign script tests
-        run: python3 -m unittest tools/test_csmith_campaign.py tools/test_run_doom.py
+        run: python3 -m unittest tools/test_csmith_campaign.py tools/test_run_doom.py tools/test_run_lua.py
 
   wacc:
     name: writing-a-c-compiler suite
@@ -339,3 +339,42 @@ jobs:
           scripts/fetch_freedoom.sh
           make
           python3 harness/run_doom.py --opt O0 --opt O2 --play-jobs "$(nproc)"
+
+  lua:
+    name: lua test suite and workloads
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+          components: rustfmt, clippy
+
+      - name: Install Clang, LLVM, make, and Python
+        run: |
+          set -euo pipefail
+          scripts/ci-apt-install.sh clang llvm make python3
+          major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          if [ -z "${major}" ] || [ "${major}" -lt 15 ]; then
+            echo "Clang/LLVM >= 15 is required. Got: $(clang --version | head -n 1)" >&2
+            exit 1
+          fi
+
+      - name: Cache the Lua 5.4.7 release and its test suite
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: tests/external/lua
+          key: lua-5.4.7-9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30-8a4898ffe4c7613c8009327a0722db7a41ef861d526c77c5b46114e59ebf811e-${{ runner.os }}
+
+      - name: Build Lua both ways and compare the test suite, workloads, and bytecode at -O0 and -O2
+        run: |
+          set -euo pipefail
+          scripts/fetch_lua.sh
+          make
+          python3 harness/run_lua.py --opt O0 --opt O2 --run-jobs "$(nproc)"
