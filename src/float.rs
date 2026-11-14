@@ -9,6 +9,42 @@
 //! constants are converted here from the binary significand.
 
 use crate::ast::{sign_extend, Expr, FloatKind, StrEnc, TypeName};
+use crate::target::LongDouble;
+
+/// The format constants of `kind` are computed in. `long double` is the
+/// x87 format only on x86_64. Where it shares the `double` format (Apple
+/// arm64) it is folded as `double`. On AArch64 Linux, where it is IEEE
+/// binary128, constants are folded in `double` precision and widened when
+/// written out ([`llvm_const`]); run-time arithmetic is still binary128.
+pub fn fold(kind: FloatKind) -> FloatKind {
+    if kind == FloatKind::LongDouble && !kind.is_x87() {
+        FloatKind::Double
+    } else {
+        kind
+    }
+}
+
+/// Widen IEEE binary64 bits to binary128 bits, keeping NaN payloads.
+fn widen_f64_to_f128(bits: u64) -> u128 {
+    let sign = u128::from(bits >> 63) << 127;
+    let exp = (bits >> 52) & 0x7ff;
+    let frac = u128::from(bits & ((1u64 << 52) - 1));
+    if exp == 0x7ff {
+        return sign | (0x7fffu128 << 112) | (frac << 60);
+    }
+    if exp == 0 {
+        if frac == 0 {
+            return sign;
+        }
+        // Subnormal double: normalise. The value is frac * 2^-1074.
+        let k = 127 - frac.leading_zeros(); // highest set bit, 0..=51
+        let exp128 = 16383 - 1074 + u128::from(k);
+        let mant = (frac << (112 - k)) & ((1u128 << 112) - 1);
+        return sign | (exp128 << 112) | mant;
+    }
+    let exp128 = u128::from(exp) + (16383 - 1023);
+    sign | (exp128 << 112) | (frac << 60)
+}
 
 /// IEEE-64 bit pattern of `bits`, which are `f32` bits for [`FloatKind::Float`]
 /// and `f64` bits for [`FloatKind::Double`].
@@ -18,7 +54,7 @@ use crate::ast::{sign_extend, Expr, FloatKind, StrEnc, TypeName};
 /// operations so a signaling NaN keeps its signaling encoding. Host
 /// `f64::from(f32)` would quiet a signaling NaN.
 pub fn llvm_bits(kind: FloatKind, bits: u128) -> u128 {
-    match kind {
+    match fold(kind) {
         FloatKind::Float => u128::from(widen_f32_bits(bits as u32)),
         FloatKind::Double => bits & 0xFFFF_FFFF_FFFF_FFFF,
         FloatKind::LongDouble => bits & ((1u128 << 80) - 1),
@@ -50,15 +86,30 @@ fn widen_f32_bits(bits: u32) -> u64 {
     sign | (exp64 << 52) | (u64::from(frac) << 29)
 }
 
+/// The bytes the object holds, little-endian, for a folded value of type
+/// `kind`. Only binary128 `long double` differs from the folded bits.
+pub fn memory_bits(kind: FloatKind, bits: u128) -> u128 {
+    if kind == FloatKind::LongDouble && crate::target::current().long_double() == LongDouble::Quad {
+        widen_f64_to_f128(bits as u64)
+    } else {
+        bits
+    }
+}
+
 pub fn llvm_const(kind: FloatKind, bits: u128) -> String {
-    match kind {
+    if kind == FloatKind::LongDouble && crate::target::current().long_double() == LongDouble::Quad {
+        // LLVM spells binary128 as `0xL`, the low 64 bits then the high 64.
+        let wide = widen_f64_to_f128(bits as u64);
+        return format!("0xL{:016X}{:016X}", wide as u64, (wide >> 64) as u64);
+    }
+    match fold(kind) {
         FloatKind::LongDouble => format!("0xK{:020X}", llvm_bits(kind, bits)),
         _ => format!("0x{:016X}", llvm_bits(kind, bits) as u64),
     }
 }
 
 pub fn real_is_zero(kind: FloatKind, bits: u128) -> bool {
-    match kind {
+    match fold(kind) {
         FloatKind::Float => f32::from_bits(bits as u32) == 0.0,
         FloatKind::Double => f64::from_bits(bits as u64) == 0.0,
         FloatKind::LongDouble => crate::fp80::is_zero(bits),
@@ -67,7 +118,7 @@ pub fn real_is_zero(kind: FloatKind, bits: u128) -> bool {
 
 /// Parse a decimal floating constant with the suffix already removed.
 pub fn parse_decimal(spelling: &str, kind: FloatKind) -> Option<u128> {
-    match kind {
+    match fold(kind) {
         FloatKind::Float => spelling
             .parse::<f32>()
             .ok()
@@ -92,7 +143,7 @@ pub fn parse_hex(
     bin_exp: i32,
     kind: FloatKind,
 ) -> Option<u128> {
-    match kind {
+    match fold(kind) {
         FloatKind::Float => Some(u128::from(hex_float_bits(
             int_digits,
             frac_digits,
@@ -242,7 +293,7 @@ impl FpFormatBuiltin {
 
 /// +infinity of `kind`, as the type's bit pattern.
 pub fn plus_inf(kind: FloatKind) -> u128 {
-    match kind {
+    match fold(kind) {
         FloatKind::Float => u128::from(inf_bits(true)),
         FloatKind::Double => u128::from(inf_bits(false)),
         FloatKind::LongDouble => crate::fp80::plus_inf(),
@@ -258,7 +309,7 @@ pub fn plus_inf(kind: FloatKind) -> u128 {
 /// infinity). This follows the GCC manual's description of `__builtin_nan`
 /// and `__builtin_nans`.
 pub fn nan_bits(kind: FloatKind, payload: u128, signaling: bool) -> u128 {
-    match kind {
+    match fold(kind) {
         FloatKind::Float => ieee_nan_bits(payload, signaling, true),
         FloatKind::Double => ieee_nan_bits(payload, signaling, false),
         FloatKind::LongDouble => crate::fp80::nan_bits(payload, signaling),
@@ -492,6 +543,7 @@ fn pack(exp_field: u32, frac: u64, is_f32: bool) -> u64 {
 /// does not fit. C leaves that case undefined; a constant initializer
 /// rejects it.
 pub fn real_to_int(bits: u128, kind: FloatKind, dest: TypeName) -> Option<u128> {
+    let kind = fold(kind);
     if kind == FloatKind::LongDouble {
         return crate::fp80::to_int(bits, dest);
     }
@@ -568,6 +620,7 @@ fn convert_wide(truncated: f64, dest: TypeName) -> Option<u128> {
 /// The cast goes straight to the destination format. Rounding through
 /// `f64` and then to `f32` can change a value that is not a tie in `f32`.
 pub fn int_to_real(bits: u128, src: TypeName, dest: FloatKind) -> u128 {
+    let dest = fold(dest);
     if dest == FloatKind::LongDouble {
         return crate::fp80::from_int(bits, src);
     }
@@ -595,6 +648,7 @@ pub fn int_to_real(bits: u128, src: TypeName, dest: FloatKind) -> u128 {
 }
 
 pub fn real_to_real(bits: u128, src: FloatKind, dest: FloatKind) -> u128 {
+    let (src, dest) = (fold(src), fold(dest));
     if src == dest {
         return bits;
     }
@@ -625,7 +679,7 @@ pub fn real_to_real(bits: u128, src: FloatKind, dest: FloatKind) -> u128 {
 }
 
 pub fn negate(kind: FloatKind, bits: u128) -> u128 {
-    match kind {
+    match fold(kind) {
         FloatKind::Float => u128::from((-f32::from_bits(bits as u32)).to_bits()),
         FloatKind::Double => u128::from((-f64::from_bits(bits as u64)).to_bits()),
         FloatKind::LongDouble => crate::fp80::negate(bits),
@@ -633,6 +687,7 @@ pub fn negate(kind: FloatKind, bits: u128) -> u128 {
 }
 
 pub fn apply_bin(op: FloatOp, kind: FloatKind, left: u128, right: u128) -> u128 {
+    let kind = fold(kind);
     if kind == FloatKind::LongDouble {
         return match op {
             FloatOp::Add => crate::fp80::add(left, right),
@@ -669,6 +724,7 @@ pub fn apply_bin(op: FloatOp, kind: FloatKind, left: u128, right: u128) -> u128 
 }
 
 pub fn apply_cmp(op: FloatCmp, kind: FloatKind, left: u128, right: u128) -> bool {
+    let kind = fold(kind);
     if kind == FloatKind::LongDouble {
         let which = match op {
             FloatCmp::Eq => crate::fp80::Cmp::Eq,

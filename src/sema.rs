@@ -3953,6 +3953,8 @@ impl Sema<'_> {
             Symbol::Func(func) => (func.symbol, func.ret, func.params, func.variadic),
             Symbol::Var(_) => unreachable!("direct call is a function"),
         };
+        let unprototyped =
+            matches!(self.lookup(&name), Some(Symbol::Func(func)) if !func.prototype);
         self.require_passed_aggregate(&ret, line, column, true)?;
         let arity = params.len();
         if variadic {
@@ -4009,7 +4011,7 @@ impl Sema<'_> {
                 name: fname,
                 ret: ret.clone(),
                 params,
-                variadic,
+                variadic: variadic && !(unprototyped && fixed_unprototyped_calls()),
                 indirect: false,
             });
         }
@@ -4442,7 +4444,6 @@ impl Sema<'_> {
         }
         let params = func.params.clone();
         let ret = func.ret.clone();
-        let variadic = func.variadic || !func.prototype;
         if let Expr::Call { args, .. } = expr {
             for (index, arg) in args.iter_mut().enumerate() {
                 self.check_expr(arg)?;
@@ -4463,7 +4464,7 @@ impl Sema<'_> {
                 name: String::new(),
                 ret: ret.clone(),
                 params,
-                variadic,
+                variadic: func.variadic || (!func.prototype && !fixed_unprototyped_calls()),
                 indirect: true,
             });
         }
@@ -4558,6 +4559,26 @@ impl Sema<'_> {
     }
 
     fn check_va_list_arg(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
+        if crate::target::current().is_aarch64() {
+            // The va_list is an object (`char *` on Apple, the AAPCS64
+            // structure on Linux), not an array, so the builtins take its
+            // address explicitly.
+            self.check_expr(expr)?;
+            let ty = expr.ty().expect("typed");
+            if !(va_list_object(&ty) && expr.is_lvalue()) {
+                return self.err(
+                    expr.line(),
+                    expr.column(),
+                    format!("expected a va_list, found '{}'", ty.display()),
+                );
+            }
+            let line = expr.line();
+            let column = expr.column();
+            let inner = std::mem::replace(expr, Expr::int(0, TypeName::Int, line, column));
+            *expr = Expr::unary(UnaryOp::Addr, inner, line, column);
+            expr.set_ty(CType::pointer(ty));
+            return Ok(());
+        }
         self.check_expr(expr)?;
         self.decay(expr)?;
         let ty = expr.ty().expect("typed");
@@ -5406,6 +5427,9 @@ fn write_folded_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: u
         }
         ConstInit::Float(bits) => {
             let width = ty.size().unwrap_or(0) as usize;
+            let bits = &ty
+                .float_kind()
+                .map_or(*bits, |kind| crate::float::memory_bits(kind, *bits));
             for index in 0..width {
                 let at = offset + index;
                 if at < bytes.len() {
@@ -5429,6 +5453,19 @@ fn write_folded_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: u
         }
         _ => false,
     }
+}
+
+/// A `va_list` object on AArch64: `char *` on Apple, `struct __va_list`
+/// on Linux.
+fn va_list_object(ty: &CType) -> bool {
+    let bare = ty.unqualified();
+    if crate::target::current().is_apple() {
+        return bare
+            .pointee()
+            .is_some_and(|pointee| pointee.unqualified() == CType::from_name(TypeName::Char));
+    }
+    bare.struct_ref()
+        .is_some_and(|handle| handle.tag() == "__va_list")
 }
 
 fn va_list_pointee(ty: &CType) -> bool {
@@ -5520,7 +5557,7 @@ fn string_elem_ok(elem: &CType, enc: StrEnc) -> bool {
     match enc {
         StrEnc::Byte => elem.is_character(),
         StrEnc::Utf16 => elem.as_integer() == Some(TypeName::UShort),
-        StrEnc::Wchar => elem.as_integer() == Some(TypeName::Int),
+        StrEnc::Wchar => elem.as_integer() == Some(StrEnc::Wchar.elem()),
         StrEnc::Utf32 => elem.as_integer() == Some(TypeName::UInt),
     }
 }
@@ -6954,6 +6991,16 @@ fn number_stmt(stmt: &mut Stmt, next: &mut u32, prefix: &str) {
         | Stmt::Goto { .. }
         | Stmt::GotoPtr { .. } => {}
     }
+}
+
+/// A call through a type without a prototype passes the promoted arguments
+/// as fixed arguments on AArch64, where variadic arguments travel
+/// differently (all on the stack for Apple arm64; in their own register
+/// save areas for AAPCS64). The callee is defined with fixed parameters,
+/// so the call must match that. On x86_64 the call stays variadic, which
+/// System V AMD64 passes identically apart from `%al`.
+fn fixed_unprototyped_calls() -> bool {
+    crate::target::current().is_aarch64()
 }
 
 #[cfg(test)]

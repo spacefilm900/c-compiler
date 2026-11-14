@@ -36,6 +36,8 @@ for pkg in "$@"; do
       ;;
     llvm)
       find_tool llvm-as || need="$need llvm"
+      # harness/run_arm64_ir.py also finds a versioned llc-18..21 itself.
+      find_tool llc || :
       ;;
     make)
       command -v make >/dev/null 2>&1 || need="$need make"

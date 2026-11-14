@@ -1,0 +1,7 @@
+# Cross-target harness known failures: "TARGET LABEL # reason".
+# TARGET is the --target name given to harness/run_cross.py.
+aarch64-linux-gnu 113_wide.c # test declares `typedef int wchar_t`; wchar_t is unsigned int on AArch64 Linux, so the Clang oracle rejects L"..." initializers
+aarch64-linux-gnu 122_utf8_ucn.c # same `typedef int wchar_t` assumption as 113_wide.c
+aarch64-linux-gnu 112_longdouble.c # long double is IEEE binary128 there; constants are folded in double precision and widened, so 0.1L loses low bits
+arm64-apple-macos 112_longdouble.c # test dumps 10 bytes of a long double; on Apple arm64 long double is the 8-byte double, so bytes 8-9 are outside the object
+arm64-apple-macos gnu/both/01_attributes.c # test uses the ELF section name ".data.custom"; Mach-O needs "segment,section", so the Clang oracle rejects it

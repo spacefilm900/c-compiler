@@ -10,6 +10,7 @@
 //! adjustment. A struct is one declaration: the same tag in another scope is
 //! a different type, and completing the type updates every use of it.
 
+use crate::target::LongDouble;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -71,12 +72,15 @@ impl TypeName {
         !self.is_void()
     }
 
-    /// `char` is signed on this target.
+    /// Plain `char` is signed on x86_64 and Apple arm64, and unsigned on
+    /// AArch64 Linux ([`crate::target::Target::char_is_signed`]).
     pub fn is_signed(self) -> bool {
+        if self == TypeName::Char {
+            return crate::target::current().char_is_signed();
+        }
         matches!(
             self,
-            TypeName::Char
-                | TypeName::SChar
+            TypeName::SChar
                 | TypeName::Short
                 | TypeName::Int
                 | TypeName::Long
@@ -188,8 +192,15 @@ impl TypeName {
     /// 32 bits to 32 bits: sign-extend signed types, zero-extend unsigned
     /// types. LLVM spells that `signext` / `zeroext` on the parameter or
     /// return. `int` and wider types are passed as themselves.
+    ///
+    /// Apple arm64 has the same rule. AAPCS64 itself (AArch64 Linux) leaves
+    /// the upper bits unspecified, so nothing is added there.
     pub fn abi_attr(self) -> Option<&'static str> {
+        if !crate::target::current().extends_narrow_args() {
+            return None;
+        }
         match self {
+            TypeName::Char if !self.is_signed() => Some("zeroext"),
             TypeName::Char | TypeName::SChar | TypeName::Short => Some("signext"),
             TypeName::Bool | TypeName::UChar | TypeName::UShort => Some("zeroext"),
             _ => None,
@@ -338,6 +349,8 @@ struct StructBody {
     llvm_name: String,
     /// See [`StructRef::set_irregular`].
     irregular: bool,
+    /// See [`StructRef::unadjusted_align`]; 0 means the same as `align`.
+    unadjusted_align: u32,
 }
 
 impl PartialEq for StructRef {
@@ -367,6 +380,7 @@ impl StructRef {
                 align: 1,
                 llvm_name: String::new(),
                 irregular: false,
+                unadjusted_align: 0,
             })),
         }
     }
@@ -381,6 +395,12 @@ impl StructRef {
 
     pub fn id(&self) -> u32 {
         self.id
+    }
+
+    /// Identity of the shared record body, unique among live records even
+    /// when ids are reused (as hand-built test types do).
+    pub fn body_key(&self) -> usize {
+        Rc::as_ptr(&self.data) as usize
     }
 
     pub fn tag(&self) -> String {
@@ -408,6 +428,24 @@ impl StructRef {
 
     pub fn align(&self) -> u32 {
         self.data.borrow().align
+    }
+
+    /// The alignment without an `aligned` attribute written on the record
+    /// itself (members' own alignments still count). AAPCS64 Linux uses it
+    /// to pick registers and stack slots for an argument; observed with
+    /// Clang as a black box, `struct { long a, b; } __attribute__((aligned
+    /// (16)))` goes in any two registers there, but in an even pair on Apple.
+    pub fn unadjusted_align(&self) -> u32 {
+        let body = self.data.borrow();
+        if body.unadjusted_align == 0 {
+            body.align
+        } else {
+            body.unadjusted_align
+        }
+    }
+
+    pub fn set_unadjusted_align(&self, align: u32) {
+        self.data.borrow_mut().unadjusted_align = align.max(1);
     }
 
     /// LLVM type name without the leading `%`, such as `struct.Node`.
@@ -615,11 +653,15 @@ pub fn layout_members(
     let mut places = Vec::with_capacity(members.len());
     let mut bit_pos: u64 = 0;
     let mut align = 1u32;
+    let unnamed_aligns = crate::target::current().unnamed_bitfield_aligns();
     for member in members {
         let field_align = member.align.max(1);
         if let Some(width) = member.bit_width {
             let unit_bits = member.size.max(1).saturating_mul(8);
             let align_bits = u64::from(field_align).saturating_mul(8);
+            if unnamed_aligns && !member.named {
+                align = align.max(field_align);
+            }
             if width == 0 {
                 bit_pos = align_up(bit_pos, align_bits)?;
                 places.push(LayoutPlace {
@@ -664,9 +706,13 @@ fn layout_union_members(members: &[LayoutMember]) -> Option<(Vec<LayoutPlace>, u
     let mut places = Vec::with_capacity(members.len());
     let mut align = 1u32;
     let mut size = 0u64;
+    let unnamed_aligns = crate::target::current().unnamed_bitfield_aligns();
     for member in members {
         let field_align = member.align.max(1);
         if let Some(width) = member.bit_width {
+            if unnamed_aligns && !member.named {
+                align = align.max(field_align);
+            }
             if width == 0 {
                 places.push(LayoutPlace {
                     offset: 0,
@@ -766,7 +812,10 @@ impl FloatKind {
         match self {
             FloatKind::Float => 4,
             FloatKind::Double => 8,
-            FloatKind::LongDouble => 16,
+            FloatKind::LongDouble => match crate::target::current().long_double() {
+                LongDouble::Double => 8,
+                LongDouble::X87 | LongDouble::Quad => 16,
+            },
         }
     }
 
@@ -778,8 +827,31 @@ impl FloatKind {
         match self {
             FloatKind::Float => "float",
             FloatKind::Double => "double",
-            FloatKind::LongDouble => "x86_fp80",
+            FloatKind::LongDouble => match crate::target::current().long_double() {
+                LongDouble::X87 => "x86_fp80",
+                LongDouble::Double => "double",
+                LongDouble::Quad => "fp128",
+            },
         }
+    }
+
+    /// The kind whose format this kind uses on the current target: `long
+    /// double` is computed as `double` where the two share a format (Apple
+    /// arm64). Constant folding and IR conversions use this, while the C
+    /// type system still keeps `long double` distinct from `double`.
+    pub fn repr(self) -> FloatKind {
+        if self == FloatKind::LongDouble
+            && crate::target::current().long_double() == LongDouble::Double
+        {
+            FloatKind::Double
+        } else {
+            self
+        }
+    }
+
+    /// `long double` is the x87 extended format on this target.
+    pub fn is_x87(self) -> bool {
+        self == FloatKind::LongDouble && crate::target::current().long_double() == LongDouble::X87
     }
 }
 
@@ -808,12 +880,14 @@ impl StrEnc {
     }
 
     /// Element type of the array. `char16_t` and `char32_t` are the target's
-    /// unsigned 16-bit and 32-bit types. `wchar_t` is `int`.
+    /// unsigned 16-bit and 32-bit types. `wchar_t` is `int`, or `unsigned
+    /// int` where the target makes it unsigned (AArch64 Linux).
     pub fn elem(self) -> TypeName {
         match self {
             StrEnc::Byte => TypeName::Char,
             StrEnc::Utf16 => TypeName::UShort,
-            StrEnc::Wchar => TypeName::Int,
+            StrEnc::Wchar if crate::target::current().wchar_is_signed() => TypeName::Int,
+            StrEnc::Wchar => TypeName::UInt,
             StrEnc::Utf32 => TypeName::UInt,
         }
     }

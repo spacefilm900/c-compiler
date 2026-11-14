@@ -38,6 +38,8 @@ build/compiler -E [options] INPUT.c [-o OUTPUT.i]
 
 Options are `-I DIR` (also `-IDIR`), `-D NAME[=text]` (also `-DNAME=text`; a bare `-DNAME` defines `NAME` as `1`), `-U NAME`, and `-E`. `-D` and `-U` apply in order, after the predefined macros.
 
+`-target TRIPLE` (also `--target TRIPLE` and `--target=TRIPLE`) picks the target; the default is the host. `x86_64-linux-gnu` is the original target and its output is unchanged. `arm64-apple-macos` (optionally with a version, `arm64-apple-macos14`; the default minimum is macOS 11) emits IR for Apple Silicon Macs, and `aarch64-linux-gnu` for 64-bit Arm Linux. `-isysroot DIR` names the SDK (macOS) or sysroot whose `usr/include` holds the C library headers; on a Mac the SDK is otherwise found with `xcrun`. The arm64 targets are new and have not yet been run on a real Mac; see [docs/USER_GUIDE_MACOS.md](docs/USER_GUIDE_MACOS.md).
+
 `-std=c11` selects strict ISO C11, which is also the default. `-std=gnu11` opts in to GNU extensions; any other `-std` value is a usage error, and the last `-std` wins. GNU mode is the GNU-compatibility layer of PLAN.md (stage 1); the extensions it adds are listed under [GNU extensions](#gnu-extensions) below. It also turns three C11 constraint violations into warnings (`file:line:column: warning: ...`), as GCC 14 and Clang 19 do in their default GNU modes: an equality comparison (`==`, `!=`) between a `void *` and a pointer to a function (C11 6.5.9p2); a comparison of two pointers to distinct types, for equality between any two pointers and relationally between two object pointers (C11 6.5.8p2, 6.5.9p2); and a pointer assignment, initialization, argument, or return whose pointed-to type differs only in the signedness of an integer type (`int *` from `unsigned *`, `char *` from `unsigned char *`) or drops a qualifier (`char *` from `const char *`) (C11 6.5.16.1p1). Deeper pointer mismatches such as `int **` from `unsigned **`, or `int *` from `long *`, stay errors in both modes, as GCC 14 rejects them. A comparison inside a constant expression that the parser folds before semantic analysis (for example in `sizeof` within an array bound, an enumerator, or `_Static_assert`) is accepted in GNU mode without a warning. Relational comparison of function pointers and the predefined macros (including `__STRICT_ANSI__`) are the same in both modes. A null pointer constant such as `(void *)0` may be compared with a function pointer in either mode. The GCC torture runner and the Csmith runner pass `-std=gnu11`; the other harnesses use the strict default.
 
 On success the command exits 0 and writes a textual LLVM IR module, or the preprocessed text when `-E` is set. On failure it exits non-zero, prints one diagnostic to stderr (`file:line:column: error: ...`), and does not create the output file. A diagnostic in an included file names that file.
@@ -56,6 +58,8 @@ python3 harness/run_tests.py
 ```
 
 `cargo test` runs the lexer, parser, diagnostic, and IR unit tests, and compares every `tests/*.c` program with Clang. `harness/run_tests.py` is the project differential runner: it compiles each `tests/*.c` with this compiler and with Clang, links both, and compares exit status, stdout, and stderr.
+
+`harness/run_arm64_ir.py` compares this compiler's arm64 function signatures with Clang's and checks that `llc` builds the IR for both arm64 targets (Mach-O objects for macOS). `harness/run_cross.py --target aarch64-linux-gnu` and `--target arm64-apple-macos` run the same differential programs under `qemu-aarch64`; the docstring explains how the Apple calling convention is run without a Mac.
 
 The external suites (Csmith, One True AWK, the AWK Builder suites, `gcc.c-torture/execute`, DOOM, Lua, and SQLite) and the performance script are described in [tests/external/README.md](tests/external/README.md) and [STATUS.md](STATUS.md).
 
@@ -171,6 +175,9 @@ The parser or checker rejects variable-length arrays, a `static` or `extern` dec
 - `build/compiler` — release binary produced by `make` (not committed)
 - `tests/` — C programs for the differential harness; `tests/inc/` holds headers those programs include
 - `harness/run_tests.py` — Clang oracle
+- `src/target.rs`, `src/aapcs64.rs` — target selection and the Arm 64-bit calling convention
+- `harness/run_arm64_ir.py`, `harness/run_cross.py`, `harness/arm64/` — arm64 checks without a Mac; `tests/arm64/` holds the arm64 calling-convention programs
+- `docs/USER_GUIDE_MACOS.md` — building and using the compiler on a Mac (draft)
 - `harness/run_doom.py`, `harness/doom/` — DOOM harness and its headless backend
 - `harness/run_lua.py`, `harness/lua/` — Lua harness and its workload scripts
 - `harness/run_sqlite.py`, `harness/sqlite/` — SQLite harness and its SQL workloads

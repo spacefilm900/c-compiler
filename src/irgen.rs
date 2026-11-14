@@ -35,21 +35,15 @@ use crate::abi::{
 };
 use crate::ast::*;
 
-/// System V AMD64 layout for `x86_64-pc-linux-gnu`.
-///
-/// `i64` is aligned to 8 bytes, which is what `long` requires. LLVM's default
-/// layout, used when this line is absent, aligns `i64` to 4 bytes. A struct
-/// `getelementptr` is then folded with the wrong field offset: `struct { char
-/// c; long l; }` puts `l` at 4 instead of 8. The string is the one Clang
-/// attaches to this triple.
-const DATA_LAYOUT: &str =
-    "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128";
-
 pub fn render(unit: &TranslationUnit, filename: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("source_filename = {}\n", llvm_string(filename)));
-    out.push_str(&format!("target datalayout = \"{DATA_LAYOUT}\"\n"));
-    out.push_str("target triple = \"x86_64-pc-linux-gnu\"\n\n");
+    let target = crate::target::current();
+    out.push_str(&format!(
+        "target datalayout = \"{}\"\n",
+        target.data_layout()
+    ));
+    out.push_str(&format!("target triple = \"{}\"\n\n", target.triple()));
     let mut wrote_prelude = false;
     for handle in &unit.structs {
         if handle.is_complete() {
@@ -113,13 +107,14 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
         out.push_str("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
         wrote_prelude = true;
     }
+    let nanl_decl = format!("declare {} @nanl(ptr)\n", FloatKind::LongDouble.ir_type());
     // A runtime __builtin_nan* with a malformed tag lowers to nan/nanf/nanl
     // (C11 7.12.11.2). Declare the library function if this unit does not
     // already have that symbol.
     for (needed, name, decl) in [
         (needs.nan, "nan", "declare double @nan(ptr)\n"),
         (needs.nanf, "nanf", "declare float @nanf(ptr)\n"),
-        (needs.nanl, "nanl", "declare x86_fp80 @nanl(ptr)\n"),
+        (needs.nanl, "nanl", nanl_decl.as_str()),
     ] {
         if needed && !has_func_symbol(unit, name) {
             out.push_str(decl);
@@ -418,7 +413,11 @@ fn render_declare(decl: &IrFunc, attrs: Option<&FnAttrs>) -> String {
 /// "Function Attributes"), with a leading space, and the section of a
 /// definition.
 fn fn_attr_suffix(attrs: Option<&FnAttrs>, definition: bool) -> String {
+    let target_attrs = crate::target::current().function_attrs();
     let Some(attrs) = attrs else {
+        if definition && !target_attrs.is_empty() {
+            return format!(" {target_attrs}");
+        }
         return String::new();
     };
     let mut parts = Vec::new();
@@ -439,6 +438,9 @@ fn fn_attr_suffix(attrs: Option<&FnAttrs>, definition: bool) -> String {
         parts.push("memory(none)".to_string());
     } else if attrs.pure {
         parts.push("memory(read)".to_string());
+    }
+    if definition && !target_attrs.is_empty() {
+        parts.push(target_attrs.to_string());
     }
     if definition {
         if let Some(section) = &attrs.section {
@@ -756,7 +758,13 @@ impl Gen {
             .and_then(|name| self.renames.get(name))
         {
             Some(fresh) => llvm_global(fresh),
-            None => slot.to_string(),
+            // An Apple asm label starts with \01 and must be quoted.
+            None => match slot.strip_prefix('@') {
+                Some(name) if !name.starts_with('"') && !is_unquoted_llvm_name(name) => {
+                    llvm_global(name)
+                }
+                _ => slot.to_string(),
+            },
         }
     }
 
@@ -1129,7 +1137,14 @@ impl Gen {
                     .expect("register aggregate returns a value");
                 self.store_pieces(&tmp, ty.align(), &pieces, &value);
             }
-            None => unreachable!("aggregate call"),
+            Some(AggAbi::Coerce { ty: ir, size }) => {
+                let rendered = self.render_call_args(args, resolved, &sig, None);
+                let value = self
+                    .emit_call(callee, resolved, &sig, &rendered)
+                    .expect("register aggregate returns a value");
+                self.store_coerced(&value, &tmp, &ty, &ir, size);
+            }
+            Some(AggAbi::Indirect) | None => unreachable!("aggregate call"),
         }
         tmp
     }
@@ -1155,6 +1170,17 @@ impl Gen {
                 if parts.len() == 1 && matches!(parts[0].kind, PartKind::Byval) {
                     let src = self.record_ptr(arg);
                     rendered.push(format_part("ptr", &parts[0].attrs, Some(&src)));
+                    continue;
+                }
+                if parts.len() == 1
+                    && matches!(parts[0].kind, PartKind::Coerce { .. } | PartKind::Indirect)
+                {
+                    let value = self.aapcs64_record_arg(arg, &parts[0]);
+                    rendered.push(format_part(
+                        &parts[0].ir_type,
+                        &parts[0].attrs,
+                        Some(&value),
+                    ));
                     continue;
                 }
                 if parts
@@ -1213,11 +1239,18 @@ impl Gen {
         free_sse: &mut usize,
     ) -> Vec<String> {
         let ty = arg.ty().expect("typed");
+        if crate::target::current().is_aarch64() {
+            let parts = crate::aapcs64::arg_parts(&ty).expect("variadic aggregate");
+            let value = self.aapcs64_record_arg(arg, &parts[0]);
+            return vec![format_part(&parts[0].ir_type, "", Some(&value))];
+        }
         let src = self.record_ptr(arg);
         let agg =
             crate::abi::classify_for(&ty, crate::abi::AggUse::Param).expect("variadic aggregate");
         let parts = match agg {
-            AggAbi::Memory | AggAbi::X87 => vec![memory_part(&ty)],
+            AggAbi::Memory | AggAbi::X87 | AggAbi::Coerce { .. } | AggAbi::Indirect => {
+                vec![memory_part(&ty)]
+            }
             AggAbi::Direct(pieces) => pieces
                 .into_iter()
                 .map(|piece| Part {
@@ -1236,7 +1269,9 @@ impl Gen {
                     let loaded = self.load_piece(&src, ty.align(), piece);
                     format_part(&piece.ir_type(), "", Some(&loaded))
                 }
-                PartKind::Scalar => unreachable!("aggregate piece"),
+                PartKind::Scalar | PartKind::Coerce { .. } | PartKind::Indirect => {
+                    unreachable!("System V aggregate piece")
+                }
             })
             .collect()
     }
@@ -1276,8 +1311,18 @@ impl Gen {
     }
 
     fn store_param(&mut self, param: &Param, names: &[String], parts: &[Part]) {
-        if parts.len() == 1 && matches!(parts[0].kind, PartKind::Byval) {
+        if parts.len() == 1 && matches!(parts[0].kind, PartKind::Byval | PartKind::Indirect) {
             self.copy_struct(&param.ty, &names[0], &param.slot, false);
+            return;
+        }
+        if let [Part {
+            ir_type,
+            kind: PartKind::Coerce { size },
+            ..
+        }] = parts
+        {
+            let ty = param.ty.clone();
+            self.store_coerced(&names[0], &param.slot, &ty, ir_type, *size);
             return;
         }
         if parts
@@ -1307,6 +1352,94 @@ impl Gen {
             param.slot,
             param.ty.align()
         ));
+    }
+
+    /// An entry-block slot of LLVM type `ir`.
+    fn entry_alloca_ir(&mut self, ir: &str, align: u32) -> String {
+        let name = self.fresh();
+        let line = format!("  {name} = alloca {ir}, align {align}");
+        self.lines.insert(self.alloca_at, line);
+        self.alloca_at += 1;
+        name
+    }
+
+    /// One AAPCS64 aggregate argument: the coerced value, or the address
+    /// of a fresh copy for a composite passed by reference.
+    fn aapcs64_record_arg(&mut self, arg: &Expr, part: &Part) -> String {
+        let ty = arg.ty().expect("typed");
+        let src = self.record_ptr(arg);
+        match part.kind {
+            PartKind::Coerce { size } => {
+                self.load_coerced(&src, &ty, &part.ir_type, size, ty.is_volatile())
+            }
+            PartKind::Indirect => {
+                // The callee may modify its parameter, so it gets a copy.
+                let copy = self.entry_alloca(&ty.unqualified());
+                self.copy_struct(&ty, &src, &copy, ty.is_volatile());
+                copy
+            }
+            _ => unreachable!("AAPCS64 aggregate part"),
+        }
+    }
+
+    /// Load the coerced LLVM value `ir` (`size` bytes) of the aggregate at
+    /// `src`. When `ir` is wider than the object, the object is first
+    /// copied into a slot of type `ir` so the load reads no byte past it.
+    fn load_coerced(
+        &mut self,
+        src: &str,
+        ty: &CType,
+        ir: &str,
+        size: u64,
+        volatile: bool,
+    ) -> String {
+        let object = ty.size().unwrap_or(0);
+        let (from, align) = if size > object {
+            let align = coerce_align(ir).max(ty.align());
+            let slot = self.entry_alloca_ir(ir, align);
+            if object > 0 {
+                self.needs_memcpy = true;
+                self.emit(&format!(
+                    "  call void @llvm.memcpy.p0.p0.i64(ptr {slot}, ptr {src}, i64 {object}, i1 {volatile})"
+                ));
+            }
+            (slot, align)
+        } else {
+            // A member of a packed record may sit at any byte.
+            (src.to_string(), self.access_align(ty, src))
+        };
+        let vol = if volatile && size <= object {
+            " volatile"
+        } else {
+            ""
+        };
+        let tmp = self.fresh();
+        self.emit(&format!(
+            "  {tmp} = load{vol} {ir}, ptr {from}, align {align}"
+        ));
+        tmp
+    }
+
+    /// Store the coerced value `value` into the aggregate slot `dest`,
+    /// through a slot of type `ir` when `ir` is wider than the object.
+    fn store_coerced(&mut self, value: &str, dest: &str, ty: &CType, ir: &str, size: u64) {
+        let object = ty.size().unwrap_or(0);
+        if size <= object {
+            self.emit(&format!(
+                "  store {ir} {value}, ptr {dest}, align {}",
+                self.access_align(ty, dest)
+            ));
+            return;
+        }
+        let align = coerce_align(ir).max(ty.align());
+        let slot = self.entry_alloca_ir(ir, align);
+        self.emit(&format!("  store {ir} {value}, ptr {slot}, align {align}"));
+        if object > 0 {
+            self.needs_memcpy = true;
+            self.emit(&format!(
+                "  call void @llvm.memcpy.p0.p0.i64(ptr {dest}, ptr {slot}, i64 {object}, i1 false)"
+            ));
+        }
     }
 
     fn entry_alloca(&mut self, ty: &CType) -> String {
@@ -1381,6 +1514,12 @@ impl Gen {
                 ));
                 self.emit(&format!("  ret x86_fp80 {tmp}"));
             }
+            AggAbi::Coerce { ty: ir, size } => {
+                let ty = self.ret_ty.clone();
+                let value = self.load_coerced(src, &ty, &ir, size, src_volatile);
+                self.emit(&format!("  ret {ir} {value}"));
+            }
+            AggAbi::Indirect => unreachable!("AAPCS64 returns use sret, not a pointer argument"),
             AggAbi::Direct(pieces) => {
                 if pieces.len() == 1 {
                     let value = self.load_piece(src, align, &pieces[0]);
@@ -1419,6 +1558,10 @@ impl Gen {
                     let ty = crate::abi::pieces_type(&pieces);
                     self.emit(&format!("  ret {ty} zeroinitializer"));
                 }
+                AggAbi::Coerce { ty, .. } => {
+                    self.emit(&format!("  ret {ty} zeroinitializer"));
+                }
+                AggAbi::Indirect => unreachable!("AAPCS64 returns use sret"),
             }
             return;
         }
@@ -1665,7 +1808,7 @@ impl Gen {
             return tmp;
         }
         if let (Some(from_f), Some(to_f)) = (from.as_float(), to.as_float()) {
-            if from_f == to_f {
+            if from_f == to_f || from.ir_type() == to.ir_type() {
                 return value.to_string();
             }
             let op = if float_rank(to_f) > float_rank(from_f) {
@@ -1702,7 +1845,7 @@ impl Gen {
             return tmp;
         }
         if let (Some(from_f), Some(to_f)) = (from.float_kind(), to.float_kind()) {
-            if from_f == to_f {
+            if from_f == to_f || from.ir_type() == to.ir_type() {
                 return value.to_string();
             }
             let op = if float_rank(to_f) > float_rank(from_f) {
@@ -2216,11 +2359,168 @@ impl Gen {
         out
     }
 
+    /// Address of the next variadic argument of type `ty` on AArch64,
+    /// with `ap` (the address of the `va_list` object) advanced past it.
+    fn aarch64_va_arg_addr(&mut self, ap: &str, ty: &CType) -> String {
+        let class = aarch64_va_class(ty);
+        if crate::target::current().is_apple() {
+            self.apple_va_arg_addr(ap, &class)
+        } else {
+            self.aapcs64_va_arg_addr(ap, ty, &class)
+        }
+    }
+
+    /// Apple arm64: `va_list` is a `char *` into the stack, where every
+    /// variadic argument has its own slot of a multiple of 8 bytes (16-byte
+    /// aligned for a 16-byte-aligned type). A composite passed by reference
+    /// has an 8-byte slot holding its address.
+    fn apple_va_arg_addr(&mut self, ap: &str, class: &A64Va) -> String {
+        let ptr_ty = CType::pointer(CType::Void);
+        let current = self.load(&ptr_ty, ap);
+        let aligned = if class.align16 {
+            self.align_ptr(&current, 16)
+        } else {
+            current
+        };
+        let step = if class.by_ref { 8 } else { class.stack_size };
+        let next = self.fresh();
+        self.emit(&format!(
+            "  {next} = getelementptr inbounds i8, ptr {aligned}, i64 {step}"
+        ));
+        self.store(&ptr_ty, &next, ap);
+        if class.by_ref {
+            return self.load(&ptr_ty, &aligned);
+        }
+        aligned
+    }
+
+    /// AAPCS64 (AArch64 Linux): `va_list` is `{ __stack, __gr_top,
+    /// __vr_top, __gr_offs, __vr_offs }`, and `va_arg` follows the
+    /// algorithm in the AAPCS64 appendix on variable argument lists. A
+    /// negative offset indexes back from the top of the general (8-byte
+    /// slots) or FP/SIMD (16-byte slots) register save area; once it is no
+    /// longer negative the argument is on the stack.
+    fn aapcs64_va_arg_addr(&mut self, ap: &str, ty: &CType, class: &A64Va) -> String {
+        let i32_ty = CType::from_name(TypeName::Int);
+        let ptr_ty = CType::pointer(CType::Void);
+        let (offs_field, top_field, slot) = if class.fp_regs > 0 {
+            (28u64, 16u64, 16u64)
+        } else {
+            (24, 8, 8)
+        };
+        let nreg = if class.fp_regs > 0 {
+            class.fp_regs
+        } else {
+            class.gp_regs
+        };
+        let offs_ptr = self.offset_ptr(ap, offs_field);
+        let offs = self.load(&i32_ty, &offs_ptr);
+        let stack_label = self.label();
+        let try_label = self.label();
+        let reg_label = self.label();
+        let done = self.label();
+        let already = self.fresh();
+        self.emit(&format!("  {already} = icmp sge i32 {offs}, 0"));
+        self.br_cond(&already, &stack_label, &try_label);
+
+        self.start(try_label);
+        let offs = if class.fp_regs == 0 && class.align16 {
+            let added = self.fresh();
+            self.emit(&format!("  {added} = add i32 {offs}, 15"));
+            let rounded = self.fresh();
+            self.emit(&format!("  {rounded} = and i32 {added}, -16"));
+            rounded
+        } else {
+            offs
+        };
+        let new_offs = self.fresh();
+        self.emit(&format!(
+            "  {new_offs} = add i32 {offs}, {}",
+            u64::from(nreg) * slot
+        ));
+        self.store(&i32_ty, &new_offs, &offs_ptr);
+        let overflow = self.fresh();
+        self.emit(&format!("  {overflow} = icmp sgt i32 {new_offs}, 0"));
+        self.br_cond(&overflow, &stack_label, &reg_label);
+
+        self.start(reg_label.clone());
+        let top_ptr = self.offset_ptr(ap, top_field);
+        let top = self.load(&ptr_ty, &top_ptr);
+        let offs64 = self.fresh();
+        self.emit(&format!("  {offs64} = sext i32 {offs} to i64"));
+        let reg_addr = self.fresh();
+        self.emit(&format!(
+            "  {reg_addr} = getelementptr inbounds i8, ptr {top}, i64 {offs64}"
+        ));
+        let reg_addr = if class.fp_regs > 1 || (class.fp_regs == 1 && ty.unqualified().is_record())
+        {
+            // HFA members sit in successive 16-byte register slots. Gather
+            // them into a contiguous object.
+            let tmp = self.entry_alloca(&ty.unqualified());
+            let unit = class.fp_unit;
+            let ir = match unit {
+                4 => "float",
+                8 => "double",
+                _ => "fp128",
+            };
+            for index in 0..u64::from(class.fp_regs) {
+                let from = self.offset_ptr(&reg_addr, index * 16);
+                let value = self.fresh();
+                self.emit(&format!("  {value} = load {ir}, ptr {from}, align {unit}"));
+                let to = self.offset_ptr(&tmp, index * unit);
+                self.emit(&format!("  store {ir} {value}, ptr {to}, align {unit}"));
+            }
+            tmp
+        } else {
+            reg_addr
+        };
+        let reg_end = self.cur.clone();
+        self.br(&done);
+
+        self.start(stack_label.clone());
+        let stack_ptr = self.offset_ptr(ap, 0);
+        let current = self.load(&ptr_ty, &stack_ptr);
+        let aligned = if class.align16 {
+            self.align_ptr(&current, 16)
+        } else {
+            current
+        };
+        let step = if class.by_ref { 8 } else { class.stack_size };
+        let next = self.fresh();
+        self.emit(&format!(
+            "  {next} = getelementptr inbounds i8, ptr {aligned}, i64 {step}"
+        ));
+        self.store(&ptr_ty, &next, &stack_ptr);
+        let stack_end = self.cur.clone();
+        self.br(&done);
+
+        self.start(done);
+        let addr = self.fresh();
+        self.emit(&format!(
+            "  {addr} = phi ptr [ {reg_addr}, %{reg_end} ], [ {aligned}, %{stack_end} ]"
+        ));
+        if class.by_ref {
+            return self.load(&ptr_ty, &addr);
+        }
+        addr
+    }
+
     fn gen_va_arg(&mut self, expr: &Expr) -> String {
         let Expr::VaArg { ap, type_arg, .. } = expr else {
             unreachable!("va_arg");
         };
         let ap_ptr = self.gen_val(ap);
+        if crate::target::current().is_aarch64() {
+            let addr = self.aarch64_va_arg_addr(&ap_ptr, type_arg);
+            let tmp = self.fresh();
+            self.emit(&format!(
+                "  {tmp} = load{} {}, ptr {addr}, align {}",
+                vol_attr(type_arg),
+                type_arg.ir_type(),
+                type_arg.align().min(8)
+            ));
+            return tmp;
+        }
         let addr = self.va_arg_addr(&ap_ptr, type_arg);
         // A 128-bit integer may come from the register save area, whose
         // GP slots are only 8-byte aligned. The address is a phi of that
@@ -2244,6 +2544,12 @@ impl Gen {
             unreachable!("va_arg record");
         };
         let ap_ptr = self.gen_val(ap);
+        if crate::target::current().is_aarch64() {
+            let addr = self.aarch64_va_arg_addr(&ap_ptr, type_arg);
+            let slot = self.entry_alloca(type_arg);
+            self.copy_struct(type_arg, &addr, &slot, type_arg.is_volatile());
+            return slot;
+        }
         if let VaClass::Pieces(pieces) = va_class(type_arg) {
             return self.va_split(&ap_ptr, type_arg, &pieces);
         }
@@ -2930,7 +3236,7 @@ impl Gen {
         };
         if dest.is_float() {
             let kind = dest.float_kind().expect("float");
-            let one_bits: u128 = match kind {
+            let one_bits: u128 = match crate::float::fold(kind) {
                 FloatKind::Float => 0x3f80_0000,
                 FloatKind::Double => 0x3ff0_0000_0000_0000,
                 FloatKind::LongDouble => 0x3FFF_8000_0000_0000_0000,
@@ -3011,6 +3317,17 @@ impl Gen {
                 self.emit(&format!("  {bits} = bitcast double {value} to i64"));
                 let cmp = self.fresh();
                 self.emit(&format!("  {cmp} = icmp slt i64 {bits}, 0"));
+                cmp
+            }
+            FloatKind::LongDouble if !kind.is_x87() => {
+                // The sign is the top bit of the `double` or binary128
+                // representation.
+                let ir = dest.ir_type();
+                let width = dest.size().unwrap_or(8) * 8;
+                let bits = self.fresh();
+                self.emit(&format!("  {bits} = bitcast {ir} {value} to i{width}"));
+                let cmp = self.fresh();
+                self.emit(&format!("  {cmp} = icmp slt i{width} {bits}, 0"));
                 cmp
             }
             FloatKind::LongDouble => {
@@ -3330,17 +3647,18 @@ impl Gen {
                 if inline == Inline::IsNan {
                     self.emit(&format!("  {cmp} = fcmp uno {ir} {value}, {value}"));
                 } else {
-                    let suffix = match kind {
-                        FloatKind::Float => "f32",
-                        FloatKind::Double => "f64",
-                        FloatKind::LongDouble => "f80",
+                    let suffix = match ir.as_str() {
+                        "float" => "f32",
+                        "double" => "f64",
+                        "fp128" => "f128",
+                        _ => "f80",
                     };
                     self.intrinsic(&format!("declare {ir} @llvm.fabs.{suffix}({ir})"));
                     let abs = self.fresh();
                     self.emit(&format!(
                         "  {abs} = call {ir} @llvm.fabs.{suffix}({ir} {value})"
                     ));
-                    let (inf, min_normal): (u128, u128) = match kind {
+                    let (inf, min_normal): (u128, u128) = match crate::float::fold(kind) {
                         FloatKind::Float => (0x7f80_0000, 0x0080_0000),
                         FloatKind::Double => (0x7ff0_0000_0000_0000, 0x0010_0000_0000_0000),
                         FloatKind::LongDouble => {
@@ -3356,7 +3674,14 @@ impl Gen {
                             self.emit(&format!("  {cmp} = fcmp olt {ir} {abs}, {inf}"));
                         }
                         _ => {
-                            let min = crate::float::llvm_const(kind, min_normal);
+                            // The threshold is the run-time format's, not
+                            // the folding precision's: binary128 `long
+                            // double` is normal down to 2^-16382.
+                            let min = if ir == "fp128" {
+                                "0xL00000000000000000001000000000000".to_string()
+                            } else {
+                                crate::float::llvm_const(kind, min_normal)
+                            };
                             let below = self.fresh();
                             self.emit(&format!("  {below} = fcmp olt {ir} {abs}, {inf}"));
                             let above = self.fresh();
@@ -3808,6 +4133,15 @@ fn variadic_sig(sig: &FnSig) -> String {
     format!("{} ({})", sig.ret_type, parts.join(", "))
 }
 
+/// Alignment of a slot that holds an AAPCS64 coerced value.
+fn coerce_align(ir: &str) -> u32 {
+    if ir == "i128" || ir.contains("fp128") {
+        16
+    } else {
+        8
+    }
+}
+
 /// Alignment of an address `offset` bytes into an object of alignment `base`.
 fn piece_align(base_align: u32, offset: u64) -> u32 {
     if offset == 0 {
@@ -3920,6 +4254,84 @@ enum VaClass {
     },
     /// Eightbytes that are not one packed image in the save area.
     Pieces(Vec<crate::abi::RegPiece>),
+}
+
+/// How one variadic argument is found on AArch64.
+struct A64Va {
+    /// Consecutive FP/SIMD registers (an HFA's member count, or 1 for a
+    /// floating scalar). Zero for the general-register class.
+    fp_regs: u32,
+    /// Size of one HFA member, or of the floating scalar.
+    fp_unit: u64,
+    /// General registers, when `fp_regs` is zero.
+    gp_regs: u32,
+    /// The argument is a pointer to a caller-made copy.
+    by_ref: bool,
+    /// 16-byte alignment: an even register pair and a 16-byte-aligned
+    /// stack slot.
+    align16: bool,
+    /// Bytes the argument occupies on the stack, a multiple of 8.
+    stack_size: u64,
+}
+
+fn aarch64_va_class(ty: &CType) -> A64Va {
+    let bare = ty.unqualified();
+    let size = bare.size().unwrap_or(8);
+    let round8 = ((size + 7) & !7).max(8);
+    let align16 = crate::aapcs64::arg_align(&bare) >= 16;
+    if bare.is_record() {
+        if let Some((base, count)) = crate::aapcs64::hfa(&bare) {
+            let unit = match base {
+                "float" => 4,
+                "double" => 8,
+                _ => 16,
+            };
+            return A64Va {
+                fp_regs: count as u32,
+                fp_unit: unit,
+                gp_regs: 0,
+                by_ref: false,
+                align16,
+                stack_size: round8,
+            };
+        }
+        if size > 16 {
+            return A64Va {
+                fp_regs: 0,
+                fp_unit: 0,
+                gp_regs: 1,
+                by_ref: true,
+                align16: false,
+                stack_size: 8,
+            };
+        }
+        return A64Va {
+            fp_regs: 0,
+            fp_unit: 0,
+            gp_regs: (round8 / 8) as u32,
+            by_ref: false,
+            align16,
+            stack_size: round8,
+        };
+    }
+    if let Some(kind) = bare.float_kind() {
+        return A64Va {
+            fp_regs: 1,
+            fp_unit: CType::Float(kind).size().unwrap_or(8),
+            gp_regs: 0,
+            by_ref: false,
+            align16,
+            stack_size: round8,
+        };
+    }
+    A64Va {
+        fp_regs: 0,
+        fp_unit: 0,
+        gp_regs: (round8 / 8) as u32,
+        by_ref: false,
+        align16,
+        stack_size: round8,
+    }
 }
 
 fn va_class(ty: &CType) -> VaClass {
@@ -4181,6 +4593,9 @@ fn write_const_bytes(ty: &CType, value: &ConstInit, bytes: &mut [u8], offset: us
         ConstInit::Zero => true,
         ConstInit::Float(bits) => {
             let width = ty.size().unwrap_or(0) as usize;
+            let bits = &ty
+                .float_kind()
+                .map_or(*bits, |kind| crate::float::memory_bits(kind, *bits));
             for index in 0..width {
                 let at = offset + index;
                 if at < bytes.len() {
@@ -4810,7 +5225,10 @@ int main(void) {
         assert!(ir.contains("define i32 @main()"));
         assert!(ir.contains("ret i32 42"));
         assert!(ir.contains("target triple = \"x86_64-pc-linux-gnu\""));
-        assert!(ir.contains(&format!("target datalayout = \"{}\"", super::DATA_LAYOUT)));
+        assert!(ir.contains(&format!(
+            "target datalayout = \"{}\"",
+            crate::target::Target::X86_64Linux.data_layout()
+        )));
         assert_eq!(run_binary(&ir).0, 42);
     }
 

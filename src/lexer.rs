@@ -755,7 +755,7 @@ impl Lexer<'_> {
         self.bump();
         let value = self.char_body(line, column, bits)?;
         let spelling = self.source[start..self.index].to_string();
-        let ty = if wchar {
+        let ty = if wchar && crate::target::current().wchar_is_signed() {
             TypeName::Int
         } else if bits == 16 {
             TypeName::UShort
@@ -812,15 +812,21 @@ impl Lexer<'_> {
     /// An integer character constant has type `int` (C11 6.4.4.4).
     /// One source character or one escape is accepted. A hex or octal escape
     /// must fit in `unsigned char`; Clang rejects a wider escape on this target.
-    /// The value is that byte converted from `char` to `int`. `char` is signed,
-    /// so 128..255 are negative. A character outside ASCII needs more than one
+    /// The value is that byte converted from `char` to `int`. Where `char` is
+    /// signed (x86_64, Apple arm64), 128..255 are negative. A character outside ASCII needs more than one
     /// UTF-8 byte and is diagnosed.
     fn char_constant(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
         let start = self.index;
         self.bump();
         let value = self.char_body(line, column, 8)?;
         let spelling = self.source[start..self.index].to_string();
-        let bits = crate::ast::sign_extend(u128::from(value), 8) as u32 as u64;
+        // Plain `char` is unsigned on AArch64 Linux, so there the byte is
+        // zero-extended instead.
+        let bits = if crate::target::current().char_is_signed() {
+            crate::ast::sign_extend(u128::from(value), 8) as u32 as u64
+        } else {
+            u64::from(value & 0xff)
+        };
         self.push_int(&spelling, bits, TypeName::Int, line, column);
         Ok(())
     }

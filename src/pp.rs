@@ -20,6 +20,7 @@ use std::rc::Rc;
 
 use crate::ast::{sign_extend, TypeName};
 use crate::diag::Diagnostic;
+use crate::target::{LongDouble, Target};
 use crate::token::{Token, TokenKind};
 
 const MAX_EXPANSIONS: u32 = 100_000;
@@ -48,6 +49,10 @@ pub struct PpOptions {
     pub definitions: Vec<CliMacro>,
     /// Nested `#include` limit. The main file is depth 0.
     pub max_include_depth: usize,
+    /// The machine being compiled for. It selects the predefined macros,
+    /// and [`crate::compile_dialect`] passes it on to the rest of the
+    /// frontend.
+    pub target: Target,
 }
 
 impl Default for PpOptions {
@@ -57,6 +62,7 @@ impl Default for PpOptions {
             system_dirs: default_system_dirs(),
             definitions: Vec::new(),
             max_include_depth: DEFAULT_INCLUDE_DEPTH,
+            target: Target::host(),
         }
     }
 }
@@ -109,10 +115,20 @@ pub fn preprocess_tokens(
 }
 
 fn default_system_dirs() -> Vec<PathBuf> {
+    system_dirs_for(Target::host(), None)
+}
+
+/// The `#include <...>` search list for `target`.
+///
+/// The compiler's own headers (stddef.h, stdarg.h, stdbool.h, limits.h,
+/// float.h) come before the C library, the same way a hosted compiler
+/// searches its builtin include directory first. The C library is the
+/// host's on x86_64 Linux and AArch64 Linux (the Debian/Ubuntu multiarch
+/// cross directory when compiling for AArch64 on another host). For macOS
+/// it is the SDK: `sysroot` (`-isysroot`), else `$SDKROOT`, else, on a Mac,
+/// the path `xcrun --show-sdk-path` prints.
+pub fn system_dirs_for(target: Target, sysroot: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    // The compiler's own headers (stddef.h, stdarg.h, stdbool.h, limits.h)
-    // come before the C library, the same way a hosted compiler searches its
-    // builtin include directory first.
     push_compiler(&mut dirs, PathBuf::from("include"));
     push_compiler(
         &mut dirs,
@@ -126,13 +142,159 @@ fn default_system_dirs() -> Vec<PathBuf> {
             dir = current.parent().map(Path::to_path_buf);
         }
     }
-    for path in ["/usr/include/x86_64-linux-gnu", "/usr/include"] {
-        let path = PathBuf::from(path);
+    let mut library: Vec<PathBuf> = Vec::new();
+    match target {
+        Target::X86_64Linux => {
+            if sysroot.is_none() && Target::host() != Target::X86_64Linux {
+                // Debian/Ubuntu cross headers (libc6-dev-amd64-cross).
+                library.push("/usr/x86_64-linux-gnu/include".into());
+            } else {
+                let root = sysroot.map(Path::to_path_buf).unwrap_or_else(|| "/".into());
+                library.push(root.join("usr/include/x86_64-linux-gnu"));
+                library.push(root.join("usr/include"));
+            }
+        }
+        Target::Aarch64Linux => {
+            if let Some(root) = sysroot {
+                library.push(root.join("usr/include/aarch64-linux-gnu"));
+                library.push(root.join("usr/include"));
+            } else if Target::host() == Target::Aarch64Linux {
+                library.push("/usr/include/aarch64-linux-gnu".into());
+                library.push("/usr/include".into());
+            } else {
+                library.push("/usr/aarch64-linux-gnu/include".into());
+            }
+        }
+        Target::Arm64Apple { .. } => {
+            if let Some(sdk) = apple_sdk(sysroot) {
+                library.push(sdk.join("usr/include"));
+            }
+        }
+    }
+    for path in library {
         if path.is_dir() && !dirs.iter().any(|dir| dir == &path) {
             dirs.push(path);
         }
     }
     dirs
+}
+
+fn apple_sdk(sysroot: Option<&Path>) -> Option<PathBuf> {
+    if let Some(root) = sysroot {
+        return Some(root.to_path_buf());
+    }
+    if let Some(root) = std::env::var_os("SDKROOT").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(root));
+    }
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let output = std::process::Command::new("xcrun")
+        .args(["--sdk", "macosx", "--show-sdk-path"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let path = text.trim();
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+/// Predefined macros that depend on the target (C11 6.10.8 leaves the
+/// rest to the implementation). The sets were chosen by comparing with
+/// `clang -dM -E` for each triple as a black box; macros for features this
+/// compiler lacks (Blocks, NEON vectors, Objective-C) are left out so a
+/// header does not take a path it cannot compile.
+fn target_macros(target: Target) -> Vec<(&'static str, &'static str)> {
+    let mut out: Vec<(&'static str, &'static str)> = Vec::new();
+    match target {
+        Target::X86_64Linux => out.extend([
+            ("__x86_64__", "1"),
+            ("__x86_64", "1"),
+            ("__amd64__", "1"),
+            ("__amd64", "1"),
+        ]),
+        Target::Arm64Apple { .. } | Target::Aarch64Linux => out.extend([
+            ("__aarch64__", "1"),
+            ("__AARCH64EL__", "1"),
+            ("__ARM_64BIT_STATE", "1"),
+            ("__ARM_ARCH", "8"),
+            ("__ARM_ARCH_ISA_A64", "1"),
+            ("__ARM_ARCH_PROFILE", "'A'"),
+            ("__ARM_PCS_AAPCS64", "1"),
+            ("__ARM_SIZEOF_WCHAR_T", "4"),
+            ("__ARM_SIZEOF_MINIMAL_ENUM", "4"),
+        ]),
+    }
+    match target {
+        Target::X86_64Linux | Target::Aarch64Linux => out.extend([
+            ("__linux__", "1"),
+            ("__linux", "1"),
+            ("__unix__", "1"),
+            ("__unix", "1"),
+            ("__gnu_linux__", "1"),
+            ("__ELF__", "1"),
+            ("__USER_LABEL_PREFIX__", ""),
+        ]),
+        Target::Arm64Apple { .. } => out.extend([
+            ("__APPLE__", "1"),
+            ("__APPLE_CC__", "6000"),
+            ("__MACH__", "1"),
+            ("__arm64__", "1"),
+            ("__arm64", "1"),
+            ("__DYNAMIC__", "1"),
+            ("__USER_LABEL_PREFIX__", "_"),
+        ]),
+    }
+    if let Target::Arm64Apple {
+        macos_major,
+        macos_minor,
+    } = target
+    {
+        // `110000` for macOS 11.0, as Availability.h expects.
+        let version: &'static str =
+            Box::leak(format!("{}", macos_major * 10000 + macos_minor * 100).into_boxed_str());
+        out.push(("__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__", version));
+        out.push(("__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__", version));
+    }
+    if !target.char_is_signed() {
+        out.push(("__CHAR_UNSIGNED__", "1"));
+    }
+    if target.wchar_is_signed() {
+        out.extend([
+            ("__WCHAR_TYPE__", "int"),
+            ("__WCHAR_MAX__", "2147483647"),
+            ("__WCHAR_MIN__", "(-2147483647 - 1)"),
+        ]);
+    } else {
+        out.extend([
+            ("__WCHAR_TYPE__", "unsigned int"),
+            ("__WCHAR_MAX__", "4294967295U"),
+            ("__WCHAR_MIN__", "0U"),
+            ("__WCHAR_UNSIGNED__", "1"),
+        ]);
+    }
+    // wint_t is `int` on Apple and `unsigned int` in glibc.
+    if target.is_apple() {
+        out.push(("__WINT_TYPE__", "int"));
+    } else {
+        out.push(("__WINT_TYPE__", "unsigned int"));
+    }
+    match target.long_double() {
+        LongDouble::X87 => out.extend([
+            ("__SIZEOF_LONG_DOUBLE__", "16"),
+            ("__LDBL_MANT_DIG__", "64"),
+        ]),
+        LongDouble::Double => {
+            out.extend([("__SIZEOF_LONG_DOUBLE__", "8"), ("__LDBL_MANT_DIG__", "53")])
+        }
+        LongDouble::Quad => out.extend([
+            ("__SIZEOF_LONG_DOUBLE__", "16"),
+            ("__LDBL_MANT_DIG__", "113"),
+        ]),
+    }
+    out
 }
 
 fn push_compiler(dirs: &mut Vec<PathBuf>, path: PathBuf) {
@@ -142,6 +304,7 @@ fn push_compiler(dirs: &mut Vec<PathBuf>, path: PathBuf) {
 }
 
 fn run(source: &str, filename: &str, options: &PpOptions) -> Result<Vec<PpToken>, Diagnostic> {
+    crate::target::set(options.target);
     let mut processor = Processor::new(options)?;
     processor.push_main(filename);
     processor.tokens = crate::timing::lexing(|| lex_source(source, filename, 0))?;
@@ -436,18 +599,8 @@ impl Processor {
             ("__STDC_NO_THREADS__", "1"),
             ("__STDC_NO_VLA__", "1"),
             ("__STRICT_ANSI__", "1"),
-            ("__x86_64__", "1"),
-            ("__x86_64", "1"),
-            ("__amd64__", "1"),
-            ("__amd64", "1"),
             ("__LP64__", "1"),
             ("_LP64", "1"),
-            ("__linux__", "1"),
-            ("__linux", "1"),
-            ("__unix__", "1"),
-            ("__unix", "1"),
-            ("__gnu_linux__", "1"),
-            ("__ELF__", "1"),
             ("__CHAR_BIT__", "8"),
             ("__SIZEOF_SHORT__", "2"),
             ("__SIZEOF_INT__", "4"),
@@ -458,7 +611,6 @@ impl Processor {
             ("__SIZEOF_PTRDIFF_T__", "8"),
             ("__SIZEOF_FLOAT__", "4"),
             ("__SIZEOF_DOUBLE__", "8"),
-            ("__SIZEOF_LONG_DOUBLE__", "16"),
             ("__POINTER_WIDTH__", "64"),
             ("__INT_WIDTH__", "32"),
             ("__LONG_WIDTH__", "64"),
@@ -472,7 +624,6 @@ impl Processor {
             ("__UINTMAX_MAX__", "18446744073709551615UL"),
             ("__SIZE_TYPE__", "long unsigned int"),
             ("__PTRDIFF_TYPE__", "long int"),
-            ("__WCHAR_TYPE__", "int"),
             ("__INTMAX_TYPE__", "long int"),
             ("__UINTMAX_TYPE__", "long unsigned int"),
             ("__INTPTR_TYPE__", "long int"),
@@ -485,12 +636,9 @@ impl Processor {
             ("__ORDER_BIG_ENDIAN__", "4321"),
             ("__ORDER_PDP_ENDIAN__", "3412"),
             ("__BYTE_ORDER__", "__ORDER_LITTLE_ENDIAN__"),
-            ("__USER_LABEL_PREFIX__", ""),
-            ("__WCHAR_MAX__", "2147483647"),
-            ("__WCHAR_MIN__", "(-2147483647 - 1)"),
-            ("__WINT_TYPE__", "unsigned int"),
         ];
-        for (name, body) in BUILTINS {
+        let target = target_macros(crate::target::current());
+        for (name, body) in BUILTINS.iter().chain(target.iter()) {
             let mac = self.macro_from_parts(name, None, false, body_tokens(body)?, None)?;
             self.macros
                 .insert(mac.name.clone(), MacroEntry::Defined(Rc::new(mac)));

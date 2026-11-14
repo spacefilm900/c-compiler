@@ -5,6 +5,9 @@
 //! passed to the preprocessor. A bare `-D NAME` defines `NAME` as `1`.
 //! `-std=c11` (the default) is strict ISO C11; `-std=gnu11` enables the GNU
 //! extensions listed in [`crate::dialect`]. The last `-std` wins.
+//! `-target TRIPLE` (or `--target=TRIPLE`) selects the machine; the host is
+//! the default. `-isysroot DIR` names the C library headers' root (the
+//! macOS SDK when compiling for `arm64-apple-macos`).
 
 use std::fs;
 use std::io::{self, Write};
@@ -24,6 +27,10 @@ options:
   -E              preprocess only
   -std=c11        strict ISO C11 (the default)
   -std=gnu11      C11 plus the GNU extensions this compiler supports
+  -target TRIPLE  compile for TRIPLE (also --target=TRIPLE): x86_64-linux-gnu,
+                  arm64-apple-macos[VERSION], or aarch64-linux-gnu;
+                  the default is the host
+  -isysroot DIR   find the C library headers under DIR/usr/include
   --time-phases   print frontend phase times as JSON on stderr
   -h, --help      show this help
 Compile a C subset to textual LLVM IR.";
@@ -130,6 +137,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut time_phases = false;
     let mut pp = PpOptions::default();
     let mut dialect = Dialect::default();
+    let mut target = crate::target::Target::host();
+    let mut sysroot: Option<PathBuf> = None;
     let mut index = 1;
     while index < args.len() {
         let arg = &args[index];
@@ -156,6 +165,32 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         if let Some(name) = arg.strip_prefix("-std=") {
             dialect = Dialect::from_std(name)
                 .ok_or_else(|| format!("unsupported -std value '{name}'; use c11 or gnu11"))?;
+            index += 1;
+            continue;
+        }
+        if arg == "-target" || arg == "--target" {
+            index += 1;
+            let Some(triple) = args.get(index) else {
+                return Err(USAGE.to_string());
+            };
+            target = parse_target(triple)?;
+            index += 1;
+            continue;
+        }
+        if let Some(triple) = arg
+            .strip_prefix("--target=")
+            .or_else(|| arg.strip_prefix("-target="))
+        {
+            target = parse_target(triple)?;
+            index += 1;
+            continue;
+        }
+        if arg == "-isysroot" {
+            index += 1;
+            let Some(dir) = args.get(index) else {
+                return Err(USAGE.to_string());
+            };
+            sysroot = Some(PathBuf::from(dir));
             index += 1;
             continue;
         }
@@ -189,6 +224,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     if !preprocess_only && output.is_none() {
         return Err(USAGE.to_string());
     }
+    pp.target = target;
+    pp.system_dirs = crate::pp::system_dirs_for(target, sysroot.as_deref());
     Ok(Options {
         input,
         output,
@@ -196,6 +233,14 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         time_phases,
         pp,
         dialect,
+    })
+}
+
+fn parse_target(triple: &str) -> Result<crate::target::Target, String> {
+    crate::target::Target::parse(triple).ok_or_else(|| {
+        format!(
+            "unsupported target '{triple}'; use x86_64-linux-gnu, arm64-apple-macos, or aarch64-linux-gnu"
+        )
     })
 }
 
@@ -308,6 +353,47 @@ mod tests {
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&out);
         let _ = std::fs::remove_file(&bad);
+    }
+
+    #[test]
+    fn target_option_spellings() {
+        let (src, out) = temp_paths();
+        std::fs::write(&src, "int main(void) { return 0; }\n").unwrap();
+        let path = src.display().to_string();
+        let ll = out.display().to_string();
+        for (flags, triple) in [
+            (
+                vec!["-target", "arm64-apple-macos"],
+                "arm64-apple-macosx11.0.0",
+            ),
+            (
+                vec!["--target", "arm64-apple-macos14"],
+                "arm64-apple-macosx14.0.0",
+            ),
+            (
+                vec!["--target=aarch64-linux-gnu"],
+                "aarch64-unknown-linux-gnu",
+            ),
+            (vec!["-target", "x86_64-linux-gnu"], "x86_64-pc-linux-gnu"),
+        ] {
+            let mut args = vec!["compiler".to_string()];
+            args.extend(flags.iter().map(|flag| flag.to_string()));
+            args.extend([path.clone(), "-o".to_string(), ll.clone()]);
+            assert_eq!(run(&args), 0, "{flags:?}");
+            let text = std::fs::read_to_string(&out).unwrap();
+            assert!(
+                text.contains(&format!("target triple = \"{triple}\"")),
+                "{text}"
+            );
+        }
+        let args: Vec<String> = ["compiler", "-target", "mips-linux-gnu", &path, "-o", &ll]
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect();
+        assert_eq!(run(&args), 2);
+        assert!(parse_target("arm64-apple-macos10.15").is_err());
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&out);
     }
 
     #[test]
