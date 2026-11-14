@@ -11,7 +11,9 @@ Rust sources for the clean-room frontend. `make` (or `cargo build --release`) pr
 | `parser.rs`, `ast.rs` | Recursive-descent parser and AST, including pointers, arrays, structs, unions, typedefs, enums, `const`/`volatile`/`restrict`, and variadic prototypes. |
 | `sema.rs` | Scopes, tag scopes, typedefs, promotions, pointer conversions, array decay, struct and union layout, qualifiers, string initializers, calls, lvalues, linkage, and constant initializers. |
 | `irgen.rs` | Textual LLVM IR (`define`, `declare`, globals, named struct types, `getelementptr`, string constants, pointer arithmetic, and variadic calls). |
-| `driver.rs`, `main.rs` | `compiler [options] INPUT.c -o OUTPUT.ll`, including `-E`, `-I`, `-D`, and `-U`. |
+| `driver.rs`, `main.rs` | `compiler [options] INPUT.c -o OUTPUT.ll`, including `-E`, `-I`, `-D`, `-U`, and `--time-phases`. |
 | `diag.rs`, `token.rs` | Diagnostics and token kinds. |
+| `timing.rs` | Frontend phase timing for `--time-phases`. |
+| `fxhash.rs` | A small fast hasher for the preprocessor's macro table and hide sets. |
 
 See the repository `README.md` for the supported subset and `STATUS.md` for test results.

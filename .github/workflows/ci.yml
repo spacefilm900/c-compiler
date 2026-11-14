@@ -62,7 +62,7 @@ jobs:
           python3 harness/run_tests.py
 
       - name: Csmith campaign script tests
-        run: python3 -m unittest tools/test_csmith_campaign.py tools/test_run_doom.py tools/test_run_lua.py tools/test_run_sqlite.py
+        run: python3 -m unittest tools/test_csmith_campaign.py tools/test_run_doom.py tools/test_run_lua.py tools/test_run_sqlite.py tools/test_perf_tools.py
 
   wacc:
     name: writing-a-c-compiler suite
@@ -417,3 +417,6 @@ jobs:
           scripts/fetch_sqlite.sh
           make
           python3 harness/run_sqlite.py --opt O0 --opt O2
+
+      - name: Compile-time guard (frontend vs clang -O0 on sqlite3.c and shell.c)
+        run: python3 tools/perf_guard.py

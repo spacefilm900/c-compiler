@@ -119,7 +119,7 @@ pub struct Token {
     pub column: usize,
     /// Source file this token came from. The preprocessor sets this for
     /// tokens that originated in a `#include`d file.
-    pub filename: String,
+    pub filename: std::rc::Rc<str>,
     /// Present for [`TokenKind::Int`] and [`TokenKind::Float`]. The low bits
     /// of an integer, a character constant, or a floating constant. The
     /// integer type is [`Token::int_ty`]. A `long double` also stores its

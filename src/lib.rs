@@ -12,11 +12,13 @@ pub mod dialect;
 pub mod driver;
 pub mod float;
 mod fp80;
+pub(crate) mod fxhash;
 pub mod irgen;
 pub mod lexer;
 pub mod parser;
 pub mod pp;
 pub mod sema;
+pub mod timing;
 pub mod token;
 
 pub use diag::{Diagnostic, Warning};
@@ -49,6 +51,8 @@ pub struct Output {
     /// Warnings: those from parsing (such as an unknown attribute), then
     /// those from semantic analysis, each in source order.
     pub warnings: Vec<Warning>,
+    /// Wall time of each frontend phase (`write` is filled in by the driver).
+    pub times: timing::PhaseTimes,
 }
 
 /// Like [`compile_with`], in the given dialect.
@@ -58,15 +62,56 @@ pub fn compile_dialect(
     options: &PpOptions,
     dialect: Dialect,
 ) -> Result<Output, Diagnostic> {
+    compile_impl(source, filename, options, dialect, false)
+}
+
+/// Like [`compile_dialect`] for a process that exits right afterwards: the
+/// token list and the syntax tree are not freed, because the operating
+/// system reclaims them faster than freeing millions of small allocations
+/// one by one.
+pub fn compile_and_exit(
+    source: &str,
+    filename: &str,
+    options: &PpOptions,
+    dialect: Dialect,
+) -> Result<Output, Diagnostic> {
+    compile_impl(source, filename, options, dialect, true)
+}
+
+fn compile_impl(
+    source: &str,
+    filename: &str,
+    options: &PpOptions,
+    dialect: Dialect,
+    leak: bool,
+) -> Result<Output, Diagnostic> {
+    use std::time::Instant;
+    let mut times = timing::PhaseTimes::default();
+    timing::take_lex();
+    let start = Instant::now();
     let tokens = pp::preprocess_tokens(source, filename, options)?;
+    times.lex = timing::take_lex();
+    times.preprocess = start.elapsed().saturating_sub(times.lex);
+    let start = Instant::now();
     let mut unit = parser::parse_dialect(&tokens, filename, dialect)?;
+    times.parse = start.elapsed();
+    let start = Instant::now();
     let mut warnings = std::mem::take(&mut unit.warnings);
     warnings.extend(sema::analyze_dialect(
         &mut unit, filename, &tokens, dialect,
     )?);
+    times.sema = start.elapsed();
+    let start = Instant::now();
+    let ir = irgen::render(&unit, filename);
+    times.irgen = start.elapsed();
+    if leak {
+        std::mem::forget(unit);
+        std::mem::forget(tokens);
+    }
     Ok(Output {
-        ir: irgen::render(&unit, filename),
+        ir,
         warnings,
+        times,
     })
 }
 

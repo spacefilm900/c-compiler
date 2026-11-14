@@ -395,6 +395,12 @@ impl StructRef {
         self.data.borrow().fields.clone()
     }
 
+    /// The members without copying them. The borrow must end before the
+    /// record is completed.
+    pub fn fields_ref(&self) -> Option<std::cell::Ref<'_, [StructField]>> {
+        std::cell::Ref::filter_map(self.data.borrow(), |body| body.fields.as_deref()).ok()
+    }
+
     pub fn size(&self) -> Option<u64> {
         let body = self.data.borrow();
         body.fields.as_ref().map(|_| body.size)
@@ -453,7 +459,7 @@ impl StructRef {
         if name.is_empty() {
             return None;
         }
-        let fields = self.fields()?;
+        let fields = self.fields_ref()?;
         for (index, field) in fields.iter().enumerate() {
             if field.bit_width == Some(0) {
                 continue;
@@ -498,7 +504,7 @@ impl StructRef {
     pub fn has_bitfield(&self) -> bool {
         self.data.borrow().irregular
             || self
-                .fields()
+                .fields_ref()
                 .is_some_and(|fields| fields.iter().any(StructField::is_bitfield))
     }
 
@@ -510,7 +516,7 @@ impl StructRef {
 
     /// The last member is a flexible array (C11 6.7.2.1). `sizeof` excludes it.
     pub fn has_flexible_member(&self) -> bool {
-        self.fields()
+        self.fields_ref()
             .is_some_and(|fields| fields.last().is_some_and(StructField::is_flexible))
     }
 
@@ -1009,11 +1015,11 @@ impl CType {
                     return false;
                 }
                 if handle.is_union() {
-                    handle
-                        .fields()
-                        .unwrap_or_default()
-                        .iter()
-                        .any(|field| field.bit_width.is_none() && field.ty.flexible_carrier())
+                    handle.fields_ref().is_some_and(|fields| {
+                        fields
+                            .iter()
+                            .any(|field| field.bit_width.is_none() && field.ty.flexible_carrier())
+                    })
                 } else {
                     handle.has_flexible_member()
                 }
@@ -1096,10 +1102,8 @@ impl CType {
         match self.peel() {
             CType::Array(elem, _) => elem.contains_const(),
             CType::Struct(handle) => handle
-                .fields()
-                .unwrap_or_default()
-                .iter()
-                .any(|field| field.ty.contains_const()),
+                .fields_ref()
+                .is_some_and(|fields| fields.iter().any(|field| field.ty.contains_const())),
             CType::Func(func) => func.ret.contains_const(),
             _ => false,
         }

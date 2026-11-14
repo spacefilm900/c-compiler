@@ -13,6 +13,8 @@
 //! that follow the invocation.
 
 use std::collections::{HashMap, HashSet};
+
+use crate::fxhash::{FxHashMap, FxHashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -76,7 +78,7 @@ pub fn preprocess_tokens(
 ) -> Result<Vec<Token>, Diagnostic> {
     let pp_tokens = run(source, filename, options)?;
     let mut out = Vec::new();
-    let mut eof_file = filename.to_string();
+    let mut eof_file: Rc<str> = Rc::from(filename);
     let mut eof_line = 1usize;
     let mut eof_col = 1usize;
     for tok in &pp_tokens {
@@ -142,7 +144,7 @@ fn push_compiler(dirs: &mut Vec<PathBuf>, path: PathBuf) {
 fn run(source: &str, filename: &str, options: &PpOptions) -> Result<Vec<PpToken>, Diagnostic> {
     let mut processor = Processor::new(options)?;
     processor.push_main(filename);
-    processor.tokens = lex_source(source, filename, 0)?;
+    processor.tokens = crate::timing::lexing(|| lex_source(source, filename, 0))?;
     processor.expand_all(false)
 }
 
@@ -206,7 +208,25 @@ fn convert_token(tok: &PpToken) -> Result<Token, Diagnostic> {
         "%>" => "}",
         other => other,
     };
-    match crate::lexer::lex(spelling, &tok.display) {
+    // Identifiers, keywords, and punctuators are most tokens; they need no
+    // value, so the full lexer is skipped for them.
+    if matches!(tok.kind, PpKind::Ident | PpKind::Punct) {
+        if let Some(kind) = crate::timing::lexing(|| crate::lexer::simple_kind(spelling)) {
+            return Ok(Token {
+                kind,
+                spelling: spelling.to_string(),
+                line: tok.line,
+                column: tok.column,
+                filename: Rc::clone(&tok.display),
+                value: None,
+                float_hi: 0,
+                int_ty: None,
+                float_kind: None,
+                bytes: None,
+            });
+        }
+    }
+    match crate::timing::lexing(|| crate::lexer::lex_shared(spelling, &tok.display)) {
         Ok(mut tokens) => {
             tokens.pop();
             if tokens.len() != 1 {
@@ -218,11 +238,11 @@ fn convert_token(tok: &PpToken) -> Result<Token, Diagnostic> {
             let mut converted = tokens.remove(0);
             converted.line = tok.line;
             converted.column = tok.column;
-            converted.filename = tok.display.clone();
+            converted.filename = Rc::clone(&tok.display);
             Ok(converted)
         }
         Err(mut err) => {
-            err.filename = tok.display.clone();
+            err.filename = tok.display.to_string();
             err.line = tok.line;
             err.column = tok.column;
             Err(err)
@@ -231,13 +251,13 @@ fn convert_token(tok: &PpToken) -> Result<Token, Diagnostic> {
 }
 
 fn error_at(tok: &PpToken, message: impl Into<String>) -> Diagnostic {
-    Diagnostic::new(&tok.display, tok.line, tok.column, message)
+    Diagnostic::new(&*tok.display, tok.line, tok.column, message)
 }
 
-type Hide = Rc<HashSet<String>>;
+type Hide = Rc<FxHashSet<String>>;
 
 fn hide_empty() -> Hide {
-    Rc::new(HashSet::new())
+    Rc::new(FxHashSet::default())
 }
 
 fn hide_with(hide: &Hide, name: &str) -> Hide {
@@ -277,7 +297,7 @@ enum PpKind {
 struct PpToken {
     kind: PpKind,
     spelling: String,
-    display: String,
+    display: Rc<str>,
     file_id: u32,
     line: usize,
     column: usize,
@@ -315,7 +335,7 @@ struct Macro {
 
 #[derive(Clone)]
 enum MacroEntry {
-    Defined(Macro),
+    Defined(Rc<Macro>),
     Undefined,
 }
 
@@ -333,7 +353,7 @@ struct Cond {
     seen_true: bool,
     /// C11 6.10.1 allows one `#else`, and no `#elif` after it.
     else_seen: bool,
-    display: String,
+    display: Rc<str>,
     line: usize,
     column: usize,
 }
@@ -356,7 +376,7 @@ struct Collected {
 enum Found {
     No,
     Special,
-    Macro(Macro),
+    Macro(Rc<Macro>),
 }
 
 enum Clause {
@@ -368,11 +388,14 @@ enum Clause {
 struct Processor {
     tokens: Vec<PpToken>,
     index: usize,
-    macros: HashMap<String, MacroEntry>,
+    macros: FxHashMap<String, MacroEntry>,
     files: Vec<FileInfo>,
     once: HashSet<PathBuf>,
     cond: Vec<Cond>,
     expansions: u32,
+    /// Free slots `splice` last put in front of the cursor when it rebuilt
+    /// the token vector.
+    headroom: usize,
     include_dirs: Vec<PathBuf>,
     system_dirs: Vec<PathBuf>,
     max_depth: usize,
@@ -383,11 +406,12 @@ impl Processor {
         let mut processor = Self {
             tokens: Vec::new(),
             index: 0,
-            macros: HashMap::new(),
+            macros: FxHashMap::default(),
             files: Vec::new(),
             once: HashSet::new(),
             cond: Vec::new(),
             expansions: 0,
+            headroom: 0,
             include_dirs: options.include_dirs.clone(),
             system_dirs: options.system_dirs.clone(),
             max_depth: options.max_include_depth,
@@ -469,7 +493,7 @@ impl Processor {
         for (name, body) in BUILTINS {
             let mac = self.macro_from_parts(name, None, false, body_tokens(body)?, None)?;
             self.macros
-                .insert(mac.name.clone(), MacroEntry::Defined(mac));
+                .insert(mac.name.clone(), MacroEntry::Defined(Rc::new(mac)));
         }
         Ok(())
     }
@@ -491,7 +515,7 @@ impl Processor {
                 };
                 let mac = self.macro_from_parts(name, None, false, body, Some(&at))?;
                 self.macros
-                    .insert(mac.name.clone(), MacroEntry::Defined(mac));
+                    .insert(mac.name.clone(), MacroEntry::Defined(Rc::new(mac)));
                 Ok(())
             }
         }
@@ -517,7 +541,7 @@ impl Processor {
             }
             if self.tokens[self.index].kind == PpKind::Newline {
                 if !isolated {
-                    out.push(self.tokens[self.index].clone());
+                    out.push(self.take_current());
                 }
                 self.index += 1;
                 continue;
@@ -525,19 +549,30 @@ impl Processor {
             if self.try_expand(isolated)? {
                 continue;
             }
-            out.push(self.tokens[self.index].clone());
+            out.push(self.take_current());
             self.index += 1;
         }
         if !isolated && !self.cond.is_empty() {
             let frame = self.cond.last().unwrap();
             return Err(Diagnostic::new(
-                &frame.display,
+                &*frame.display,
                 frame.line,
                 frame.column,
                 "unterminated conditional directive",
             ));
         }
         Ok(out)
+    }
+
+    /// The token at the cursor, about to be consumed. Its spelling is moved
+    /// out rather than copied: a consumed token is read again only for its
+    /// kind (`at_line_start`) or its position.
+    fn take_current(&mut self) -> PpToken {
+        let slot = &mut self.tokens[self.index];
+        let spelling = std::mem::take(&mut slot.spelling);
+        let mut tok = slot.clone();
+        tok.spelling = spelling;
+        tok
     }
 
     fn at_line_start(&self) -> bool {
@@ -549,11 +584,16 @@ impl Processor {
     }
 
     fn try_expand(&mut self, isolated: bool) -> Result<bool, Diagnostic> {
-        let tok = self.tokens[self.index].clone();
-        if tok.kind != PpKind::Ident || tok.hide.contains(&tok.spelling) {
+        let current = &self.tokens[self.index];
+        if current.kind != PpKind::Ident || current.hide.contains(&current.spelling) {
             return Ok(false);
         }
-        match self.lookup(&tok.spelling) {
+        let found = self.lookup(&current.spelling);
+        if matches!(found, Found::No) {
+            return Ok(false);
+        }
+        let tok = current.clone();
+        match found {
             Found::No => Ok(false),
             Found::Special => {
                 self.note_expansion(&tok)?;
@@ -591,15 +631,59 @@ impl Processor {
         Ok(())
     }
 
+    /// Insert `repl` so that it is read next.
+    ///
+    /// Tokens before `self.index` have been consumed. Only the one just
+    /// before the cursor is still read (by `at_line_start` and
+    /// `directive_token`), so the replacement is written over the consumed
+    /// prefix, with that token copied in front of it. Inserting in the
+    /// middle of the vector instead would move the whole rest of the file
+    /// on every macro expansion. When the prefix is too short the vector
+    /// is rebuilt with free slots in front.
     fn splice(&mut self, repl: Vec<PpToken>) {
         let at = self.index;
-        self.tokens.splice(at..at, repl);
-        self.index = at;
+        let n = repl.len();
+        if at == 0 {
+            self.tokens.splice(0..0, repl);
+            return;
+        }
+        if n >= at {
+            // Room for this replacement and as much again, so a run of
+            // nested expansions at the cursor rebuilds only now and then.
+            self.headroom = 2 * n + 64;
+            let filler = PpToken {
+                kind: PpKind::Placemarker,
+                spelling: String::new(),
+                display: Rc::from(""),
+                file_id: 0,
+                line: 0,
+                column: 0,
+                leading_space: false,
+                hide: hide_empty(),
+            };
+            let tail = self.tokens.split_off(at);
+            let previous = self.tokens.pop().expect("at > 0");
+            let mut rebuilt = Vec::with_capacity(self.headroom + 1 + tail.len());
+            rebuilt.resize(self.headroom, filler);
+            rebuilt.push(previous);
+            rebuilt.extend(tail);
+            self.tokens = rebuilt;
+            self.index = self.headroom + 1;
+        }
+        let at = self.index;
+        let start = at - n;
+        if n > 0 {
+            self.tokens[start - 1] = self.tokens[at - 1].clone();
+        }
+        for (slot, tok) in self.tokens[start..at].iter_mut().zip(repl) {
+            *slot = tok;
+        }
+        self.index = start;
     }
 
     fn lookup(&self, name: &str) -> Found {
         match self.macros.get(name) {
-            Some(MacroEntry::Defined(mac)) => Found::Macro(mac.clone()),
+            Some(MacroEntry::Defined(mac)) => Found::Macro(Rc::clone(mac)),
             Some(MacroEntry::Undefined) => Found::No,
             None if name == "__FILE__" || name == "__LINE__" => Found::Special,
             None => Found::No,
@@ -1091,7 +1175,7 @@ impl Processor {
             let adjusted = tok.line as isize + delta;
             tok.line = if adjusted < 1 { 1 } else { adjusted as usize };
             if let Some(name) = &new_file {
-                tok.display = name.clone();
+                tok.display = Rc::from(name.as_str());
             }
         }
     }
@@ -1114,14 +1198,14 @@ impl Processor {
         }
         let text = read_source(&path, at)?;
         let file_id = self.files.len() as u32;
-        let display = path.display().to_string();
+        let display: Rc<str> = Rc::from(path.display().to_string());
         self.files.push(FileInfo {
             real_path: path,
             canonical,
             depth,
             found_dir: Some(found_dir),
         });
-        let mut included = lex_source(&text, &display, file_id)?;
+        let mut included = crate::timing::lexing(|| lex_source(&text, &display, file_id))?;
         // A header that does not end in a new-line must not continue into the
         // next line of the file that included it. Clang treats that end of
         // file as the end of the line.
@@ -1132,7 +1216,7 @@ impl Processor {
                 included.push(PpToken {
                     kind: PpKind::Newline,
                     spelling: "\n".to_string(),
-                    display: display.clone(),
+                    display: Rc::clone(&display),
                     file_id,
                     line,
                     column,
@@ -1315,7 +1399,7 @@ impl Processor {
             if self.index >= self.tokens.len() {
                 let frame = self.cond.last().unwrap();
                 return Err(Diagnostic::new(
-                    &frame.display,
+                    &*frame.display,
                     frame.line,
                     frame.column,
                     "unterminated conditional directive",
@@ -1350,7 +1434,7 @@ impl Processor {
             }
         }
         self.macros
-            .insert(mac.name.clone(), MacroEntry::Defined(mac));
+            .insert(mac.name.clone(), MacroEntry::Defined(Rc::new(mac)));
         Ok(())
     }
 
@@ -1442,7 +1526,7 @@ fn command_token() -> PpToken {
     PpToken {
         kind: PpKind::Ident,
         spelling: String::new(),
-        display: "<command-line>".to_string(),
+        display: Rc::from("<command-line>"),
         file_id: 0,
         line: 1,
         column: 1,
@@ -1487,8 +1571,19 @@ fn retarget(tokens: &mut [PpToken], inv: &PpToken) {
 
 fn paint(tokens: &mut [PpToken], base: &Hide, name: &str) {
     let extra = hide_with(base, name);
+    // Neighbouring tokens usually share one hide set (they came from the
+    // same body or argument), so the last union is reused instead of
+    // building an equal set again.
+    let mut last: Option<(Hide, Hide)> = None;
     for tok in tokens {
-        tok.hide = hide_union(&tok.hide, &extra);
+        if let Some((from, to)) = &last {
+            if Rc::ptr_eq(from, &tok.hide) {
+                tok.hide = Rc::clone(to);
+                continue;
+            }
+        }
+        let union = hide_union(&tok.hide, &extra);
+        last = Some((std::mem::replace(&mut tok.hide, Rc::clone(&union)), union));
     }
 }
 
@@ -1758,7 +1853,7 @@ fn header_from(tokens: &[PpToken], at: &PpToken) -> Result<(String, bool, usize)
 }
 
 fn decode_string(tok: &PpToken) -> Result<String, Diagnostic> {
-    match crate::lexer::lex(&tok.spelling, &tok.display) {
+    match crate::lexer::lex_shared(&tok.spelling, &tok.display) {
         Ok(mut tokens) => {
             tokens.pop();
             if tokens.len() != 1 {
@@ -1768,7 +1863,7 @@ fn decode_string(tok: &PpToken) -> Result<String, Diagnostic> {
             String::from_utf8(bytes).map_err(|_| error_at(tok, "file name is not valid UTF-8"))
         }
         Err(mut err) => {
-            err.filename = tok.display.clone();
+            err.filename = tok.display.to_string();
             err.line = tok.line;
             err.column = tok.column;
             Err(err)
@@ -1968,7 +2063,7 @@ fn literal_val(tok: &PpToken) -> Result<Val, Diagnostic> {
     // A prefixed character constant has the value and type it has in
     // program text (C11 6.10.1p4): `L'\400'` is the `wchar_t` 256, and
     // `U'\xffffffff'` is an unsigned value.
-    match crate::lexer::lex(&tok.spelling, &tok.display) {
+    match crate::lexer::lex_shared(&tok.spelling, &tok.display) {
         Ok(mut tokens) => {
             tokens.pop();
             if tokens.len() == 1 && tokens[0].kind == TokenKind::Float {
@@ -1986,7 +2081,7 @@ fn literal_val(tok: &PpToken) -> Result<Val, Diagnostic> {
             Ok(val_from_compiler(&tokens[0]))
         }
         Err(mut err) => {
-            err.filename = tok.display.clone();
+            err.filename = tok.display.to_string();
             err.line = tok.line;
             err.column = tok.column;
             Err(err)
@@ -2067,7 +2162,7 @@ enum Binary {
 }
 
 struct IfLoc {
-    display: String,
+    display: Rc<str>,
     line: usize,
     column: usize,
 }
@@ -2413,7 +2508,7 @@ fn eval_binary(op: Binary, left: Val, right: Val, loc: &IfLoc) -> Result<Val, Di
     let unsigned = left.unsigned || right.unsigned;
     if matches!(op, Binary::Div | Binary::Mod) && right.bits == 0 {
         return Err(Diagnostic::new(
-            &loc.display,
+            &*loc.display,
             loc.line,
             loc.column,
             "division by zero in preprocessor expression",
@@ -2482,7 +2577,7 @@ fn eval_shift(op: Binary, left: Val, right: Val, loc: &IfLoc) -> Result<Val, Dia
         let count = right.bits as i64;
         if count < 0 {
             return Err(Diagnostic::new(
-                &loc.display,
+                &*loc.display,
                 loc.line,
                 loc.column,
                 "negative shift count in preprocessor expression",
@@ -2516,7 +2611,7 @@ struct Scanner<'a> {
     index: usize,
     line: usize,
     column: usize,
-    display: &'a str,
+    display: Rc<str>,
     file_id: u32,
     pending_space: bool,
     tokens: Vec<PpToken>,
@@ -2528,7 +2623,7 @@ fn lex_source(source: &str, display: &str, file_id: u32) -> Result<Vec<PpToken>,
         index: 0,
         line: 1,
         column: 1,
-        display,
+        display: Rc::from(display),
         file_id,
         pending_space: false,
         tokens: Vec::new(),
@@ -2763,15 +2858,14 @@ impl Scanner<'_> {
             "%>", "%:", "#", "+", "-", "*", "/", "%", "=", "<", ">", "!", "&", "|", "^", "~", "(",
             ")", "{", "}", "[", "]", ";", ",", "?", ":", ".",
         ];
+        // The longest punctuator is four characters: read that many logical
+        // bytes once instead of once per candidate.
+        let mut ahead = [0u8; 4];
+        let have = self.peek_logical_into(&mut ahead);
         PUNCTS
             .iter()
-            .find(|punct| self.starts_with(punct.as_bytes()))
+            .find(|punct| ahead[..have].starts_with(punct.as_bytes()))
             .copied()
-    }
-
-    fn starts_with(&self, bytes: &[u8]) -> bool {
-        self.peek_logical_n(bytes.len())
-            .is_some_and(|peeked| peeked == bytes)
     }
 
     fn push(&mut self, kind: PpKind, spelling: &str, line: usize, column: usize) {
@@ -2780,7 +2874,7 @@ impl Scanner<'_> {
         self.tokens.push(PpToken {
             kind,
             spelling: spelling.to_string(),
-            display: self.display.to_string(),
+            display: Rc::clone(&self.display),
             file_id: self.file_id,
             line,
             column,
@@ -2794,7 +2888,7 @@ impl Scanner<'_> {
         self.tokens.push(PpToken {
             kind: PpKind::Newline,
             spelling: "\n".to_string(),
-            display: self.display.to_string(),
+            display: Rc::clone(&self.display),
             file_id: self.file_id,
             line,
             column,
@@ -2804,7 +2898,7 @@ impl Scanner<'_> {
     }
 
     fn fail<T>(&self, line: usize, column: usize, message: &str) -> Result<T, Diagnostic> {
-        Err(Diagnostic::new(self.display, line, column, message))
+        Err(Diagnostic::new(&*self.display, line, column, message))
     }
 
     fn skip_splices(&mut self) -> bool {
@@ -2832,17 +2926,14 @@ impl Scanner<'_> {
     }
 
     fn peek_byte_logical(&self) -> Option<u8> {
-        self.peek_logical_n(1).map(|bytes| bytes[0])
+        self.peek_logical_at(0)
     }
 
+    /// The logical byte `offset` places ahead, skipping line splices.
     fn peek_logical_at(&self, offset: usize) -> Option<u8> {
-        self.peek_logical_n(offset + 1).map(|bytes| bytes[offset])
-    }
-
-    fn peek_logical_n(&self, count: usize) -> Option<Vec<u8>> {
-        let mut out = Vec::with_capacity(count);
+        let mut seen = 0;
         let mut index = self.index;
-        while out.len() < count {
+        loop {
             if index >= self.bytes.len() {
                 return None;
             }
@@ -2851,10 +2942,33 @@ impl Scanner<'_> {
                 index += newline_width(self.bytes, index);
                 continue;
             }
-            out.push(self.bytes[index]);
+            if seen == offset {
+                return Some(self.bytes[index]);
+            }
+            seen += 1;
             index += 1;
         }
-        Some(out)
+    }
+
+    /// Fill `out` with the next logical bytes, skipping line splices, and
+    /// return how many were available.
+    fn peek_logical_into(&self, out: &mut [u8]) -> usize {
+        let mut filled = 0;
+        let mut index = self.index;
+        while filled < out.len() {
+            if index >= self.bytes.len() {
+                break;
+            }
+            if self.bytes[index] == b'\\' && is_newline(self.bytes, index + 1) {
+                index += 1;
+                index += newline_width(self.bytes, index);
+                continue;
+            }
+            out[filled] = self.bytes[index];
+            filled += 1;
+            index += 1;
+        }
+        filled
     }
 
     fn bump(&mut self) -> u8 {
@@ -2928,6 +3042,19 @@ mod tests {
     fn splices_lines_and_drops_comments() {
         let text = pp("int ab\\\nc = 1; // hidden\\\nstill\n/* a \\\nb */ int y;\n");
         assert_eq!(squash(&text), "int abc = 1; int y;");
+    }
+
+    #[test]
+    fn expansions_longer_than_the_consumed_prefix() {
+        // The first token of the file expands to more tokens than have been
+        // read, and each of those expands again, so `splice` has to make
+        // room in front of the cursor several times over.
+        let text = pp("#define A B B B B\n#define B C C C C\n#define C 1\nA\n#define E\nE # x\n#define F(p) p p p p p p p p\nF(F(F(2)))\n");
+        let flat = squash(&text);
+        assert!(flat.starts_with(&"1 ".repeat(16)), "{flat}");
+        // A '#' that comes out of an expansion does not start a directive.
+        assert!(flat.contains("# x"), "{flat}");
+        assert_eq!(flat.matches('2').count(), 512, "{flat}");
     }
 
     #[test]

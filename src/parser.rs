@@ -301,7 +301,7 @@ impl Parser<'_> {
         // `;` here; Clang and GCC accept it (with -Wextra-semi). SQLite's
         // shell writes `SQLITE_EXTENSION_INIT1;`, which expands to this.
         if self.current().kind == TokenKind::Semi {
-            self.advance();
+            self.bump();
             return Ok(Vec::new());
         }
         if self.current().kind == TokenKind::KwStaticAssert {
@@ -312,7 +312,7 @@ impl Parser<'_> {
         self.apply_shadow(&specs)?;
         if self.current().kind == TokenKind::Semi {
             self.finish_tag_only(&specs)?;
-            self.expect(TokenKind::Semi, "';'")?;
+            self.expect_skip(TokenKind::Semi, "';'")?;
             return Ok(Vec::new());
         }
         let base = specs.ty.clone();
@@ -333,7 +333,7 @@ impl Parser<'_> {
             }
             decls.push(self.finish_file_decl(&specs, next)?);
         }
-        self.expect(TokenKind::Semi, "';'")?;
+        self.expect_skip(TokenKind::Semi, "';'")?;
         Ok(decls)
     }
 
@@ -554,15 +554,15 @@ impl Parser<'_> {
                 | TokenKind::KwLong
                 | TokenKind::KwSigned
                 | TokenKind::KwUnsigned => {
-                    self.advance();
+                    self.bump();
                     self.note_type(&mut flags, &token)?;
                 }
                 TokenKind::KwConst | TokenKind::KwVolatile => {
-                    self.advance();
+                    self.bump();
                     self.note_qualifier(&mut flags, &token)?;
                 }
                 TokenKind::KwRestrict => {
-                    self.advance();
+                    self.bump();
                     self.note_restrict(&mut flags, &token)?;
                 }
                 TokenKind::KwTypedef => {
@@ -570,22 +570,22 @@ impl Parser<'_> {
                 }
                 TokenKind::KwInline => {
                     // Accepted and ignored. `static inline` stays `static`.
-                    self.advance();
+                    self.bump();
                 }
                 TokenKind::KwNoreturn => {
                     // A function specifier. It does not change the type.
-                    self.advance();
+                    self.bump();
                 }
                 TokenKind::KwRegister | TokenKind::KwAuto => {
                     self.note_storage(&mut flags, Storage::None, &token, where_)?;
                     flags.plain_storage = true;
                 }
                 TokenKind::KwBool => {
-                    self.advance();
+                    self.bump();
                     self.note_bool(&mut flags, &token)?;
                 }
                 TokenKind::KwFloat | TokenKind::KwDouble => {
-                    self.advance();
+                    self.bump();
                     self.note_float(&mut flags, &token)?;
                 }
                 TokenKind::KwStruct => {
@@ -613,7 +613,7 @@ impl Parser<'_> {
                     {
                         break;
                     }
-                    self.advance();
+                    self.bump();
                     flags.any = true;
                     flags.struct_ty = Some(self.builtin_va_list());
                     flags.line = token.line;
@@ -723,7 +723,7 @@ impl Parser<'_> {
             };
             return Err(self.error(message));
         }
-        self.advance();
+        self.bump();
         if storage == Storage::None {
             if flags.storage != Storage::None || flags.plain_storage {
                 return Err(self.error("multiple storage-class specifiers"));
@@ -792,7 +792,7 @@ impl Parser<'_> {
                 "invalid combination of type specifiers",
             ));
         }
-        self.advance();
+        self.bump();
         flags.any = true;
         flags.int128 = true;
         if token.spelling == "__uint128_t" {
@@ -923,7 +923,7 @@ impl Parser<'_> {
                 format!("'{}' is a GNU extension; use -std=gnu11", keyword.spelling),
             ));
         }
-        self.expect(TokenKind::LParen, "'('")?;
+        self.expect_skip(TokenKind::LParen, "'('")?;
         let ty = if self.at_type_specifier(self.current()) {
             self.parse_type_name()?
         } else {
@@ -945,7 +945,7 @@ impl Parser<'_> {
                 )
             })?
         };
-        self.expect(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
         Ok(ty)
     }
 
@@ -959,7 +959,7 @@ impl Parser<'_> {
         _where: SpecPlace,
     ) -> Result<(), Diagnostic> {
         let token = self.current().clone();
-        self.advance();
+        self.bump();
         match token.spelling.as_str() {
             "__inline" | "__inline__" => {}
             "__restrict" | "__restrict__" => self.note_restrict(flags, &token)?,
@@ -1276,13 +1276,13 @@ impl Parser<'_> {
         } else {
             self.declare_fresh_tag("", kind)
         };
-        self.expect(TokenKind::LBrace, "'{'")?;
+        self.expect_skip(TokenKind::LBrace, "'{'")?;
         let id = handle.id();
         self.defining.insert(id);
         let parsed = self.parse_member_list();
         self.defining.remove(&id);
         let (mut fields, member_attrs) = parsed?;
-        self.expect(TokenKind::RBrace, "'}'")?;
+        self.expect_skip(TokenKind::RBrace, "'}'")?;
         attrs.extend(self.parse_attributes_into()?);
         let label = tag.unwrap_or(word);
         if fields.is_empty() {
@@ -1407,9 +1407,9 @@ impl Parser<'_> {
                 }
             }
         }
-        self.advance();
+        self.bump();
         self.parse_enumerators()?;
-        self.expect(TokenKind::RBrace, "'}'")?;
+        self.expect_skip(TokenKind::RBrace, "'}'")?;
         Ok((line, column))
     }
 
@@ -1471,7 +1471,7 @@ impl Parser<'_> {
             }
             self.bind_typedef_decl(&specs.attrs, &next)?;
         }
-        self.expect(TokenKind::Semi, "';'")?;
+        self.expect_skip(TokenKind::Semi, "';'")?;
         Ok(Vec::new())
     }
 
@@ -1487,7 +1487,7 @@ impl Parser<'_> {
             }
             break;
         }
-        self.expect(TokenKind::Semi, "';'")?;
+        self.expect_skip(TokenKind::Semi, "';'")?;
         Ok(())
     }
 
@@ -1749,13 +1749,13 @@ impl Parser<'_> {
     /// program and is not implemented is an error.
     fn skip_attribute(&mut self) -> Result<(), Diagnostic> {
         let at = self.advance();
-        self.expect(TokenKind::LParen, "'('")?;
-        self.expect(TokenKind::LParen, "'('")?;
+        self.expect_skip(TokenKind::LParen, "'('")?;
+        self.expect_skip(TokenKind::LParen, "'('")?;
         loop {
             match self.current().kind {
                 TokenKind::RParen => break,
                 TokenKind::Comma => {
-                    self.advance();
+                    self.bump();
                     continue;
                 }
                 TokenKind::Eof => {
@@ -1777,18 +1777,18 @@ impl Parser<'_> {
             {
                 return Err(self.error("expected an attribute name"));
             }
-            self.advance();
+            self.bump();
             let name = attr_name(&tok.spelling);
             let mut args = Vec::new();
             if self.current().kind == TokenKind::LParen {
-                self.advance();
+                self.bump();
                 while self.current().kind != TokenKind::RParen {
                     args.push(self.parse_attr_arg(&name)?);
                     if !self.match_kind(TokenKind::Comma) {
                         break;
                     }
                 }
-                self.expect(TokenKind::RParen, "')'")?;
+                self.expect_skip(TokenKind::RParen, "')'")?;
             }
             match attr_class(&name) {
                 AttrClass::Known => {}
@@ -1817,8 +1817,8 @@ impl Parser<'_> {
                 break;
             }
         }
-        self.expect(TokenKind::RParen, "')'")?;
-        self.expect(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
         Ok(())
     }
 
@@ -1838,7 +1838,7 @@ impl Parser<'_> {
         if cur.kind == TokenKind::Ident
             && matches!(self.lookahead(), TokenKind::Comma | TokenKind::RParen)
         {
-            self.advance();
+            self.bump();
             return Ok(AttrArg::Ident(cur.spelling));
         }
         let mut depth = 0usize;
@@ -1851,7 +1851,7 @@ impl Parser<'_> {
                 TokenKind::Eof => return Err(self.error("unclosed __attribute__")),
                 _ => {}
             }
-            self.advance();
+            self.bump();
         }
         Ok(AttrArg::Other)
     }
@@ -2033,13 +2033,13 @@ impl Parser<'_> {
     }
 
     fn parse_asm_label(&mut self) -> Result<String, Diagnostic> {
-        self.advance();
+        self.bump();
         while self.spec_word(&["__volatile__", "__volatile", "volatile", "goto"])
             || self.current().kind == TokenKind::KwVolatile
         {
-            self.advance();
+            self.bump();
         }
-        self.expect(TokenKind::LParen, "'('")?;
+        self.expect_skip(TokenKind::LParen, "'('")?;
         if self.current().kind != TokenKind::String {
             return Err(self.error("expected a string after __asm__"));
         }
@@ -2055,7 +2055,7 @@ impl Parser<'_> {
             }
             bytes.extend(tok.bytes.expect("string token"));
         }
-        self.expect(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
@@ -2064,14 +2064,14 @@ impl Parser<'_> {
     /// member list. The expression is an integer constant expression; when
     /// it is 0 the message is reported.
     fn parse_static_assert(&mut self) -> Result<(), Diagnostic> {
-        self.advance();
-        self.expect(TokenKind::LParen, "'('")?;
+        self.bump();
+        self.expect_skip(TokenKind::LParen, "'('")?;
         let expr = self.parse_conditional()?;
         check_uneval(&expr, self.env())
             .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
         let value = eval_ice(&expr, self.env())
             .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
-        self.expect(TokenKind::Comma, "','")?;
+        self.expect_skip(TokenKind::Comma, "','")?;
         if self.current().kind != TokenKind::String {
             return Err(self.error(format!(
                 "expected a string literal, found {}",
@@ -2090,8 +2090,8 @@ impl Parser<'_> {
                 _ => message.push_str(&tok.spelling),
             }
         }
-        self.expect(TokenKind::RParen, "')'")?;
-        self.expect(TokenKind::Semi, "';'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::Semi, "';'")?;
         if value.bits & value.ty.mask() == 0 {
             return Err(self.error_at(
                 expr.line(),
@@ -2137,7 +2137,7 @@ impl Parser<'_> {
                         bit_width: None,
                     });
                     extras.push(self.member_attrs(&specs.attrs, &[])?);
-                    self.advance();
+                    self.bump();
                     continue;
                 }
                 return Err(self.error("expected a declarator"));
@@ -2217,7 +2217,7 @@ impl Parser<'_> {
                 }
                 break;
             }
-            self.expect(TokenKind::Semi, "';'")?;
+            self.expect_skip(TokenKind::Semi, "';'")?;
         }
         Ok((fields, extras))
     }
@@ -2603,7 +2603,7 @@ impl Parser<'_> {
     }
 
     fn parse_param_list(&mut self) -> Result<ParsedParams, Diagnostic> {
-        self.expect(TokenKind::LParen, "'('")?;
+        self.expect_skip(TokenKind::LParen, "'('")?;
         // Tags declared in a parameter list have prototype scope, or the
         // function's block scope when this declarator is a definition. The
         // map is returned either way; the caller keeps it only for a body.
@@ -2629,8 +2629,8 @@ impl Parser<'_> {
             });
         }
         if self.current().kind == TokenKind::KwVoid && self.lookahead() == TokenKind::RParen {
-            self.advance();
-            self.advance();
+            self.bump();
+            self.bump();
             return Ok(ParsedParams {
                 params: Vec::new(),
                 prototype: true,
@@ -2654,7 +2654,7 @@ impl Parser<'_> {
                 if params.is_empty() {
                     return Err(self.error("a named parameter is required before '...'"));
                 }
-                self.advance();
+                self.bump();
                 variadic = true;
                 break;
             }
@@ -2667,7 +2667,7 @@ impl Parser<'_> {
             }
             break;
         }
-        self.expect(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
         Ok(ParsedParams {
             params,
             prototype: true,
@@ -2769,7 +2769,7 @@ impl Parser<'_> {
     /// omit the identifier (`sizeof(int *)`, `(void *)0`).
     fn parse_raw_declarator(&mut self, abstract_ok: bool) -> Result<RawDecl, Diagnostic> {
         if self.current().kind == TokenKind::Star {
-            self.advance();
+            self.bump();
             let quals = self.parse_pointer_quals()?;
             if let Some(message) = unsupported(self.current().kind) {
                 return Err(self.error(message));
@@ -2788,9 +2788,9 @@ impl Parser<'_> {
                 let params = self.parse_param_list()?;
                 RawDecl::Func(Box::new(RawDecl::Abstract(line, column)), params)
             } else {
-                self.advance();
+                self.bump();
                 let inner = self.parse_raw_declarator(abstract_ok)?;
-                self.expect(TokenKind::RParen, "')'")?;
+                self.expect_skip(TokenKind::RParen, "')'")?;
                 inner
             }
         } else if self.current().kind == TokenKind::Ident {
@@ -2810,9 +2810,9 @@ impl Parser<'_> {
         loop {
             match self.current().kind {
                 TokenKind::LBrack => {
-                    self.advance();
+                    self.bump();
                     let len = self.parse_array_len()?;
-                    self.expect(TokenKind::RBrack, "']'")?;
+                    self.expect_skip(TokenKind::RBrack, "']'")?;
                     node = RawDecl::Array(Box::new(node), len);
                 }
                 TokenKind::LParen => {
@@ -2851,14 +2851,14 @@ impl Parser<'_> {
                     } else {
                         quals.is_volatile = true;
                     }
-                    self.advance();
+                    self.bump();
                 }
                 TokenKind::KwRestrict => {
                     if quals.is_restrict {
                         return Err(self.error("duplicate 'restrict' qualifier"));
                     }
                     quals.is_restrict = true;
-                    self.advance();
+                    self.bump();
                 }
                 TokenKind::Ident
                     if matches!(
@@ -2870,7 +2870,7 @@ impl Parser<'_> {
                         return Err(self.error("duplicate 'restrict' qualifier"));
                     }
                     quals.is_restrict = true;
-                    self.advance();
+                    self.bump();
                 }
                 TokenKind::Ident if self.at_attribute() => {
                     // An attribute on a pointer declarator is ignored.
@@ -3088,7 +3088,7 @@ impl Parser<'_> {
                 items.push(self.parse_statement()?);
             }
         }
-        self.expect(TokenKind::RBrace, "'}'")?;
+        self.expect_skip(TokenKind::RBrace, "'}'")?;
         Ok(Compound {
             items,
             line,
@@ -3136,7 +3136,7 @@ impl Parser<'_> {
         }
         if self.current().kind == TokenKind::Semi {
             self.finish_tag_only(&specs)?;
-            self.expect(TokenKind::Semi, "';'")?;
+            self.expect_skip(TokenKind::Semi, "';'")?;
             return Ok(Vec::new());
         }
         if specs.storage == Storage::Typedef {
@@ -3171,7 +3171,7 @@ impl Parser<'_> {
             }
             break;
         }
-        self.expect(TokenKind::Semi, "';'")?;
+        self.expect_skip(TokenKind::Semi, "';'")?;
         Ok(items)
     }
 
@@ -3347,7 +3347,7 @@ impl Parser<'_> {
             TokenKind::KwGoto => self.parse_goto(),
             TokenKind::KwBreak => {
                 let token = self.advance();
-                self.expect(TokenKind::Semi, "';'")?;
+                self.expect_skip(TokenKind::Semi, "';'")?;
                 Ok(Stmt::Break {
                     line: token.line,
                     column: token.column,
@@ -3355,7 +3355,7 @@ impl Parser<'_> {
             }
             TokenKind::KwContinue => {
                 let token = self.advance();
-                self.expect(TokenKind::Semi, "';'")?;
+                self.expect_skip(TokenKind::Semi, "';'")?;
                 Ok(Stmt::Continue {
                     line: token.line,
                     column: token.column,
@@ -3377,7 +3377,7 @@ impl Parser<'_> {
                 let line = self.current().line;
                 let column = self.current().column;
                 let expr = self.parse_expression()?;
-                self.expect(TokenKind::Semi, "';'")?;
+                self.expect_skip(TokenKind::Semi, "';'")?;
                 Ok(Stmt::Expr {
                     expr: Some(expr),
                     line,
@@ -3389,7 +3389,7 @@ impl Parser<'_> {
 
     fn parse_label(&mut self) -> Result<Stmt, Diagnostic> {
         let name = self.advance();
-        self.expect(TokenKind::Colon, "':'")?;
+        self.expect_skip(TokenKind::Colon, "':'")?;
         // Label attributes, such as `unused`, are accepted and ignored.
         self.parse_attributes_into()?;
         let stmt = Box::new(self.parse_statement()?);
@@ -3414,7 +3414,7 @@ impl Parser<'_> {
                 ));
             }
             let expr = self.parse_expression()?;
-            self.expect(TokenKind::Semi, "';'")?;
+            self.expect_skip(TokenKind::Semi, "';'")?;
             return Ok(Stmt::GotoPtr {
                 expr,
                 line: token.line,
@@ -3425,7 +3425,7 @@ impl Parser<'_> {
             return Err(self.error("expected a label name"));
         }
         let name = self.advance();
-        self.expect(TokenKind::Semi, "';'")?;
+        self.expect_skip(TokenKind::Semi, "';'")?;
         Ok(Stmt::Goto {
             name: name.spelling,
             line: token.line,
@@ -3440,7 +3440,7 @@ impl Parser<'_> {
         } else {
             Some(self.parse_expression()?)
         };
-        self.expect(TokenKind::Semi, "';'")?;
+        self.expect_skip(TokenKind::Semi, "';'")?;
         Ok(Stmt::Return {
             expr,
             line: token.line,
@@ -3450,9 +3450,9 @@ impl Parser<'_> {
 
     fn parse_if(&mut self) -> Result<Stmt, Diagnostic> {
         let token = self.advance();
-        self.expect(TokenKind::LParen, "'('")?;
+        self.expect_skip(TokenKind::LParen, "'('")?;
         let cond = self.parse_expression()?;
-        self.expect(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
         let then_stmt = Box::new(self.parse_statement()?);
         let else_stmt = if self.match_kind(TokenKind::KwElse) {
             Some(Box::new(self.parse_statement()?))
@@ -3470,9 +3470,9 @@ impl Parser<'_> {
 
     fn parse_while(&mut self) -> Result<Stmt, Diagnostic> {
         let token = self.advance();
-        self.expect(TokenKind::LParen, "'('")?;
+        self.expect_skip(TokenKind::LParen, "'('")?;
         let cond = self.parse_expression()?;
-        self.expect(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
         let body = Box::new(self.parse_statement()?);
         Ok(Stmt::While {
             cond,
@@ -3485,11 +3485,11 @@ impl Parser<'_> {
     fn parse_do(&mut self) -> Result<Stmt, Diagnostic> {
         let token = self.advance();
         let body = Box::new(self.parse_statement()?);
-        self.expect(TokenKind::KwWhile, "'while'")?;
-        self.expect(TokenKind::LParen, "'('")?;
+        self.expect_skip(TokenKind::KwWhile, "'while'")?;
+        self.expect_skip(TokenKind::LParen, "'('")?;
         let cond = self.parse_expression()?;
-        self.expect(TokenKind::RParen, "')'")?;
-        self.expect(TokenKind::Semi, "';'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::Semi, "';'")?;
         Ok(Stmt::Do {
             body,
             cond,
@@ -3507,7 +3507,7 @@ impl Parser<'_> {
 
     fn parse_for_in_scope(&mut self) -> Result<Stmt, Diagnostic> {
         let token = self.advance();
-        self.expect(TokenKind::LParen, "'('")?;
+        self.expect_skip(TokenKind::LParen, "'('")?;
         let init = if self.match_kind(TokenKind::Semi) {
             ForInit::Empty
         } else if self.starts_declaration() {
@@ -3526,7 +3526,7 @@ impl Parser<'_> {
             return Err(self.error(message));
         } else {
             let expr = self.parse_expression()?;
-            self.expect(TokenKind::Semi, "';'")?;
+            self.expect_skip(TokenKind::Semi, "';'")?;
             ForInit::Expr(expr)
         };
         let cond = if self.current().kind == TokenKind::Semi {
@@ -3534,13 +3534,13 @@ impl Parser<'_> {
         } else {
             Some(self.parse_expression()?)
         };
-        self.expect(TokenKind::Semi, "';'")?;
+        self.expect_skip(TokenKind::Semi, "';'")?;
         let step = if self.current().kind == TokenKind::RParen {
             None
         } else {
             Some(self.parse_expression()?)
         };
-        self.expect(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
         let body = Box::new(self.parse_statement()?);
         Ok(Stmt::For {
             init,
@@ -3556,9 +3556,9 @@ impl Parser<'_> {
     /// full expression, so it may contain a comma.
     fn parse_switch(&mut self) -> Result<Stmt, Diagnostic> {
         let token = self.advance();
-        self.expect(TokenKind::LParen, "'('")?;
+        self.expect_skip(TokenKind::LParen, "'('")?;
         let cond = self.parse_expression()?;
-        self.expect(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
         let body = Box::new(self.parse_statement()?);
         Ok(Stmt::Switch {
             cond,
@@ -3591,7 +3591,7 @@ impl Parser<'_> {
         } else {
             None
         };
-        self.expect(TokenKind::Colon, "':'")?;
+        self.expect_skip(TokenKind::Colon, "':'")?;
         let stmt = Box::new(self.parse_statement()?);
         Ok(Stmt::Case {
             expr,
@@ -3606,7 +3606,7 @@ impl Parser<'_> {
 
     fn parse_default(&mut self) -> Result<Stmt, Diagnostic> {
         let token = self.advance();
-        self.expect(TokenKind::Colon, "':'")?;
+        self.expect_skip(TokenKind::Colon, "':'")?;
         let stmt = Box::new(self.parse_statement()?);
         Ok(Stmt::Default {
             stmt,
@@ -3632,7 +3632,7 @@ impl Parser<'_> {
         let Some(kind) = assign_kind(self.current().kind) else {
             return Ok(left);
         };
-        self.advance();
+        self.bump();
         let line = left.line();
         let column = left.column();
         let value = self.parse_assignment()?;
@@ -3672,7 +3672,7 @@ impl Parser<'_> {
             });
         }
         let then_expr = self.parse_expression()?;
-        self.expect(TokenKind::Colon, "':'")?;
+        self.expect_skip(TokenKind::Colon, "':'")?;
         let else_expr = self.parse_conditional()?;
         Ok(Expr::cond(cond, then_expr, else_expr, line, column))
     }
@@ -3811,14 +3811,14 @@ impl Parser<'_> {
 
     fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
         if self.spec_word(&["__extension__"]) {
-            self.advance();
+            self.bump();
             return self.parse_unary();
         }
         let token = self.current().clone();
         match token.kind {
             TokenKind::LParen if self.lookahead_is_type() => self.parse_cast(),
             TokenKind::Plus | TokenKind::Minus | TokenKind::Bang | TokenKind::Tilde => {
-                self.advance();
+                self.bump();
                 let op = match token.kind {
                     TokenKind::Plus => UnaryOp::Plus,
                     TokenKind::Minus => UnaryOp::Minus,
@@ -3829,7 +3829,7 @@ impl Parser<'_> {
                 Ok(Expr::unary(op, expr, token.line, token.column))
             }
             TokenKind::PlusPlus | TokenKind::MinusMinus => {
-                self.advance();
+                self.bump();
                 let op = if token.kind == TokenKind::PlusPlus {
                     IncOp::PreInc
                 } else {
@@ -3841,12 +3841,12 @@ impl Parser<'_> {
             TokenKind::KwSizeof => self.parse_sizeof(token.line, token.column),
             TokenKind::KwAlignof => self.parse_alignof(token.line, token.column),
             TokenKind::Amp => {
-                self.advance();
+                self.bump();
                 let expr = self.parse_unary()?;
                 Ok(Expr::unary(UnaryOp::Addr, expr, token.line, token.column))
             }
             TokenKind::Star => {
-                self.advance();
+                self.bump();
                 let expr = self.parse_unary()?;
                 Ok(Expr::unary(UnaryOp::Deref, expr, token.line, token.column))
             }
@@ -3860,7 +3860,7 @@ impl Parser<'_> {
                         "label addresses ('&&label') are a GNU extension; use -std=gnu11",
                     ));
                 }
-                self.advance();
+                self.bump();
                 let name = self.advance();
                 Ok(Expr::LabelAddr {
                     name: name.spelling,
@@ -3911,7 +3911,7 @@ impl Parser<'_> {
             }
             break;
         }
-        self.expect(TokenKind::RBrace, "'}'")?;
+        self.expect_skip(TokenKind::RBrace, "'}'")?;
         Ok(Init::List {
             items,
             line: brace.line,
@@ -3929,7 +3929,7 @@ impl Parser<'_> {
         while matches!(self.current().kind, TokenKind::Dot | TokenKind::LBrack) {
             designators.push(self.parse_designator()?);
         }
-        self.expect(TokenKind::Assign, "'='")?;
+        self.expect_skip(TokenKind::Assign, "'='")?;
         let init = self.parse_initializer()?;
         Ok(Init::Designated {
             designators,
@@ -3956,7 +3956,7 @@ impl Parser<'_> {
         if self.current().kind == TokenKind::Ellipsis {
             return Err(self.error("range designators are not supported"));
         }
-        self.expect(TokenKind::RBrack, "']'")?;
+        self.expect_skip(TokenKind::RBrack, "']'")?;
         Ok(Designator::Index {
             expr,
             line: bracket.line,
@@ -3967,11 +3967,11 @@ impl Parser<'_> {
     /// `sizeof (type-name)` when the parenthesis starts a type. Otherwise
     /// `sizeof unary-expression`. The operand is not evaluated later.
     fn parse_sizeof(&mut self, line: usize, column: usize) -> Result<Expr, Diagnostic> {
-        self.advance();
+        self.bump();
         if self.current().kind == TokenKind::LParen && self.lookahead_is_type() {
             let lparen = self.advance();
             let ty = self.parse_type_name()?;
-            self.expect(TokenKind::RParen, "')'")?;
+            self.expect_skip(TokenKind::RParen, "')'")?;
             if self.current().kind == TokenKind::LBrace {
                 // `sizeof (T){...}` is `sizeof` of a compound literal.
                 let literal = self.parse_compound_literal(ty, lparen.line, lparen.column)?;
@@ -4020,9 +4020,9 @@ impl Parser<'_> {
             }
             return Err(self.error("_Alignof requires a parenthesized type name"));
         }
-        self.advance();
+        self.bump();
         let ty = self.parse_type_name()?;
-        self.expect(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
         if ty.is_func() {
             return Err(self.error_at(
                 line,
@@ -4048,7 +4048,7 @@ impl Parser<'_> {
     fn parse_cast(&mut self) -> Result<Expr, Diagnostic> {
         let lparen = self.advance();
         let ty = self.parse_type_name()?;
-        self.expect(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
         if self.current().kind == TokenKind::LBrace {
             let literal = self.parse_compound_literal(ty, lparen.line, lparen.column)?;
             return self.parse_postfix_tail(literal);
@@ -4090,9 +4090,9 @@ impl Parser<'_> {
     /// `default : expr`.
     fn parse_generic(&mut self) -> Result<Expr, Diagnostic> {
         let keyword = self.advance();
-        self.expect(TokenKind::LParen, "'('")?;
+        self.expect_skip(TokenKind::LParen, "'('")?;
         let control = self.parse_assignment()?;
-        self.expect(TokenKind::Comma, "','")?;
+        self.expect_skip(TokenKind::Comma, "','")?;
         let mut assocs = Vec::new();
         loop {
             let token = self.current().clone();
@@ -4101,7 +4101,7 @@ impl Parser<'_> {
             } else {
                 Some(self.parse_type_name()?)
             };
-            self.expect(TokenKind::Colon, "':'")?;
+            self.expect_skip(TokenKind::Colon, "':'")?;
             let expr = self.parse_assignment()?;
             assocs.push(GenericAssoc {
                 ty,
@@ -4113,7 +4113,7 @@ impl Parser<'_> {
                 break;
             }
         }
-        self.expect(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
         Ok(Expr::Generic {
             control: Box::new(control),
             assocs,
@@ -4151,11 +4151,11 @@ impl Parser<'_> {
     }
 
     fn parse_builtin_va_arg(&mut self, line: usize, column: usize) -> Result<Expr, Diagnostic> {
-        self.advance();
+        self.bump();
         let ap = self.parse_assignment()?;
-        self.expect(TokenKind::Comma, "','")?;
+        self.expect_skip(TokenKind::Comma, "','")?;
         let type_arg = self.parse_type_name()?;
-        self.expect(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
         Ok(Expr::va_arg(ap, type_arg, line, column))
     }
 
@@ -4173,28 +4173,28 @@ impl Parser<'_> {
     /// and not a constant expression. No address is formed from a null
     /// pointer, so the IR has no `getelementptr` on a null base.
     fn parse_builtin_offsetof(&mut self, line: usize, column: usize) -> Result<Expr, Diagnostic> {
-        self.advance();
+        self.bump();
         let ty = self.parse_type_name()?;
-        self.expect(TokenKind::Comma, "','")?;
+        self.expect_skip(TokenKind::Comma, "','")?;
         let first = self.expect(TokenKind::Ident, "a member name")?;
         let mut steps = vec![OffsetStep::Member(first)];
         loop {
             match self.current().kind {
                 TokenKind::Dot => {
-                    self.advance();
+                    self.bump();
                     let name = self.expect(TokenKind::Ident, "a member name")?;
                     steps.push(OffsetStep::Member(name));
                 }
                 TokenKind::LBrack => {
                     let bracket = self.advance();
                     let index = self.parse_expression()?;
-                    self.expect(TokenKind::RBrack, "']'")?;
+                    self.expect_skip(TokenKind::RBrack, "']'")?;
                     steps.push(OffsetStep::Index(index, bracket));
                 }
                 _ => break,
             }
         }
-        self.expect(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
 
         let size_t = || CType::from_name(TypeName::ULong);
         let mut cur = ty;
@@ -4334,11 +4334,11 @@ impl Parser<'_> {
     ) -> Result<Option<Expr>, Diagnostic> {
         match name.as_str() {
             "__builtin_types_compatible_p" => {
-                self.advance();
+                self.bump();
                 let first = self.parse_type_name()?;
-                self.expect(TokenKind::Comma, "','")?;
+                self.expect_skip(TokenKind::Comma, "','")?;
                 let second = self.parse_type_name()?;
-                self.expect(TokenKind::RParen, "')'")?;
+                self.expect_skip(TokenKind::RParen, "')'")?;
                 // Top-level qualifiers are ignored.
                 let same = compatible(&first.unqualified(), &second.unqualified());
                 Ok(Some(Expr::int(
@@ -4349,7 +4349,7 @@ impl Parser<'_> {
                 )))
             }
             "__builtin_choose_expr" => {
-                self.advance();
+                self.bump();
                 let cond = self.parse_assignment()?;
                 let value = eval_ice(&cond, self.env()).map_err(|_| {
                     self.error_at(
@@ -4358,11 +4358,11 @@ impl Parser<'_> {
                         "the first argument of __builtin_choose_expr is not a constant",
                     )
                 })?;
-                self.expect(TokenKind::Comma, "','")?;
+                self.expect_skip(TokenKind::Comma, "','")?;
                 let first = self.parse_assignment()?;
-                self.expect(TokenKind::Comma, "','")?;
+                self.expect_skip(TokenKind::Comma, "','")?;
                 let second = self.parse_assignment()?;
-                self.expect(TokenKind::RParen, "')'")?;
+                self.expect_skip(TokenKind::RParen, "')'")?;
                 Ok(Some(if value.bits & value.ty.mask() != 0 {
                     first
                 } else {
@@ -4370,9 +4370,9 @@ impl Parser<'_> {
                 }))
             }
             "__builtin_constant_p" => {
-                self.advance();
+                self.bump();
                 let arg = self.parse_assignment()?;
-                self.expect(TokenKind::RParen, "')'")?;
+                self.expect_skip(TokenKind::RParen, "')'")?;
                 // 1 for an integer constant expression or a floating or
                 // string literal; 0 otherwise. The argument is not
                 // evaluated. GCC may also answer 1 after optimization; 0 is
@@ -4483,7 +4483,7 @@ impl Parser<'_> {
                         },
                         _ => None,
                     };
-                    self.advance();
+                    self.bump();
                     let mut args = Vec::new();
                     if self.current().kind != TokenKind::RParen {
                         loop {
@@ -4497,7 +4497,7 @@ impl Parser<'_> {
                             }
                         }
                     }
-                    self.expect(TokenKind::RParen, "')'")?;
+                    self.expect_skip(TokenKind::RParen, "')'")?;
                     expr = if let Some(op) = builtin {
                         Expr::va_op(op, args, line, column)
                     } else {
@@ -4507,7 +4507,7 @@ impl Parser<'_> {
                 TokenKind::LBrack => {
                     let bracket = self.advance();
                     let index = self.parse_expression()?;
-                    self.expect(TokenKind::RBrack, "']'")?;
+                    self.expect_skip(TokenKind::RBrack, "']'")?;
                     expr = Expr::index(expr, index, bracket.line, bracket.column);
                 }
                 TokenKind::PlusPlus | TokenKind::MinusMinus => {
@@ -4544,7 +4544,7 @@ impl Parser<'_> {
         match token.kind {
             TokenKind::KwGeneric => self.parse_generic(),
             TokenKind::Float => {
-                self.advance();
+                self.bump();
                 Ok(Expr::float_lit(
                     (u128::from(token.float_hi) << 64)
                         | u128::from(token.value.expect("float bits")),
@@ -4554,7 +4554,7 @@ impl Parser<'_> {
                 ))
             }
             TokenKind::Int => {
-                self.advance();
+                self.bump();
                 Ok(Expr::int(
                     token.value.expect("int token"),
                     token.int_ty.expect("int token type"),
@@ -4563,7 +4563,7 @@ impl Parser<'_> {
                 ))
             }
             TokenKind::Ident => {
-                self.advance();
+                self.bump();
                 if let Some(NameBinding::EnumConst(value)) = self.lookup_name(&token.spelling) {
                     return Ok(Expr::int(
                         value as u32 as u64,
@@ -4582,7 +4582,7 @@ impl Parser<'_> {
                 Ok(Expr::var(token.spelling, token.line, token.column))
             }
             TokenKind::String => {
-                self.advance();
+                self.bump();
                 // Translation phase 6 (C11 6.4.5). An unprefixed literal adopts
                 // the other prefix. Two different non-ordinary prefixes are a
                 // diagnostic. `u8` is a non-ordinary prefix; the result is
@@ -4607,9 +4607,9 @@ impl Parser<'_> {
             }
             TokenKind::LParen if self.lookahead() == TokenKind::LBrace => self.parse_stmt_expr(),
             TokenKind::LParen => {
-                self.advance();
+                self.bump();
                 let expr = self.parse_expression()?;
-                self.expect(TokenKind::RParen, "')'")?;
+                self.expect_skip(TokenKind::RParen, "')'")?;
                 Ok(expr)
             }
             kind => {
@@ -4659,7 +4659,7 @@ impl Parser<'_> {
             _ => Some(CType::Void),
         };
         self.pop_tags();
-        self.expect(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
         Ok(Expr::StmtExpr {
             body: Box::new(body),
             value_ty,
@@ -4682,15 +4682,20 @@ impl Parser<'_> {
 
     fn advance(&mut self) -> Token {
         let token = self.current().clone();
-        if token.kind != TokenKind::Eof && self.index + 1 < self.tokens.len() {
+        self.bump();
+        token
+    }
+
+    /// Like [`Parser::advance`] without copying the token.
+    fn bump(&mut self) {
+        if self.current().kind != TokenKind::Eof && self.index + 1 < self.tokens.len() {
             self.index += 1;
         }
-        token
     }
 
     fn match_kind(&mut self, kind: TokenKind) -> bool {
         if self.current().kind == kind {
-            self.advance();
+            self.bump();
             true
         } else {
             false
@@ -4702,6 +4707,15 @@ impl Parser<'_> {
             return Err(self.error(format!("expected {what}, found {}", found(self.current()))));
         }
         Ok(self.advance())
+    }
+
+    /// Like [`Parser::expect`] without copying the token.
+    fn expect_skip(&mut self, kind: TokenKind, what: &str) -> Result<(), Diagnostic> {
+        if self.current().kind != kind {
+            return Err(self.error(format!("expected {what}, found {}", found(self.current()))));
+        }
+        self.bump();
+        Ok(())
     }
 
     fn error(&self, message: impl Into<String>) -> Diagnostic {
