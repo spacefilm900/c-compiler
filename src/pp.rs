@@ -587,6 +587,9 @@ struct FileInfo {
     /// Directory the file was found in, for `#include_next`. None for the
     /// main source file.
     found_dir: Option<PathBuf>,
+    /// A system header: found in a system directory, or found next to the
+    /// system header that included it with `#include "..."`.
+    system: bool,
 }
 
 struct Cond {
@@ -759,6 +762,7 @@ impl Processor {
             canonical,
             depth: 0,
             found_dir: None,
+            system: false,
         });
     }
 
@@ -1263,12 +1267,7 @@ impl Processor {
             .first()
             .is_some_and(|tok| tok.is_lparen() && !tok.leading_space)
         {
-            let file = &self.files[at.file_id as usize];
-            let system = file
-                .found_dir
-                .as_ref()
-                .is_some_and(|dir| self.system_dirs.contains(dir));
-            parse_function_header(rest, system)?
+            parse_function_header(rest, self.files[at.file_id as usize].system)?
         } else {
             ParsedFn {
                 params: None,
@@ -1453,11 +1452,15 @@ impl Processor {
         let text = read_source(&path, at)?;
         let file_id = self.files.len() as u32;
         let display: Rc<str> = Rc::from(path.display().to_string());
+        let parent = &self.files[at.file_id as usize];
+        let system = self.system_dirs.contains(&found_dir)
+            || (quote && parent.system && parent.real_path.parent() == Some(found_dir.as_path()));
         self.files.push(FileInfo {
             real_path: path,
             canonical,
             depth,
             found_dir: Some(found_dir),
+            system,
         });
         let mut included = crate::timing::lexing(|| lex_source(&text, &display, file_id))?;
         // A header that does not end in a new-line must not continue into the
@@ -3656,13 +3659,19 @@ mod tests {
         let header = "#define GROUP(TAG, MEMBERS...) struct TAG { MEMBERS }\n\
                       #define SHOW(fmt, args...) show(fmt, ## args)\n";
         std::fs::write(dir.join("sys.h"), header).unwrap();
+        // A header reached with `#include "..."` from a system header in a
+        // subdirectory is a system header too.
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/outer.h"), "#include \"inner.h\"\n").unwrap();
+        std::fs::write(dir.join("sub/inner.h"), "#define INNER(a...) inner(a)\n").unwrap();
         std::fs::write(dir.join("user.h"), header).unwrap();
         let options = PpOptions {
             system_dirs: vec![dir.clone()],
             ..PpOptions::default()
         };
         let text = preprocess(
-            "#include <sys.h>\nGROUP(g, int a; int b;);\nSHOW(\"x\");\nSHOW(\"y\", 1, 2);\n",
+            "#include <sys.h>\n#include <sub/outer.h>\nGROUP(g, int a; int b;);\n\
+             SHOW(\"x\");\nSHOW(\"y\", 1, 2);\nINNER(3, 4);\n",
             "t.c",
             &options,
         )
@@ -3671,6 +3680,7 @@ mod tests {
         assert!(text.contains("struct g { int a; int b; };"), "{text}");
         assert!(text.contains("show(\"x\");"), "{text}");
         assert!(text.contains("show(\"y\", 1, 2);"), "{text}");
+        assert!(text.contains("inner(3, 4);"), "{text}");
         // In a header found through -I it is still an error.
         let options = PpOptions {
             include_dirs: vec![dir.clone()],
