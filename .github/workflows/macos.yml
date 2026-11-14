@@ -1,15 +1,14 @@
 # Native macOS check on an Apple Silicon runner. macOS minutes cost about
 # ten times Linux minutes, so this runs only after a merge to main and by
 # hand (Actions > macos > Run workflow, or `gh workflow run macos.yml`);
-# never on pull requests or other branches. Target: about 6 minutes.
+# never on pull requests or other branches. Budget: about 6 minutes; the
+# first runs took under a minute.
 
 name: macos
 
 on:
   push:
-    # TEMPORARY, for the pre-review check: workflow_dispatch cannot start a
-    # workflow that is not on the default branch yet. Removed before review.
-    branches: [main, macos-ci]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
