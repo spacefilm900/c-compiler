@@ -40,7 +40,8 @@ line can be removed. An unlisted failure fails the run.
 Env: CC_UNDER_TEST, CLANG (default clang), QEMU_AARCH64 (default
 qemu-aarch64), AARCH64_LINK (default "clang --target=aarch64-linux-gnu
 -static"), AARCH64_INCLUDE (default /usr/aarch64-linux-gnu/include),
-TIMEOUT (seconds, default 20), JOBS (default: CPU count).
+TIMEOUT (seconds, default 20), JOBS (default: CPU count), TORTURE_ROOT
+(for --torture).
 """
 import argparse, concurrent.futures, os, re, shlex, subprocess, sys, tempfile
 from pathlib import Path
@@ -248,11 +249,68 @@ def known_failures(target):
     return known
 
 
+def torture(target, label_filter):
+    """Run gcc.c-torture/execute for an arm64 target, built by this compiler
+    alone (`-std=gnu11`), each program's own self-test deciding. This is a
+    report, not a gate: it lists failures that are not already in the
+    x86_64 list harness/gcc_torture_known_failures.txt, and exits 0. Under
+    the Apple proxy, programs that call glibc's `long double` functions or
+    its asm-label redirects (`__isoc99_fscanf`, `__sysv_signal`) cannot
+    work, because those are glibc's, not Apple's."""
+    root = Path(os.environ.get("TORTURE_ROOT", ROOT / "tests" / "external" / "gcc-torture")) \
+        / "gcc" / "testsuite" / "gcc.c-torture" / "execute"
+    if not root.is_dir():
+        print(f"FAIL: {root} is missing; run scripts/fetch_gcc_torture.sh")
+        return 1
+    files = sorted(p for p in root.rglob("*.c") if "builtins" not in p.parts)
+    files = [p for p in files if label_filter in str(p.relative_to(root))]
+    known = set()
+    for line in (ROOT / "harness" / "gcc_torture_known_failures.txt").read_text().splitlines():
+        line = line.split("#")[0].strip()
+        if line:
+            known.add(line.split()[0])
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        tc = Toolchain(target, tmp)
+        setup_err = tc.setup()
+        if setup_err:
+            print(f"FAIL setup: {setup_err}")
+            return 1
+
+        def one(src):
+            label = str(src.relative_to(root))
+            work = tmp / label.replace("/", "_")
+            work.mkdir()
+            obj, err = build_ours(tc, src, work / "t", "gnu11")
+            if err:
+                return label, err
+            rc, _, e = tc.link([obj], work / "t.bin")
+            if rc != 0:
+                return label, f"link failed: {short(e)}"
+            rc, _, _ = tc.execute(work / "t.bin")
+            return label, None if rc == 0 else f"exit {rc}"
+
+        workers = int(os.environ.get("JOBS", os.cpu_count() or 2))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(one, files))
+    failed = [(label, err) for label, err in results if err]
+    new = [(label, err) for label, err in failed if label not in known]
+    for label, err in new:
+        print(f"NOT_IN_X86_LIST {label}: {err.splitlines()[0][:200]}")
+    print(f"\n{target} torture: {len(results)} files, {len(results) - len(failed)} passed, "
+          f"{len(failed)} failed, {len(new)} of them not in the x86_64 known-failure list")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True, choices=["aarch64-linux-gnu", "arm64-apple-macos"])
     parser.add_argument("--filter", default="", help="only labels containing this text")
+    parser.add_argument("--torture", action="store_true",
+                        help="instead, run gcc.c-torture/execute (report only; see torture())")
     args = parser.parse_args()
+    if args.torture:
+        return torture(args.target, args.filter)
 
     jobs = []
     for t in sorted((ROOT / "tests").glob("*.c")):

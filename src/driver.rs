@@ -362,9 +362,18 @@ mod tests {
         let path = src.display().to_string();
         let ll = out.display().to_string();
         for (flags, triple) in [
-            (vec!["-target", "arm64-apple-macos"], "arm64-apple-macosx11.0.0"),
-            (vec!["--target", "arm64-apple-macos14"], "arm64-apple-macosx14.0.0"),
-            (vec!["--target=aarch64-linux-gnu"], "aarch64-unknown-linux-gnu"),
+            (
+                vec!["-target", "arm64-apple-macos"],
+                "arm64-apple-macosx11.0.0",
+            ),
+            (
+                vec!["--target", "arm64-apple-macos14"],
+                "arm64-apple-macosx14.0.0",
+            ),
+            (
+                vec!["--target=aarch64-linux-gnu"],
+                "aarch64-unknown-linux-gnu",
+            ),
             (vec!["-target", "x86_64-linux-gnu"], "x86_64-pc-linux-gnu"),
         ] {
             let mut args = vec!["compiler".to_string()];
@@ -372,7 +381,10 @@ mod tests {
             args.extend([path.clone(), "-o".to_string(), ll.clone()]);
             assert_eq!(run(&args), 0, "{flags:?}");
             let text = std::fs::read_to_string(&out).unwrap();
-            assert!(text.contains(&format!("target triple = \"{triple}\"")), "{text}");
+            assert!(
+                text.contains(&format!("target triple = \"{triple}\"")),
+                "{text}"
+            );
         }
         let args: Vec<String> = ["compiler", "-target", "mips-linux-gnu", &path, "-o", &ll]
             .iter()
