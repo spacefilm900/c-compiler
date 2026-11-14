@@ -429,6 +429,6 @@ mod tests {
         );
         assert_eq!(coerce(&ld, AggUse::Param), "[2 x fp128]");
         assert_eq!(coerce(&ld, AggUse::Return), "[2 x fp128]");
-        target::set(Target::host());
+        target::set(Target::build_default());
     }
 }

@@ -60,7 +60,7 @@ pub enum Abi {
 
 impl Default for Target {
     fn default() -> Self {
-        Target::host()
+        Target::build_default()
     }
 }
 
@@ -72,6 +72,18 @@ pub const APPLE_DEFAULT: Target = Target::Arm64Apple {
 impl Target {
     /// The machine this compiler binary runs on, when it is a supported
     /// target; otherwise `x86_64-linux-gnu`.
+    /// The target used when none is named: the host. Unit tests use
+    /// x86_64 Linux instead, on any machine, because their expected IR and
+    /// layouts are written for it; the arm64 targets are tested by name
+    /// (`target_tests.rs`).
+    pub fn build_default() -> Target {
+        if cfg!(test) {
+            Target::X86_64Linux
+        } else {
+            Target::host()
+        }
+    }
+
     pub fn host() -> Target {
         if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             APPLE_DEFAULT
@@ -261,7 +273,7 @@ fn parse_apple_os(os: &str) -> Option<Target> {
 }
 
 thread_local! {
-    static CURRENT: Cell<Target> = Cell::new(Target::host());
+    static CURRENT: Cell<Target> = Cell::new(Target::build_default());
 }
 
 /// The target of the translation unit being compiled on this thread.
@@ -335,7 +347,7 @@ mod tests {
         set(APPLE_DEFAULT);
         assert!(current().is_apple());
         let other = std::thread::spawn(current).join().unwrap();
-        assert_eq!(other, Target::host());
-        set(Target::host());
+        assert_eq!(other, Target::build_default());
+        set(Target::build_default());
     }
 }

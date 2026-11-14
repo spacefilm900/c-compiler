@@ -32,8 +32,11 @@ tests/gnu/both/*.c use GNU spellings that strict C11 also accepts
 identifiers, not constraint violations. Each is compared with Clang in
 both modes, -std=c11 and -std=gnu11.
 
-Env: CC_UNDER_TEST, CLANG (default "clang"), TIMEOUT (seconds, default 10).
-Exit status 0 only if all tests pass.
+Env: CC_UNDER_TEST, CLANG (default "clang"), TIMEOUT (seconds, default 10),
+KNOWN_FAILURES (optional file of test labels, one per line, '#' comments:
+those tests may fail without failing the run; the macOS job uses
+harness/macos_known_failures.txt).
+Exit status 0 only if every test not listed as a known failure passes.
 """
 import os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
@@ -43,16 +46,32 @@ COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
 CLANG = os.environ.get("CLANG", "clang")
 TIMEOUT = float(os.environ.get("TIMEOUT", "10"))
 MIN_CLANG_MAJOR = 18
+# Apple numbers its Clang separately from LLVM. Apple Clang 16 (Xcode 16)
+# reads the IR this compiler writes; the LLVM 15-17 problem behind
+# MIN_CLANG_MAJOR is in the x86_64 backend, which a Mac does not use here.
+MIN_APPLE_CLANG_MAJOR = 16
 
 def clang_major():
-    """Major version from `clang --version`, or None if it cannot be read."""
+    """(major version, is Apple Clang) from `clang --version`; major is None
+    if it cannot be read."""
     try:
         out = subprocess.run([CLANG, "--version"], capture_output=True, text=True,
                              timeout=TIMEOUT).stdout
     except (OSError, subprocess.TimeoutExpired):
-        return None
+        return None, False
     m = re.search(r"version (\d+)", out)
-    return int(m.group(1)) if m else None
+    return (int(m.group(1)) if m else None), "Apple clang" in out
+
+def known_failures():
+    path = os.environ.get("KNOWN_FAILURES")
+    if not path:
+        return set()
+    names = set()
+    for line in Path(path).read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            names.add(line)
+    return names
 
 def run(cmd):
     try:
@@ -154,8 +173,11 @@ def main():
     if shutil.which(CLANG) is None:
         problems.append(f"clang not found: {CLANG}")
     else:
-        major = clang_major()
-        if major is None or major < MIN_CLANG_MAJOR:
+        major, apple = clang_major()
+        if apple:
+            if major is None or major < MIN_APPLE_CLANG_MAJOR:
+                problems.append(f"Apple Clang >= {MIN_APPLE_CLANG_MAJOR} is required; got: {major}")
+        elif major is None or major < MIN_CLANG_MAJOR:
             problems.append(
                 f"Clang/LLVM >= {MIN_CLANG_MAJOR} is required (LLVM 15-17 split an "
                 f"i128 argument between a register and the stack); got: {major}"
@@ -172,39 +194,47 @@ def main():
             print(f"FAIL gnu/both/{t.name}: " + "; ".join(problems))
         print(f"\n0/{total} passed")
         return 1
+    known = known_failures()
     passed = 0
+    expected_failures = []
+    now_passing = []
+
+    def report(label, r):
+        nonlocal passed
+        if r is None:
+            passed += 1
+            if label in known:
+                now_passing.append(label)
+            print(f"PASS {label}")
+        elif label in known:
+            expected_failures.append(label)
+            print(f"KNOWN {label}: {r}")
+        else:
+            print(f"FAIL {label}: {r}")
+
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
         for t in tests:
-            r = test(t, tmp)
-            print(f"{'PASS' if r is None else 'FAIL'} {t.name}" + ("" if r is None else f": {r}"))
-            passed += r is None
+            report(t.name, test(t, tmp))
         for t in hosted:
-            r = test(t, tmp)
-            label = f"{t.parent.name}/{t.name}"
-            print(f"{'PASS' if r is None else 'FAIL'} {label}" + ("" if r is None else f": {r}"))
-            passed += r is None
+            report(f"{t.parent.name}/{t.name}", test(t, tmp))
         for t in crosses:
             use = t.with_name(t.name[: -len("_def.c")] + "_use.c")
             label = f"{t.parent.name}/{t.name[: -len('_def.c')]}"
-            if not use.is_file():
-                r = f"missing {use.name}"
-            else:
-                r = test_cross(t, use, tmp)
-            print(f"{'PASS' if r is None else 'FAIL'} {label}" + ("" if r is None else f": {r}"))
-            passed += r is None
+            report(label, f"missing {use.name}" if not use.is_file() else test_cross(t, use, tmp))
         for t in gnu:
-            r = test_gnu(t, tmp)
-            label = f"{t.parent.name}/{t.name}"
-            print(f"{'PASS' if r is None else 'FAIL'} {label}" + ("" if r is None else f": {r}"))
-            passed += r is None
+            report(f"{t.parent.name}/{t.name}", test_gnu(t, tmp))
         for t in both:
-            r = test_both(t, tmp)
-            label = f"gnu/both/{t.name}"
-            print(f"{'PASS' if r is None else 'FAIL'} {label}" + ("" if r is None else f": {r}"))
-            passed += r is None
-    print(f"\n{passed}/{total} passed")
-    return 0 if passed == total else 1
+            report(f"gnu/both/{t.name}", test_both(t, tmp))
+    unexpected = total - passed - len(expected_failures)
+    if known:
+        print(f"\n{passed}/{total} passed, {len(expected_failures)} known failures, "
+              f"{unexpected} unexpected failures")
+        for label in now_passing:
+            print(f"now passing (remove from {os.environ['KNOWN_FAILURES']}): {label}")
+    else:
+        print(f"\n{passed}/{total} passed")
+    return 0 if unexpected == 0 else 1
 
 if __name__ == "__main__":
     sys.exit(main())

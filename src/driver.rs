@@ -137,7 +137,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut time_phases = false;
     let mut pp = PpOptions::default();
     let mut dialect = Dialect::default();
-    let mut target = crate::target::Target::host();
+    let mut target = crate::target::Target::build_default();
     let mut sysroot: Option<PathBuf> = None;
     let mut index = 1;
     while index < args.len() {

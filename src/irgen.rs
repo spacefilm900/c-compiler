@@ -5037,6 +5037,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn source_filename_escapes_and_assembles() {
         let name = "a\"b\\c\n\t\u{7f}.c";
         let ir = crate::compile_to_ir("int main(void) { return 7; }\n", name).unwrap();
@@ -5052,6 +5056,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn globals_and_prototypes_lower() {
         let ir = crate::compile_to_ir(
             "\
@@ -5083,6 +5091,10 @@ int main(void) { counter = id(4); return counter; }
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn operators_lower_and_sizeof_is_not_emitted() {
         let ir = crate::compile_to_ir(
             "\
@@ -5117,6 +5129,10 @@ int main(void) {
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn static_locals_block_linkage_and_do_while() {
         let ir = crate::compile_to_ir(
             "\
@@ -5220,6 +5236,10 @@ int main(void) {
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn return_constant_ir_assembles() {
         let ir = crate::compile_to_ir("int main(void) { return 42; }\n", "t.c").unwrap();
         assert!(ir.contains("define i32 @main()"));
@@ -5288,6 +5308,10 @@ extern short e;
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn mixed_link_matches_clang_calling_convention() {
         let callee = "\
 char idc(char c) { return c; }
@@ -5424,6 +5448,10 @@ int main(void) {
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn pointer_and_array_ir() {
         let ir = crate::compile_to_ir(
             "\
@@ -5479,6 +5507,10 @@ int main(void) {
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn strings_and_varargs_lower() {
         let hello = "\
 int printf(const char *, ...);
@@ -5537,6 +5569,10 @@ char exact[2] = \"hi\";
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn struct_ir_names_the_type_and_geps_members() {
         let source = "\
 struct S { char c; int i; };
@@ -5566,6 +5602,10 @@ int main(void) {
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn incomplete_extern_keeps_a_distinct_type_name() {
         let source = "\
 void f(void) { struct S { int a; }; }
@@ -5611,6 +5651,10 @@ int main(void) { return &x == 0; }
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn smoke_files_match_clang() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
         let mut files: Vec<_> = std::fs::read_dir(&root)
@@ -5633,6 +5677,10 @@ int main(void) { return &x == 0; }
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn union_enum_and_function_pointer_ir() {
         let source = "\
 enum E { A = 2, B };
@@ -5652,6 +5700,10 @@ int main(void) {
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn switch_lowers_for_every_integer_width() {
         let source = "\
 int on_int(int x) {
@@ -5719,6 +5771,10 @@ int main(void) {
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn struct_abi_links_with_clang() {
         let defs = r#"
 struct s1 { unsigned char a; };
@@ -5931,6 +5987,10 @@ int main(void) {
         let _ = std::fs::remove_file(&bin2);
     }
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn signaling_nan_constants_keep_ieee_encoding() {
         // GCC "Floating-Point Format Builtins": a default `__builtin_nans*`
         // is a signaling NaN. LLVM hex constants for `float` use the
@@ -6089,6 +6149,10 @@ int main(void) {
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn floating_comparison_builtins_use_quiet_fcmp() {
         // LLVM LangRef: fcmp is not signalling, and the `o` predicates are
         // false when either operand is a NaN while `uno` is true. That is
@@ -6148,6 +6212,10 @@ int main(void) {
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn internal_object_named_like_a_hidden_libcall_is_renamed() {
         // LLVM IR has one namespace for global variables and functions.
         // A file-scope `static int nan;` is valid C11 (7.1.3 reserves
@@ -6217,6 +6285,10 @@ int main(void) {
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn no_rename_without_a_hidden_libcall_clash() {
         // A valid tag folds to a constant and makes no call.
         for tag in ["", "0x10"] {
@@ -6263,6 +6335,10 @@ int main(void) { return (int)__builtin_nan(\"1xyz\") - 42; }
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn internal_names_of_memory_libcalls_are_renamed() {
         // llvm.memcpy, llvm.memmove, and llvm.memset may be lowered to
         // calls of the C library memcpy, memmove, and memset (LLVM
@@ -6294,6 +6370,10 @@ int main(void) {
     }
 
     #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        ignore = "builds and runs x86_64 Linux code"
+    )]
     fn runtime_offsetof_has_no_inbounds_gep_from_null() {
         // A getelementptr inbounds from a null base with a nonzero offset
         // is poison (LLVM LangRef, "getelementptr"), so a subscript that

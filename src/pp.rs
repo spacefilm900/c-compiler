@@ -62,7 +62,7 @@ impl Default for PpOptions {
             system_dirs: default_system_dirs(),
             definitions: Vec::new(),
             max_include_depth: DEFAULT_INCLUDE_DEPTH,
-            target: Target::host(),
+            target: Target::build_default(),
         }
     }
 }
@@ -115,7 +115,7 @@ pub fn preprocess_tokens(
 }
 
 fn default_system_dirs() -> Vec<PathBuf> {
-    system_dirs_for(Target::host(), None)
+    system_dirs_for(Target::build_default(), None)
 }
 
 /// The `#include <...>` search list for `target`.
@@ -842,7 +842,7 @@ impl Processor {
         match self.macros.get(name) {
             Some(MacroEntry::Defined(_)) => true,
             Some(MacroEntry::Undefined) => false,
-            None => name == "__FILE__" || name == "__LINE__",
+            None => name == "__FILE__" || name == "__LINE__" || is_has_query(name),
         }
     }
 
@@ -1561,8 +1561,11 @@ impl Processor {
     }
 
     fn eval_line(&mut self, tokens: Vec<PpToken>, at: &PpToken) -> Result<bool, Diagnostic> {
+        let tokens = self.replace_has_queries(tokens, at)?;
         let replaced = replace_defined(&tokens, |name| self.is_defined(name))?;
         let expanded = self.expand_list(replaced)?;
+        // A query can also come from a macro (glibc's `__glibc_has_attribute`).
+        let expanded = self.replace_has_queries(expanded, at)?;
         let zeroed = replace_idents(expanded);
         if zeroed.is_empty() {
             return Err(error_at(at, "expected an expression"));
@@ -1570,6 +1573,79 @@ impl Processor {
         let expr = parse_if_expr(&zeroed)?;
         let value = eval_expr(&expr)?;
         Ok(value.bits != 0)
+    }
+
+    /// Replace the feature queries that system headers test in `#if`
+    /// (Apple's SDK among them; C23 6.10.1 standardises `__has_include`)
+    /// with 0 or 1, before macro expansion so that a header name in
+    /// `__has_include(<a/b.h>)` is not expanded. A query the program has
+    /// defined or undefined as a macro is left to that macro.
+    ///
+    /// `__has_include` and `__has_include_next` search the include path the
+    /// same way `#include` would. The other queries answer 0: this compiler
+    /// claims no Clang feature, extension, or attribute, so a header takes
+    /// its plain C path (the one a compiler without the query would take).
+    fn replace_has_queries(
+        &self,
+        tokens: Vec<PpToken>,
+        at: &PpToken,
+    ) -> Result<Vec<PpToken>, Diagnostic> {
+        let mut out = Vec::with_capacity(tokens.len());
+        let mut index = 0;
+        while index < tokens.len() {
+            let tok = &tokens[index];
+            let query = tok.kind == PpKind::Ident
+                && is_has_query(&tok.spelling)
+                && !self.macros.contains_key(&tok.spelling)
+                && !(index > 0 && tokens[index - 1].spelling == "defined")
+                && !(index > 1
+                    && tokens[index - 1].is_lparen()
+                    && tokens[index - 2].spelling == "defined");
+            if !query {
+                out.push(tok.clone());
+                index += 1;
+                continue;
+            }
+            let name = tok.spelling.as_str();
+            if index + 1 >= tokens.len() || !tokens[index + 1].is_lparen() {
+                return Err(error_at(tok, format!("missing '(' after '{name}'")));
+            }
+            let open = index + 1;
+            let mut depth = 0usize;
+            let mut close = None;
+            for (offset, inner) in tokens[open..].iter().enumerate() {
+                if inner.is_lparen() {
+                    depth += 1;
+                } else if inner.is_rparen() {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + offset);
+                        break;
+                    }
+                }
+            }
+            let Some(close) = close else {
+                return Err(error_at(tok, format!("missing ')' after '{name}'")));
+            };
+            let inside = &tokens[open + 1..close];
+            let value = if name.starts_with("__has_include") {
+                let (header, quote, consumed) = header_from(inside, tok)?;
+                if consumed != inside.len() || header.is_empty() {
+                    return Err(error_at(tok, format!("'{name}' expects one file name")));
+                }
+                let after = if name == "__has_include_next" {
+                    self.files[at.file_id as usize].found_dir.clone()
+                } else {
+                    None
+                };
+                self.search(&header, quote, at, after.as_deref()).is_ok()
+            } else {
+                false
+            };
+            out.push(number_token(tok, if value { "1" } else { "0" }));
+            index = close + 1;
+        }
+        Ok(out)
     }
 
     fn install(&mut self, mac: Macro, at: &PpToken, force: bool) -> Result<(), Diagnostic> {
@@ -1904,6 +1980,24 @@ fn arity_error(inv: &PpToken, name: &str, got: usize, need: usize, variadic: boo
         format!("macro '{name}' passed {got} arguments but takes {need}")
     };
     error_at(inv, message)
+}
+
+/// The `#if` feature queries handled by `replace_has_queries`.
+fn is_has_query(name: &str) -> bool {
+    matches!(
+        name,
+        "__has_include"
+            | "__has_include_next"
+            | "__has_feature"
+            | "__has_extension"
+            | "__has_attribute"
+            | "__has_c_attribute"
+            | "__has_cpp_attribute"
+            | "__has_declspec_attribute"
+            | "__has_builtin"
+            | "__has_warning"
+            | "__building_module"
+    )
 }
 
 fn replace_defined(
@@ -3351,6 +3445,57 @@ mod tests {
             .push(CliMacro::Undef("NAME".to_string()));
         let err = preprocess("#include <n.h>\n", "t.c", &options).unwrap();
         assert!(err.contains("int from_header = NAME;"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn has_include_and_feature_queries() {
+        let dir = std::env::temp_dir().join(format!("cc-pp-has-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("b")).unwrap();
+        std::fs::write(
+            dir.join("a/n.h"),
+            "#if __has_include_next(<n.h>)\nint next;\n#endif\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("b/n.h"), "").unwrap();
+        std::fs::write(
+            dir.join("a/only.h"),
+            "#if !__has_include_next(<only.h>)\nint last;\n#endif\n",
+        )
+        .unwrap();
+        let options = PpOptions {
+            system_dirs: vec![dir.join("a"), dir.join("b")],
+            ..PpOptions::default()
+        };
+        let source =
+            "#if __has_include(<n.h>) && !__has_include(<missing.h>)\nint found;\n#endif\n\
+            #define HAS(h) __has_include(h)\n#if HAS(<n.h>)\nint via_macro;\n#endif\n\
+            #if defined(__has_include) && defined __has_feature && !__has_feature(blocks) \\\n\
+              && !__has_attribute(availability) && !__has_builtin(__builtin_expect) \\\n\
+              && !__has_extension(x) && !__building_module(m)\nint plain_c;\n#endif\n\
+            #include <n.h>\n#include <only.h>\n";
+        let text = preprocess(source, "t.c", &options).unwrap();
+        for want in [
+            "int found;",
+            "int via_macro;",
+            "int plain_c;",
+            "int next;",
+            "int last;",
+        ] {
+            assert!(text.contains(want), "{want}: {text}");
+        }
+        // A program's own definition of a query name wins.
+        let text = preprocess(
+            "#define __has_feature(x) 1\n#if __has_feature(anything)\nint own;\n#endif\n",
+            "t.c",
+            &options,
+        )
+        .unwrap();
+        assert!(text.contains("int own;"), "{text}");
+        let err = preprocess("#if __has_include(<n.h>\n#endif\n", "t.c", &options).unwrap_err();
+        assert!(err.to_string().contains("missing ')'"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

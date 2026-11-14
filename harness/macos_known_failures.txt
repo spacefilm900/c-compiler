@@ -1,0 +1,3 @@
+# Tests in harness/run_tests.py that may fail on macOS (Apple Silicon,
+# Apple Clang as the oracle). The macOS workflow passes this file as
+# KNOWN_FAILURES. One label per line, as run_tests.py prints it.
