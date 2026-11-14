@@ -14,3 +14,5 @@ reports/perf.json
 
 # Written by Csmith into the working directory.
 platform.info
+tests/external/doomgeneric/
+tests/external/freedoom/

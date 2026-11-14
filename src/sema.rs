@@ -82,6 +82,8 @@ pub fn analyze_dialect(
         variadic_fn: false,
         last_param: None,
         stmt_expr_seq: 0,
+        union_choice: Vec::new(),
+        overridden: Vec::new(),
         library_calls: std::collections::BTreeMap::new(),
         deprecated: unit
             .fn_attrs
@@ -188,6 +190,12 @@ fn case_key(bits: u64, ty: TypeName) -> i128 {
 struct Sema {
     /// Statement expressions checked so far, for their slot names.
     stmt_expr_seq: u32,
+    /// The member each union in the initializer being shaped holds so far:
+    /// byte offset of the union, its key, and the member index.
+    union_choice: Vec<(u64, UnionKey, usize)>,
+    /// Stores of union members that a later designator replaced, in the
+    /// initializer being shaped.
+    overridden: Vec<ElemStore>,
     /// C library functions that a `__builtin_` forwarder calls, by symbol.
     library_calls: std::collections::BTreeMap<String, crate::builtins::LibSig>,
     /// Functions declared `deprecated`, by symbol, with the message.
@@ -307,7 +315,7 @@ impl Sema {
         } else {
             None
         };
-        if let Some((shaped_ty, _)) = &shaped {
+        if let Some((shaped_ty, _, _)) = &shaped {
             ty = shaped_ty.clone();
         }
         if let Some(Symbol::Var(var)) = self.file_get(&name) {
@@ -350,12 +358,14 @@ impl Sema {
             self.reveal_file(&name);
             self.set_global_type(&name, ty.clone());
         }
-        if let Some((_, mut stores)) = shaped {
+        if let Some((_, mut stores, mut overridden)) = shaped {
             if matches!(self.global_state(&name), Some(GlobalState::Defined(_))) {
                 return self.err(decl.line, decl.column, format!("redefinition of '{name}'"));
             }
             self.check_stores(&mut stores)?;
+            self.check_stores(&mut overridden)?;
             let value = self.fold_stores(&name, &ty, &stores)?;
+            self.fold_overridden(&name, &overridden)?;
             self.set_global_state(&name, GlobalState::Defined(value));
         } else if decl.storage != Storage::Extern {
             self.upgrade_tentative(&name);
@@ -712,6 +722,34 @@ impl Sema {
         init: &Init,
         line: usize,
         column: usize,
+    ) -> Result<Shaped, Diagnostic> {
+        // A compound literal inside this initializer shapes its own
+        // initializer, with its own union member choices.
+        let outer = std::mem::take(&mut self.union_choice);
+        let outer_overridden = std::mem::take(&mut self.overridden);
+        let shaped = self.shape_initializer_inner(ty, init, line, column);
+        self.union_choice = outer;
+        let overridden = std::mem::replace(&mut self.overridden, outer_overridden);
+        let (ty, stores) = shaped?;
+        Ok((ty, stores, overridden))
+    }
+
+    /// C11 6.7.9p4: every expression in the initializer of an object with
+    /// static storage duration is a constant expression, including one whose
+    /// store a later designator overrode. Its value is not used.
+    fn fold_overridden(&self, name: &str, overridden: &[ElemStore]) -> Result<(), Diagnostic> {
+        for store in overridden {
+            self.fold_one(name, &store.expr, &store.ty)?;
+        }
+        Ok(())
+    }
+
+    fn shape_initializer_inner(
+        &mut self,
+        ty: &CType,
+        init: &Init,
+        line: usize,
+        column: usize,
     ) -> Result<(CType, Vec<ElemStore>), Diagnostic> {
         let mut ty = ty.clone();
         if let CType::Array(elem, None) = &ty {
@@ -745,6 +783,11 @@ impl Sema {
                 ty = CType::array(elem, Some(count));
             }
         }
+        // Length inference above walked the same items into scratch stores,
+        // every element at offset 0. Its member choices and replaced stores
+        // belong to that scratch walk, not to this one.
+        self.union_choice.clear();
+        self.overridden.clear();
         let mut stores = Vec::new();
         self.fill_object(&ty, init, 0, &mut stores, line, column)?;
         if stores.is_empty() && !ty.is_array() {
@@ -835,7 +878,7 @@ impl Sema {
                                 children: init_children(&child.ty, false),
                                 index: 0,
                                 base: child_base,
-                                is_union: child.ty.is_union(),
+                                union: union_key(&child.ty),
                             });
                             self.positional_one(&first, &mut frames, &mut scratch, elem)?;
                         } else if !advance_frames(&mut frames) {
@@ -848,7 +891,7 @@ impl Sema {
                             children: init_children(elem, false),
                             index: 0,
                             base: 0,
-                            is_union: elem.is_union(),
+                            union: union_key(elem),
                         });
                         self.positional_one(&first, &mut frames, &mut scratch, elem)?;
                     }
@@ -1015,6 +1058,11 @@ impl Sema {
             // later items on top of the same bytes and steal them from the
             // enclosing initializer.
             let fields = initializable_fields(fields, ty.is_union());
+            if let Some(key) = union_key(ty) {
+                if *pos < items.len() && !fields.is_empty() {
+                    self.select_member(base, key, 0, stores);
+                }
+            }
             for field in &fields {
                 if *pos >= items.len() {
                     break;
@@ -1076,6 +1124,11 @@ impl Sema {
             let (line, column) = init_pos(init);
             return self.err(line, column, "struct initializer must be a brace list");
         };
+        if let Some(key) = union_key(ty) {
+            if !items.is_empty() && !fields.is_empty() {
+                self.select_member(base, key, 0, stores);
+            }
+        }
         let mut pos = 0usize;
         for field in &fields {
             if pos >= items.len() {
@@ -1208,7 +1261,7 @@ impl Sema {
             children: init_children(ty, false),
             index: 0,
             base,
-            is_union: ty.is_union(),
+            union: union_key(ty),
         }];
         for item in items {
             if let Init::Designated {
@@ -1220,6 +1273,7 @@ impl Sema {
             {
                 let (child, mut frames_at) =
                     self.seek_designator(ty, base, designators, *line, *column)?;
+                self.select_frames(&frames_at, stores);
                 if self.elides_into(&child, init) {
                     // C11 6.7.9p17, p20: a designated aggregate whose
                     // initializer has no braces starts brace elision at its
@@ -1230,7 +1284,7 @@ impl Sema {
                         children: init_children(&child.ty, false),
                         index: 0,
                         base: child_base,
-                        is_union: child.ty.is_union(),
+                        union: union_key(&child.ty),
                     });
                     self.positional_one(init, &mut frames_at, stores, ty)?;
                     frames = frames_at;
@@ -1300,12 +1354,11 @@ impl Sema {
                         return self.err(*line, *column, "designator does not match this type");
                     }
                     let child = children[*index].clone();
-                    let is_union = current.is_union();
                     frames.push(InitFrame {
                         children,
                         index: *index,
                         base: current_base,
-                        is_union,
+                        union: union_key(&current),
                     });
                     if step + 1 == path.len() {
                         chosen = Some(child);
@@ -1344,7 +1397,7 @@ impl Sema {
                 children,
                 index,
                 base: current_base,
-                is_union: current.is_union(),
+                union: union_key(&current),
             });
             if nth + 1 == designators.len() {
                 return Ok((child, frames));
@@ -1389,6 +1442,10 @@ impl Sema {
             }
             let child = frame.children[frame.index].clone();
             let child_base = frame.base + child.offset;
+            if let Some(key) = frame.union {
+                let (union_base, member) = (frame.base, frame.index);
+                self.select_member(union_base, key, member, stores);
+            }
             let scalar =
                 child.ty.is_scalar() || child.field.as_ref().is_some_and(|f| f.is_bitfield());
             if scalar || self.opens_subobject(&child.ty, item) {
@@ -1417,7 +1474,7 @@ impl Sema {
                 children: nested,
                 index: 0,
                 base: child_base,
-                is_union: child.ty.is_union(),
+                union: union_key(&child.ty),
             });
             let _ = root;
         }
@@ -1472,6 +1529,63 @@ impl Sema {
             });
         }
         Ok(())
+    }
+
+    /// Record that the initializer for the union at byte `base` names
+    /// `member`. C11 6.7.9p17 and p19: when a designator names a different
+    /// member from the one initialized so far, that member is the one the
+    /// union holds, and its subobjects not named later are initialized as
+    /// for static storage (zero). Stores already made inside the union
+    /// belonged to the earlier member, so they are dropped, together with
+    /// the member choices of unions nested inside it.
+    fn select_member(
+        &mut self,
+        base: u64,
+        key: UnionKey,
+        member: usize,
+        stores: &mut Vec<ElemStore>,
+    ) {
+        let (id, size) = key;
+        let end = base + size;
+        let earlier = self
+            .union_choice
+            .iter()
+            .position(|(at, (other, _), _)| *at == base && *other == id);
+        let Some(pos) = earlier else {
+            self.union_choice.push((base, key, member));
+            return;
+        };
+        if self.union_choice[pos].2 == member {
+            return;
+        }
+        // The earlier member's stores are not part of the object, but their
+        // expressions are still checked (see `Shaped`).
+        let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(stores)
+            .into_iter()
+            .partition(|store| store_within(store, base, end));
+        *stores = kept;
+        self.overridden.extend(gone);
+        self.union_choice[pos].2 = member;
+        // A nested union is first chosen after the union around it, so the
+        // choices after this one that lie inside it are its descendants. An
+        // enclosing union of the same offset and size comes before it and
+        // keeps its choice.
+        let mut index = 0;
+        self.union_choice.retain(|(at, (_, len), _)| {
+            let keep = index <= pos || !(*at >= base && *at + *len <= end);
+            index += 1;
+            keep
+        });
+    }
+
+    /// [`Self::select_member`] for every union a designator or positional
+    /// walk passes through, outermost first.
+    fn select_frames(&mut self, frames: &[InitFrame], stores: &mut Vec<ElemStore>) {
+        for frame in frames {
+            if let Some(key) = frame.union {
+                self.select_member(frame.base, key, frame.index, stores);
+            }
+        }
     }
 
     fn check_stores(&mut self, stores: &mut [ElemStore]) -> Result<(), Diagnostic> {
@@ -1529,7 +1643,7 @@ impl Sema {
         stores: &[ElemStore],
     ) -> Result<ConstInit, Diagnostic> {
         let size = ty.size().unwrap_or(0) as usize;
-        let mut bytes = vec![0u8; size];
+        let mut image = ByteImage::zeroed(size);
         for store in stores {
             if let Some(bits) = &store.bits {
                 let fold_ty = if bits.declared == TypeName::Bool {
@@ -1545,10 +1659,10 @@ impl Sema {
                         format!("initializer of '{name}' is not a constant expression"),
                     );
                 };
-                pack_bits(&mut bytes, bits.abs_bit, bits.width, raw);
+                image.pack_bits(bits.abs_bit, bits.width, raw);
             } else {
                 let value = self.fold_one(name, &store.expr, &store.ty)?;
-                if !write_folded_bytes(&store.ty, &value, &mut bytes, store.offset as usize) {
+                if !image.write(&store.ty, &value, store.offset as usize) {
                     let kind = if ty.is_union() {
                         "union"
                     } else {
@@ -1562,7 +1676,7 @@ impl Sema {
                 }
             }
         }
-        Ok(ConstInit::Bytes(bytes))
+        Ok(image.into_const())
     }
 
     /// A file-scope initializer whose top type is an ordinary struct or array,
@@ -1575,7 +1689,7 @@ impl Sema {
         stores: &[ElemStore],
     ) -> Result<ConstInit, Diagnostic> {
         let size = ty.size().unwrap_or(0) as usize;
-        let mut image = vec![0u8; size];
+        let mut image = ByteImage::zeroed(size);
         let mut ranges = Vec::new();
         bit_record_ranges(ty, 0, &mut ranges);
         let mut unions = UnionImages::new(ty);
@@ -1595,16 +1709,16 @@ impl Sema {
                         format!("initializer of '{name}' is not a constant expression"),
                     );
                 };
-                pack_bits(&mut image, bits.abs_bit, bits.width, raw);
+                image.pack_bits(bits.abs_bit, bits.width, raw);
             } else {
                 let value = self.fold_one(name, &store.expr, &store.ty)?;
                 let inside = ranges
                     .iter()
                     .any(|(start, end)| store.offset >= *start && store.offset < *end);
                 if inside {
-                    // The nested record is a byte image. A plain member shares
-                    // that image; a relocation cannot.
-                    if !write_folded_bytes(&store.ty, &value, &mut image, store.offset as usize) {
+                    // The nested record is a byte image. A plain member,
+                    // including an address, is written into that image.
+                    if !image.write(&store.ty, &value, store.offset as usize) {
                         return self.err(
                             store.expr.line(),
                             store.expr.column(),
@@ -1619,7 +1733,13 @@ impl Sema {
             }
         }
         unions.finish(name, self, &mut folded)?;
-        splice_bit_blobs(ty, 0, &image, &mut folded);
+        if !splice_bit_blobs(ty, 0, &image, &mut folded) {
+            return self.err(
+                stores.first().map(|store| store.expr.line()).unwrap_or(1),
+                stores.first().map(|store| store.expr.column()).unwrap_or(1),
+                format!("initializer of '{name}' uses an address in a bit-field struct"),
+            );
+        }
         let value = assemble(ty, &folded, 0);
         if !union_bytes_ok(ty, &value) {
             return self.err(
@@ -2153,10 +2273,10 @@ impl Sema {
             file_visible: true,
         }));
         let init = decl.init.clone();
-        let (ty, stores) = if let Some(init) = &init {
+        let (ty, stores, mut overridden) = if let Some(init) = &init {
             self.shape_initializer(&decl.ty, init, decl.line, decl.column)?
         } else {
-            (decl.ty.clone(), Vec::new())
+            (decl.ty.clone(), Vec::new(), Vec::new())
         };
         if !ty.is_complete() {
             return self.err(decl.line, decl.column, incomplete_local(&decl.name, &ty));
@@ -2166,6 +2286,7 @@ impl Sema {
         if decl.init.is_some() {
             let mut stores = stores;
             self.check_stores(&mut stores)?;
+            self.check_stores(&mut overridden)?;
             decl.checked = Some(classify_init(&ty, stores));
         }
         Ok(())
@@ -2196,10 +2317,10 @@ impl Sema {
             file_visible: true,
         }));
         let init = decl.init.clone();
-        let (ty, stores) = if let Some(init) = &init {
+        let (ty, stores, mut overridden) = if let Some(init) = &init {
             self.shape_initializer(&decl.ty, init, decl.line, decl.column)?
         } else {
-            (decl.ty.clone(), Vec::new())
+            (decl.ty.clone(), Vec::new(), Vec::new())
         };
         if !ty.is_complete() {
             return self.err(decl.line, decl.column, incomplete_local(&decl.name, &ty));
@@ -2209,7 +2330,10 @@ impl Sema {
         let value = if decl.init.is_some() {
             let mut stores = stores;
             self.check_stores(&mut stores)?;
-            self.fold_stores(&decl.name, &ty, &stores)?
+            self.check_stores(&mut overridden)?;
+            let value = self.fold_stores(&decl.name, &ty, &stores)?;
+            self.fold_overridden(&decl.name, &overridden)?;
+            value
         } else {
             zero_const(&ty)
         };
@@ -2779,15 +2903,18 @@ impl Sema {
             );
         }
         let init = decl.init.clone().expect("compound literal initializer");
-        let (ty, mut stores) = self.shape_initializer(&decl.ty, &init, line, column)?;
+        let (ty, mut stores, mut overridden) =
+            self.shape_initializer(&decl.ty, &init, line, column)?;
         decl.ty = ty.clone();
         self.check_stores(&mut stores)?;
+        self.check_stores(&mut overridden)?;
         if !self.fn_name.is_empty() {
             decl.checked = Some(classify_init(&ty, stores));
             expr.set_ty(ty);
             return Ok(());
         }
         let value = self.fold_stores("compound literal", &ty, &stores)?;
+        self.fold_overridden("compound literal", &overridden)?;
         self.static_seq += 1;
         let symbol = format!(".compoundliteral.{}", self.static_seq);
         self.static_locals.push(IrGlobal {
@@ -4833,8 +4960,36 @@ struct InitFrame {
     index: usize,
     base: u64,
     /// A union initializes one member. The next positional item continues
-    /// after the union, not at another member of it.
-    is_union: bool,
+    /// after the union, not at another member of it. The key identifies the
+    /// union type and gives its size, for [`Sema::select_member`].
+    union: Option<UnionKey>,
+}
+
+/// Whether a store lies inside the bytes `base..end`.
+fn store_within(store: &ElemStore, base: u64, end: u64) -> bool {
+    if let Some(bits) = &store.bits {
+        let first = u64::from(bits.abs_bit / 8);
+        return first >= base && first < end;
+    }
+    let size = store.ty.size().unwrap_or(0);
+    store.offset >= base && store.offset < end && store.offset + size <= end
+}
+
+/// A shaped initializer: the object's type (an array's length completed),
+/// the stores that make up its value, and the stores of union members that
+/// a later designator replaced. Those are not part of the value, but their
+/// expressions are still checked like the others (C11 6.7.9p2, p4).
+type Shaped = (CType, Vec<ElemStore>, Vec<ElemStore>);
+
+/// A union type's identity and size in bytes.
+type UnionKey = (u32, u64);
+
+fn union_key(ty: &CType) -> Option<UnionKey> {
+    if !ty.is_union() {
+        return None;
+    }
+    let handle = ty.struct_ref()?;
+    Some((handle.id(), ty.size().unwrap_or(0)))
 }
 
 /// Indexes through `init_children(..., true)` that reach `name`.
@@ -4898,7 +5053,7 @@ fn advance_frames(frames: &mut Vec<InitFrame>) -> bool {
         let Some(frame) = frames.last_mut() else {
             return false;
         };
-        if frame.is_union {
+        if frame.union.is_some() {
             frames.pop();
             continue;
         }
@@ -4924,6 +5079,137 @@ fn initializable_fields(fields: Vec<StructField>, union_ty: bool) -> Vec<StructF
     } else {
         fields
     }
+}
+
+/// An object representation being built for a union or a bit-field
+/// record: its bytes, plus the addresses that need a relocation.
+///
+/// An address cannot be written as bytes, so it is kept beside them at its
+/// byte offset with zeros underneath. A later store that overlaps it
+/// replaces it, the same way later bytes replace earlier ones.
+#[derive(Clone)]
+struct ByteImage {
+    bytes: Vec<u8>,
+    relocs: Vec<(u64, ConstInit)>,
+}
+
+impl ByteImage {
+    fn zeroed(size: usize) -> Self {
+        ByteImage {
+            bytes: vec![0u8; size],
+            relocs: Vec::new(),
+        }
+    }
+
+    /// Drop every relocation that overlaps `start..start + len`.
+    fn clear_relocs(&mut self, start: usize, len: usize) {
+        let (start, end) = (start as u64, (start + len) as u64);
+        self.relocs
+            .retain(|(at, value)| at + reloc_width(value) <= start || *at >= end);
+    }
+
+    fn zero(&mut self, start: usize, len: usize) {
+        let end = (start + len).min(self.bytes.len());
+        if start < end {
+            self.bytes[start..end].fill(0);
+        }
+    }
+
+    /// Write `value`, of type `ty`, at byte `offset`. `false` means the
+    /// value has no object representation here (an aggregate).
+    fn write(&mut self, ty: &CType, value: &ConstInit, offset: usize) -> bool {
+        match value {
+            ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => {
+                let len = reloc_width(value) as usize;
+                self.clear_relocs(offset, len);
+                self.zero(offset, len);
+                self.relocs.push((offset as u64, value.clone()));
+                self.relocs.sort_by_key(|(at, _)| *at);
+                true
+            }
+            ConstInit::RelocBytes { bytes, relocs } => {
+                self.clear_relocs(offset, bytes.len());
+                for (index, byte) in bytes.iter().enumerate() {
+                    if let Some(slot) = self.bytes.get_mut(offset + index) {
+                        *slot = *byte;
+                    }
+                }
+                for (at, reloc) in relocs {
+                    self.relocs.push((offset as u64 + at, reloc.clone()));
+                }
+                self.relocs.sort_by_key(|(at, _)| *at);
+                true
+            }
+            ConstInit::Bytes(raw) => {
+                self.clear_relocs(offset, raw.len());
+                for (index, byte) in raw.iter().enumerate() {
+                    if let Some(slot) = self.bytes.get_mut(offset + index) {
+                        *slot = *byte;
+                    }
+                }
+                true
+            }
+            _ => {
+                self.clear_relocs(offset, ty.size().unwrap_or(0) as usize);
+                write_folded_bytes(ty, value, &mut self.bytes, offset)
+            }
+        }
+    }
+
+    fn pack_bits(&mut self, bit: u32, width: u32, value: u64) {
+        let first = (bit / 8) as usize;
+        let last = ((bit + width).div_ceil(8)) as usize;
+        self.clear_relocs(first, last.saturating_sub(first));
+        pack_bits(&mut self.bytes, bit, width, value);
+    }
+
+    /// The `size` bytes at `start`, with the relocations inside them.
+    /// `None` when a relocation starts inside and ends outside: its address
+    /// cannot be split across two pieces.
+    fn slice(&self, start: usize, size: usize) -> Option<ConstInit> {
+        let mut bytes = vec![0u8; size];
+        if start < self.bytes.len() {
+            let end = (start + size).min(self.bytes.len());
+            bytes[..end - start].copy_from_slice(&self.bytes[start..end]);
+        }
+        let (lo, hi) = (start as u64, (start + size) as u64);
+        if self.relocs.iter().any(|(at, value)| {
+            let end = at + reloc_width(value);
+            (*at >= lo && *at < hi && end > hi) || (*at < lo && end > lo)
+        }) {
+            return None;
+        }
+        let relocs: Vec<_> = self
+            .relocs
+            .iter()
+            .filter(|(at, _)| *at >= lo && *at < hi)
+            .map(|(at, value)| (at - lo, value.clone()))
+            .collect();
+        if relocs.is_empty() {
+            Some(ConstInit::Bytes(bytes))
+        } else {
+            Some(ConstInit::RelocBytes { bytes, relocs })
+        }
+    }
+
+    fn into_const(self) -> ConstInit {
+        let size = self.bytes.len();
+        self.slice(0, size)
+            .expect("an address written into an image lies inside it")
+    }
+}
+
+/// Bytes covered by a relocation in a [`ByteImage`].
+fn reloc_width(value: &ConstInit) -> u64 {
+    match value {
+        ConstInit::PtrToInt { width, .. } => u64::from(*width / 8),
+        _ => 8,
+    }
+}
+
+/// A union or bit-field record already rendered as an image.
+fn is_image_const(value: &ConstInit) -> bool {
+    matches!(value, ConstInit::Bytes(_) | ConstInit::RelocBytes { .. })
 }
 
 fn pack_bits(bytes: &mut [u8], bit: u32, width: u32, value: u64) {
@@ -5150,8 +5436,9 @@ fn union_bytes_ok(ty: &CType, value: &ConstInit) -> bool {
         // The address of an object needs a relocation.
         ConstInit::Ptr(PtrConst::Null | PtrConst::IntToPtr(_)) => true,
         ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => !ty.is_union(),
-        // Bytes are an object representation. A relocation cannot hide in them.
-        ConstInit::Bytes(_) => true,
+        // Bytes are an object representation. Addresses in an image are
+        // explicit relocations that the IR generator spells out.
+        ConstInit::Bytes(_) | ConstInit::RelocBytes { .. } => true,
         ConstInit::Aggregate(items) => {
             if ty.is_union() {
                 return items.first().is_none_or(const_has_no_address);
@@ -5174,7 +5461,9 @@ fn const_has_no_address(value: &ConstInit) -> bool {
     match value {
         ConstInit::Zero | ConstInit::Int(_) | ConstInit::Float(_) => true,
         ConstInit::Ptr(PtrConst::Null | PtrConst::IntToPtr(_)) => true,
-        ConstInit::Ptr(PtrConst::Addr { .. }) | ConstInit::PtrToInt { .. } => false,
+        ConstInit::Ptr(PtrConst::Addr { .. })
+        | ConstInit::PtrToInt { .. }
+        | ConstInit::RelocBytes { .. } => false,
         ConstInit::Bytes(_) => true,
         ConstInit::Aggregate(items) => items.iter().all(const_has_no_address),
     }
@@ -5190,7 +5479,7 @@ struct UnionImages {
     /// Sorted and disjoint.
     ranges: Vec<(u64, u64)>,
     /// An image is made when the first store lands in its union.
-    images: Vec<Option<Vec<u8>>>,
+    images: Vec<Option<ByteImage>>,
     bad: Option<(usize, usize)>,
 }
 
@@ -5216,9 +5505,10 @@ impl UnionImages {
             return Ok(false);
         }
         let (start, end) = self.ranges[index - 1];
-        let image = self.images[index - 1].get_or_insert_with(|| vec![0u8; (end - start) as usize]);
+        let image =
+            self.images[index - 1].get_or_insert_with(|| ByteImage::zeroed((end - start) as usize));
         let at = (store.offset - start) as usize;
-        if !write_folded_bytes(&store.ty, value, image, at) && self.bad.is_none() {
+        if !image.write(&store.ty, value, at) && self.bad.is_none() {
             self.bad = Some((store.expr.line(), store.expr.column()));
         }
         Ok(true)
@@ -5239,7 +5529,7 @@ impl UnionImages {
         }
         for ((start, _), image) in self.ranges.into_iter().zip(self.images) {
             if let Some(image) = image {
-                folded.push((start, ConstInit::Bytes(image)));
+                folded.push((start, image.into_const()));
             }
         }
         Ok(())
@@ -5278,7 +5568,7 @@ fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
         if let Some((_, value)) = stores
             .iter()
             .rev()
-            .find(|(offset, value)| *offset == base && matches!(value, ConstInit::Bytes(_)))
+            .find(|(offset, value)| *offset == base && is_image_const(value))
         {
             return value.clone();
         }
@@ -5287,7 +5577,7 @@ fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> ConstInit {
         if let Some((_, value)) = stores
             .iter()
             .rev()
-            .find(|(offset, value)| *offset == base && matches!(value, ConstInit::Bytes(_)))
+            .find(|(offset, value)| *offset == base && is_image_const(value))
         {
             return value.clone();
         }
@@ -5356,9 +5646,43 @@ fn is_bit_image_seen(ty: &CType, seen: &mut HashSet<u32>) -> bool {
     })
 }
 
+/// A bit-field record or a union that holds a bit-field record anywhere in
+/// its members, including through a struct or an array member.
+///
+/// All members of a union share its bytes (C11 6.7.2.1p16), so such a union
+/// is assembled as one complete byte image. Slicing out only the bit-field
+/// record of its first member would lose a longer member's bytes, and with
+/// them the union's size and the C offsets of the fields after it.
+fn is_image_record(ty: &CType) -> bool {
+    if is_bit_image(ty) {
+        return true;
+    }
+    ty.is_union() && holds_bit_record(ty, &mut HashSet::new())
+}
+
+fn holds_bit_record(ty: &CType, seen: &mut HashSet<u32>) -> bool {
+    if ty.record_has_bitfield() {
+        return true;
+    }
+    if let Some(elem) = ty.array_elem() {
+        return holds_bit_record(elem, seen);
+    }
+    let Some(handle) = ty.struct_ref() else {
+        return false;
+    };
+    if !seen.insert(handle.id()) {
+        return false;
+    }
+    handle.fields().is_some_and(|fields| {
+        fields
+            .iter()
+            .any(|field| field.bit_width.is_some() || holds_bit_record(&field.ty, seen))
+    })
+}
+
 /// Byte ranges of nested records whose LLVM type is a byte image.
 fn bit_record_ranges(ty: &CType, base: u64, out: &mut Vec<(u64, u64)>) {
-    if is_bit_image(ty) {
+    if is_image_record(ty) {
         out.push((base, base + ty.size().unwrap_or(0)));
         return;
     }
@@ -5390,17 +5714,22 @@ fn bit_record_ranges(ty: &CType, base: u64, out: &mut Vec<(u64, u64)>) {
 /// C11 6.7.9 initializes the designated union member and leaves the rest of
 /// that union's object representation zero. Every member occupies the same
 /// bytes, so a bit-field in a member other than the first is still this image.
-fn splice_bit_blobs(ty: &CType, base: u64, image: &[u8], out: &mut Vec<(u64, ConstInit)>) {
-    if is_bit_image(ty) {
+///
+/// `false` means an address in `image` crosses the edge of a record, so it
+/// has no place in any one record's bytes.
+fn splice_bit_blobs(
+    ty: &CType,
+    base: u64,
+    image: &ByteImage,
+    out: &mut Vec<(u64, ConstInit)>,
+) -> bool {
+    if is_image_record(ty) {
         let size = ty.size().unwrap_or(0) as usize;
-        let start = base as usize;
-        let mut bytes = vec![0u8; size];
-        if start < image.len() {
-            let end = (start + size).min(image.len());
-            bytes[..end - start].copy_from_slice(&image[start..end]);
-        }
-        out.push((base, ConstInit::Bytes(bytes)));
-        return;
+        let Some(blob) = image.slice(base as usize, size) else {
+            return false;
+        };
+        out.push((base, blob));
+        return true;
     }
     if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
         let fields: Vec<_> = if ty.is_union() {
@@ -5412,16 +5741,21 @@ fn splice_bit_blobs(ty: &CType, base: u64, image: &[u8], out: &mut Vec<(u64, Con
             if field.bit_width.is_some() {
                 continue;
             }
-            splice_bit_blobs(&field.ty, base + field.offset, image, out);
+            if !splice_bit_blobs(&field.ty, base + field.offset, image, out) {
+                return false;
+            }
         }
-        return;
+        return true;
     }
     if let (Some(elem), Some(len)) = (ty.array_elem(), ty.array_len()) {
         let step = elem.size().unwrap_or(0);
         for index in 0..len {
-            splice_bit_blobs(elem, base + index * step, image, out);
+            if !splice_bit_blobs(elem, base + index * step, image, out) {
+                return false;
+            }
         }
     }
+    true
 }
 
 fn ptr_as_int(ptr: PtrConst, dest: TypeName) -> ConstInit {
@@ -6486,10 +6820,7 @@ mod tests {
             "struct I { int a, b; }; struct O { struct I in; int z; } o = { .in = 1, 2, .nope = 3 };"
         )
         .contains("no member named 'nope'"));
-        assert!(sema_err(
-            "int x; union U { int i; int *p; }; struct S { union U u; } s = { .u.p = &x };"
-        )
-        .contains("uses an address in a union"));
+        sema_ok("int x; union U { int i; int *p; }; struct S { union U u; } s = { .u.p = &x };");
     }
 
     #[test]
@@ -6789,6 +7120,34 @@ mod tests {
             sema_err("int k(); int k(int); int main(void) { return k(); }")
                 .contains("expects 1 argument")
         );
+    }
+
+    #[test]
+    fn checks_overridden_union_initializers() {
+        // C11 6.7.9: a store that a later designator for another union
+        // member replaces is not part of the value, but its expression is
+        // still checked, and in a static initializer it must be constant.
+        let union = "union U { int a; int b; };";
+        assert!(
+            sema_err(&format!("{union} union U u = {{.a = missing, .b = 1}};"))
+                .contains("undeclared identifier 'missing'")
+        );
+        assert!(sema_err(&format!(
+            "{union} int main(void) {{ union U u = {{.a = missing, .b = 1}}; return u.b; }}"
+        ))
+        .contains("undeclared identifier 'missing'"));
+        assert!(sema_err(&format!(
+            "{union} int main(void) {{ static union U u = {{.a = missing, .b = 1}}; return u.b; }}"
+        ))
+        .contains("undeclared identifier 'missing'"));
+        assert!(
+            sema_err(&format!("{union} int g; union U u = {{.a = g, .b = 1}};"))
+                .contains("not a constant expression")
+        );
+        assert!(sema_err(&format!(
+            "{union} struct S {{ int x; }}; union U u = {{.a = (struct S){{1}}, .b = 1}};"
+        ))
+        .contains("incompatible"));
     }
 
     #[test]
@@ -7529,8 +7888,9 @@ int main(void) { T t = A; union U u = {t}; return u.x + B; }
             sema_err("static int f(void); int main(void) { int (*p)(void) = f; return 0; }")
                 .contains("static function 'f' is used but not defined")
         );
-        assert!(sema_err("int g; union U { int *p; long l; } u = { &g };")
-            .contains("address in a union"));
+        let ir = crate::compile_to_ir("int g; union U { int *p; long l; } u = { &g };\n", "ua.c")
+            .unwrap();
+        assert!(ir.contains("@u = global <{ ptr }> <{ ptr @g }>"), "{ir}");
         assert!(sema_err("struct S { int *p : 3; };").contains("non-integral"));
         assert!(sema_err("struct S { int x : 4294967297L; };").contains("exceeds the width"));
         sema_ok("struct A { int a : 3; }; struct O { struct A in; } g = {{1}};");

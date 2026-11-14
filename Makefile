@@ -1,7 +1,7 @@
 # Build the compiler the harness expects at build/compiler.
 CARGO ?= cargo
 
-.PHONY: all test wacc csmith csmith-campaign otawk torture perf awk-extra clean
+.PHONY: all test wacc csmith csmith-campaign otawk torture perf awk-extra doom clean
 
 all: build/compiler
 
@@ -37,6 +37,11 @@ otawk: build/compiler
 torture: build/compiler
 	scripts/fetch_gcc_torture.sh
 	python3 harness/run_gcc_torture.py
+
+doom: build/compiler
+	scripts/fetch_doomgeneric.sh
+	scripts/fetch_freedoom.sh
+	python3 harness/run_doom.py
 
 perf: build/compiler
 	python3 harness/perf.py

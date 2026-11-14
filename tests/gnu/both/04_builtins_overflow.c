@@ -4,35 +4,33 @@
 
 int printf(const char *, ...);
 
-#define SHOW(op, a, b, T, fmt) do { T r; int o = op(a, b, &r); printf(#op " " fmt " %d\n", r, o); } while (0)
-
 int main(void)
 {
-    SHOW(__builtin_add_overflow, 2147483647, 1, int, "%d");
-    SHOW(__builtin_add_overflow, 2147483647, 1, long, "%ld");
-    SHOW(__builtin_add_overflow, 200, 100, unsigned char, "%u");
-    SHOW(__builtin_add_overflow, -1, 0, unsigned, "%u");
-    SHOW(__builtin_add_overflow, -5, 10u, int, "%d");
-    SHOW(__builtin_add_overflow, 9223372036854775807L, 1, long, "%ld");
-    SHOW(__builtin_add_overflow, 18446744073709551615UL, 1, unsigned long, "%lu");
-    SHOW(__builtin_add_overflow, 18446744073709551615UL, -1, long, "%ld");
-    SHOW(__builtin_sub_overflow, 0, 1, unsigned, "%u");
-    SHOW(__builtin_sub_overflow, -2147483647 - 1, 1, int, "%d");
-    SHOW(__builtin_sub_overflow, 5u, 7u, int, "%d");
-    SHOW(__builtin_sub_overflow, -9223372036854775807L - 1, 1, long long, "%lld");
-    SHOW(__builtin_sub_overflow, 0, -9223372036854775807L - 1, unsigned long, "%lu");
-    SHOW(__builtin_mul_overflow, 65536, 65536, int, "%d");
-    SHOW(__builtin_mul_overflow, 65536, 65536, long, "%ld");
-    SHOW(__builtin_mul_overflow, -1, -1, unsigned, "%u");
-    SHOW(__builtin_mul_overflow, -3, 4, int, "%d");
-    SHOW(__builtin_mul_overflow, -3, 4, unsigned, "%u");
-    SHOW(__builtin_mul_overflow, 4294967296L, 4294967296L, long, "%ld");
-    SHOW(__builtin_mul_overflow, 18446744073709551615UL, 18446744073709551615UL, unsigned long, "%lu");
-    SHOW(__builtin_mul_overflow, -9223372036854775807L - 1, -1, long, "%ld");
-    SHOW(__builtin_mul_overflow, -9223372036854775807L - 1, -1, unsigned long, "%lu");
-    SHOW(__builtin_mul_overflow, 3037000500L, 3037000500L, long, "%ld");
-    SHOW(__builtin_mul_overflow, (short)-300, (short)200, short, "%d");
-    SHOW(__builtin_mul_overflow, 0, -9223372036854775807L - 1, unsigned char, "%u");
+    { int r; int o = __builtin_add_overflow(2147483647, 1, &r); printf("__builtin_add_overflow %d %d\n", r, o); }
+    { long r; int o = __builtin_add_overflow(2147483647, 1, &r); printf("__builtin_add_overflow %ld %d\n", r, o); }
+    { unsigned char r; int o = __builtin_add_overflow(200, 100, &r); printf("__builtin_add_overflow %u %d\n", r, o); }
+    { unsigned r; int o = __builtin_add_overflow(-1, 0, &r); printf("__builtin_add_overflow %u %d\n", r, o); }
+    { int r; int o = __builtin_add_overflow(-5, 10u, &r); printf("__builtin_add_overflow %d %d\n", r, o); }
+    { long r; int o = __builtin_add_overflow(9223372036854775807L, 1, &r); printf("__builtin_add_overflow %ld %d\n", r, o); }
+    { unsigned long r; int o = __builtin_add_overflow(18446744073709551615UL, 1, &r); printf("__builtin_add_overflow %lu %d\n", r, o); }
+    { long r; int o = __builtin_add_overflow(18446744073709551615UL, -1, &r); printf("__builtin_add_overflow %ld %d\n", r, o); }
+    { unsigned r; int o = __builtin_sub_overflow(0, 1, &r); printf("__builtin_sub_overflow %u %d\n", r, o); }
+    { int r; int o = __builtin_sub_overflow(-2147483647 - 1, 1, &r); printf("__builtin_sub_overflow %d %d\n", r, o); }
+    { int r; int o = __builtin_sub_overflow(5u, 7u, &r); printf("__builtin_sub_overflow %d %d\n", r, o); }
+    { long long r; int o = __builtin_sub_overflow(-9223372036854775807L - 1, 1, &r); printf("__builtin_sub_overflow %lld %d\n", r, o); }
+    { unsigned long r; int o = __builtin_sub_overflow(0, -9223372036854775807L - 1, &r); printf("__builtin_sub_overflow %lu %d\n", r, o); }
+    { int r; int o = __builtin_mul_overflow(65536, 65536, &r); printf("__builtin_mul_overflow %d %d\n", r, o); }
+    { long r; int o = __builtin_mul_overflow(65536, 65536, &r); printf("__builtin_mul_overflow %ld %d\n", r, o); }
+    { unsigned r; int o = __builtin_mul_overflow(-1, -1, &r); printf("__builtin_mul_overflow %u %d\n", r, o); }
+    { int r; int o = __builtin_mul_overflow(-3, 4, &r); printf("__builtin_mul_overflow %d %d\n", r, o); }
+    { unsigned r; int o = __builtin_mul_overflow(-3, 4, &r); printf("__builtin_mul_overflow %u %d\n", r, o); }
+    { long r; int o = __builtin_mul_overflow(4294967296L, 4294967296L, &r); printf("__builtin_mul_overflow %ld %d\n", r, o); }
+    { unsigned long r; int o = __builtin_mul_overflow(18446744073709551615UL, 18446744073709551615UL, &r); printf("__builtin_mul_overflow %lu %d\n", r, o); }
+    { long r; int o = __builtin_mul_overflow(-9223372036854775807L - 1, -1, &r); printf("__builtin_mul_overflow %ld %d\n", r, o); }
+    { unsigned long r; int o = __builtin_mul_overflow(-9223372036854775807L - 1, -1, &r); printf("__builtin_mul_overflow %lu %d\n", r, o); }
+    { long r; int o = __builtin_mul_overflow(3037000500L, 3037000500L, &r); printf("__builtin_mul_overflow %ld %d\n", r, o); }
+    { short r; int o = __builtin_mul_overflow((short)-300, (short)200, &r); printf("__builtin_mul_overflow %d %d\n", r, o); }
+    { unsigned char r; int o = __builtin_mul_overflow(0, -9223372036854775807L - 1, &r); printf("__builtin_mul_overflow %u %d\n", r, o); }
     int si; unsigned ui; long sl; unsigned long ul; long long sll; unsigned long long ull;
     printf("%d ", __builtin_sadd_overflow(2147483647, 1, &si)); printf("%d\n", si);
     printf("%d ", __builtin_uadd_overflow(4294967295u, 2u, &ui)); printf("%u\n", ui);

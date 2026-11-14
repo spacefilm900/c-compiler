@@ -1,6 +1,6 @@
 #!/bin/sh
 # Prefer tools already on the GitHub-hosted ubuntu-24.04 image
-# (Clang 16–18, make, python3, bison, g++). Only call apt-get for
+# (Clang 16–18, make, python3, bison, g++, unzip). Only call apt-get for
 # something that is actually missing, so a broken apt mirror does
 # not fail the job. If apt is needed, prefer archive.ubuntu.com and
 # keep the Azure mirror as a fallback, and retry a few times.
@@ -42,6 +42,9 @@ for pkg in "$@"; do
       ;;
     g++)
       command -v g++ >/dev/null 2>&1 || need="$need g++"
+      ;;
+    unzip)
+      command -v unzip >/dev/null 2>&1 || need="$need unzip"
       ;;
     *)
       need="$need $pkg"
