@@ -12,9 +12,14 @@
  *   selects. W/A/S/D also move and strafe, and E also opens doors.
  * - No sound: doomgeneric's sound needs SDL_mixer, and this build leaves
  *   FEATURE_SOUND off.
- * - DOOM_EXIT_AFTER_MS=N makes the game quit by itself after N
- *   milliseconds; CI uses it with SDL_VIDEODRIVER=dummy to show that the
- *   game starts and draws frames without a screen.
+ * - For tests without a person or a screen (CI runs them with
+ *   SDL_VIDEODRIVER=dummy):
+ *   DOOM_EXIT_AFTER_MS=N quits by itself after N milliseconds;
+ *   DOOM_SCREENSHOT=FILE then saves the last frame as a PPM picture;
+ *   DOOM_TEST_KEYS=1 presses keys through SDL's event queue, the same
+ *   path real key presses take: Escape, Enter three times (menu, New
+ *   Game, episode, skill), then holds the up arrow and Ctrl, so the game
+ *   starts and the player walks forward firing.
  */
 
 #define SDL_MAIN_HANDLED
@@ -32,6 +37,23 @@ static SDL_Renderer *renderer;
 static SDL_Texture *texture;
 static uint32_t exit_after_ms;
 static unsigned long frames_drawn;
+static const char *screenshot_path;
+static int test_keys;
+static int test_key_step;
+
+/* DOOM_TEST_KEYS: when (in milliseconds), which key, pressed or released. */
+static const struct {
+    uint32_t at_ms;
+    SDL_Keycode key;
+    int down;
+} test_key_script[] = {
+    {1000, SDLK_ESCAPE, 1}, {1050, SDLK_ESCAPE, 0},
+    {1300, SDLK_RETURN, 1}, {1350, SDLK_RETURN, 0},
+    {1600, SDLK_RETURN, 1}, {1650, SDLK_RETURN, 0},
+    {1900, SDLK_RETURN, 1}, {1950, SDLK_RETURN, 0},
+    {2600, SDLK_UP, 1},     {2600, SDLK_LCTRL, 1},
+    {3600, SDLK_LCTRL, 0},  {4000, SDLK_UP, 0},
+};
 
 #define KEYQUEUE_SIZE 64
 
@@ -128,9 +150,51 @@ static void queue_key(int pressed, SDL_Keycode code)
     key_write = (key_write + 1) % KEYQUEUE_SIZE;
 }
 
+static void push_test_keys(void)
+{
+    uint32_t now = SDL_GetTicks();
+    int count = (int)(sizeof test_key_script / sizeof test_key_script[0]);
+
+    while (test_key_step < count && test_key_script[test_key_step].at_ms <= now) {
+        SDL_Event e;
+
+        SDL_zero(e);
+        e.type = test_key_script[test_key_step].down ? SDL_KEYDOWN : SDL_KEYUP;
+        e.key.state = test_key_script[test_key_step].down ? SDL_PRESSED : SDL_RELEASED;
+        e.key.keysym.sym = test_key_script[test_key_step].key;
+        SDL_PushEvent(&e);
+        test_key_step++;
+    }
+}
+
+/* A binary PPM: a header, then red, green, blue for each pixel. */
+static void save_screenshot(void)
+{
+    FILE *f = fopen(screenshot_path, "wb");
+    int i;
+
+    if (f == NULL) {
+        fprintf(stderr, "DOOM: cannot write %s\n", screenshot_path);
+        return;
+    }
+    fprintf(f, "P6\n%d %d\n255\n", DOOMGENERIC_RESX, DOOMGENERIC_RESY);
+    for (i = 0; i < DOOMGENERIC_RESX * DOOMGENERIC_RESY; i++) {
+        uint32_t p = DG_ScreenBuffer[i];
+
+        putc((int)((p >> 16) & 0xFF), f);
+        putc((int)((p >> 8) & 0xFF), f);
+        putc((int)(p & 0xFF), f);
+    }
+    fclose(f);
+    printf("DOOM: saved the last frame to %s\n", screenshot_path);
+}
+
 static void poll_events(void)
 {
     SDL_Event e;
+
+    if (test_keys)
+        push_test_keys();
 
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) {
@@ -150,6 +214,8 @@ void DG_Init(void)
 
     if (limit != NULL)
         exit_after_ms = (uint32_t)strtoul(limit, NULL, 10);
+    screenshot_path = getenv("DOOM_SCREENSHOT");
+    test_keys = getenv("DOOM_TEST_KEYS") != NULL;
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_EVENTS) != 0) {
         fprintf(stderr, "DOOM: SDL could not start: %s\n", SDL_GetError());
         exit(1);
@@ -190,6 +256,8 @@ void DG_DrawFrame(void)
     if (exit_after_ms != 0 && SDL_GetTicks() >= exit_after_ms) {
         printf("DOOM: drew %lu frames, exiting after %u ms as asked\n", frames_drawn,
                (unsigned)exit_after_ms);
+        if (screenshot_path != NULL)
+            save_screenshot();
         SDL_Quit();
         exit(0);
     }
