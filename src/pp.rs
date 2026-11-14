@@ -2811,15 +2811,14 @@ impl Scanner<'_> {
             "%>", "%:", "#", "+", "-", "*", "/", "%", "=", "<", ">", "!", "&", "|", "^", "~", "(",
             ")", "{", "}", "[", "]", ";", ",", "?", ":", ".",
         ];
+        // The longest punctuator is four characters: read that many logical
+        // bytes once instead of once per candidate.
+        let mut ahead = [0u8; 4];
+        let have = self.peek_logical_into(&mut ahead);
         PUNCTS
             .iter()
-            .find(|punct| self.starts_with(punct.as_bytes()))
+            .find(|punct| ahead[..have].starts_with(punct.as_bytes()))
             .copied()
-    }
-
-    fn starts_with(&self, bytes: &[u8]) -> bool {
-        self.peek_logical_n(bytes.len())
-            .is_some_and(|peeked| peeked == bytes)
     }
 
     fn push(&mut self, kind: PpKind, spelling: &str, line: usize, column: usize) {
@@ -2880,17 +2879,14 @@ impl Scanner<'_> {
     }
 
     fn peek_byte_logical(&self) -> Option<u8> {
-        self.peek_logical_n(1).map(|bytes| bytes[0])
+        self.peek_logical_at(0)
     }
 
+    /// The logical byte `offset` places ahead, skipping line splices.
     fn peek_logical_at(&self, offset: usize) -> Option<u8> {
-        self.peek_logical_n(offset + 1).map(|bytes| bytes[offset])
-    }
-
-    fn peek_logical_n(&self, count: usize) -> Option<Vec<u8>> {
-        let mut out = Vec::with_capacity(count);
+        let mut seen = 0;
         let mut index = self.index;
-        while out.len() < count {
+        loop {
             if index >= self.bytes.len() {
                 return None;
             }
@@ -2899,10 +2895,33 @@ impl Scanner<'_> {
                 index += newline_width(self.bytes, index);
                 continue;
             }
-            out.push(self.bytes[index]);
+            if seen == offset {
+                return Some(self.bytes[index]);
+            }
+            seen += 1;
             index += 1;
         }
-        Some(out)
+    }
+
+    /// Fill `out` with the next logical bytes, skipping line splices, and
+    /// return how many were available.
+    fn peek_logical_into(&self, out: &mut [u8]) -> usize {
+        let mut filled = 0;
+        let mut index = self.index;
+        while filled < out.len() {
+            if index >= self.bytes.len() {
+                break;
+            }
+            if self.bytes[index] == b'\\' && is_newline(self.bytes, index + 1) {
+                index += 1;
+                index += newline_width(self.bytes, index);
+                continue;
+            }
+            out[filled] = self.bytes[index];
+            filled += 1;
+            index += 1;
+        }
+        filled
     }
 
     fn bump(&mut self) -> u8 {
