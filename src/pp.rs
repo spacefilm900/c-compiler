@@ -76,7 +76,7 @@ pub fn preprocess_tokens(
 ) -> Result<Vec<Token>, Diagnostic> {
     let pp_tokens = run(source, filename, options)?;
     let mut out = Vec::new();
-    let mut eof_file = filename.to_string();
+    let mut eof_file: Rc<str> = Rc::from(filename);
     let mut eof_line = 1usize;
     let mut eof_col = 1usize;
     for tok in &pp_tokens {
@@ -206,7 +206,7 @@ fn convert_token(tok: &PpToken) -> Result<Token, Diagnostic> {
         "%>" => "}",
         other => other,
     };
-    match crate::timing::lexing(|| crate::lexer::lex(spelling, &tok.display)) {
+    match crate::timing::lexing(|| crate::lexer::lex_shared(spelling, &tok.display)) {
         Ok(mut tokens) => {
             tokens.pop();
             if tokens.len() != 1 {
@@ -218,11 +218,11 @@ fn convert_token(tok: &PpToken) -> Result<Token, Diagnostic> {
             let mut converted = tokens.remove(0);
             converted.line = tok.line;
             converted.column = tok.column;
-            converted.filename = tok.display.clone();
+            converted.filename = Rc::clone(&tok.display);
             Ok(converted)
         }
         Err(mut err) => {
-            err.filename = tok.display.clone();
+            err.filename = tok.display.to_string();
             err.line = tok.line;
             err.column = tok.column;
             Err(err)
@@ -231,7 +231,7 @@ fn convert_token(tok: &PpToken) -> Result<Token, Diagnostic> {
 }
 
 fn error_at(tok: &PpToken, message: impl Into<String>) -> Diagnostic {
-    Diagnostic::new(&tok.display, tok.line, tok.column, message)
+    Diagnostic::new(&*tok.display, tok.line, tok.column, message)
 }
 
 type Hide = Rc<HashSet<String>>;
@@ -277,7 +277,7 @@ enum PpKind {
 struct PpToken {
     kind: PpKind,
     spelling: String,
-    display: String,
+    display: Rc<str>,
     file_id: u32,
     line: usize,
     column: usize,
@@ -333,7 +333,7 @@ struct Cond {
     seen_true: bool,
     /// C11 6.10.1 allows one `#else`, and no `#elif` after it.
     else_seen: bool,
-    display: String,
+    display: Rc<str>,
     line: usize,
     column: usize,
 }
@@ -535,7 +535,7 @@ impl Processor {
         if !isolated && !self.cond.is_empty() {
             let frame = self.cond.last().unwrap();
             return Err(Diagnostic::new(
-                &frame.display,
+                &*frame.display,
                 frame.line,
                 frame.column,
                 "unterminated conditional directive",
@@ -618,7 +618,7 @@ impl Processor {
             let filler = PpToken {
                 kind: PpKind::Placemarker,
                 spelling: String::new(),
-                display: String::new(),
+                display: Rc::from(""),
                 file_id: 0,
                 line: 0,
                 column: 0,
@@ -1139,7 +1139,7 @@ impl Processor {
             let adjusted = tok.line as isize + delta;
             tok.line = if adjusted < 1 { 1 } else { adjusted as usize };
             if let Some(name) = &new_file {
-                tok.display = name.clone();
+                tok.display = Rc::from(name.as_str());
             }
         }
     }
@@ -1162,7 +1162,7 @@ impl Processor {
         }
         let text = read_source(&path, at)?;
         let file_id = self.files.len() as u32;
-        let display = path.display().to_string();
+        let display: Rc<str> = Rc::from(path.display().to_string());
         self.files.push(FileInfo {
             real_path: path,
             canonical,
@@ -1180,7 +1180,7 @@ impl Processor {
                 included.push(PpToken {
                     kind: PpKind::Newline,
                     spelling: "\n".to_string(),
-                    display: display.clone(),
+                    display: Rc::clone(&display),
                     file_id,
                     line,
                     column,
@@ -1363,7 +1363,7 @@ impl Processor {
             if self.index >= self.tokens.len() {
                 let frame = self.cond.last().unwrap();
                 return Err(Diagnostic::new(
-                    &frame.display,
+                    &*frame.display,
                     frame.line,
                     frame.column,
                     "unterminated conditional directive",
@@ -1490,7 +1490,7 @@ fn command_token() -> PpToken {
     PpToken {
         kind: PpKind::Ident,
         spelling: String::new(),
-        display: "<command-line>".to_string(),
+        display: Rc::from("<command-line>"),
         file_id: 0,
         line: 1,
         column: 1,
@@ -1806,7 +1806,7 @@ fn header_from(tokens: &[PpToken], at: &PpToken) -> Result<(String, bool, usize)
 }
 
 fn decode_string(tok: &PpToken) -> Result<String, Diagnostic> {
-    match crate::lexer::lex(&tok.spelling, &tok.display) {
+    match crate::lexer::lex_shared(&tok.spelling, &tok.display) {
         Ok(mut tokens) => {
             tokens.pop();
             if tokens.len() != 1 {
@@ -1816,7 +1816,7 @@ fn decode_string(tok: &PpToken) -> Result<String, Diagnostic> {
             String::from_utf8(bytes).map_err(|_| error_at(tok, "file name is not valid UTF-8"))
         }
         Err(mut err) => {
-            err.filename = tok.display.clone();
+            err.filename = tok.display.to_string();
             err.line = tok.line;
             err.column = tok.column;
             Err(err)
@@ -2016,7 +2016,7 @@ fn literal_val(tok: &PpToken) -> Result<Val, Diagnostic> {
     // A prefixed character constant has the value and type it has in
     // program text (C11 6.10.1p4): `L'\400'` is the `wchar_t` 256, and
     // `U'\xffffffff'` is an unsigned value.
-    match crate::lexer::lex(&tok.spelling, &tok.display) {
+    match crate::lexer::lex_shared(&tok.spelling, &tok.display) {
         Ok(mut tokens) => {
             tokens.pop();
             if tokens.len() == 1 && tokens[0].kind == TokenKind::Float {
@@ -2034,7 +2034,7 @@ fn literal_val(tok: &PpToken) -> Result<Val, Diagnostic> {
             Ok(val_from_compiler(&tokens[0]))
         }
         Err(mut err) => {
-            err.filename = tok.display.clone();
+            err.filename = tok.display.to_string();
             err.line = tok.line;
             err.column = tok.column;
             Err(err)
@@ -2115,7 +2115,7 @@ enum Binary {
 }
 
 struct IfLoc {
-    display: String,
+    display: Rc<str>,
     line: usize,
     column: usize,
 }
@@ -2461,7 +2461,7 @@ fn eval_binary(op: Binary, left: Val, right: Val, loc: &IfLoc) -> Result<Val, Di
     let unsigned = left.unsigned || right.unsigned;
     if matches!(op, Binary::Div | Binary::Mod) && right.bits == 0 {
         return Err(Diagnostic::new(
-            &loc.display,
+            &*loc.display,
             loc.line,
             loc.column,
             "division by zero in preprocessor expression",
@@ -2530,7 +2530,7 @@ fn eval_shift(op: Binary, left: Val, right: Val, loc: &IfLoc) -> Result<Val, Dia
         let count = right.bits as i64;
         if count < 0 {
             return Err(Diagnostic::new(
-                &loc.display,
+                &*loc.display,
                 loc.line,
                 loc.column,
                 "negative shift count in preprocessor expression",
@@ -2564,7 +2564,7 @@ struct Scanner<'a> {
     index: usize,
     line: usize,
     column: usize,
-    display: &'a str,
+    display: Rc<str>,
     file_id: u32,
     pending_space: bool,
     tokens: Vec<PpToken>,
@@ -2576,7 +2576,7 @@ fn lex_source(source: &str, display: &str, file_id: u32) -> Result<Vec<PpToken>,
         index: 0,
         line: 1,
         column: 1,
-        display,
+        display: Rc::from(display),
         file_id,
         pending_space: false,
         tokens: Vec::new(),
@@ -2827,7 +2827,7 @@ impl Scanner<'_> {
         self.tokens.push(PpToken {
             kind,
             spelling: spelling.to_string(),
-            display: self.display.to_string(),
+            display: Rc::clone(&self.display),
             file_id: self.file_id,
             line,
             column,
@@ -2841,7 +2841,7 @@ impl Scanner<'_> {
         self.tokens.push(PpToken {
             kind: PpKind::Newline,
             spelling: "\n".to_string(),
-            display: self.display.to_string(),
+            display: Rc::clone(&self.display),
             file_id: self.file_id,
             line,
             column,
@@ -2851,7 +2851,7 @@ impl Scanner<'_> {
     }
 
     fn fail<T>(&self, line: usize, column: usize, message: &str) -> Result<T, Diagnostic> {
-        Err(Diagnostic::new(self.display, line, column, message))
+        Err(Diagnostic::new(&*self.display, line, column, message))
     }
 
     fn skip_splices(&mut self) -> bool {

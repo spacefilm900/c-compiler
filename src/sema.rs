@@ -53,7 +53,7 @@ pub fn analyze_dialect(
             assign_slots(func);
         }
     }
-    let mut locs: HashMap<(usize, usize), String> = HashMap::new();
+    let mut locs: HashMap<(usize, usize), std::rc::Rc<str>> = HashMap::new();
     for token in tokens {
         if token.kind != crate::token::TokenKind::Eof {
             locs.insert((token.line, token.column), token.filename.clone());
@@ -234,7 +234,7 @@ struct Sema {
     /// Last token at each line and column. Included files override the main
     /// file when they share a coordinate; parser diagnostics resolve this
     /// more precisely from the token cursor.
-    locs: HashMap<(usize, usize), String>,
+    locs: HashMap<(usize, usize), std::rc::Rc<str>>,
     scopes: Vec<HashMap<String, Symbol>>,
     loop_depth: u32,
     /// Innermost switch first at the end. A `case` or `default` belongs to
@@ -5032,7 +5032,7 @@ impl Sema {
         let file = self
             .locs
             .get(&(line, column))
-            .map(String::as_str)
+            .map(|file| &**file)
             .unwrap_or(self.filename.as_str());
         self.warnings
             .borrow_mut()
@@ -5048,7 +5048,7 @@ impl Sema {
         let file = self
             .locs
             .get(&(line, column))
-            .map(String::as_str)
+            .map(|file| &**file)
             .unwrap_or(self.filename.as_str());
         Err(Diagnostic::new(file, line, column, message))
     }

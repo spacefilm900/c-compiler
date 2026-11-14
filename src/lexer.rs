@@ -10,6 +10,7 @@ use crate::ast::{FloatKind, TypeName};
 use crate::diag::Diagnostic;
 use crate::float::{inf_bits, parse_decimal, parse_exponent, parse_hex};
 use crate::token::{keyword, Token, TokenKind};
+use std::rc::Rc;
 
 /// One character of a character constant or string literal, before it is
 /// encoded for the literal's prefix.
@@ -25,6 +26,11 @@ enum SrcChar {
 }
 
 pub fn lex(source: &str, filename: &str) -> Result<Vec<Token>, Diagnostic> {
+    lex_shared(source, &Rc::from(filename))
+}
+
+/// Like [`lex`], with the file name every token shares.
+pub fn lex_shared(source: &str, filename: &Rc<str>) -> Result<Vec<Token>, Diagnostic> {
     Lexer {
         source,
         filename,
@@ -39,7 +45,7 @@ pub fn lex(source: &str, filename: &str) -> Result<Vec<Token>, Diagnostic> {
 
 struct Lexer<'a> {
     source: &'a str,
-    filename: &'a str,
+    filename: &'a Rc<str>,
     bytes: &'a [u8],
     index: usize,
     line: usize,
@@ -114,7 +120,7 @@ impl Lexer<'_> {
             spelling: String::new(),
             line: self.line,
             column: self.column,
-            filename: self.filename.to_string(),
+            filename: Rc::clone(self.filename),
             value: None,
             float_hi: 0,
             int_ty: None,
@@ -156,7 +162,7 @@ impl Lexer<'_> {
             spelling: spelling.to_string(),
             line,
             column,
-            filename: self.filename.to_string(),
+            filename: Rc::clone(self.filename),
             value: None,
             float_hi: 0,
             int_ty: None,
@@ -171,7 +177,7 @@ impl Lexer<'_> {
         column: usize,
         message: impl Into<String>,
     ) -> Result<T, Diagnostic> {
-        Err(Diagnostic::new(self.filename, line, column, message))
+        Err(Diagnostic::new(&**self.filename, line, column, message))
     }
 
     fn line_comment(&mut self) -> Result<(), Diagnostic> {
@@ -478,7 +484,7 @@ impl Lexer<'_> {
             spelling: spelling.to_string(),
             line,
             column,
-            filename: self.filename.to_string(),
+            filename: Rc::clone(self.filename),
             value: Some(bits as u64),
             float_hi: (bits >> 64) as u16,
             int_ty: None,
@@ -585,7 +591,7 @@ impl Lexer<'_> {
             spelling: spelling.to_string(),
             line,
             column,
-            filename: self.filename.to_string(),
+            filename: Rc::clone(self.filename),
             value: Some(bits),
             float_hi: 0,
             int_ty: Some(ty),
@@ -624,7 +630,7 @@ impl Lexer<'_> {
             spelling,
             line,
             column,
-            filename: self.filename.to_string(),
+            filename: Rc::clone(self.filename),
             value: None,
             float_hi: 0,
             int_ty: None,
