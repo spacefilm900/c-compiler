@@ -411,7 +411,6 @@ pr86714.c compile-error
 pr88904.c compile-error
 pr90025.c compile-error
 pr92618.c compile-error
-pr92904.c compile-error
 pr93213.c compile-error
 pr93945.c compile-error
 pr94130.c compile-error

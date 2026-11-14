@@ -126,6 +126,28 @@ mod tests {
     }
 
     #[test]
+    fn int128_va_arg_load_assumes_only_save_slot_alignment() {
+        // The register save area's GP slots are 8-byte aligned, so a
+        // 128-bit va_arg that may come from there must not claim 16.
+        let ir = compile(
+            "__int128 f(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); \
+             __int128 v = __builtin_va_arg(ap, __int128); __builtin_va_end(ap); return v; }",
+            Dialect::C11,
+        )
+        .unwrap_or_else(|err| panic!("{err}"))
+        .ir;
+        let phi = ir
+            .lines()
+            .position(|line| line.contains(" = phi ptr"))
+            .expect("va_arg phi");
+        let load = ir.lines().nth(phi + 1).expect("load after phi");
+        assert!(
+            load.contains("load i128") && load.ends_with("align 8"),
+            "{load}\n{ir}"
+        );
+    }
+
+    #[test]
     fn int128_constant_overflows_and_bitfields_are_rejected() {
         // Signed overflow in a constant is a constraint violation
         // (C11 6.6, 6.5.7). Clang 19 warns and wraps; this compiler rejects.

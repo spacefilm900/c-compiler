@@ -1190,12 +1190,12 @@ impl Gen {
                     free_sse = free_sse.saturating_sub(1);
                 } else if !promoted.is_long_double() {
                     // A 128-bit integer takes two GP registers. If only
-                    // one remains, the whole argument goes on the stack
-                    // and the leftover register is unused.
+                    // one remains, the whole argument goes on the stack.
+                    // Only its own registers are given back (System V
+                    // AMD64 3.2.3), so a later argument can still use the
+                    // leftover register.
                     let slots = if promoted.size() == Some(16) { 2 } else { 1 };
-                    if free_int < slots {
-                        free_int = 0;
-                    } else {
+                    if free_int >= slots {
                         free_int -= slots;
                     }
                 }
@@ -2222,6 +2222,20 @@ impl Gen {
         };
         let ap_ptr = self.gen_val(ap);
         let addr = self.va_arg_addr(&ap_ptr, type_arg);
+        // A 128-bit integer may come from the register save area, whose
+        // GP slots are only 8-byte aligned. The address is a phi of that
+        // slot and the overflow area, so the load claims 8, not 16.
+        if let VaClass::Gp { slots: 2, .. } = va_class(type_arg) {
+            if type_arg.align() > 8 {
+                let tmp = self.fresh();
+                self.emit(&format!(
+                    "  {tmp} = load{} {}, ptr {addr}, align 8",
+                    vol_attr(type_arg),
+                    type_arg.ir_type(),
+                ));
+                return tmp;
+            }
+        }
         self.load(type_arg, &addr)
     }
 
@@ -3917,9 +3931,11 @@ fn va_class(ty: &CType) -> VaClass {
             Ok(AggAbi::Direct(pieces)) => {
                 let sse = pieces.iter().filter(|piece| piece.is_sse()).count();
                 if sse == 0 {
+                    // In the overflow area the record keeps its own
+                    // alignment, which `_Alignas(16)` can raise above 8.
                     VaClass::Gp {
                         slots: pieces.len().max(1) as u32,
-                        stack_align: 8,
+                        stack_align: u64::from(bare.align()).max(8),
                         stack_size: stack.max(8),
                     }
                 } else if sse == pieces.len() && pieces.len() == 1 {
