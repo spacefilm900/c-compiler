@@ -281,10 +281,9 @@ fn target_macros(target: Target) -> Vec<(&'static str, &'static str)> {
             ("__SIZEOF_LONG_DOUBLE__", "16"),
             ("__LDBL_MANT_DIG__", "64"),
         ]),
-        LongDouble::Double => out.extend([
-            ("__SIZEOF_LONG_DOUBLE__", "8"),
-            ("__LDBL_MANT_DIG__", "53"),
-        ]),
+        LongDouble::Double => {
+            out.extend([("__SIZEOF_LONG_DOUBLE__", "8"), ("__LDBL_MANT_DIG__", "53")])
+        }
         LongDouble::Quad => out.extend([
             ("__SIZEOF_LONG_DOUBLE__", "16"),
             ("__LDBL_MANT_DIG__", "113"),

@@ -355,7 +355,12 @@ mod tests {
         let f3 = record(vec![("a", float()), ("b", float()), ("c", float())], false);
         assert_eq!(coerce(&f3, AggUse::Param), "[3 x float]");
         let d4 = record(
-            vec![("a", double()), ("b", double()), ("c", double()), ("d", double())],
+            vec![
+                ("a", double()),
+                ("b", double()),
+                ("c", double()),
+                ("d", double()),
+            ],
             false,
         );
         assert_eq!(coerce(&d4, AggUse::Param), "[4 x double]");

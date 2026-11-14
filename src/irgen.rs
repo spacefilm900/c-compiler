@@ -107,10 +107,7 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
         out.push_str("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
         wrote_prelude = true;
     }
-    let nanl_decl = format!(
-        "declare {} @nanl(ptr)\n",
-        FloatKind::LongDouble.ir_type()
-    );
+    let nanl_decl = format!("declare {} @nanl(ptr)\n", FloatKind::LongDouble.ir_type());
     // A runtime __builtin_nan* with a malformed tag lowers to nan/nanf/nanl
     // (C11 7.12.11.2). Declare the library function if this unit does not
     // already have that symbol.
@@ -1173,7 +1170,11 @@ impl Gen {
                     && matches!(parts[0].kind, PartKind::Coerce { .. } | PartKind::Indirect)
                 {
                     let value = self.aapcs64_record_arg(arg, &parts[0]);
-                    rendered.push(format_part(&parts[0].ir_type, &parts[0].attrs, Some(&value)));
+                    rendered.push(format_part(
+                        &parts[0].ir_type,
+                        &parts[0].attrs,
+                        Some(&value),
+                    ));
                     continue;
                 }
                 if parts
@@ -1406,7 +1407,9 @@ impl Gen {
             ""
         };
         let tmp = self.fresh();
-        self.emit(&format!("  {tmp} = load{vol} {ir}, ptr {from}, align {align}"));
+        self.emit(&format!(
+            "  {tmp} = load{vol} {ir}, ptr {from}, align {align}"
+        ));
         tmp
     }
 
@@ -5208,7 +5211,10 @@ int main(void) {
         assert!(ir.contains("define i32 @main()"));
         assert!(ir.contains("ret i32 42"));
         assert!(ir.contains("target triple = \"x86_64-pc-linux-gnu\""));
-        assert!(ir.contains(&format!("target datalayout = \"{}\"", crate::target::Target::X86_64Linux.data_layout())));
+        assert!(ir.contains(&format!(
+            "target datalayout = \"{}\"",
+            crate::target::Target::X86_64Linux.data_layout()
+        )));
         assert_eq!(run_binary(&ir).0, 42);
     }
 

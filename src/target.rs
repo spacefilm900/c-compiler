@@ -53,7 +53,9 @@ pub enum LongDouble {
 pub enum Abi {
     SysV,
     /// AAPCS64. `apple` selects Apple's deviations.
-    Aapcs64 { apple: bool },
+    Aapcs64 {
+        apple: bool,
+    },
 }
 
 impl Default for Target {
@@ -275,7 +277,10 @@ mod tests {
     #[test]
     fn parses_triples() {
         assert_eq!(Target::parse("x86_64-linux-gnu"), Some(Target::X86_64Linux));
-        assert_eq!(Target::parse("x86_64-pc-linux-gnu"), Some(Target::X86_64Linux));
+        assert_eq!(
+            Target::parse("x86_64-pc-linux-gnu"),
+            Some(Target::X86_64Linux)
+        );
         assert_eq!(Target::parse("arm64-apple-macos"), Some(APPLE_DEFAULT));
         assert_eq!(Target::parse("aarch64-apple-darwin"), Some(APPLE_DEFAULT));
         assert_eq!(
@@ -292,7 +297,10 @@ mod tests {
                 macos_minor: 0
             })
         );
-        assert_eq!(Target::parse("aarch64-linux-gnu"), Some(Target::Aarch64Linux));
+        assert_eq!(
+            Target::parse("aarch64-linux-gnu"),
+            Some(Target::Aarch64Linux)
+        );
         assert_eq!(
             Target::parse("aarch64-unknown-linux-gnu"),
             Some(Target::Aarch64Linux)
@@ -308,7 +316,9 @@ mod tests {
         assert_eq!(APPLE_DEFAULT.triple(), "arm64-apple-macosx11.0.0");
         assert!(APPLE_DEFAULT.data_layout().contains("m:o"));
         assert_eq!(Target::X86_64Linux.triple(), "x86_64-pc-linux-gnu");
-        assert!(Target::Aarch64Linux.data_layout().starts_with("e-m:e-i8:8:32"));
+        assert!(Target::Aarch64Linux
+            .data_layout()
+            .starts_with("e-m:e-i8:8:32"));
         assert!(APPLE_DEFAULT.char_is_signed());
         assert!(!Target::Aarch64Linux.char_is_signed());
         assert_eq!(APPLE_DEFAULT.long_double(), LongDouble::Double);

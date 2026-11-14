@@ -10,9 +10,9 @@
 //! adjustment. A struct is one declaration: the same tag in another scope is
 //! a different type, and completing the type updates every use of it.
 
+use crate::target::LongDouble;
 use std::cell::RefCell;
 use std::rc::Rc;
-use crate::target::LongDouble;
 
 /// Integer and `void` types on `x86_64-pc-linux-gnu` (LP64).
 ///

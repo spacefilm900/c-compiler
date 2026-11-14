@@ -17,7 +17,7 @@ jobs:
   check:
     name: fmt, clippy, tests, harness
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -63,6 +63,26 @@ jobs:
 
       - name: Csmith campaign script tests
         run: python3 -m unittest tools/test_csmith_campaign.py tools/test_run_doom.py tools/test_run_lua.py tools/test_run_sqlite.py tools/test_perf_tools.py
+
+      # The arm64 targets, checked on this Linux runner (no macOS runner):
+      # IR signatures against Clang and llc acceptance (Mach-O objects for
+      # arm64-apple-macos), then the differential harness under qemu-aarch64
+      # for AArch64 Linux and for the Apple calling-convention proxy. See
+      # docs/USER_GUIDE_MACOS.md for what this does not cover.
+      - name: Install the AArch64 cross toolchain and qemu
+        run: |
+          set -euo pipefail
+          scripts/ci-apt-install.sh qemu-user libc6-dev-arm64-cross libgcc-13-dev-arm64-cross binutils-aarch64-linux-gnu
+          qemu-aarch64 --version
+
+      - name: arm64 IR and llc checks
+        run: python3 harness/run_arm64_ir.py
+
+      - name: arm64 differential harness under qemu
+        run: |
+          set -euo pipefail
+          python3 harness/run_cross.py --target aarch64-linux-gnu
+          python3 harness/run_cross.py --target arm64-apple-macos
 
   wacc:
     name: writing-a-c-compiler suite

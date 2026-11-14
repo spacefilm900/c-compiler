@@ -20,6 +20,8 @@ pub mod parser;
 pub mod pp;
 pub mod sema;
 pub mod target;
+#[cfg(test)]
+mod target_tests;
 pub mod timing;
 pub mod token;
 

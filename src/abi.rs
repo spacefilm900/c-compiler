@@ -141,7 +141,9 @@ pub enum PartKind {
     Byval,
     /// AAPCS64 [`AggAbi::Coerce`]: the whole aggregate as one LLVM value
     /// whose type has `size` bytes.
-    Coerce { size: u64 },
+    Coerce {
+        size: u64,
+    },
     /// AAPCS64 [`AggAbi::Indirect`]: a pointer to a caller-made copy.
     Indirect,
 }

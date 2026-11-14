@@ -356,6 +356,35 @@ mod tests {
     }
 
     #[test]
+    fn target_option_spellings() {
+        let (src, out) = temp_paths();
+        std::fs::write(&src, "int main(void) { return 0; }\n").unwrap();
+        let path = src.display().to_string();
+        let ll = out.display().to_string();
+        for (flags, triple) in [
+            (vec!["-target", "arm64-apple-macos"], "arm64-apple-macosx11.0.0"),
+            (vec!["--target", "arm64-apple-macos14"], "arm64-apple-macosx14.0.0"),
+            (vec!["--target=aarch64-linux-gnu"], "aarch64-unknown-linux-gnu"),
+            (vec!["-target", "x86_64-linux-gnu"], "x86_64-pc-linux-gnu"),
+        ] {
+            let mut args = vec!["compiler".to_string()];
+            args.extend(flags.iter().map(|flag| flag.to_string()));
+            args.extend([path.clone(), "-o".to_string(), ll.clone()]);
+            assert_eq!(run(&args), 0, "{flags:?}");
+            let text = std::fs::read_to_string(&out).unwrap();
+            assert!(text.contains(&format!("target triple = \"{triple}\"")), "{text}");
+        }
+        let args: Vec<String> = ["compiler", "-target", "mips-linux-gnu", &path, "-o", &ll]
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect();
+        assert_eq!(run(&args), 2);
+        assert!(parse_target("arm64-apple-macos10.15").is_err());
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
     fn dash_e_define_and_include() {
         let (src, out) = temp_paths();
         std::fs::write(&src, "int x = NAME;\n").unwrap();

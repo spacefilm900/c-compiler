@@ -127,9 +127,7 @@ impl Inline {
             "bswap32" => Inline::Bswap(TypeName::UInt),
             // The result is `uint64_t`: `unsigned long long` on Apple
             // platforms, `unsigned long` on LP64 Linux.
-            "bswap64" if crate::target::current().is_apple() => {
-                Inline::Bswap(TypeName::ULongLong)
-            }
+            "bswap64" if crate::target::current().is_apple() => Inline::Bswap(TypeName::ULongLong),
             "bswap64" => Inline::Bswap(TypeName::ULong),
             "expect" => Inline::Expect,
             "unreachable" => Inline::Unreachable,

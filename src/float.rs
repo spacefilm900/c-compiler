@@ -89,8 +89,7 @@ fn widen_f32_bits(bits: u32) -> u64 {
 /// The bytes the object holds, little-endian, for a folded value of type
 /// `kind`. Only binary128 `long double` differs from the folded bits.
 pub fn memory_bits(kind: FloatKind, bits: u128) -> u128 {
-    if kind == FloatKind::LongDouble && crate::target::current().long_double() == LongDouble::Quad
-    {
+    if kind == FloatKind::LongDouble && crate::target::current().long_double() == LongDouble::Quad {
         widen_f64_to_f128(bits as u64)
     } else {
         bits
@@ -98,8 +97,7 @@ pub fn memory_bits(kind: FloatKind, bits: u128) -> u128 {
 }
 
 pub fn llvm_const(kind: FloatKind, bits: u128) -> String {
-    if kind == FloatKind::LongDouble && crate::target::current().long_double() == LongDouble::Quad
-    {
+    if kind == FloatKind::LongDouble && crate::target::current().long_double() == LongDouble::Quad {
         // LLVM spells binary128 as `0xL`, the low 64 bits then the high 64.
         let wide = widen_f64_to_f128(bits as u64);
         return format!("0xL{:016X}{:016X}", wide as u64, (wide >> 64) as u64);
