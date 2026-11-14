@@ -12,7 +12,11 @@ set -eu
 find_tool() {
   cmd=$1
   if command -v "$cmd" >/dev/null 2>&1; then
-    return 0
+    major=$("$cmd" --version 2>/dev/null |
+      sed -n 's/.*version \([0-9][0-9]*\)\..*/\1/p' | head -n 1) || major=
+    if [ -n "$major" ] && [ "$major" -ge 18 ]; then
+      return 0
+    fi
   fi
   ver=
   for ver in 18 19 20 21; do
