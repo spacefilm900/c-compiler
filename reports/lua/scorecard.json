@@ -1,0 +1,1657 @@
+{
+  "meta": {
+    "date": "2026-11-14",
+    "compiler_commit": "ab7bcaa",
+    "lua_version": "5.4.7",
+    "lua_sha256": "9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30",
+    "tests_sha256": "8a4898ffe4c7613c8009327a0722db7a41ef861d526c77c5b46114e59ebf811e",
+    "std": "gnu11",
+    "clang": "Debian clang version 19.1.7 (3+b1)"
+  },
+  "jobs": 8,
+  "run_jobs": 1,
+  "levels": [
+    {
+      "opt": "O0",
+      "builds": {
+        "release": {
+          "config": "release",
+          "files": [
+            {
+              "file": "lapi.c",
+              "frontend_seconds": 0.6540963659999761,
+              "backend_seconds": 0.18761756100002458,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lcode.c",
+              "frontend_seconds": 0.8037234220000755,
+              "backend_seconds": 0.0791484669998681,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lctype.c",
+              "frontend_seconds": 0.06406146499989518,
+              "backend_seconds": 0.2092923889999838,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ldebug.c",
+              "frontend_seconds": 0.3751468499999646,
+              "backend_seconds": 0.13126961300008588,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ldo.c",
+              "frontend_seconds": 0.4251756670000759,
+              "backend_seconds": 0.1157100799998716,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ldump.c",
+              "frontend_seconds": 0.28781644499986214,
+              "backend_seconds": 0.07719724300000053,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lfunc.c",
+              "frontend_seconds": 0.30821565900009773,
+              "backend_seconds": 0.05402658700018037,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lgc.c",
+              "frontend_seconds": 0.6669251769999391,
+              "backend_seconds": 0.13641914100003305,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "llex.c",
+              "frontend_seconds": 0.3690307389999816,
+              "backend_seconds": 0.1503605720001815,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lmem.c",
+              "frontend_seconds": 0.2510448059999817,
+              "backend_seconds": 0.16580612799998562,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lobject.c",
+              "frontend_seconds": 0.5282684459998563,
+              "backend_seconds": 0.03448909500002628,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lopcodes.c",
+              "frontend_seconds": 0.14168184000004658,
+              "backend_seconds": 0.12177316799989057,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lparser.c",
+              "frontend_seconds": 0.3394412860000102,
+              "backend_seconds": 0.05653451800003495,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lstate.c",
+              "frontend_seconds": 0.17725490999987414,
+              "backend_seconds": 0.03901027699998849,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lstring.c",
+              "frontend_seconds": 0.16576034900003833,
+              "backend_seconds": 0.04367789000002631,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ltable.c",
+              "frontend_seconds": 0.36251442299999326,
+              "backend_seconds": 0.043956069999921965,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ltm.c",
+              "frontend_seconds": 0.15998437300004298,
+              "backend_seconds": 0.033948272000088764,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lundump.c",
+              "frontend_seconds": 0.17186277700011487,
+              "backend_seconds": 0.057559053999966636,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lvm.c",
+              "frontend_seconds": 0.9374209869999959,
+              "backend_seconds": 0.08109725400004208,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lzio.c",
+              "frontend_seconds": 0.13173869899992496,
+              "backend_seconds": 0.04733172800001739,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lauxlib.c",
+              "frontend_seconds": 0.2421356620000097,
+              "backend_seconds": 0.05477550699993117,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lbaselib.c",
+              "frontend_seconds": 0.11731088700003056,
+              "backend_seconds": 0.0612184999999954,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lcorolib.c",
+              "frontend_seconds": 0.08330180300004031,
+              "backend_seconds": 0.028711795000162965,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ldblib.c",
+              "frontend_seconds": 0.10324942700003703,
+              "backend_seconds": 0.05628202599996257,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "liolib.c",
+              "frontend_seconds": 0.1472203589999026,
+              "backend_seconds": 0.042244121000067025,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lmathlib.c",
+              "frontend_seconds": 0.3827733890000218,
+              "backend_seconds": 0.0443628999998964,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "loadlib.c",
+              "frontend_seconds": 0.1258826369999042,
+              "backend_seconds": 0.09478198200008592,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "loslib.c",
+              "frontend_seconds": 0.1708499970000048,
+              "backend_seconds": 0.062302735999992365,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lstrlib.c",
+              "frontend_seconds": 0.45897214700016775,
+              "backend_seconds": 0.05048859099997571,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ltablib.c",
+              "frontend_seconds": 0.14363552700001492,
+              "backend_seconds": 0.037330362999909994,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lutf8lib.c",
+              "frontend_seconds": 0.17132041600007142,
+              "backend_seconds": 0.09325455599991983,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "linit.c",
+              "frontend_seconds": 0.07772168299993609,
+              "backend_seconds": 0.02461174499990193,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lua.c",
+              "frontend_seconds": 0.2277806550000605,
+              "backend_seconds": 0.04081334500006051,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "luac.c",
+              "frontend_seconds": 0.28119123800001944,
+              "backend_seconds": 0.036625956000079896,
+              "status": "ok",
+              "stderr": ""
+            }
+          ],
+          "failed_files": [],
+          "build": "full",
+          "clang_compile_seconds": 6.07169128099963,
+          "ours_frontend_seconds": 10.054510512999968,
+          "ours_compile_seconds": 12.648539743000129,
+          "link_ok": true
+        },
+        "ltests": {
+          "config": "ltests",
+          "files": [
+            {
+              "file": "lapi.c",
+              "frontend_seconds": 0.7145622749999347,
+              "backend_seconds": 0.11980973800018546,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lcode.c",
+              "frontend_seconds": 0.8197516170000654,
+              "backend_seconds": 0.07065920800005188,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lctype.c",
+              "frontend_seconds": 0.08213798899987523,
+              "backend_seconds": 0.07338823800000682,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ldebug.c",
+              "frontend_seconds": 0.3858466930000759,
+              "backend_seconds": 0.05421640700001262,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ldo.c",
+              "frontend_seconds": 0.3773122909999529,
+              "backend_seconds": 0.11093707700001687,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ldump.c",
+              "frontend_seconds": 0.16190621699979602,
+              "backend_seconds": 0.0625360730000466,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lfunc.c",
+              "frontend_seconds": 0.21459608200007096,
+              "backend_seconds": 0.05569311700014623,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lgc.c",
+              "frontend_seconds": 0.46261607199994614,
+              "backend_seconds": 0.07117336900000737,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "llex.c",
+              "frontend_seconds": 0.31216669200011893,
+              "backend_seconds": 0.04449743299983311,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lmem.c",
+              "frontend_seconds": 0.2757876569999098,
+              "backend_seconds": 0.043940850999888426,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lobject.c",
+              "frontend_seconds": 0.5259198740000102,
+              "backend_seconds": 0.053090386000121725,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lopcodes.c",
+              "frontend_seconds": 0.14068739000003916,
+              "backend_seconds": 0.058733135000011316,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lparser.c",
+              "frontend_seconds": 0.3362693849999232,
+              "backend_seconds": 0.04576807400007965,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lstate.c",
+              "frontend_seconds": 0.28180998499988164,
+              "backend_seconds": 0.04863666400001421,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lstring.c",
+              "frontend_seconds": 0.24049274300000434,
+              "backend_seconds": 0.042849423000006936,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ltable.c",
+              "frontend_seconds": 0.5640239740000652,
+              "backend_seconds": 0.09219746000007945,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ltm.c",
+              "frontend_seconds": 0.3437348219999876,
+              "backend_seconds": 0.08041359300000295,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lundump.c",
+              "frontend_seconds": 0.22477272800006176,
+              "backend_seconds": 0.06199664800010396,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lvm.c",
+              "frontend_seconds": 1.3677448890000505,
+              "backend_seconds": 0.10764331899986246,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lzio.c",
+              "frontend_seconds": 0.15393641400009983,
+              "backend_seconds": 0.05005859799985046,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lauxlib.c",
+              "frontend_seconds": 0.2041739209998923,
+              "backend_seconds": 0.04755790500007606,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lbaselib.c",
+              "frontend_seconds": 0.15952917599997818,
+              "backend_seconds": 0.0753085750000082,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lcorolib.c",
+              "frontend_seconds": 0.10934251499998027,
+              "backend_seconds": 0.04637060899995049,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ldblib.c",
+              "frontend_seconds": 0.12603888399985408,
+              "backend_seconds": 0.05460131800009549,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "liolib.c",
+              "frontend_seconds": 0.42240311900013694,
+              "backend_seconds": 0.06727590199989208,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lmathlib.c",
+              "frontend_seconds": 0.4893292790000032,
+              "backend_seconds": 0.03257013300003564,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "loadlib.c",
+              "frontend_seconds": 0.1581005880000248,
+              "backend_seconds": 0.09435700499989252,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "loslib.c",
+              "frontend_seconds": 0.1560335550000218,
+              "backend_seconds": 0.07647359799989317,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lstrlib.c",
+              "frontend_seconds": 0.4314890949999608,
+              "backend_seconds": 0.06634240799985491,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ltablib.c",
+              "frontend_seconds": 0.2147096789999523,
+              "backend_seconds": 0.08519134899984238,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lutf8lib.c",
+              "frontend_seconds": 0.21885053599999083,
+              "backend_seconds": 0.035440454000081445,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "linit.c",
+              "frontend_seconds": 0.1861442059998808,
+              "backend_seconds": 0.032958842999960325,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lua.c",
+              "frontend_seconds": 0.24153043599994817,
+              "backend_seconds": 0.03813828400006969,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ltests.c",
+              "frontend_seconds": 0.4971131909999258,
+              "backend_seconds": 0.06813031100000444,
+              "status": "ok",
+              "stderr": ""
+            }
+          ],
+          "failed_files": [],
+          "build": "full",
+          "clang_compile_seconds": 2.888463686999785,
+          "ours_frontend_seconds": 11.60086396899942,
+          "ours_compile_seconds": 13.769819473999405,
+          "link_ok": true
+        }
+      },
+      "suites": [
+        {
+          "suite": "user",
+          "config": "release",
+          "setting": "_U=true",
+          "ref": {
+            "rc": 0,
+            "final_ok": true,
+            "files": [
+              "main.lua",
+              "gc.lua",
+              "db.lua",
+              "calls.lua",
+              "tpack.lua",
+              "attrib.lua",
+              "gengc.lua",
+              "locals.lua",
+              "constructs.lua",
+              "code.lua",
+              "cstack.lua",
+              "nextvar.lua",
+              "pm.lua",
+              "utf8.lua",
+              "api.lua",
+              "events.lua",
+              "vararg.lua",
+              "closure.lua",
+              "coroutine.lua",
+              "goto.lua",
+              "errors.lua",
+              "math.lua",
+              "sort.lua",
+              "bitwise.lua",
+              "verybig.lua",
+              "files.lua"
+            ],
+            "seconds": 0.9656520300000011,
+            "tail": ""
+          },
+          "ours": {
+            "rc": 0,
+            "final_ok": true,
+            "files": [
+              "main.lua",
+              "gc.lua",
+              "db.lua",
+              "calls.lua",
+              "tpack.lua",
+              "attrib.lua",
+              "gengc.lua",
+              "locals.lua",
+              "constructs.lua",
+              "code.lua",
+              "cstack.lua",
+              "nextvar.lua",
+              "pm.lua",
+              "utf8.lua",
+              "api.lua",
+              "events.lua",
+              "vararg.lua",
+              "closure.lua",
+              "coroutine.lua",
+              "goto.lua",
+              "errors.lua",
+              "math.lua",
+              "sort.lua",
+              "bitwise.lua",
+              "verybig.lua",
+              "files.lua"
+            ],
+            "seconds": 0.7791122199998881,
+            "tail": ""
+          },
+          "match": true
+        },
+        {
+          "suite": "portable",
+          "config": "release",
+          "setting": "_port=true",
+          "ref": {
+            "rc": 0,
+            "final_ok": true,
+            "files": [
+              "main.lua",
+              "gc.lua",
+              "db.lua",
+              "calls.lua",
+              "tpack.lua",
+              "attrib.lua",
+              "gengc.lua",
+              "locals.lua",
+              "constructs.lua",
+              "code.lua",
+              "big.lua",
+              "cstack.lua",
+              "nextvar.lua",
+              "pm.lua",
+              "utf8.lua",
+              "api.lua",
+              "events.lua",
+              "vararg.lua",
+              "closure.lua",
+              "coroutine.lua",
+              "goto.lua",
+              "errors.lua",
+              "math.lua",
+              "sort.lua",
+              "bitwise.lua",
+              "verybig.lua",
+              "files.lua"
+            ],
+            "seconds": 13.232470435999858,
+            "tail": ""
+          },
+          "ours": {
+            "rc": 0,
+            "final_ok": true,
+            "files": [
+              "main.lua",
+              "gc.lua",
+              "db.lua",
+              "calls.lua",
+              "tpack.lua",
+              "attrib.lua",
+              "gengc.lua",
+              "locals.lua",
+              "constructs.lua",
+              "code.lua",
+              "big.lua",
+              "cstack.lua",
+              "nextvar.lua",
+              "pm.lua",
+              "utf8.lua",
+              "api.lua",
+              "events.lua",
+              "vararg.lua",
+              "closure.lua",
+              "coroutine.lua",
+              "goto.lua",
+              "errors.lua",
+              "math.lua",
+              "sort.lua",
+              "bitwise.lua",
+              "verybig.lua",
+              "files.lua"
+            ],
+            "seconds": 13.596289748000345,
+            "tail": ""
+          },
+          "match": true
+        },
+        {
+          "suite": "internal",
+          "config": "ltests",
+          "setting": "_port=true",
+          "ref": {
+            "rc": 0,
+            "final_ok": true,
+            "files": [
+              "main.lua",
+              "gc.lua",
+              "db.lua",
+              "calls.lua",
+              "tpack.lua",
+              "attrib.lua",
+              "gengc.lua",
+              "locals.lua",
+              "constructs.lua",
+              "code.lua",
+              "big.lua",
+              "cstack.lua",
+              "nextvar.lua",
+              "pm.lua",
+              "utf8.lua",
+              "api.lua",
+              "events.lua",
+              "vararg.lua",
+              "closure.lua",
+              "coroutine.lua",
+              "goto.lua",
+              "errors.lua",
+              "math.lua",
+              "sort.lua",
+              "bitwise.lua",
+              "verybig.lua",
+              "files.lua"
+            ],
+            "seconds": 8.034562727999855,
+            "tail": ""
+          },
+          "ours": {
+            "rc": 0,
+            "final_ok": true,
+            "files": [
+              "main.lua",
+              "gc.lua",
+              "db.lua",
+              "calls.lua",
+              "tpack.lua",
+              "attrib.lua",
+              "gengc.lua",
+              "locals.lua",
+              "constructs.lua",
+              "code.lua",
+              "big.lua",
+              "cstack.lua",
+              "nextvar.lua",
+              "pm.lua",
+              "utf8.lua",
+              "api.lua",
+              "events.lua",
+              "vararg.lua",
+              "closure.lua",
+              "coroutine.lua",
+              "goto.lua",
+              "errors.lua",
+              "math.lua",
+              "sort.lua",
+              "bitwise.lua",
+              "verybig.lua",
+              "files.lua"
+            ],
+            "seconds": 9.291614000000209,
+            "tail": ""
+          },
+          "match": true
+        }
+      ],
+      "workloads": [
+        {
+          "workload": "benchmarks.lua",
+          "clang_seconds": 2.255944071999693,
+          "rc": 0,
+          "ours_seconds": 2.6804303970002366,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 253
+        },
+        {
+          "workload": "closures.lua",
+          "clang_seconds": 0.4300452289999157,
+          "rc": 0,
+          "ours_seconds": 0.37329778299999816,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 375
+        },
+        {
+          "workload": "coroutines.lua",
+          "clang_seconds": 0.17465485399998215,
+          "rc": 0,
+          "ours_seconds": 0.16358097000011185,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 247
+        },
+        {
+          "workload": "format.lua",
+          "clang_seconds": 0.1545738239997263,
+          "rc": 0,
+          "ours_seconds": 0.17645723099985844,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 6021
+        },
+        {
+          "workload": "gc.lua",
+          "clang_seconds": 0.45434290799994415,
+          "rc": 0,
+          "ours_seconds": 0.43258004400013306,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 290
+        },
+        {
+          "workload": "math.lua",
+          "clang_seconds": 1.9517694490000395,
+          "rc": 0,
+          "ours_seconds": 2.3626249170001756,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 926
+        },
+        {
+          "workload": "objects.lua",
+          "clang_seconds": 0.415264051000122,
+          "rc": 0,
+          "ours_seconds": 0.49791966000020693,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 191
+        },
+        {
+          "workload": "strings.lua",
+          "clang_seconds": 0.11313042999972822,
+          "rc": 0,
+          "ours_seconds": 0.09827631699999984,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 589
+        },
+        {
+          "workload": "tables.lua",
+          "clang_seconds": 4.020901809999941,
+          "rc": 0,
+          "ours_seconds": 4.5145048639997185,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 271
+        }
+      ],
+      "luac": {
+        "files": 42,
+        "matching": 42,
+        "differ": []
+      },
+      "match": true,
+      "full": true
+    },
+    {
+      "opt": "O2",
+      "builds": {
+        "release": {
+          "config": "release",
+          "files": [
+            {
+              "file": "lapi.c",
+              "frontend_seconds": 0.27428383500000564,
+              "backend_seconds": 0.23981972399997176,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lcode.c",
+              "frontend_seconds": 0.45093455899996115,
+              "backend_seconds": 0.2793329019996236,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lctype.c",
+              "frontend_seconds": 0.07350437500008411,
+              "backend_seconds": 0.048954683000374644,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ldebug.c",
+              "frontend_seconds": 0.20092380300002333,
+              "backend_seconds": 0.2288964260001194,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ldo.c",
+              "frontend_seconds": 0.24662136500000997,
+              "backend_seconds": 0.17170228199984194,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ldump.c",
+              "frontend_seconds": 0.09081965899986244,
+              "backend_seconds": 0.13337606200002483,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lfunc.c",
+              "frontend_seconds": 0.12286328000027424,
+              "backend_seconds": 0.12824800499993216,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lgc.c",
+              "frontend_seconds": 0.3008467820000078,
+              "backend_seconds": 0.28803753700003654,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "llex.c",
+              "frontend_seconds": 0.18693615900019722,
+              "backend_seconds": 0.19795666399977563,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lmem.c",
+              "frontend_seconds": 0.10191615200028536,
+              "backend_seconds": 0.07721387899982801,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lobject.c",
+              "frontend_seconds": 0.33049622399994405,
+              "backend_seconds": 0.1399040609999247,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lopcodes.c",
+              "frontend_seconds": 0.06955202300014207,
+              "backend_seconds": 0.04442598200012071,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lparser.c",
+              "frontend_seconds": 0.2564838499997677,
+              "backend_seconds": 0.42383420499982094,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lstate.c",
+              "frontend_seconds": 0.18385380599966084,
+              "backend_seconds": 0.10694382899964694,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lstring.c",
+              "frontend_seconds": 0.13400002699972902,
+              "backend_seconds": 0.08664854300013758,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ltable.c",
+              "frontend_seconds": 0.3249820309997631,
+              "backend_seconds": 0.23515731099996628,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ltm.c",
+              "frontend_seconds": 0.18318081100005656,
+              "backend_seconds": 0.0612764820002667,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lundump.c",
+              "frontend_seconds": 0.13534271200023795,
+              "backend_seconds": 0.1853644800003167,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lvm.c",
+              "frontend_seconds": 0.7706573139998909,
+              "backend_seconds": 0.8316178170002786,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lzio.c",
+              "frontend_seconds": 0.08651716799977294,
+              "backend_seconds": 0.03818494200004352,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lauxlib.c",
+              "frontend_seconds": 0.14944739600014145,
+              "backend_seconds": 0.1617767869997806,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lbaselib.c",
+              "frontend_seconds": 0.10789065000017217,
+              "backend_seconds": 0.0903762140001163,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lcorolib.c",
+              "frontend_seconds": 0.12356932700004108,
+              "backend_seconds": 0.03853404400024374,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ldblib.c",
+              "frontend_seconds": 0.12297369599991725,
+              "backend_seconds": 0.06525419499985219,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "liolib.c",
+              "frontend_seconds": 0.11141640400001052,
+              "backend_seconds": 0.1210841340002844,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lmathlib.c",
+              "frontend_seconds": 0.20752044199980446,
+              "backend_seconds": 0.08885901600024226,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "loadlib.c",
+              "frontend_seconds": 0.18878251300020565,
+              "backend_seconds": 0.0866422250001051,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "loslib.c",
+              "frontend_seconds": 0.12275575300009223,
+              "backend_seconds": 0.09214838599973518,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lstrlib.c",
+              "frontend_seconds": 0.36175594399992406,
+              "backend_seconds": 0.2509074370000235,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ltablib.c",
+              "frontend_seconds": 0.131486175000191,
+              "backend_seconds": 0.08338905799973872,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lutf8lib.c",
+              "frontend_seconds": 0.1306104850000338,
+              "backend_seconds": 0.06072274899997865,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "linit.c",
+              "frontend_seconds": 0.05304866300002686,
+              "backend_seconds": 0.03838293999979214,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lua.c",
+              "frontend_seconds": 0.1347115099997609,
+              "backend_seconds": 0.08646701199995732,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "luac.c",
+              "frontend_seconds": 0.1938843239995549,
+              "backend_seconds": 0.10880075300019598,
+              "status": "ok",
+              "stderr": ""
+            }
+          ],
+          "failed_files": [],
+          "build": "full",
+          "clang_compile_seconds": 5.2447523489991,
+          "ours_frontend_seconds": 6.664569216999553,
+          "ours_compile_seconds": 11.98480998299965,
+          "link_ok": true
+        },
+        "ltests": {
+          "config": "ltests",
+          "files": [
+            {
+              "file": "lapi.c",
+              "frontend_seconds": 0.5508451959999547,
+              "backend_seconds": 0.3873311930001364,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lcode.c",
+              "frontend_seconds": 0.4466752049997922,
+              "backend_seconds": 0.2491632009996465,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lctype.c",
+              "frontend_seconds": 0.07348861600030432,
+              "backend_seconds": 0.025004958999943483,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ldebug.c",
+              "frontend_seconds": 0.27250118599977213,
+              "backend_seconds": 0.19459035299996685,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ldo.c",
+              "frontend_seconds": 0.44451585900014834,
+              "backend_seconds": 0.2462543840001672,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ldump.c",
+              "frontend_seconds": 0.27907338499971956,
+              "backend_seconds": 0.08194897300018056,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lfunc.c",
+              "frontend_seconds": 0.16406344699998954,
+              "backend_seconds": 0.0698227970001426,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lgc.c",
+              "frontend_seconds": 0.318280159999631,
+              "backend_seconds": 0.3357320479999544,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "llex.c",
+              "frontend_seconds": 0.2188325279998935,
+              "backend_seconds": 0.15220374199998332,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lmem.c",
+              "frontend_seconds": 0.15998531200011712,
+              "backend_seconds": 0.07803400100010549,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lobject.c",
+              "frontend_seconds": 0.3151009039997916,
+              "backend_seconds": 0.11366279300000315,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lopcodes.c",
+              "frontend_seconds": 0.13953607600024043,
+              "backend_seconds": 0.04962601999977778,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lparser.c",
+              "frontend_seconds": 0.2644302409999,
+              "backend_seconds": 0.44881379900016327,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lstate.c",
+              "frontend_seconds": 0.21906148300013228,
+              "backend_seconds": 0.09671311200008859,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lstring.c",
+              "frontend_seconds": 0.1732504130000052,
+              "backend_seconds": 0.13945574499985014,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ltable.c",
+              "frontend_seconds": 0.33595638599990707,
+              "backend_seconds": 0.23694572999966113,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ltm.c",
+              "frontend_seconds": 0.26035848500032444,
+              "backend_seconds": 0.09753914800012353,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lundump.c",
+              "frontend_seconds": 0.17461390900007245,
+              "backend_seconds": 0.12315369599991755,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lvm.c",
+              "frontend_seconds": 1.0232276039996577,
+              "backend_seconds": 0.7039364160000332,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lzio.c",
+              "frontend_seconds": 0.14279260600005728,
+              "backend_seconds": 0.0352051439999741,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lauxlib.c",
+              "frontend_seconds": 0.15055311400010396,
+              "backend_seconds": 0.13299064900002122,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lbaselib.c",
+              "frontend_seconds": 0.11811937399988892,
+              "backend_seconds": 0.07676254900025015,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lcorolib.c",
+              "frontend_seconds": 0.12391058799994425,
+              "backend_seconds": 0.053008217999831686,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ldblib.c",
+              "frontend_seconds": 0.13523252400000274,
+              "backend_seconds": 0.10764275200017437,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "liolib.c",
+              "frontend_seconds": 0.17839960300034363,
+              "backend_seconds": 0.10578423200013276,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lmathlib.c",
+              "frontend_seconds": 0.22069073700004083,
+              "backend_seconds": 0.0816967570003726,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "loadlib.c",
+              "frontend_seconds": 0.11743176100026176,
+              "backend_seconds": 0.09101663899991763,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "loslib.c",
+              "frontend_seconds": 0.20054942900014794,
+              "backend_seconds": 0.05018340400010857,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lstrlib.c",
+              "frontend_seconds": 0.3339986289997796,
+              "backend_seconds": 0.2715856340000755,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ltablib.c",
+              "frontend_seconds": 0.11642070099969715,
+              "backend_seconds": 0.07493688699969425,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lutf8lib.c",
+              "frontend_seconds": 0.10376648299961744,
+              "backend_seconds": 0.10766008299970053,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "linit.c",
+              "frontend_seconds": 0.1306343989999732,
+              "backend_seconds": 0.02761014099996828,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "lua.c",
+              "frontend_seconds": 0.13835713400021632,
+              "backend_seconds": 0.09703341900012674,
+              "status": "ok",
+              "stderr": ""
+            },
+            {
+              "file": "ltests.c",
+              "frontend_seconds": 0.36466890100018645,
+              "backend_seconds": 0.3217889020002076,
+              "status": "ok",
+              "stderr": ""
+            }
+          ],
+          "failed_files": [],
+          "build": "full",
+          "clang_compile_seconds": 6.044059989000743,
+          "ours_frontend_seconds": 8.409322377999615,
+          "ours_compile_seconds": 13.874159898000016,
+          "link_ok": true
+        }
+      },
+      "suites": [
+        {
+          "suite": "user",
+          "config": "release",
+          "setting": "_U=true",
+          "ref": {
+            "rc": 0,
+            "final_ok": true,
+            "files": [
+              "main.lua",
+              "gc.lua",
+              "db.lua",
+              "calls.lua",
+              "tpack.lua",
+              "attrib.lua",
+              "gengc.lua",
+              "locals.lua",
+              "constructs.lua",
+              "code.lua",
+              "cstack.lua",
+              "nextvar.lua",
+              "pm.lua",
+              "utf8.lua",
+              "api.lua",
+              "events.lua",
+              "vararg.lua",
+              "closure.lua",
+              "coroutine.lua",
+              "goto.lua",
+              "errors.lua",
+              "math.lua",
+              "sort.lua",
+              "bitwise.lua",
+              "verybig.lua",
+              "files.lua"
+            ],
+            "seconds": 0.43607808700016903,
+            "tail": ""
+          },
+          "ours": {
+            "rc": 0,
+            "final_ok": true,
+            "files": [
+              "main.lua",
+              "gc.lua",
+              "db.lua",
+              "calls.lua",
+              "tpack.lua",
+              "attrib.lua",
+              "gengc.lua",
+              "locals.lua",
+              "constructs.lua",
+              "code.lua",
+              "cstack.lua",
+              "nextvar.lua",
+              "pm.lua",
+              "utf8.lua",
+              "api.lua",
+              "events.lua",
+              "vararg.lua",
+              "closure.lua",
+              "coroutine.lua",
+              "goto.lua",
+              "errors.lua",
+              "math.lua",
+              "sort.lua",
+              "bitwise.lua",
+              "verybig.lua",
+              "files.lua"
+            ],
+            "seconds": 0.41717699699984223,
+            "tail": ""
+          },
+          "match": true
+        },
+        {
+          "suite": "portable",
+          "config": "release",
+          "setting": "_port=true",
+          "ref": {
+            "rc": 0,
+            "final_ok": true,
+            "files": [
+              "main.lua",
+              "gc.lua",
+              "db.lua",
+              "calls.lua",
+              "tpack.lua",
+              "attrib.lua",
+              "gengc.lua",
+              "locals.lua",
+              "constructs.lua",
+              "code.lua",
+              "big.lua",
+              "cstack.lua",
+              "nextvar.lua",
+              "pm.lua",
+              "utf8.lua",
+              "api.lua",
+              "events.lua",
+              "vararg.lua",
+              "closure.lua",
+              "coroutine.lua",
+              "goto.lua",
+              "errors.lua",
+              "math.lua",
+              "sort.lua",
+              "bitwise.lua",
+              "verybig.lua",
+              "files.lua"
+            ],
+            "seconds": 8.729324395000276,
+            "tail": ""
+          },
+          "ours": {
+            "rc": 0,
+            "final_ok": true,
+            "files": [
+              "main.lua",
+              "gc.lua",
+              "db.lua",
+              "calls.lua",
+              "tpack.lua",
+              "attrib.lua",
+              "gengc.lua",
+              "locals.lua",
+              "constructs.lua",
+              "code.lua",
+              "big.lua",
+              "cstack.lua",
+              "nextvar.lua",
+              "pm.lua",
+              "utf8.lua",
+              "api.lua",
+              "events.lua",
+              "vararg.lua",
+              "closure.lua",
+              "coroutine.lua",
+              "goto.lua",
+              "errors.lua",
+              "math.lua",
+              "sort.lua",
+              "bitwise.lua",
+              "verybig.lua",
+              "files.lua"
+            ],
+            "seconds": 8.542330672999924,
+            "tail": ""
+          },
+          "match": true
+        },
+        {
+          "suite": "internal",
+          "config": "ltests",
+          "setting": "_port=true",
+          "ref": {
+            "rc": 0,
+            "final_ok": true,
+            "files": [
+              "main.lua",
+              "gc.lua",
+              "db.lua",
+              "calls.lua",
+              "tpack.lua",
+              "attrib.lua",
+              "gengc.lua",
+              "locals.lua",
+              "constructs.lua",
+              "code.lua",
+              "big.lua",
+              "cstack.lua",
+              "nextvar.lua",
+              "pm.lua",
+              "utf8.lua",
+              "api.lua",
+              "events.lua",
+              "vararg.lua",
+              "closure.lua",
+              "coroutine.lua",
+              "goto.lua",
+              "errors.lua",
+              "math.lua",
+              "sort.lua",
+              "bitwise.lua",
+              "verybig.lua",
+              "files.lua"
+            ],
+            "seconds": 3.521513529999993,
+            "tail": ""
+          },
+          "ours": {
+            "rc": 0,
+            "final_ok": true,
+            "files": [
+              "main.lua",
+              "gc.lua",
+              "db.lua",
+              "calls.lua",
+              "tpack.lua",
+              "attrib.lua",
+              "gengc.lua",
+              "locals.lua",
+              "constructs.lua",
+              "code.lua",
+              "big.lua",
+              "cstack.lua",
+              "nextvar.lua",
+              "pm.lua",
+              "utf8.lua",
+              "api.lua",
+              "events.lua",
+              "vararg.lua",
+              "closure.lua",
+              "coroutine.lua",
+              "goto.lua",
+              "errors.lua",
+              "math.lua",
+              "sort.lua",
+              "bitwise.lua",
+              "verybig.lua",
+              "files.lua"
+            ],
+            "seconds": 3.7382141360003516,
+            "tail": ""
+          },
+          "match": true
+        }
+      ],
+      "workloads": [
+        {
+          "workload": "benchmarks.lua",
+          "clang_seconds": 1.5009786290002012,
+          "rc": 0,
+          "ours_seconds": 1.374452433999977,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 253
+        },
+        {
+          "workload": "closures.lua",
+          "clang_seconds": 0.26482734799992613,
+          "rc": 0,
+          "ours_seconds": 0.21951953600000707,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 375
+        },
+        {
+          "workload": "coroutines.lua",
+          "clang_seconds": 0.08414369599995553,
+          "rc": 0,
+          "ours_seconds": 0.08702445099970646,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 247
+        },
+        {
+          "workload": "format.lua",
+          "clang_seconds": 0.1346563970000716,
+          "rc": 0,
+          "ours_seconds": 0.10573144700038029,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 6021
+        },
+        {
+          "workload": "gc.lua",
+          "clang_seconds": 0.2696903820001353,
+          "rc": 0,
+          "ours_seconds": 0.31519720999995116,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 290
+        },
+        {
+          "workload": "math.lua",
+          "clang_seconds": 1.0924677029997838,
+          "rc": 0,
+          "ours_seconds": 1.0362913260000823,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 926
+        },
+        {
+          "workload": "objects.lua",
+          "clang_seconds": 0.2808954800002539,
+          "rc": 0,
+          "ours_seconds": 0.2655737820000468,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 191
+        },
+        {
+          "workload": "strings.lua",
+          "clang_seconds": 0.05200046900017696,
+          "rc": 0,
+          "ours_seconds": 0.06599314599998252,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 589
+        },
+        {
+          "workload": "tables.lua",
+          "clang_seconds": 1.6589127570000528,
+          "rc": 0,
+          "ours_seconds": 1.5615458319998652,
+          "ours_rc": 0,
+          "match": true,
+          "stdout_bytes": 271
+        }
+      ],
+      "luac": {
+        "files": 42,
+        "matching": 42,
+        "differ": []
+      },
+      "match": true,
+      "full": true
+    }
+  ]
+}
