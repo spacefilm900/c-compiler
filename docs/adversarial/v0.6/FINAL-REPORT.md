@@ -32,7 +32,7 @@
 | C11-703 | `void *v=0; return v==f;` | Required diagnostic omitted | 6.5.9p2 |
 | C11-704 | `void *v=0; return v!=&f;` | Required diagnostic omitted | 6.5.9p2 |
 
-Under C11 6.5.9p2, a `void *` may be compared for equality only with an object pointer or a null pointer constant. Here `v` is an object, not a null pointer constant, so comparing it with a function pointer is a constraint violation that requires a diagnostic. GCC 14 and Clang 19 accept this comparison as an extension by default and reject it only with `-pedantic-errors`.
+Under C11 6.5.9p2, a `void *` may be compared for equality only with another pointer to an object type (including another `void *`), possibly qualified, or with a null pointer constant. Here `v` is an object, not a null pointer constant, so comparing it with a function pointer is a constraint violation that requires a diagnostic. GCC 14 and Clang 19 accept this comparison as an extension by default and reject it only with `-pedantic-errors`.
 
 **Why the fix was held back earlier:** applying the diagnostic unconditionally breaks GCC torture test `20041212-1.c`, which depends on the GNU extension.
 
