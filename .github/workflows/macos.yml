@@ -12,6 +12,11 @@ name: macos
 on:
   push:
     branches: [main]
+    # A merge that changes only documentation does not run the Mac job.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
   workflow_dispatch:
     inputs:
       doom:

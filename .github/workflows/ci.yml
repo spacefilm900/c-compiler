@@ -1,10 +1,23 @@
-# Ready to import. This file has not been executed on GitHub.
+# Runs once per change: on pull requests, and on pushes to main (merges).
+# A branch push without a pull request does not run CI; open a PR or start
+# it by hand (Actions > ci > Run workflow, or `gh workflow run ci.yml --ref <branch>`).
+# Changes that touch only documentation (Markdown files, docs/, LICENSE) skip CI.
 
 name: ci
 
 on:
   push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+  workflow_dispatch:
 
 permissions:
   contents: read
