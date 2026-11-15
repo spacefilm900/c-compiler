@@ -485,7 +485,7 @@ That is 39,209 frames per level and 78,418 in all, every one identical to Clang'
 | Compile time, ours vs Clang (sum over files) | 9.26 s vs 2.52 s (3.7x) | 11.84 s vs 5.73 s (2.1x) |
 | Run time, ours vs Clang (all eight demos, hashing included) | 42.98 s vs 44.80 s (0.96x) | 23.48 s vs 24.12 s (0.97x) |
 
-About 7.1 s of our compile time is this compiler's preprocessor and frontend (about 90 ms a file); the rest is Clang turning the IR into objects. That is a tuning item for step 11, not a defect.
+About 7.1 s of our compile time is this compiler's preprocessor and frontend (about 90 ms a file); the rest is Clang turning the IR into objects. That is an item for the further performance tuning step in `PLAN.md`, not a defect.
 
 **CI.** A new `doom frame hashes` job fetches doomgeneric and Freedoom (both cached), builds the compiler, and runs `python3 harness/run_doom.py --opt O0 --opt O2 --play-jobs "$(nproc)"`: all eight demos to their end at both levels. Locally, with 8 cores and one demo run at a time, that takes about 2 minutes 20 seconds; with the demos side by side it is well under that.
 
