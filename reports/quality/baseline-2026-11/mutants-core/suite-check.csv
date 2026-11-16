@@ -1,0 +1,21 @@
+mutant,result,detail
+src/irgen.rs:133: replace && with || in render,missed by suite too,179/179 passed
+src/irgen.rs:284: replace && with || in library_renames,missed by suite too,179/179 passed
+src/irgen.rs:373: replace == with != in render_string,missed by suite too,179/179 passed
+src/irgen.rs:379: replace * with / in render_string,missed by suite too,179/179 passed
+src/irgen.rs:646: replace |= with &= in LowerNeeds::merge,missed by suite too,179/179 passed
+"src/irgen.rs:1084: delete match arm Expr::Comma{left, right, ..} in Gen::record_ptr",missed by suite too,179/179 passed
+src/irgen.rs:1378: delete match arm PartKind::Indirect in Gen::aapcs64_record_arg,missed by suite too,179/179 passed
+src/irgen.rs:1429: replace Gen::store_coerced with (),missed by suite too,179/179 passed
+src/irgen.rs:1636: replace < with <= in Gen::finish_bitfield,caught by suite,178/179 passed
+src/irgen.rs:1814: replace || with && in Gen::convert,missed by suite too,179/179 passed
+src/irgen.rs:1854: replace > with < in Gen::convert,missed by suite too,179/179 passed
+src/irgen.rs:2067: replace > with >= in Gen::gen_switch,caught by suite,178/179 passed
+src/irgen.rs:2069: replace & with | in Gen::gen_switch,missed by suite too,179/179 passed
+src/irgen.rs:2075: replace < with <= in Gen::gen_switch,missed by suite too,179/179 passed
+"src/irgen.rs:2381: replace Gen::apple_va_arg_addr -> String with ""xyzzy"".into()",missed by suite too,179/179 passed
+src/irgen.rs:2414: replace > with == in Gen::aapcs64_va_arg_addr,missed by suite too,179/179 passed
+src/irgen.rs:2458: replace > with == in Gen::aapcs64_va_arg_addr,missed by suite too,179/179 passed
+src/irgen.rs:2466: delete match arm 8 in Gen::aapcs64_va_arg_addr,caught by suite,178/179 passed
+src/irgen.rs:2571: delete ! in Gen::va_split,caught by suite,178/179 passed
+src/irgen.rs:2632: delete ! in Gen::va_split,missed by suite too,179/179 passed
