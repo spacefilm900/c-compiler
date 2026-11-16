@@ -57,6 +57,8 @@ class QualityTools(unittest.TestCase):
         self.assertEqual([(s[0], s[1]) for s in rust_scan.test_spans(rust_scan.strip(cg))], [(1, 7)])
         gen = "#[cfg(test)]\nfn g<T: Into<u8>>(x: T) -> Vec<u8> where T: Copy {\n    vec![x.into()]\n}\n"
         self.assertEqual([(s[0], s[1]) for s in rust_scan.test_spans(rust_scan.strip(gen))], [(1, 4)])
+        cmp = "#[cfg(test)]\nfn fixture() -> [u8; (1 < 2) as usize] {\n    [0]\n}\nfn after() {}\n"
+        self.assertEqual([(s[0], s[1]) for s in rust_scan.test_spans(rust_scan.strip(cmp))], [(1, 4)])
         self.assertEqual(rust_scan.test_only_modules("#[cfg(test)]\nmod only_tests;"), {"only_tests"})
 
     def test_complexity(self):

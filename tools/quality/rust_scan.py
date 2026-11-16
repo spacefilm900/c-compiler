@@ -68,13 +68,20 @@ def test_spans(clean):
         # <>; a `;` inside a signature, as in `-> [u8; 1]`, does not end it,
         # and nor does a const-generic block such as `Foo<{ 1 }>`, which is
         # skipped whole. `->` and `=>` are not angle brackets.
+        # A `<` opened inside () or [] (for example the comparison in
+        # `[u8; (1 < 2) as usize]`) is forgotten when that bracket closes,
+        # so it cannot make the body's `{` look like a const-generic block.
         b = semi = -1
-        k, depth, angle = m.end(), 0, 0
+        k, depth, angle, saved = m.end(), 0, 0, []
         while k < len(clean):
             ch = clean[k]
             prev = clean[k - 1] if k else ""
-            if ch in "([": depth += 1
-            elif ch in ")]": depth -= 1
+            if ch in "([":
+                depth += 1
+                saved.append(angle)
+            elif ch in ")]":
+                depth -= 1
+                angle = saved.pop() if saved else 0
             elif ch == "<": angle += 1
             elif ch == ">" and prev not in "-=": angle = max(0, angle - 1)
             elif ch == "{" and (depth or angle):
