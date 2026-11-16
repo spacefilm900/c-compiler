@@ -53,9 +53,18 @@ def test_spans(clean):
     """Line ranges (1-based, inclusive) of items marked #[cfg(test)]."""
     spans = []
     for m in re.finditer(r"#\[cfg\(test\)\]", clean):
-        b = clean.find("{", m.end())
-        semi = clean.find(";", m.end())
-        if semi != -1 and (b == -1 or semi < b):
+        # The item ends at the first `;` or `{` outside (), [] and <>; a `;`
+        # inside a signature, as in `-> [u8; 1]`, does not end it.
+        b = semi = -1
+        k, depth = m.end(), 0
+        while k < len(clean):
+            ch = clean[k]
+            if ch in "([": depth += 1
+            elif ch in ")]": depth -= 1
+            elif depth == 0 and ch == ";": semi = k; break
+            elif depth == 0 and ch == "{": b = k; break
+            k += 1
+        if semi != -1:
             # `#[cfg(test)] mod foo;` -- the whole file is test code
             spans.append((clean.count("\n", 0, m.start()) + 1,
                           clean.count("\n", 0, semi) + 1, clean[m.end():semi].split()[-1]))

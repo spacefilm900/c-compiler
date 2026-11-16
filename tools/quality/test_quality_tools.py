@@ -51,6 +51,8 @@ class QualityTools(unittest.TestCase):
         clean = rust_scan.strip(SAMPLE)
         spans = rust_scan.test_spans(clean)
         self.assertEqual([(s[0], s[1]) for s in spans], [(15, 19)])
+        arr = "fn a() {}\n#[cfg(test)]\nfn fixture() -> [u8; 1] {\n    [0]\n}\nfn b() {}\n"
+        self.assertEqual([(s[0], s[1]) for s in rust_scan.test_spans(rust_scan.strip(arr))], [(2, 5)])
         self.assertEqual(rust_scan.test_only_modules("#[cfg(test)]\nmod only_tests;"), {"only_tests"})
 
     def test_complexity(self):

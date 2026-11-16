@@ -25,20 +25,35 @@ cargo llvm-cov report --lcov --output-path "$OUT/unit.lcov"
 
 # shellcheck disable=SC1090
 source <(cargo llvm-cov show-env --export-prefix)
+# show-env may use a different target directory from the run above; clear
+# its old profiles so an earlier run's suites do not leak into this report.
+cargo llvm-cov clean --workspace
 cargo build --bin compiler
 BIN="$CARGO_LLVM_COV_TARGET_DIR/debug/compiler"
 [ -x "$BIN" ] || BIN="$(dirname "$CARGO_LLVM_COV_TARGET_DIR")/debug/compiler"
 echo "instrumented compiler: $BIN"
+# A suite may report test failures (coverage is still valid), but it must
+# reach its final summary line; otherwise the measurement is incomplete.
+incomplete=""
 for s in $SUITES; do
   echo "== suite $s"
   case "$s" in
-    tests)   CC_UNDER_TEST="$BIN" python3 harness/run_tests.py > "$OUT/suite-tests.log" 2>&1 || true ;;
-    wacc)    CC_UNDER_TEST="$BIN" python3 harness/run_wacc.py > "$OUT/suite-wacc.log" 2>&1 || true ;;
-    torture) CC_UNDER_TEST="$BIN" python3 harness/run_gcc_torture.py > "$OUT/suite-torture.log" 2>&1 || true ;;
+    tests)   runner=harness/run_tests.py;       done_re='^[0-9]+/[0-9]+ passed' ;;
+    wacc)    runner=harness/run_wacc.py;        done_re='^[0-9]+ passed, ' ;;
+    torture) runner=harness/run_gcc_torture.py; done_re='^[0-9]+ passed, ' ;;
     *) echo "unknown suite $s" >&2; exit 2 ;;
   esac
+  CC_UNDER_TEST="$BIN" python3 "$runner" > "$OUT/suite-$s.log" 2>&1 || true
   tail -n 3 "$OUT/suite-$s.log"
+  if ! grep -Eq "$done_re" "$OUT/suite-$s.log"; then
+    echo "suite $s did not finish; see $OUT/suite-$s.log" >&2
+    incomplete="$incomplete $s"
+  fi
 done
+if [ -n "$incomplete" ]; then
+  echo "INCOMPLETE: suites did not finish:$incomplete; no suite coverage reported" >&2
+  exit 1
+fi
 # This report covers the instrumented binary; it does not reliably include
 # the unit-test profiles too, so the two lcov files are merged below.
 cargo llvm-cov report --lcov --output-path "$OUT/suites.lcov"
