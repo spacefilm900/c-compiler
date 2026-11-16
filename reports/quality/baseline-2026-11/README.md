@@ -7,7 +7,7 @@ Measured on `main` at `f11131e` on 2026-11-16, on the x86_64 Linux box (Rust 1.8
 - **The tests reach most of the code.** Nine lines in ten of the compiler run under at least one test (89.6%), and 95.5% of functions. The Rust unit tests alone reach 85.1%; the outside test suites alone reach 80.9%. The gaps are small and scattered. The biggest are ARM64 (`aarch64_va_class`) and Apple variadic paths that the Linux runs cannot reach, a byte-blob printer, and a few constant-folding branches.
 - **Bad input does not crash the compiler.** It has 333 places that would crash if an assumption failed (`unwrap`, `expect`, `panic!`, `unreachable!`; there are no `todo!` or `unimplemented!`). Then 225,740 broken C programs, made by randomly damaging 2,876 real test files, were fed to it. Not one crashed, hung or hit any of those places: each got a normal error message. On reading, 293 of the 333 are safe by design. 104 are checked a few lines earlier. The other 189 rely on an earlier stage having already rejected bad input, and the damaged programs back that up. The other 40 are "unclear", nearly all in `irgen.rs`, which trusts `sema.rs`. None was shown to be reachable.
 - **The code is large but not tangled.** It has 1,152 functions. Only 26 are over 100 lines and 2 are over 200: `check_stmt` in `sema.rs` (246) and `gen_expr` in `irgen.rs` (210). The three big files hold 21 of the 26.
-- **The unit tests are weak at checking exact output.** Mutation testing makes small deliberate bugs and checks whether any test notices them. Over 3/4 hours on 794 sampled bugs, the unit tests caught 73% of those that built. That is fine for the front end, but the unit tests often check only that IR is produced, not that it is right. MUTATION_SUITE_LINE
+- **The unit tests are weak at checking exact output.** Mutation testing makes small deliberate bugs and checks whether any test notices them. In about 1.5 hours on 794 sampled bugs, the unit tests caught 70% of those that built. The rate is much the same in every file: 68% in `irgen.rs` and `sema.rs`, 71% in `parser.rs`, 74% in `pp.rs`. The unit tests often check only that IR is produced, not that it is right. The outside suite does not fill the gap either: it caught only 4 of 20 sampled bugs that the unit tests had missed.
 
 ## Headline numbers
 
@@ -21,7 +21,7 @@ Measured on `main` at `f11131e` on 2026-11-16, on the x86_64 Linux box (Rust 1.8
 | Crash points (unwrap, expect, panic!, unreachable!) | **333**: (a) invariant 293, (b) reachable from bad input **0**, (c) unclear 40 |
 | ... of which on lines no test reaches | 18 |
 | Fuzzed bad inputs / crashes / hangs | 225,740 / **0** / 0 |
-| Mutation sample: caught / missed / timeout / unviable | MUTATION_TABLE_LINE |
+| Mutation sample: caught / missed / timeout / unviable | 794 mutants: **513 caught / 230 missed / 13 timeout / 38 unviable**, so **70%** of viable mutants were killed by the unit tests |
 
 ## 1. Tools and versions
 
@@ -86,10 +86,10 @@ Not counted: slice indexing, integer overflow in debug builds and `RefCell` borr
 
 ## 5. Mutation testing (bounded sample)
 
-cargo-mutants 26.0.0 with `cargo test` (the unit tests) as the test. The baseline build took 5 s and the tests 18 s, and the timeout was set automatically. Two runs, both in `mutants-*/`:
+cargo-mutants 26.0.0 with `cargo test` (the unit tests) as the test. The baseline build took 5 s and the tests 18 s, and the timeout was set automatically. Two runs, in `mutants-core/` and `mutants-front/`, about 94 minutes of wall time in total:
 
 1. **`irgen.rs`, first half**: `--file sema.rs parser.rs irgen.rs --shard 0/8`, 42 minutes. cargo-mutants' default "slice" sharding gave the first 424 of 3,392 mutants, which all fall in `irgen.rs`, lines 39 to about 2,980. Result: **279 caught, 131 missed, 5 timeouts, 9 unviable**, so 68% of viable mutants were killed.
-2. **`sema.rs`, `parser.rs`, `pp.rs` spread evenly**: `--shard 0/10 --sharding round-robin`, 370 mutants, capped at 60 minutes. MUT2_LINE
+2. **`sema.rs`, `parser.rs`, `pp.rs` spread evenly**: `--shard 0/10 --sharding round-robin`, 370 mutants, 52 minutes. Result: **234 caught, 99 missed, 8 timeouts, 29 unviable**, so 70% killed. By file: `sema.rs` 79/38/2/13 (68%), `parser.rs` 77/33/5/10 (71%), `pp.rs` 78/28/1/6 (74%), as caught/missed/timeout/unviable. Several `pp.rs` timeouts are mutants that make the preprocessor loop forever.
 
 **Does the outside suite catch what the unit tests miss?** `tools/quality/check_missed.py` applied 20 evenly spaced missed `irgen.rs` mutants, rebuilt the compiler, and ran `harness/run_tests.py`. Only **4 of 20** were caught ([mutants-core/suite-check.csv](mutants-core/suite-check.csv)). Of the 16 that slipped through, 6 are ARM64 or Apple-only code, which the Linux suite never runs, and 10 are real gaps in the x86_64 tests. The full run with WACC and torture was not repeated for these.
 
