@@ -693,8 +693,8 @@ Baseline on `f11131e` (non-test code in `src/`, 22,466 instrumented lines):
 
 - **Coverage** (`cargo llvm-cov`, line and function; branch coverage needs a nightly toolchain): unit tests alone 85.1% of lines and 93.7% of functions; the main differential suite, WACC, and GCC torture alone 80.9% and 88.1%; together 89.6% and 95.5%. `sema.rs` 89.2%, `parser.rs` 91.3%, `irgen.rs` 92.5%.
 - **Size and complexity** (`tools/quality/complexity.py`; rust-code-analysis-cli would not build on the box): 1,152 functions; 26 over 100 lines and 2 over 200 (`sema.rs` `check_stmt` 246, `irgen.rs` `gen_expr` 210); 17 with cyclomatic complexity over 25.
-- **Crash points**: CRASH_POINTS_LINE
-- **Mutation testing** (`cargo-mutants`, unit tests only): MUTANTS_LINE
+- **Crash points** (`unwrap`, `expect`, `panic!`, `unreachable!`; no `todo!` or `unimplemented!`): 333. (a) true invariant 293 (104 checked a few lines earlier, 189 relying on an earlier phase), (b) reachable from bad input 0, (c) unclear 40 (37 of them in `irgen.rs`, trusting `sema.rs`). 225,740 damaged C programs from the test corpora gave no crash or hang. 18 crash points are on lines no test runs.
+- **Mutation testing** (`cargo-mutants`, unit tests only, a bounded sample of 794 mutants in about 1.5 hours over `irgen.rs`, `sema.rs`, `parser.rs` and `pp.rs`): 513 caught, 230 missed, 13 timeouts, 38 unviable, so 70% of viable mutants were killed. The main differential suite caught only 4 of 20 sampled survivors; 6 of the other 16 are ARM64 or Apple-only paths.
 
 ## Next actions
 
