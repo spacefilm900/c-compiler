@@ -34,6 +34,10 @@ MID = {"sema.rs", "ast.rs", "builtins.rs"}
 BACK = {"irgen.rs", "abi.rs", "aapcs64.rs", "float.rs", "fp80.rs", "target.rs"}
 DRIVER = {"driver.rs", "main.rs", "lib.rs", "timing.rs", "dialect.rs", "diag.rs"}
 
+LOCAL_RULES = {"fmt::Write into a String cannot fail", "text the compiler built itself",
+               "internal stack the same pass pushes and pops", "conversion or lock that cannot fail here",
+               "assertion on an internal invariant"}
+
 def fn_names(clean):
     """Map line -> name of the innermost fn that starts at or before it."""
     starts = [(clean.count("\n", 0, m.start()) + 1, m.group(1))
@@ -145,6 +149,10 @@ def main():
     out = ["# Crash points in non-test code", "",
            f"Total: {len(rows)}. By category: a (invariant) {cats['a']}, b (reachable from bad input) {cats['b']}, c (unclear) {cats['c']}.", "",
            "By kind: " + ", ".join(f"{k} {v}" for k, v in kinds.most_common()), "",
+           "Category a by basis: " + ", ".join(f"{k} {v}" for k, v in Counter(
+               ("checked locally" if r["reason"].startswith("hand review") or r["reason"] in LOCAL_RULES
+                else "relies on an earlier phase or match (rule, not hand-checked)")
+               for r in rows if r["category"] == "a").most_common()), "",
            "| File | Total | a | b | c |", "|---|---:|---:|---:|---:|"]
     for f in sorted(per, key=lambda f: -sum(per[f].values())):
         c = per[f]; out.append(f"| {f} | {sum(c.values())} | {c['a']} | {c['b']} | {c['c']} |")
