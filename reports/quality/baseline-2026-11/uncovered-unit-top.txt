@@ -1,0 +1,50 @@
+Largest uncovered runs in src/irgen.rs:
+  src/irgen.rs:3521-3642  97 lines  in gen_inline_builtin
+  src/irgen.rs:3769-3823  52 lines  in gen_overflow
+  src/irgen.rs:4286-4318  32 lines  in aarch64_va_class
+  src/irgen.rs:4416-4447  28 lines  in render_byte_blob
+  src/irgen.rs:2086-2105  20 lines  in gen_switch
+  src/irgen.rs:1084-1101  16 lines  in record_ptr
+  src/irgen.rs:372-387  15 lines  in render_string
+  src/irgen.rs:2462-2476  14 lines  in aapcs64_va_arg_addr
+  src/irgen.rs:1851-1865  13 lines  in convert
+  src/irgen.rs:1557-1569  12 lines  in emit_implicit_return
+  src/irgen.rs:3023-3034  12 lines  in spill
+  src/irgen.rs:3496-3508  12 lines  in builtin_arg
+  src/irgen.rs:4596-4608  12 lines  in write_const_bytes
+  src/irgen.rs:4643-4656  12 lines  in write_const_bytes
+  src/irgen.rs:1401-1409  9 lines  in load_coerced
+
+Largest uncovered runs in src/parser.rs:
+  src/parser.rs:2101-2142  35 lines  in apply_mode
+  src/parser.rs:3460-3496  32 lines  in parse_attribute_statement
+  src/parser.rs:4175-4195  21 lines  in parse_alignof
+  src/parser.rs:5432-5450  15 lines  in eval_ice
+  src/parser.rs:4549-4563  11 lines  in parse_folded_builtin
+  src/parser.rs:1367-1376  10 lines  in define_record
+  src/parser.rs:1423-1434  10 lines  in parse_enum_specifier
+  src/parser.rs:2315-2323  9 lines  in parse_member_list
+  src/parser.rs:1549-1555  7 lines  in bind_typedef_decl
+  src/parser.rs:4471-4477  7 lines  in parse_builtin_offsetof
+  src/parser.rs:5528-5534  7 lines  in check_uneval
+  src/parser.rs:1104-1109  6 lines  in resolve_type
+  src/parser.rs:2471-2476  6 lines  in finish_tag_only
+  src/parser.rs:2978-2984  6 lines  in parse_direct
+  src/parser.rs:5638-5646  6 lines  in check_uneval
+
+Largest uncovered runs in src/sema.rs:
+  src/sema.rs:4026-4074  42 lines  in check_library_builtin
+  src/sema.rs:6467-6497  25 lines  in eval_real_unary
+  src/sema.rs:5308-5328  18 lines  in write
+  src/sema.rs:6171-6191  15 lines  in designator
+  src/sema.rs:6405-6426  15 lines  in eval_num
+  src/sema.rs:6661-6679  15 lines  in eval_const_expr
+  src/sema.rs:1885-1897  13 lines  in fold_one
+  src/sema.rs:600-611  12 lines  in finish
+  src/sema.rs:3294-3304  11 lines  in arith_type
+  src/sema.rs:3448-3458  11 lines  in check_additive
+  src/sema.rs:649-659  10 lines  in finish
+  src/sema.rs:3630-3639  10 lines  in check_compound_assign
+  src/sema.rs:4094-4105  10 lines  in check_inline_builtin
+  src/sema.rs:4971-4980  10 lines  in require_scalar
+  src/sema.rs:3436-3444  9 lines  in check_additive

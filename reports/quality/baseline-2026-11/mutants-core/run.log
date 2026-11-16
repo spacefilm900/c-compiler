@@ -1,0 +1,142 @@
+Mon Nov 16 21:05:47 UTC 2026
+Found 424 mutants to test
+ok       Unmutated baseline in 5s build + 18s test
+ INFO Auto-set test timeout to 94s
+MISSED   src/irgen.rs:133:44: replace && with || in render in 1s build + 17s test
+MISSED   src/irgen.rs:139:44: replace match guard func.body.is_some() with true in render in 1s build + 17s test
+MISSED   src/irgen.rs:139:44: replace match guard func.body.is_some() with false in render in 1s build + 16s test
+MISSED   src/irgen.rs:164:40: replace match guard func.body.is_some() with true in render in 1s build + 16s test
+MISSED   src/irgen.rs:164:40: replace match guard func.body.is_some() with false in render in 1s build + 16s test
+MISSED   src/irgen.rs:183:12: delete ! in render in 1s build + 17s test
+MISSED   src/irgen.rs:284:17: replace && with || in library_renames in 1s build + 25s test
+MISSED   src/irgen.rs:288:15: replace += with -= in library_renames in 2s build + 31s test
+TIMEOUT  src/irgen.rs:283:16: delete ! in library_renames in 1s build + 94s test
+TIMEOUT  src/irgen.rs:284:20: delete ! in library_renames in 1s build + 94s test
+MISSED   src/irgen.rs:288:15: replace += with *= in library_renames in 2s build + 34s test
+TIMEOUT  src/irgen.rs:284:55: replace == with != in library_renames in 2s build + 94s test
+MISSED   src/irgen.rs:340:55: replace && with || in render_struct in 1s build + 17s test
+MISSED   src/irgen.rs:340:34: replace && with || in render_struct in 1s build + 17s test
+MISSED   src/irgen.rs:343:17: delete match arm 2 in render_struct in 1s build + 18s test
+MISSED   src/irgen.rs:373:22: replace == with != in render_string in 2s build + 16s test
+MISSED   src/irgen.rs:374:37: replace / with % in render_string in 2s build + 16s test
+MISSED   src/irgen.rs:374:37: replace / with * in render_string in 1s build + 16s test
+MISSED   src/irgen.rs:379:17: replace |= with &= in render_string in 1s build + 16s test
+MISSED   src/irgen.rs:379:37: replace << with >> in render_string in 1s build + 17s test
+MISSED   src/irgen.rs:379:43: replace * with + in render_string in 1s build + 17s test
+MISSED   src/irgen.rs:379:43: replace * with / in render_string in 1s build + 17s test
+MISSED   src/irgen.rs:418:23: replace && with || in fn_attr_suffix in 1s build + 17s test
+MISSED   src/irgen.rs:442:19: replace && with || in fn_attr_suffix in 1s build + 16s test
+MISSED   src/irgen.rs:442:22: delete ! in fn_attr_suffix in 1s build + 90s test
+MISSED   src/irgen.rs:514:30: replace match guard attrs.is_some_and(|attrs| attrs.weak) with false in render_function in 3s build + 18s test
+MISSED   src/irgen.rs:645:17: replace |= with &= in LowerNeeds::merge in 1s build + 31s test
+MISSED   src/irgen.rs:646:21: replace |= with &= in LowerNeeds::merge in 2s build + 32s test
+MISSED   src/irgen.rs:647:21: replace |= with &= in LowerNeeds::merge in 3s build + 22s test
+MISSED   src/irgen.rs:766:31: replace match guard !name.starts_with('"') && !is_unquoted_llvm_name(name) with true in Gen::var_slot in 2s build + 20s test
+MISSED   src/irgen.rs:766:54: replace && with || in Gen::var_slot in 2s build + 20s test
+MISSED   src/irgen.rs:785:9: replace Gen::ensure_block with () in 2s build + 20s test
+MISSED   src/irgen.rs:967:41: replace > with >= in Gen::gen_decl in 1s build + 20s test
+TIMEOUT  src/irgen.rs:780:9: replace Gen::label -> String with "xyzzy".into() in 1s build + 94s test
+TIMEOUT  src/irgen.rs:780:18: replace += with *= in Gen::label in 2s build + 94s test
+MISSED   src/irgen.rs:1084:13: delete match arm Expr::Comma{left, right, ..} in Gen::record_ptr in 2s build + 19s test
+MISSED   src/irgen.rs:1088:13: delete match arm Expr::StmtExpr{body, ty, ..} in Gen::record_ptr in 2s build + 20s test
+MISSED   src/irgen.rs:1362:9: replace Gen::entry_alloca_ir -> String with String::new() in 2s build + 18s test
+MISSED   src/irgen.rs:1362:9: replace Gen::entry_alloca_ir -> String with "xyzzy".into() in 2s build + 18s test
+MISSED   src/irgen.rs:1365:24: replace += with -= in Gen::entry_alloca_ir in 2s build + 18s test
+MISSED   src/irgen.rs:1365:24: replace += with *= in Gen::entry_alloca_ir in 1s build + 19s test
+MISSED   src/irgen.rs:1378:13: delete match arm PartKind::Indirect in Gen::aapcs64_record_arg in 1s build + 19s test
+MISSED   src/irgen.rs:1400:37: replace > with < in Gen::load_coerced in 1s build + 19s test
+MISSED   src/irgen.rs:1403:23: replace > with < in Gen::load_coerced in 1s build + 18s test
+MISSED   src/irgen.rs:1403:23: replace > with == in Gen::load_coerced in 2s build + 18s test
+MISSED   src/irgen.rs:1403:23: replace > with >= in Gen::load_coerced in 1s build + 18s test
+MISSED   src/irgen.rs:1414:39: replace <= with > in Gen::load_coerced in 1s build + 18s test
+MISSED   src/irgen.rs:1429:9: replace Gen::store_coerced with () in 2s build + 18s test
+MISSED   src/irgen.rs:1430:17: replace <= with > in Gen::store_coerced in 1s build + 18s test
+MISSED   src/irgen.rs:1440:19: replace > with == in Gen::store_coerced in 1s build + 18s test
+MISSED   src/irgen.rs:1440:19: replace > with < in Gen::store_coerced in 1s build + 18s test
+MISSED   src/irgen.rs:1440:19: replace > with >= in Gen::store_coerced in 2s build + 18s test
+MISSED   src/irgen.rs:1452:24: replace += with *= in Gen::entry_alloca in 1s build + 22s test
+MISSED   src/irgen.rs:1636:56: replace < with <= in Gen::finish_bitfield in 2s build + 41s test
+MISSED   src/irgen.rs:1673:55: replace & with | in Gen::write_bits in 7s build + 28s test
+MISSED   src/irgen.rs:1702:34: replace - with + in Gen::store_bitfield in 2s build + 25s test
+MISSED   src/irgen.rs:1702:64: replace * with / in Gen::store_bitfield in 1s build + 26s test
+MISSED   src/irgen.rs:1757:9: replace Gen::access_align -> u32 with 1 in 3s build + 24s test
+MISSED   src/irgen.rs:1798:38: replace < with <= in Gen::convert in 1s build + 22s test
+MISSED   src/irgen.rs:1814:31: replace || with && in Gen::convert in 2s build + 21s test
+MISSED   src/irgen.rs:1817:42: replace > with >= in Gen::convert in 2s build + 21s test
+MISSED   src/irgen.rs:1851:31: replace || with && in Gen::convert in 2s build + 20s test
+MISSED   src/irgen.rs:1851:23: replace == with != in Gen::convert in 1s build + 20s test
+MISSED   src/irgen.rs:1851:49: replace == with != in Gen::convert in 1s build + 20s test
+MISSED   src/irgen.rs:1854:42: replace > with == in Gen::convert in 1s build + 19s test
+MISSED   src/irgen.rs:1854:42: replace > with < in Gen::convert in 1s build + 19s test
+MISSED   src/irgen.rs:1854:42: replace > with >= in Gen::convert in 1s build + 19s test
+MISSED   src/irgen.rs:1878:28: replace && with || in Gen::convert in 1s build + 20s test
+MISSED   src/irgen.rs:1892:30: replace && with || in Gen::convert in 1s build + 21s test
+MISSED   src/irgen.rs:2067:52: replace > with == in Gen::gen_switch in 2s build + 20s test
+MISSED   src/irgen.rs:2067:52: replace > with < in Gen::gen_switch in 2s build + 19s test
+MISSED   src/irgen.rs:2067:52: replace > with >= in Gen::gen_switch in 2s build + 18s test
+MISSED   src/irgen.rs:2069:28: replace > with == in Gen::gen_switch in 2s build + 17s test
+MISSED   src/irgen.rs:2069:28: replace > with < in Gen::gen_switch in 1s build + 17s test
+MISSED   src/irgen.rs:2069:28: replace > with >= in Gen::gen_switch in 1s build + 17s test
+MISSED   src/irgen.rs:2069:21: replace & with | in Gen::gen_switch in 1s build + 17s test
+MISSED   src/irgen.rs:2069:21: replace & with ^ in Gen::gen_switch in 1s build + 17s test
+MISSED   src/irgen.rs:2069:35: replace & with | in Gen::gen_switch in 1s build + 17s test
+MISSED   src/irgen.rs:2069:35: replace & with ^ in Gen::gen_switch in 1s build + 17s test
+MISSED   src/irgen.rs:2074:47: replace & with | in Gen::gen_switch in 1s build + 17s test
+MISSED   src/irgen.rs:2074:47: replace & with ^ in Gen::gen_switch in 1s build + 17s test
+MISSED   src/irgen.rs:2075:21: replace < with == in Gen::gen_switch in 1s build + 17s test
+MISSED   src/irgen.rs:2075:21: replace < with > in Gen::gen_switch in 1s build + 17s test
+MISSED   src/irgen.rs:2075:21: replace < with <= in Gen::gen_switch in 1s build + 17s test
+MISSED   src/irgen.rs:2077:56: replace & with | in Gen::gen_switch in 1s build + 17s test
+MISSED   src/irgen.rs:2077:56: replace & with ^ in Gen::gen_switch in 1s build + 18s test
+MISSED   src/irgen.rs:2368:9: replace Gen::aarch64_va_arg_addr -> String with String::new() in 1s build + 17s test
+MISSED   src/irgen.rs:2368:9: replace Gen::aarch64_va_arg_addr -> String with "xyzzy".into() in 1s build + 17s test
+MISSED   src/irgen.rs:2381:9: replace Gen::apple_va_arg_addr -> String with String::new() in 1s build + 17s test
+MISSED   src/irgen.rs:2381:9: replace Gen::apple_va_arg_addr -> String with "xyzzy".into() in 1s build + 17s test
+MISSED   src/irgen.rs:2407:9: replace Gen::aapcs64_va_arg_addr -> String with String::new() in 1s build + 17s test
+MISSED   src/irgen.rs:2407:9: replace Gen::aapcs64_va_arg_addr -> String with "xyzzy".into() in 1s build + 17s test
+MISSED   src/irgen.rs:2409:62: replace > with == in Gen::aapcs64_va_arg_addr in 1s build + 17s test
+MISSED   src/irgen.rs:2409:62: replace > with < in Gen::aapcs64_va_arg_addr in 1s build + 18s test
+MISSED   src/irgen.rs:2409:62: replace > with >= in Gen::aapcs64_va_arg_addr in 1s build + 17s test
+MISSED   src/irgen.rs:2414:37: replace > with == in Gen::aapcs64_va_arg_addr in 1s build + 17s test
+MISSED   src/irgen.rs:2414:37: replace > with < in Gen::aapcs64_va_arg_addr in 1s build + 17s test
+MISSED   src/irgen.rs:2414:37: replace > with >= in Gen::aapcs64_va_arg_addr in 1s build + 17s test
+MISSED   src/irgen.rs:2430:42: replace && with || in Gen::aapcs64_va_arg_addr in 1s build + 17s test
+MISSED   src/irgen.rs:2430:37: replace == with != in Gen::aapcs64_va_arg_addr in 1s build + 17s test
+MISSED   src/irgen.rs:2458:45: replace || with && in Gen::aapcs64_va_arg_addr in 1s build + 16s test
+MISSED   src/irgen.rs:2458:41: replace > with == in Gen::aapcs64_va_arg_addr in 1s build + 18s test
+MISSED   src/irgen.rs:2458:41: replace > with >= in Gen::aapcs64_va_arg_addr in 1s build + 17s test
+MISSED   src/irgen.rs:2458:41: replace > with < in Gen::aapcs64_va_arg_addr in 1s build + 17s test
+MISSED   src/irgen.rs:2458:68: replace && with || in Gen::aapcs64_va_arg_addr in 1s build + 17s test
+MISSED   src/irgen.rs:2458:63: replace == with != in Gen::aapcs64_va_arg_addr in 1s build + 17s test
+MISSED   src/irgen.rs:2465:17: delete match arm 4 in Gen::aapcs64_va_arg_addr in 1s build + 27s test
+MISSED   src/irgen.rs:2466:17: delete match arm 8 in Gen::aapcs64_va_arg_addr in 1s build + 27s test
+MISSED   src/irgen.rs:2470:61: replace * with + in Gen::aapcs64_va_arg_addr in 2s build + 27s test
+MISSED   src/irgen.rs:2470:61: replace * with / in Gen::aapcs64_va_arg_addr in 9s build + 23s test
+MISSED   src/irgen.rs:2473:54: replace * with + in Gen::aapcs64_va_arg_addr in 2s build + 22s test
+MISSED   src/irgen.rs:2473:54: replace * with / in Gen::aapcs64_va_arg_addr in 2s build + 22s test
+MISSED   src/irgen.rs:2532:33: replace > with >= in Gen::gen_va_arg in 2s build + 21s test
+MISSED   src/irgen.rs:2571:49: delete ! in Gen::va_split in 2s build + 20s test
+MISSED   src/irgen.rs:2572:40: replace - with + in Gen::va_split in 2s build + 20s test
+MISSED   src/irgen.rs:2632:49: replace & with | in Gen::va_split in 1s build + 20s test
+MISSED   src/irgen.rs:2632:49: replace & with ^ in Gen::va_split in 1s build + 21s test
+MISSED   src/irgen.rs:2632:44: replace + with - in Gen::va_split in 1s build + 21s test
+MISSED   src/irgen.rs:2632:44: replace + with * in Gen::va_split in 1s build + 22s test
+MISSED   src/irgen.rs:2632:51: delete ! in Gen::va_split in 1s build + 22s test
+MISSED   src/irgen.rs:2666:34: replace || with && in Gen::gen_expr in 2s build + 20s test
+MISSED   src/irgen.rs:2729:17: replace && with || in Gen::gen_expr in 2s build + 20s test
+MISSED   src/irgen.rs:2864:28: replace += with -= in Gen::gen_stmt_expr_body in 2s build + 19s test
+MISSED   src/irgen.rs:2864:28: replace += with *= in Gen::gen_stmt_expr_body in 1s build + 20s test
+MISSED   src/irgen.rs:2885:9: replace Gen::gen_cond_short -> Option<String> with Some(String::new()) in 2s build + 19s test
+MISSED   src/irgen.rs:2885:9: replace Gen::gen_cond_short -> Option<String> with Some("xyzzy".into()) in 1s build + 20s test
+MISSED   src/irgen.rs:2923:9: replace Gen::test_nonzero -> String with String::new() in 2s build + 20s test
+MISSED   src/irgen.rs:2923:9: replace Gen::test_nonzero -> String with "xyzzy".into() in 2s build + 20s test
+MISSED   src/irgen.rs:2949:13: delete match arm Expr::Decay{expr, ..} in Gen::gen_addr in 3s build + 21s test
+MISSED   src/irgen.rs:2979:21: replace || with && in Gen::gen_addr in 2s build + 20s test
+MISSED   src/irgen.rs:2978:21: replace || with && in Gen::gen_addr in 2s build + 19s test
+MISSED   src/irgen.rs:2978:37: replace < with == in Gen::gen_addr in 1s build + 19s test
+MISSED   src/irgen.rs:2978:37: replace < with > in Gen::gen_addr in 1s build + 19s test
+MISSED   src/irgen.rs:2978:37: replace < with <= in Gen::gen_addr in 1s build + 19s test
+MISSED   src/irgen.rs:2979:69: replace != with == in Gen::gen_addr in 2s build + 19s test
+MISSED   src/irgen.rs:2979:37: replace % with / in Gen::gen_addr in 1s build + 19s test
+424 mutants tested in 24m: 131 missed, 279 caught, 9 unviable, 5 timeouts
+Mon Nov 16 21:47:30 UTC 2026

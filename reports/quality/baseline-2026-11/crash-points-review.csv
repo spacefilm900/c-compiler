@@ -1,0 +1,69 @@
+file,line,category,reason
+src/parser.rs,395,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/parser.rs,401,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/parser.rs,464,a,"hand review: the caller dispatched on this case, so the other arms cannot occur"
+src/parser.rs,494,a,"hand review: the caller dispatched on this case, so the other arms cannot occur"
+src/parser.rs,997,a,"hand review: the caller dispatched on this case, so the other arms cannot occur"
+src/parser.rs,1097,a,"hand review: the caller dispatched on this case, so the other arms cannot occur"
+src/parser.rs,1233,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/parser.rs,1439,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/parser.rs,2181,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/parser.rs,2219,a,hand review: the lexer always fills this field for this token kind
+src/parser.rs,2489,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/parser.rs,2788,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/parser.rs,2789,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/parser.rs,3367,a,"hand review: the caller dispatched on this case, so the other arms cannot occur"
+src/parser.rs,3405,a,"hand review: the caller dispatched on this case, so the other arms cannot occur"
+src/parser.rs,3695,a,"hand review: the caller dispatched on this case, so the other arms cannot occur"
+src/parser.rs,3697,a,"hand review: the caller dispatched on this case, so the other arms cannot occur"
+src/parser.rs,4613,a,hand review: the bit builtins' result type is a fixed integer type
+src/parser.rs,4726,a,hand review: the lexer always fills this field for this token kind
+src/parser.rs,4727,a,hand review: the lexer always fills this field for this token kind
+src/parser.rs,4735,a,hand review: the lexer always fills this field for this token kind
+src/parser.rs,4736,a,hand review: the lexer always fills this field for this token kind
+src/parser.rs,4767,a,hand review: the lexer always fills this field for this token kind
+src/parser.rs,4778,a,hand review: the lexer always fills this field for this token kind
+src/parser.rs,5385,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/parser.rs,5386,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/parser.rs,5443,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/parser.rs,5444,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,313,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,536,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,1287,a,hand review: a bit-field's type was checked to be an integer when the member was declared
+src/sema.rs,1430,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,1574,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,1575,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,1993,a,hand review: the file scope is pushed first and never popped
+src/sema.rs,2094,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,2146,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,2157,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,2309,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,2535,a,hand review: called only after a same-scope lookup succeeded
+src/sema.rs,2632,a,hand review: called only after a same-scope lookup succeeded
+src/sema.rs,2717,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,3060,a,hand review: the parser always gives a compound literal an initializer
+src/sema.rs,3567,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,3593,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,3663,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,4270,a,hand review: called only for names from_name recognised
+src/sema.rs,4499,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,4527,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,4751,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,5008,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,5009,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,5376,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/sema.rs,6934,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/pp.rs,931,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/pp.rs,2347,a,"hand review: index starts at 1, so rest is never empty"
+src/pp.rs,2394,a,"hand review: index starts at 1, so rest is never empty"
+src/pp.rs,3178,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/pp.rs,3200,a,hand review: called after peeking a digit
+src/pp.rs,3207,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/pp.rs,3212,a,hand review: guarded by a check or push a few lines earlier in the same function
+src/pp.rs,3242,a,hand review: called after peeking the opening quote
+src/pp.rs,3298,a,hand review: only whole UTF-8 characters are copied from a UTF-8 source
+src/lexer.rs,710,a,hand review: code point validated just before
+src/lexer.rs,718,a,hand review: code point validated just before
+src/lexer.rs,857,a,"hand review: the source is a &str, so it is valid UTF-8"
+src/fp80.rs,111,a,hand review: the loop condition guarantees a non-empty slice
+src/builtins.rs,458,a,hand review: signature strings come from a fixed table in the same file

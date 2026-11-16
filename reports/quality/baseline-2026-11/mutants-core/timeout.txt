@@ -1,0 +1,5 @@
+src/irgen.rs:283:16: delete ! in library_renames
+src/irgen.rs:284:20: delete ! in library_renames
+src/irgen.rs:284:55: replace == with != in library_renames
+src/irgen.rs:780:9: replace Gen::label -> String with "xyzzy".into()
+src/irgen.rs:780:18: replace += with *= in Gen::label
