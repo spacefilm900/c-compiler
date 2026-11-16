@@ -18,6 +18,8 @@ import argparse, csv, json, os, re, shutil, subprocess, sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
+# Messages harness/run_tests.py prints when its preflight fails.
+PREFLIGHT = re.compile(r"compiler not found/executable:|clang not found:|is required; got:|is required \(LLVM")
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -46,10 +48,15 @@ def main():
     def suite():
         env = dict(os.environ, CC_UNDER_TEST=str(compiler))
         t = subprocess.run([sys.executable, "harness/run_tests.py"], cwd=scratch, env=env, capture_output=True, text=True)
-        last = (t.stdout.strip().split("\n") or [""])[-1]
-        # A finished run ends with "N/M passed"; anything else is a harness
-        # setup failure (no Clang, missing compiler), not a caught mutant.
-        return t.returncode, last, re.fullmatch(r"\d+/\d+ passed", last) is not None
+        out = t.stdout
+        # A finished run prints "N/M passed", optionally followed by
+        # ", K known failures, U unexpected failures" and "now passing"
+        # notices. The preflight (no Clang, Clang too old, no compiler) also
+        # prints "0/M passed", so its messages are checked separately: that
+        # is a harness setup failure, not a caught mutant.
+        summary = re.search(r"^(\d+/\d+ passed(?:, \d+ known failures, \d+ unexpected failures)?)$", out, re.M)
+        finished = summary is not None and not PREFLIGHT.search(out)
+        return t.returncode, summary.group(1) if summary else out.strip()[-200:], finished
 
     b = subprocess.run(["cargo", "build", "--release", "-q"], cwd=scratch, capture_output=True, text=True)
     if b.returncode:

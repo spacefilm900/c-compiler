@@ -49,18 +49,36 @@ def strip(src):
         out.append(c); i += 1
     return "".join(out)
 
+def _match_brace(clean, k):
+    """Index of the `}` matching the `{` at k (or the end of the text)."""
+    d = 0
+    while k < len(clean):
+        if clean[k] == "{": d += 1
+        elif clean[k] == "}":
+            d -= 1
+            if d == 0: return k
+        k += 1
+    return len(clean) - 1
+
 def test_spans(clean):
     """Line ranges (1-based, inclusive) of items marked #[cfg(test)]."""
     spans = []
     for m in re.finditer(r"#\[cfg\(test\)\]", clean):
-        # The item ends at the first `;` or `{` outside (), [] and <>; a `;`
-        # inside a signature, as in `-> [u8; 1]`, does not end it.
+        # The item ends at the first `;` or `{` outside (), [] and generic
+        # <>; a `;` inside a signature, as in `-> [u8; 1]`, does not end it,
+        # and nor does a const-generic block such as `Foo<{ 1 }>`, which is
+        # skipped whole. `->` and `=>` are not angle brackets.
         b = semi = -1
-        k, depth = m.end(), 0
+        k, depth, angle = m.end(), 0, 0
         while k < len(clean):
             ch = clean[k]
+            prev = clean[k - 1] if k else ""
             if ch in "([": depth += 1
             elif ch in ")]": depth -= 1
+            elif ch == "<": angle += 1
+            elif ch == ">" and prev not in "-=": angle = max(0, angle - 1)
+            elif ch == "{" and (depth or angle):
+                k = _match_brace(clean, k)
             elif depth == 0 and ch == ";": semi = k; break
             elif depth == 0 and ch == "{": b = k; break
             k += 1

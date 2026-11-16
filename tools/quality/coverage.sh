@@ -45,7 +45,10 @@ for s in $SUITES; do
   esac
   CC_UNDER_TEST="$BIN" python3 "$runner" > "$OUT/suite-$s.log" 2>&1 || true
   tail -n 3 "$OUT/suite-$s.log"
-  if ! grep -Eq "$done_re" "$OUT/suite-$s.log"; then
+  # run_tests.py also prints "0/N passed" when its preflight fails (no
+  # Clang, Clang too old, no compiler), so those messages count as not run.
+  if ! grep -Eq "$done_re" "$OUT/suite-$s.log" \
+     || grep -Eq 'compiler not found/executable:|clang not found:|is required; got:|is required \(LLVM' "$OUT/suite-$s.log"; then
     echo "suite $s did not finish; see $OUT/suite-$s.log" >&2
     incomplete="$incomplete $s"
   fi
