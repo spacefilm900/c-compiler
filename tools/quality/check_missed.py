@@ -37,8 +37,14 @@ def main():
     if scratch.exists():
         # Never delete a directory this script did not create.
         sys.exit(f"--scratch {scratch} already exists; give a new path")
+    copied = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "src", "include", "harness", "tests"]
+    for item in copied:
+        src = (ROOT / item).resolve()
+        if src.is_dir() and scratch.is_relative_to(src):
+            # copytree would copy the scratch directory into itself.
+            sys.exit(f"--scratch {scratch} is inside {src}, which is copied; use a path outside it")
     scratch.mkdir(parents=True)
-    for item in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "src", "include", "harness", "tests"]:
+    for item in copied:
         s = ROOT / item
         (shutil.copytree(s, scratch / item, symlinks=True) if s.is_dir() else shutil.copy2(s, scratch / item))
     pristine = scratch / "src.orig"
