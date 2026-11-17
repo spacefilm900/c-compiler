@@ -574,6 +574,37 @@ impl Parser<'_> {
         self.bump();
         let ty = self.parse_type_name()?;
         self.expect_skip(TokenKind::Comma, "','")?;
+        let steps = self.parse_offsetof_designator()?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
+
+        let mut cur = ty;
+        let mut offset: u64 = 0;
+        // Subscripts that are not constant, each already scaled by its
+        // element size, as size_t arithmetic evaluated at run time.
+        let mut runtime: Vec<Expr> = Vec::new();
+        for (position, step) in steps.into_iter().enumerate() {
+            match step {
+                OffsetStep::Member(name) => {
+                    let (field_offset, field_ty) = self.offsetof_member(&cur, &name, position)?;
+                    offset = offset.wrapping_add(field_offset);
+                    cur = field_ty;
+                }
+                OffsetStep::Index(index, bracket) => {
+                    cur = self.offsetof_index(&cur, index, &bracket, &mut offset, &mut runtime)?;
+                }
+            }
+        }
+        // offset + i1 * size1 + i2 * size2 + ... in size_t: plain integer
+        // arithmetic, with no address formed from a null pointer.
+        Ok(runtime.into_iter().fold(
+            Expr::int(offset, TypeName::ULong, line, column),
+            |sum, term| Expr::bin(BinOp::Add, sum, term, line, column),
+        ))
+    }
+
+    /// The member designator of `offsetof`: a member name followed by
+    /// `.member` and `[index]` steps.
+    fn parse_offsetof_designator(&mut self) -> Result<Vec<OffsetStep>, Diagnostic> {
         let first = self.expect(TokenKind::Ident, "a member name")?;
         let mut steps = vec![OffsetStep::Member(first)];
         loop {
@@ -592,131 +623,131 @@ impl Parser<'_> {
                 _ => break,
             }
         }
-        self.expect_skip(TokenKind::RParen, "')'")?;
+        Ok(steps)
+    }
 
-        let size_t = || CType::from_name(TypeName::ULong);
-        let mut cur = ty;
-        let mut offset: u64 = 0;
-        // Subscripts that are not constant, each already scaled by its
-        // element size, as size_t arithmetic evaluated at run time.
-        let mut runtime: Vec<Expr> = Vec::new();
-        for (position, step) in steps.into_iter().enumerate() {
-            match step {
-                OffsetStep::Member(name) => {
-                    let Some(handle) = cur.struct_ref() else {
-                        let message = if position == 0 {
-                            format!(
-                                "offsetof requires a structure or union type, not '{}'",
-                                cur.display()
-                            )
-                        } else {
-                            format!(
-                                "member reference base type '{}' is not a structure or union",
-                                cur.display()
-                            )
-                        };
-                        return Err(self.error_at(name.line, name.column, message));
-                    };
-                    if !handle.is_complete() {
-                        return Err(self.error_at(
-                            name.line,
-                            name.column,
-                            format!("offsetof of incomplete type '{}'", cur.display()),
-                        ));
-                    }
-                    let Some(hit) = handle.lookup_member(&name.spelling) else {
-                        return Err(self.error_at(
-                            name.line,
-                            name.column,
-                            format!("no member named '{}' in '{}'", name.spelling, cur.display()),
-                        ));
-                    };
-                    if hit.field.is_bitfield() {
-                        return Err(self.error_at(
-                            name.line,
-                            name.column,
-                            format!("cannot compute offset of bit-field '{}'", name.spelling),
-                        ));
-                    }
-                    offset = offset.wrapping_add(hit.field.offset);
-                    cur = hit.field.ty;
-                }
-                OffsetStep::Index(index, bracket) => {
-                    let Some(elem) = cur.array_elem().cloned() else {
-                        return Err(self.error_at(
-                            bracket.line,
-                            bracket.column,
-                            "subscripted value is not an array",
-                        ));
-                    };
-                    let Some(size) = elem.size() else {
-                        return Err(self.error_at(
-                            bracket.line,
-                            bracket.column,
-                            format!("array has incomplete element type '{}'", elem.display()),
-                        ));
-                    };
-                    check_uneval(&index, self.env()).map_err(|err| {
-                        self.error_at(index.line(), index.column(), ice_message(err))
-                    })?;
-                    let index_ty = rvalue_type(&index, self.env()).ok();
-                    if let Some(index_ty) = &index_ty {
-                        if !index_ty.is_integer() {
-                            return Err(self.error_at(
-                                index.line(),
-                                index.column(),
-                                "array subscript is not an integer",
-                            ));
-                        }
-                    }
-                    match eval_ice(&index, self.env()) {
-                        Ok(value) => {
-                            let scaled = if value.ty.is_signed() {
-                                (sign_extend(value.bits, value.ty.width()) as u64)
-                                    .wrapping_mul(size)
-                            } else {
-                                (value.bits as u64).wrapping_mul(size)
-                            };
-                            offset = offset.wrapping_add(scaled);
-                        }
-                        Err(_) => {
-                            let (at_line, at_column) = (index.line(), index.column());
-                            // Converting the index to size_t sign-extends a
-                            // signed index, so the wrapping product and sum
-                            // equal the address difference. When the parser
-                            // cannot type the index, `| (size_t)0` performs
-                            // the same conversion and leaves semantic
-                            // analysis to require an integer operand.
-                            let as_size = if index_ty.is_some() {
-                                Expr::cast(size_t(), index, at_line, at_column)
-                            } else {
-                                Expr::bin(
-                                    BinOp::BitOr,
-                                    index,
-                                    Expr::int(0, TypeName::ULong, at_line, at_column),
-                                    at_line,
-                                    at_column,
-                                )
-                            };
-                            runtime.push(Expr::bin(
-                                BinOp::Mul,
-                                as_size,
-                                Expr::int(size, TypeName::ULong, at_line, at_column),
-                                at_line,
-                                at_column,
-                            ));
-                        }
-                    }
-                    cur = elem;
-                }
+    /// The offset and type of member `name` of `cur`, the type reached so
+    /// far in an `offsetof` designator (`position` 0 for the first step).
+    fn offsetof_member(
+        &self,
+        cur: &CType,
+        name: &Token,
+        position: usize,
+    ) -> Result<(u64, CType), Diagnostic> {
+        let Some(handle) = cur.struct_ref() else {
+            let message = if position == 0 {
+                format!(
+                    "offsetof requires a structure or union type, not '{}'",
+                    cur.display()
+                )
+            } else {
+                format!(
+                    "member reference base type '{}' is not a structure or union",
+                    cur.display()
+                )
+            };
+            return Err(self.error_at(name.line, name.column, message));
+        };
+        if !handle.is_complete() {
+            return Err(self.error_at(
+                name.line,
+                name.column,
+                format!("offsetof of incomplete type '{}'", cur.display()),
+            ));
+        }
+        let Some(hit) = handle.lookup_member(&name.spelling) else {
+            return Err(self.error_at(
+                name.line,
+                name.column,
+                format!("no member named '{}' in '{}'", name.spelling, cur.display()),
+            ));
+        };
+        if hit.field.is_bitfield() {
+            return Err(self.error_at(
+                name.line,
+                name.column,
+                format!("cannot compute offset of bit-field '{}'", name.spelling),
+            ));
+        }
+        Ok((hit.field.offset, hit.field.ty))
+    }
+
+    /// A subscript step `[index]` of an `offsetof` designator applied to
+    /// the array type `cur`. A constant index is folded into `offset`;
+    /// any other becomes a scaled `size_t` term in `runtime`. Returns the
+    /// element type.
+    fn offsetof_index(
+        &self,
+        cur: &CType,
+        index: Expr,
+        bracket: &Token,
+        offset: &mut u64,
+        runtime: &mut Vec<Expr>,
+    ) -> Result<CType, Diagnostic> {
+        let Some(elem) = cur.array_elem().cloned() else {
+            return Err(self.error_at(
+                bracket.line,
+                bracket.column,
+                "subscripted value is not an array",
+            ));
+        };
+        let Some(size) = elem.size() else {
+            return Err(self.error_at(
+                bracket.line,
+                bracket.column,
+                format!("array has incomplete element type '{}'", elem.display()),
+            ));
+        };
+        check_uneval(&index, self.env())
+            .map_err(|err| self.error_at(index.line(), index.column(), ice_message(err)))?;
+        let index_ty = rvalue_type(&index, self.env()).ok();
+        if let Some(index_ty) = &index_ty {
+            if !index_ty.is_integer() {
+                return Err(self.error_at(
+                    index.line(),
+                    index.column(),
+                    "array subscript is not an integer",
+                ));
             }
         }
-        // offset + i1 * size1 + i2 * size2 + ... in size_t: plain integer
-        // arithmetic, with no address formed from a null pointer.
-        Ok(runtime.into_iter().fold(
-            Expr::int(offset, TypeName::ULong, line, column),
-            |sum, term| Expr::bin(BinOp::Add, sum, term, line, column),
-        ))
+        match eval_ice(&index, self.env()) {
+            Ok(value) => {
+                let scaled = if value.ty.is_signed() {
+                    (sign_extend(value.bits, value.ty.width()) as u64).wrapping_mul(size)
+                } else {
+                    (value.bits as u64).wrapping_mul(size)
+                };
+                *offset = offset.wrapping_add(scaled);
+            }
+            Err(_) => {
+                let (at_line, at_column) = (index.line(), index.column());
+                // Converting the index to size_t sign-extends a
+                // signed index, so the wrapping product and sum
+                // equal the address difference. When the parser
+                // cannot type the index, `| (size_t)0` performs
+                // the same conversion and leaves semantic
+                // analysis to require an integer operand.
+                let as_size = if index_ty.is_some() {
+                    Expr::cast(CType::from_name(TypeName::ULong), index, at_line, at_column)
+                } else {
+                    Expr::bin(
+                        BinOp::BitOr,
+                        index,
+                        Expr::int(0, TypeName::ULong, at_line, at_column),
+                        at_line,
+                        at_column,
+                    )
+                };
+                runtime.push(Expr::bin(
+                    BinOp::Mul,
+                    as_size,
+                    Expr::int(size, TypeName::ULong, at_line, at_column),
+                    at_line,
+                    at_column,
+                ));
+            }
+        }
+        Ok(elem)
     }
 
     /// Builtins the parser answers itself, with their arguments still to

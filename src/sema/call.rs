@@ -4,40 +4,8 @@ use super::*;
 
 impl Sema<'_> {
     pub(super) fn check_call(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
-        if let Expr::Call { callee, .. } = &*expr {
-            if let Expr::Var { name, .. } = callee.as_ref() {
-                if matches!(
-                    name.as_str(),
-                    "__builtin_memcpy" | "__builtin_memmove" | "__builtin_memset"
-                ) {
-                    let name = name.clone();
-                    return self.check_memory_builtin(expr, &name);
-                }
-                if matches!(
-                    name.as_str(),
-                    "__builtin_signbit" | "__builtin_signbitf" | "__builtin_signbitl"
-                ) {
-                    let name = name.clone();
-                    return self.check_signbit(expr, &name);
-                }
-                if crate::float::FpFormatBuiltin::from_name(name).is_some() {
-                    let name = name.clone();
-                    return self.check_fp_format_builtin(expr, &name);
-                }
-                if crate::float::is_fp_compare_builtin(name) {
-                    let name = name.clone();
-                    return self.check_fp_compare(expr, &name);
-                }
-                if let Some(inline) = crate::builtins::Inline::from_name(name) {
-                    let name = name.clone();
-                    return self.check_inline_builtin(expr, &name, inline);
-                }
-                if self.lookup(name).is_none() {
-                    if let Some(sig) = crate::builtins::library(name) {
-                        return self.check_library_builtin(expr, sig);
-                    }
-                }
-            }
+        if let Some(result) = self.check_builtin_call(expr) {
+            return result;
         }
         let direct = match expr {
             Expr::Call { callee, .. } => match callee.as_ref() {
@@ -92,7 +60,85 @@ impl Sema<'_> {
         let unprototyped =
             matches!(self.lookup(&name), Some(Symbol::Func(func)) if !func.prototype);
         self.require_passed_aggregate(&ret, line, column, true)?;
-        let arity = params.len();
+        self.check_call_arity(&name, argc, params.len(), variadic, line, column)?;
+        if let Expr::Call { args, .. } = expr {
+            self.check_call_args(args, &params)?;
+        }
+        self.note_use(&name, line, column);
+        if let Some(message) = self.deprecated.get(&fname) {
+            let text = if message.is_empty() {
+                format!("'{name}' is deprecated")
+            } else {
+                format!("'{name}' is deprecated: {message}")
+            };
+            self.warn(line, column, text);
+        }
+        if let Expr::Call { resolved, .. } = expr {
+            *resolved = Some(CallRes {
+                name: fname,
+                ret: ret.clone(),
+                params,
+                variadic: variadic && !(unprototyped && fixed_unprototyped_calls()),
+                indirect: false,
+            });
+        }
+        expr.set_ty(ret);
+        Ok(())
+    }
+
+    /// A call of a builtin, or of a library function's `__builtin_` name
+    /// that the program does not declare itself: its result, or `None`
+    /// for an ordinary call.
+    fn check_builtin_call(&mut self, expr: &mut Expr) -> Option<Result<(), Diagnostic>> {
+        if let Expr::Call { callee, .. } = &*expr {
+            if let Expr::Var { name, .. } = callee.as_ref() {
+                if matches!(
+                    name.as_str(),
+                    "__builtin_memcpy" | "__builtin_memmove" | "__builtin_memset"
+                ) {
+                    let name = name.clone();
+                    return Some(self.check_memory_builtin(expr, &name));
+                }
+                if matches!(
+                    name.as_str(),
+                    "__builtin_signbit" | "__builtin_signbitf" | "__builtin_signbitl"
+                ) {
+                    let name = name.clone();
+                    return Some(self.check_signbit(expr, &name));
+                }
+                if crate::float::FpFormatBuiltin::from_name(name).is_some() {
+                    let name = name.clone();
+                    return Some(self.check_fp_format_builtin(expr, &name));
+                }
+                if crate::float::is_fp_compare_builtin(name) {
+                    let name = name.clone();
+                    return Some(self.check_fp_compare(expr, &name));
+                }
+                if let Some(inline) = crate::builtins::Inline::from_name(name) {
+                    let name = name.clone();
+                    return Some(self.check_inline_builtin(expr, &name, inline));
+                }
+                if self.lookup(name).is_none() {
+                    if let Some(sig) = crate::builtins::library(name) {
+                        return Some(self.check_library_builtin(expr, sig));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// The number of arguments `argc` against the `arity` fixed parameters
+    /// of `name` (C11 6.5.2.2p2).
+    fn check_call_arity(
+        &self,
+        name: &str,
+        argc: usize,
+        arity: usize,
+        variadic: bool,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
         if variadic {
             if argc < arity {
                 return self.err(
@@ -116,42 +162,27 @@ impl Sema<'_> {
                 ),
             );
         }
-        if let Expr::Call { args, .. } = expr {
-            for (index, arg) in args.iter_mut().enumerate() {
-                self.check_expr(arg)?;
-                self.decay(arg)?;
-                if index < params.len() {
-                    self.can_assign(&params[index], arg)?;
-                    self.require_passed_aggregate(&params[index], arg.line(), arg.column(), false)?;
-                } else if arg.ty().is_some_and(|ty| ty.unqualified().is_record()) {
-                    let ty = arg.ty().expect("typed");
-                    self.require_passed_aggregate(&ty, arg.line(), arg.column(), false)?;
-                } else {
-                    // Default argument promotions apply in the IR. There is no
-                    // parameter type to convert to; the argument must be a scalar.
-                    self.require_scalar(arg)?;
-                }
+        Ok(())
+    }
+
+    /// Check each argument of a direct call and convert it as if by
+    /// assignment to its parameter's type (C11 6.5.2.2p7).
+    fn check_call_args(&mut self, args: &mut [Expr], params: &[CType]) -> Result<(), Diagnostic> {
+        for (index, arg) in args.iter_mut().enumerate() {
+            self.check_expr(arg)?;
+            self.decay(arg)?;
+            if index < params.len() {
+                self.can_assign(&params[index], arg)?;
+                self.require_passed_aggregate(&params[index], arg.line(), arg.column(), false)?;
+            } else if arg.ty().is_some_and(|ty| ty.unqualified().is_record()) {
+                let ty = arg.ty().expect("typed");
+                self.require_passed_aggregate(&ty, arg.line(), arg.column(), false)?;
+            } else {
+                // Default argument promotions apply in the IR. There is no
+                // parameter type to convert to; the argument must be a scalar.
+                self.require_scalar(arg)?;
             }
         }
-        self.note_use(&name, line, column);
-        if let Some(message) = self.deprecated.get(&fname) {
-            let text = if message.is_empty() {
-                format!("'{name}' is deprecated")
-            } else {
-                format!("'{name}' is deprecated: {message}")
-            };
-            self.warn(line, column, text);
-        }
-        if let Expr::Call { resolved, .. } = expr {
-            *resolved = Some(CallRes {
-                name: fname,
-                ret: ret.clone(),
-                params,
-                variadic: variadic && !(unprototyped && fixed_unprototyped_calls()),
-                indirect: false,
-            });
-        }
-        expr.set_ty(ret);
         Ok(())
     }
 

@@ -106,69 +106,7 @@ pub(super) fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
             check_uneval(then_expr, env)?;
             check_uneval(else_expr, env)
         }
-        Expr::Call { callee, args, .. } => {
-            // A supported builtin is recognized only as a call, not as a bare
-            // identifier, so it is accepted here before ordinary lookup.
-            if let Expr::Var { name, .. } = callee.as_ref() {
-                if crate::builtins::Inline::from_name(name).is_some()
-                    || (crate::builtins::library(name).is_some() && env_lookup(env, name).is_none())
-                {
-                    for arg in args {
-                        check_uneval(arg, env)?;
-                    }
-                    return Ok(());
-                }
-                if let Some(arity) = builtin_arity(name) {
-                    for arg in args {
-                        check_uneval(arg, env)?;
-                    }
-                    if args.len() != arity {
-                        return Err(BoundErr::WrongArity);
-                    }
-                    if crate::float::is_fp_compare_builtin(name) {
-                        check_uneval_fp_compare(&args[0], &args[1], env)?;
-                    }
-                    if is_signbit_builtin(name) {
-                        check_uneval_signbit(&args[0], env)?;
-                    }
-                    if is_memory_builtin(name) {
-                        check_uneval_memory_builtin(name, args, env)?;
-                    }
-                    if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
-                        if fp.requires_string_literal()
-                            && !crate::float::FpFormatBuiltin::is_string_literal_arg(&args[0])
-                        {
-                            return Err(BoundErr::NotStringLiteral);
-                        }
-                    }
-                    return Ok(());
-                }
-            }
-            check_uneval(callee, env)?;
-            for arg in args {
-                check_uneval(arg, env)?;
-            }
-            let callee_ty = rvalue_type(callee, env)?;
-            let func = callee_ty
-                .pointee()
-                .and_then(CType::func_ty)
-                .or_else(|| callee_ty.func_ty());
-            if let Some(func) = func {
-                if func.prototype {
-                    let argc = args.len();
-                    let arity = func.params.len();
-                    let bad = if func.variadic {
-                        argc < arity
-                    } else {
-                        argc != arity
-                    };
-                    if bad {
-                        return Err(BoundErr::WrongArity);
-                    }
-                }
-            }
-            Ok(())
-        }
+        Expr::Call { callee, args, .. } => check_uneval_call(callee, args, env),
         Expr::Sizeof { operand, .. } => match operand {
             SizeofOperand::Expr(inner) => check_uneval(inner, env),
             SizeofOperand::Type(_) => Ok(()),
@@ -201,6 +139,81 @@ pub(super) fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
             check_uneval(else_expr, env)
         }
     }
+}
+
+/// A call in an unevaluated operand: a builtin's arity and operand rules,
+/// or the arity of a call through a prototype.
+fn check_uneval_call(callee: &Expr, args: &[Expr], env: Env) -> Result<(), BoundErr> {
+    // A supported builtin is recognized only as a call, not as a bare
+    // identifier, so it is accepted here before ordinary lookup.
+    if let Expr::Var { name, .. } = callee {
+        if check_uneval_builtin_call(name, args, env)? {
+            return Ok(());
+        }
+    }
+    check_uneval(callee, env)?;
+    for arg in args {
+        check_uneval(arg, env)?;
+    }
+    let callee_ty = rvalue_type(callee, env)?;
+    let func = callee_ty
+        .pointee()
+        .and_then(CType::func_ty)
+        .or_else(|| callee_ty.func_ty());
+    if let Some(func) = func {
+        if func.prototype {
+            let argc = args.len();
+            let arity = func.params.len();
+            let bad = if func.variadic {
+                argc < arity
+            } else {
+                argc != arity
+            };
+            if bad {
+                return Err(BoundErr::WrongArity);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The checks for a call to the builtin or library function `name`, if it
+/// is one; `Ok(false)` when `name` is an ordinary function.
+fn check_uneval_builtin_call(name: &str, args: &[Expr], env: Env) -> Result<bool, BoundErr> {
+    if crate::builtins::Inline::from_name(name).is_some()
+        || (crate::builtins::library(name).is_some() && env_lookup(env, name).is_none())
+    {
+        for arg in args {
+            check_uneval(arg, env)?;
+        }
+        return Ok(true);
+    }
+    let Some(arity) = builtin_arity(name) else {
+        return Ok(false);
+    };
+    for arg in args {
+        check_uneval(arg, env)?;
+    }
+    if args.len() != arity {
+        return Err(BoundErr::WrongArity);
+    }
+    if crate::float::is_fp_compare_builtin(name) {
+        check_uneval_fp_compare(&args[0], &args[1], env)?;
+    }
+    if is_signbit_builtin(name) {
+        check_uneval_signbit(&args[0], env)?;
+    }
+    if is_memory_builtin(name) {
+        check_uneval_memory_builtin(name, args, env)?;
+    }
+    if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
+        if fp.requires_string_literal()
+            && !crate::float::FpFormatBuiltin::is_string_literal_arg(&args[0])
+        {
+            return Err(BoundErr::NotStringLiteral);
+        }
+    }
+    Ok(true)
 }
 
 /// The operand constraints of the relational and equality operators
@@ -474,43 +487,10 @@ pub(super) fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
             None if name != "__func__" => Err(BoundErr::Undeclared),
             _ => Err(BoundErr::Vla),
         },
-        Expr::Unary { op, expr, .. } => match op {
-            UnaryOp::Deref => {
-                let inner = rvalue_type(expr, env)?;
-                inner.pointee().cloned().ok_or(BoundErr::NotConst)
-            }
-            UnaryOp::Addr => Ok(CType::pointer(type_only(expr, env)?)),
-            UnaryOp::Not => Ok(CType::int_type()),
-            UnaryOp::Plus | UnaryOp::Minus | UnaryOp::BitNot => {
-                let inner = rvalue_type(expr, env)?;
-                match inner.as_integer() {
-                    Some(name) => Ok(CType::from_name(name.promote())),
-                    None if inner.is_float() && *op != UnaryOp::BitNot => Ok(inner),
-                    None => Err(BoundErr::NotConst),
-                }
-            }
-        },
+        Expr::Unary { op, expr, .. } => unary_type_only(*op, expr, env),
         Expr::Bin {
             op, left, right, ..
-        } => {
-            let left = rvalue_type(left, env)?;
-            let right = rvalue_type(right, env)?;
-            if op.is_cmp() || matches!(op, BinOp::And | BinOp::Or) {
-                return Ok(CType::int_type());
-            }
-            match op {
-                BinOp::Add | BinOp::Sub if left.is_pointer() && right.is_pointer() => {
-                    Ok(CType::from_name(TypeName::Long))
-                }
-                BinOp::Add | BinOp::Sub if left.is_pointer() => Ok(left),
-                BinOp::Add if right.is_pointer() => Ok(right),
-                BinOp::Shl | BinOp::Shr => left
-                    .as_integer()
-                    .map(|name| CType::from_name(name.promote()))
-                    .ok_or(BoundErr::NotConst),
-                _ => arith_common(&left, &right),
-            }
-        }
+        } => bin_type_only(*op, left, right, env),
         Expr::Cast { ty_name, .. } => Ok(ty_name.unqualified()),
         Expr::StmtExpr { value_ty, .. } => value_ty.clone().ok_or(BoundErr::NotConst),
         Expr::LabelAddr { .. } => Ok(CType::pointer(CType::Void)),
@@ -523,38 +503,12 @@ pub(super) fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
             cond: left,
             else_expr: right,
             ..
-        } => {
-            let left = rvalue_type(left, env)?;
-            let right = rvalue_type(right, env)?;
-            if left.is_arithmetic() && right.is_arithmetic() {
-                arith_common(&left, &right)
-            } else if left.is_void() || right.is_void() {
-                Ok(CType::Void)
-            } else if left.is_pointer() || right.is_pointer() {
-                // Every object pointer has the same size; `sizeof` is all
-                // that asks for this type here.
-                Ok(if left.is_pointer() { left } else { right })
-            } else {
-                Ok(left)
-            }
-        }
+        } => cond_type_only(left, right, env),
         Expr::Assign { target, .. }
         | Expr::CompoundAssign { target, .. }
         | Expr::IncDec { target, .. } => Ok(type_only(target, env)?.unqualified()),
         Expr::Comma { right, .. } => rvalue_type(right, env),
-        Expr::Call { callee, .. } => {
-            if let Expr::Var { name, .. } = callee.as_ref() {
-                if let Some(ty) = builtin_result_type(name) {
-                    return Ok(ty);
-                }
-            }
-            let callee = rvalue_type(callee, env)?;
-            let func = callee
-                .pointee()
-                .and_then(CType::func_ty)
-                .ok_or(BoundErr::NotConst)?;
-            Ok(func.ret.unqualified())
-        }
+        Expr::Call { callee, .. } => call_type_only(callee, env),
         Expr::Index { base, index, .. } => {
             let base = rvalue_type(base, env)?;
             let index = rvalue_type(index, env)?;
@@ -565,19 +519,7 @@ pub(super) fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
         }
         Expr::Member {
             base, field, arrow, ..
-        } => {
-            let base_ty = if *arrow {
-                rvalue_type(base, env)?
-                    .pointee()
-                    .cloned()
-                    .ok_or(BoundErr::NotConst)?
-            } else {
-                type_only(base, env)?
-            };
-            let handle = base_ty.struct_ref().ok_or(BoundErr::NotConst)?;
-            let hit = handle.lookup_member(field).ok_or(BoundErr::NotConst)?;
-            Ok(hit.field.ty.with_quals(base_ty.quals()))
-        }
+        } => member_type_only(base, field, *arrow, env),
         Expr::VaArg { type_arg, .. } => Ok(type_arg.clone()),
         Expr::VaOp { .. } => Ok(CType::Void),
         Expr::Decay { ty, .. } => ty.clone().ok_or(BoundErr::NotConst),
@@ -594,6 +536,96 @@ pub(super) fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
             (ty, _) => Ok(ty.clone()),
         },
     }
+}
+
+/// [`type_only`] for a unary operator other than `++` / `--`.
+fn unary_type_only(op: UnaryOp, expr: &Expr, env: Env) -> Result<CType, BoundErr> {
+    match op {
+        UnaryOp::Deref => {
+            let inner = rvalue_type(expr, env)?;
+            inner.pointee().cloned().ok_or(BoundErr::NotConst)
+        }
+        UnaryOp::Addr => Ok(CType::pointer(type_only(expr, env)?)),
+        UnaryOp::Not => Ok(CType::int_type()),
+        UnaryOp::Plus | UnaryOp::Minus | UnaryOp::BitNot => {
+            let inner = rvalue_type(expr, env)?;
+            match inner.as_integer() {
+                Some(name) => Ok(CType::from_name(name.promote())),
+                None if inner.is_float() && op != UnaryOp::BitNot => Ok(inner),
+                None => Err(BoundErr::NotConst),
+            }
+        }
+    }
+}
+
+/// [`type_only`] for a binary operator.
+fn bin_type_only(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Result<CType, BoundErr> {
+    let left = rvalue_type(left, env)?;
+    let right = rvalue_type(right, env)?;
+    if op.is_cmp() || matches!(op, BinOp::And | BinOp::Or) {
+        return Ok(CType::int_type());
+    }
+    match op {
+        BinOp::Add | BinOp::Sub if left.is_pointer() && right.is_pointer() => {
+            Ok(CType::from_name(TypeName::Long))
+        }
+        BinOp::Add | BinOp::Sub if left.is_pointer() => Ok(left),
+        BinOp::Add if right.is_pointer() => Ok(right),
+        BinOp::Shl | BinOp::Shr => left
+            .as_integer()
+            .map(|name| CType::from_name(name.promote()))
+            .ok_or(BoundErr::NotConst),
+        _ => arith_common(&left, &right),
+    }
+}
+
+/// [`type_only`] for a conditional expression with second and third
+/// operands `left` and `right`.
+fn cond_type_only(left: &Expr, right: &Expr, env: Env) -> Result<CType, BoundErr> {
+    let left = rvalue_type(left, env)?;
+    let right = rvalue_type(right, env)?;
+    if left.is_arithmetic() && right.is_arithmetic() {
+        arith_common(&left, &right)
+    } else if left.is_void() || right.is_void() {
+        Ok(CType::Void)
+    } else if left.is_pointer() || right.is_pointer() {
+        // Every object pointer has the same size; `sizeof` is all
+        // that asks for this type here.
+        Ok(if left.is_pointer() { left } else { right })
+    } else {
+        Ok(left)
+    }
+}
+
+/// [`type_only`] for a call: a builtin's result type, or the return type
+/// of the function the callee points to.
+fn call_type_only(callee: &Expr, env: Env) -> Result<CType, BoundErr> {
+    if let Expr::Var { name, .. } = callee {
+        if let Some(ty) = builtin_result_type(name) {
+            return Ok(ty);
+        }
+    }
+    let callee = rvalue_type(callee, env)?;
+    let func = callee
+        .pointee()
+        .and_then(CType::func_ty)
+        .ok_or(BoundErr::NotConst)?;
+    Ok(func.ret.unqualified())
+}
+
+/// [`type_only`] for `base.field` or `base->field`.
+fn member_type_only(base: &Expr, field: &str, arrow: bool, env: Env) -> Result<CType, BoundErr> {
+    let base_ty = if arrow {
+        rvalue_type(base, env)?
+            .pointee()
+            .cloned()
+            .ok_or(BoundErr::NotConst)?
+    } else {
+        type_only(base, env)?
+    };
+    let handle = base_ty.struct_ref().ok_or(BoundErr::NotConst)?;
+    let hit = handle.lookup_member(field).ok_or(BoundErr::NotConst)?;
+    Ok(hit.field.ty.with_quals(base_ty.quals()))
 }
 
 /// Whether `expr`, ignoring parentheses, designates a bit-field member.
