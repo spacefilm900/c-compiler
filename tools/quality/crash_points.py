@@ -89,12 +89,8 @@ def classify(fname, kind, recv_line, raw_line, ctx):
     return "c", "no rule matched"
 
 def scan(src_dir):
-    lib = os.path.join(src_dir, "lib.rs")
-    test_mods = rust_scan.test_only_modules(rust_scan.strip(open(lib).read())) if os.path.exists(lib) else set()
     rows = []
-    for fname in sorted(os.listdir(src_dir)):
-        if not fname.endswith(".rs") or fname[:-3] in test_mods:
-            continue
+    for fname in rust_scan.source_files(src_dir):
         raw = open(os.path.join(src_dir, fname)).read()
         clean = rust_scan.strip(raw)
         spans = rust_scan.test_spans(clean)
@@ -110,7 +106,7 @@ def scan(src_dir):
                 continue  # the parser's own Result-returning `expect` method
             ctx = "\n".join(clean_lines[max(0, line - 3):line])
             raw_ctx = " ".join(l.strip() for l in raw_lines[line - 1:line + 2])
-            cat, why = classify(fname, kind, clean_lines[line - 1], raw_ctx, ctx)
+            cat, why = classify(rust_scan.top_module_file(fname), kind, clean_lines[line - 1], raw_ctx, ctx)
             rows.append({"file": "src/" + fname, "line": line, "kind": kind,
                          "function": enclosing(starts, line), "category": cat,
                          "reason": why, "code": raw_lines[line - 1].strip()[:160]})

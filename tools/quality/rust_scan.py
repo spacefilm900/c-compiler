@@ -105,8 +105,55 @@ def test_spans(clean):
     return spans
 
 def test_only_modules(lib_clean):
-    """Module names declared as `#[cfg(test)] mod name;` in lib.rs."""
+    """Module names declared as `#[cfg(test)] mod name;` in lib.rs (or any module file)."""
     return set(re.findall(r"#\[cfg\(test\)\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;", lib_clean))
+
+def source_files(src_dir, include_tests=False):
+    """The .rs files under src_dir, nested module directories included, as
+    sorted paths relative to src_dir ("lib.rs", "sema/decl.rs"). A file whose
+    module is declared `#[cfg(test)] mod name;` by its parent module (lib.rs
+    at the top; `dir.rs` or `dir/mod.rs` for files in `dir/`), or that lies
+    inside such a module, is left out unless include_tests is set."""
+    import os
+    cache = {}
+
+    def declared_test_mods(parent):
+        if parent not in cache:
+            path = os.path.join(src_dir, parent)
+            cache[parent] = (test_only_modules(strip(open(path).read()))
+                             if os.path.exists(path) else set())
+        return cache[parent]
+
+    def is_test(rel):
+        parts = rel[:-3].split("/")
+        if parts[-1] == "mod":
+            parts = parts[:-1]
+        if not parts or parts == ["lib"] or parts == ["main"]:
+            return False
+        name, dirs = parts[-1], parts[:-1]
+        if not dirs:
+            parents = ["lib.rs"]
+        else:
+            d = "/".join(dirs)
+            parents = [d + ".rs", d + "/mod.rs"]
+        for parent in parents:
+            if name in declared_test_mods(parent):
+                return True
+        return bool(dirs) and is_test("/".join(dirs) + ".rs")
+
+    out = []
+    for root, _, names in os.walk(src_dir):
+        for n in names:
+            if n.endswith(".rs"):
+                rel = os.path.relpath(os.path.join(root, n), src_dir).replace(os.sep, "/")
+                if include_tests or not is_test(rel):
+                    out.append(rel)
+    return sorted(out)
+
+def top_module_file(rel):
+    """The file name a nested module path belongs to: "sema/decl.rs" -> "sema.rs"."""
+    first = rel.split("/")[0]
+    return first if first.endswith(".rs") else first + ".rs"
 
 def in_spans(line, spans):
     return any(a <= line <= b for a, b, _ in spans)

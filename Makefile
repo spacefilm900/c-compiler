@@ -5,7 +5,7 @@ CARGO ?= cargo
 
 all: build/compiler
 
-build/compiler: Cargo.toml $(wildcard src/*.rs)
+build/compiler: Cargo.toml $(wildcard src/*.rs src/*/*.rs)
 	$(CARGO) build --release
 	mkdir -p build
 	cp -f target/release/compiler $@
