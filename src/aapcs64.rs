@@ -37,10 +37,9 @@ pub fn classify(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
     if !bare.is_record() {
         return Ok(AggAbi::Memory);
     }
-    if !bare.is_complete() {
+    let Some(size) = bare.size() else {
         return Err(AbiFail::Incomplete);
-    }
-    let size = bare.size().expect("complete aggregate");
+    };
     let align = match use_as {
         AggUse::Param => arg_align(&bare),
         AggUse::Return => u64::from(bare.align()),

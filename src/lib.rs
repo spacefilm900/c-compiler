@@ -108,7 +108,7 @@ fn compile_impl(
     )?);
     times.sema = start.elapsed();
     let start = Instant::now();
-    let ir = irgen::render(&unit, filename);
+    let ir = irgen::render(&unit, filename).map_err(|diag| in_source_file(diag, &tokens))?;
     times.irgen = start.elapsed();
     if leak {
         std::mem::forget(unit);
@@ -119,6 +119,19 @@ fn compile_impl(
         warnings,
         times,
     })
+}
+
+/// IR generation knows only the line and column. Like semantic analysis,
+/// take the file name from the token at that position, so an internal
+/// error inside an included header names the header.
+fn in_source_file(mut diag: Diagnostic, tokens: &[token::Token]) -> Diagnostic {
+    if let Some(token) = tokens
+        .iter()
+        .find(|token| (token.line, token.column) == (diag.line, diag.column))
+    {
+        diag.filename = token.filename.to_string();
+    }
+    diag
 }
 
 #[cfg(test)]
@@ -160,6 +173,50 @@ mod tests {
         assert!(strict_err("int main(void) { return ({ 1; }); }").contains("-std=gnu11"));
         assert!(strict_err("void *f(void) { l: return &&l; }").contains("-std=gnu11"));
         assert!(strict_err("void f(void *p) { goto *p; }").contains("-std=gnu11"));
+    }
+
+    #[test]
+    fn switch_labels_do_not_jump_into_statement_expressions() {
+        // GCC manual, "Statements and Declarations in Expressions": a switch
+        // may not jump into a statement expression.
+        for (source, label) in [
+            ("int f(int x) { switch (x) { case 0: ({ case 1: x++; }); } return x; }", "case"),
+            ("int f(int x) { switch (x) { case 0: ({ default: x++; }); } return x; }", "default"),
+            ("int f(int x) { switch (x) { case 0: x = ({ while (x) { case 1: x--; } x; }); } return x; }", "case"),
+        ] {
+            let err = match compile(source, Dialect::Gnu11) {
+                Ok(_) => panic!("accepted: {source}"),
+                Err(err) => err,
+            };
+            assert!(!err.is_internal(), "{err}");
+            assert_eq!(
+                err.message,
+                format!("'{label}' label jumps into a statement expression from its switch"),
+                "{source}"
+            );
+        }
+        let err = match compile(
+            "int f(int x) { ({ case 1: x++; }); return x; }",
+            Dialect::Gnu11,
+        ) {
+            Ok(_) => panic!("accepted a case with no switch"),
+            Err(err) => err,
+        };
+        assert_eq!(err.message, "'case' label is not inside a switch");
+        // A switch of its own inside the statement expression, and break or
+        // continue out of one, stay valid.
+        gnu_ok(
+            "int f(int x) { switch (x) { case 0: x = ({ int t = 0; switch (x) { case 1: t = 2; break; default: t = 3; } t; }); } return x; }",
+        );
+        gnu_ok(
+            "int f(int x) { switch (x) { case 1: ({ if (x) break; x = 2; }); x++; } return x; }",
+        );
+        gnu_ok("int f(int x) { while (x) { int y = ({ if (x > 2) continue; x; }); x -= y; } return x; }");
+        let err = match compile("int f(int x) { ({ break; }); return x; }", Dialect::Gnu11) {
+            Ok(_) => panic!("accepted break outside a loop"),
+            Err(err) => err,
+        };
+        assert_eq!(err.message, "'break' is not inside a loop or switch");
     }
 
     #[test]

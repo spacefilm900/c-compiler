@@ -34,8 +34,43 @@ use crate::abi::{
     RegPiece,
 };
 use crate::ast::*;
+use crate::diag::Diagnostic;
 
-pub fn render(unit: &TranslationUnit, filename: &str) -> String {
+/// Render the checked unit as a textual LLVM IR module.
+///
+/// Semantic analysis has rejected every invalid program, so an error here
+/// is an internal compiler error: a case that analysis should have caught.
+/// It is reported at the source position being lowered, with phase `irgen`.
+pub fn render(unit: &TranslationUnit, filename: &str) -> Result<String, Diagnostic> {
+    render_module(unit, filename)
+        .map_err(|ice| Diagnostic::internal(filename, ice.line, ice.column, "irgen", ice.message))
+}
+
+/// An internal compiler error found while lowering. `line` 0 means that no
+/// source position is known, as for a file-scope initializer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Ice {
+    line: usize,
+    column: usize,
+    message: String,
+}
+
+impl Ice {
+    fn new(line: usize, column: usize, message: impl Into<String>) -> Self {
+        Self {
+            line,
+            column,
+            message: message.into(),
+        }
+    }
+
+    /// An error with no source position.
+    fn global(message: impl Into<String>) -> Self {
+        Self::new(0, 0, message)
+    }
+}
+
+fn render_module(unit: &TranslationUnit, filename: &str) -> Result<String, Ice> {
     let mut out = String::new();
     out.push_str(&format!("source_filename = {}\n", llvm_string(filename)));
     let target = crate::target::current();
@@ -71,13 +106,13 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
     // Function bodies are rendered first because they decide which library
     // functions IR lowering calls. An internal object that shares such a
     // name is then given a private symbol and the bodies are rendered again.
-    let (mut functions, mut needs) = render_functions(unit, &Renames::new());
+    let (mut functions, mut needs) = render_functions(unit, &Renames::new())?;
     let renames = library_renames(unit, &needs);
     if !renames.is_empty() {
-        (functions, needs) = render_functions(unit, &renames);
+        (functions, needs) = render_functions(unit, &renames)?;
     }
     for global in &unit.globals {
-        out.push_str(&render_global(global, &renames));
+        out.push_str(&render_global(global, &renames)?);
         out.push('\n');
         wrote_prelude = true;
     }
@@ -197,7 +232,7 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
         out.push_str(&text);
         out.push_str("\n\n");
     }
-    out
+    Ok(out)
 }
 
 /// LLVM symbol replacements: C linker name to the private name used in IR.
@@ -211,20 +246,23 @@ type Renames = std::collections::HashMap<String, String>;
 /// `__builtin_nan*` tag.
 const MEMORY_LIBCALLS: [&str; 3] = ["memcpy", "memmove", "memset"];
 
-fn render_functions(unit: &TranslationUnit, renames: &Renames) -> (Vec<String>, LowerNeeds) {
+fn render_functions(
+    unit: &TranslationUnit,
+    renames: &Renames,
+) -> Result<(Vec<String>, LowerNeeds), Ice> {
     let mut functions = Vec::new();
     let mut needs = LowerNeeds::default();
     for decl in &unit.decls {
         if let TopDecl::Func(func) = decl {
             if func.body.is_some() {
                 let (text, fn_needs) =
-                    render_function(func, renames, unit.fn_attrs.get(&func.symbol));
+                    render_function(func, renames, unit.fn_attrs.get(&func.symbol))?;
                 needs.merge(fn_needs);
                 functions.push(text);
             }
         }
     }
-    (functions, needs)
+    Ok((functions, needs))
 }
 
 /// Private LLVM names for internal-linkage entities whose C name is a
@@ -297,7 +335,7 @@ fn renamed<'a>(name: &'a str, renames: &'a Renames) -> &'a str {
     renames.get(name).map_or(name, String::as_str)
 }
 
-fn render_global(global: &IrGlobal, renames: &Renames) -> String {
+fn render_global(global: &IrGlobal, renames: &Renames) -> Result<String, Ice> {
     let name = llvm_global(renamed(&global.name, renames));
     let ir = global.ty.ir_type();
     let align = global.ty.align().max(global.attrs.align.unwrap_or(0));
@@ -324,12 +362,14 @@ fn render_global(global: &IrGlobal, renames: &Renames) -> String {
         // its own shape. The global then has that type instead of `ir`;
         // every access goes through an opaque `ptr`, so only the size and
         // alignment have to agree.
-        let (ir, spelled) = render_typed_const(&global.ty, value, renames);
-        format!("{name} = {linkage}{kind} {ir} {spelled}{section}, align {align}")
+        let (ir, spelled) = render_typed_const(&global.ty, value, renames)?;
+        Ok(format!(
+            "{name} = {linkage}{kind} {ir} {spelled}{section}, align {align}"
+        ))
     } else if global.attrs.weak {
-        format!("{name} = extern_weak {kind} {ir}, align {align}")
+        Ok(format!("{name} = extern_weak {kind} {ir}, align {align}"))
     } else {
-        format!("{name} = external {kind} {ir}, align {align}")
+        Ok(format!("{name} = external {kind} {ir}, align {align}"))
     }
 }
 
@@ -490,13 +530,17 @@ fn render_function(
     func: &FuncDef,
     renames: &Renames,
     attrs: Option<&FnAttrs>,
-) -> (String, LowerNeeds) {
-    let body = func.body.as_ref().expect("defined function");
+) -> Result<(String, LowerNeeds), Ice> {
+    let ice = |message: &str| Ice::new(func.line, func.column, message);
+    let body = func
+        .body
+        .as_ref()
+        .ok_or_else(|| ice("function has no body"))?;
     let param_tys: Vec<CType> = func.params.iter().map(|param| param.ty.clone()).collect();
     // Semantic analysis rejects a definition whose aggregate needs an SSE
     // register or is still incomplete, so the signature is known here.
     let sig = function_sig(&func.ret_type, &param_tys)
-        .expect("defined function has a System V signature");
+        .map_err(|_| ice("defined function has no calling-convention signature"))?;
     let names: Vec<Vec<String>> = sig
         .params
         .iter()
@@ -547,12 +591,16 @@ fn render_function(
         gen.store_param(param, names, parts);
     }
 
+    gen.pos = (func.line, func.column);
     gen.gen_compound(body);
     if !gen.terminated {
         gen.emit_implicit_return();
     }
+    if let Some(ice) = gen.ice.take() {
+        return Err(ice);
+    }
     gen.emit("}");
-    (
+    Ok((
         gen.lines.join("\n"),
         LowerNeeds {
             memmove: gen.needs_memmove,
@@ -564,7 +612,7 @@ fn render_function(
             nanl: gen.needs_nanl,
             intrinsics: gen.intrinsics,
         },
-    )
+    ))
 }
 
 fn local_slots(compound: &Compound) -> Vec<(String, CType, u32)> {
@@ -706,6 +754,13 @@ struct Gen {
     /// GNU case ranges of the switch being collected: low and high bits
     /// and the case block.
     switch_ranges: Vec<(u128, u128, String)>,
+    /// Line and column of the statement or expression being lowered, for an
+    /// internal compiler error.
+    pos: (usize, usize),
+    /// The first internal compiler error. Lowering goes on with a
+    /// placeholder operand, so callers need not check; `render_function`
+    /// then returns this instead of the function's IR.
+    ice: Option<Ice>,
 }
 
 /// One store of an automatic aggregate initializer, evaluated and waiting
@@ -744,11 +799,32 @@ impl Gen {
             unaligned: std::collections::HashSet::new(),
             intrinsics: std::collections::BTreeSet::new(),
             switch_ranges: Vec::new(),
+            pos: (0, 0),
+            ice: None,
         }
     }
 }
 
 impl Gen {
+    /// Record an internal compiler error at the current source position and
+    /// return a placeholder operand. Only the first error is kept.
+    fn ice(&mut self, message: &str) -> String {
+        let (line, column) = self.pos;
+        self.ice_at(line, column, message)
+    }
+
+    /// [`Gen::ice`] at the position of `expr`.
+    fn ice_in(&mut self, expr: &Expr, message: &str) -> String {
+        self.ice_at(expr.line(), expr.column(), message)
+    }
+
+    fn ice_at(&mut self, line: usize, column: usize, message: &str) -> String {
+        if self.ice.is_none() {
+            self.ice = Some(Ice::new(line, column, message));
+        }
+        "poison".to_string()
+    }
+
     fn emit(&mut self, line: &str) {
         self.lines.push(line.to_string());
     }
@@ -789,29 +865,26 @@ impl Gen {
     }
 
     fn start(&mut self, name: String) {
-        assert!(
-            self.terminated,
-            "internal compiler error: fallthrough into {name}"
-        );
+        if !self.terminated {
+            self.ice(&format!("block falls through into {name}"));
+        }
         self.emit(&format!("{name}:"));
         self.cur = name;
         self.terminated = false;
     }
 
     fn br(&mut self, label: &str) {
-        assert!(
-            !self.terminated,
-            "internal compiler error: branch after terminator"
-        );
+        if self.terminated {
+            self.ice("branch after the end of a block");
+        }
         self.emit(&format!("  br label %{label}"));
         self.terminated = true;
     }
 
     fn br_cond(&mut self, cond: &str, then_label: &str, else_label: &str) {
-        assert!(
-            !self.terminated,
-            "internal compiler error: branch after terminator"
-        );
+        if self.terminated {
+            self.ice("branch after the end of a block");
+        }
         self.emit(&format!(
             "  br i1 {cond}, label %{then_label}, label %{else_label}"
         ));
@@ -825,6 +898,7 @@ impl Gen {
     }
 
     fn gen_stmt(&mut self, stmt: &Stmt) {
+        self.pos = stmt.pos();
         match stmt {
             Stmt::Compound(compound) => self.gen_compound(compound),
             Stmt::Decl(decl) => {
@@ -862,7 +936,12 @@ impl Gen {
                 body,
                 promoted,
                 ..
-            } => self.gen_switch(cond, body, promoted.expect("switch type")),
+            } => match promoted {
+                Some(promoted) => self.gen_switch(cond, body, *promoted),
+                None => {
+                    self.ice("switch has no promoted controlling type");
+                }
+            },
             Stmt::Case { stmt, .. } | Stmt::Default { stmt, .. } => {
                 let label = self.take_switch_label();
                 self.place_label(&label);
@@ -912,8 +991,8 @@ impl Gen {
                 let end = self
                     .breaks
                     .last()
-                    .expect("break outside loop or switch")
-                    .clone();
+                    .cloned()
+                    .unwrap_or_else(|| self.ice("'break' is not inside a loop or switch"));
                 self.br(&end);
             }
             Stmt::Continue { .. } => {
@@ -921,8 +1000,8 @@ impl Gen {
                 let cont = self
                     .continues
                     .last()
-                    .expect("continue outside loop")
-                    .clone();
+                    .cloned()
+                    .unwrap_or_else(|| self.ice("'continue' is not inside a loop"));
                 self.br(&cont);
             }
         }
@@ -1087,9 +1166,12 @@ impl Gen {
             }
             Expr::StmtExpr { body, ty, .. } => {
                 let ty = ty.clone().expect("typed statement expression");
-                let last = self
-                    .gen_stmt_expr_body(body)
-                    .expect("a record-valued statement expression ends in an expression");
+                let Some(last) = self.gen_stmt_expr_body(body) else {
+                    return self.ice_in(
+                        expr,
+                        "a struct or union statement expression does not end in an expression",
+                    );
+                };
                 let volatile = last.ty().is_some_and(|ty| ty.is_volatile());
                 let src = self.record_ptr(last);
                 self.ensure_block();
@@ -1098,7 +1180,7 @@ impl Gen {
                 self.copy_struct(&ty, &src, &tmp, volatile);
                 tmp
             }
-            _ => panic!("internal compiler error: aggregate expression has no address"),
+            _ => self.ice_in(expr, "struct or union expression has no address"),
         }
     }
 
@@ -1127,7 +1209,7 @@ impl Gen {
                 let rendered = self.render_call_args(args, resolved, &sig, None);
                 let value = self
                     .emit_call(callee, resolved, &sig, &rendered)
-                    .expect("x87 aggregate returns a value");
+                    .unwrap_or_else(|| self.ice_in(expr, "call returning a struct gave no value"));
                 let align = ty.align().max(16);
                 self.emit(&format!(
                     "  store x86_fp80 {value}, ptr {tmp}, align {align}"
@@ -1137,17 +1219,19 @@ impl Gen {
                 let rendered = self.render_call_args(args, resolved, &sig, None);
                 let value = self
                     .emit_call(callee, resolved, &sig, &rendered)
-                    .expect("register aggregate returns a value");
+                    .unwrap_or_else(|| self.ice_in(expr, "call returning a struct gave no value"));
                 self.store_pieces(&tmp, ty.align(), &pieces, &value);
             }
             Some(AggAbi::Coerce { ty: ir, size }) => {
                 let rendered = self.render_call_args(args, resolved, &sig, None);
                 let value = self
                     .emit_call(callee, resolved, &sig, &rendered)
-                    .expect("register aggregate returns a value");
+                    .unwrap_or_else(|| self.ice_in(expr, "call returning a struct gave no value"));
                 self.store_coerced(&value, &tmp, &ty, &ir, size);
             }
-            Some(AggAbi::Indirect) | None => unreachable!("aggregate call"),
+            Some(AggAbi::Indirect) | None => {
+                self.ice_in(expr, "call returning a struct has no return convention");
+            }
         }
         tmp
     }
@@ -1164,7 +1248,13 @@ impl Gen {
         let mut free_int = sig.free_int;
         let mut free_sse = sig.free_sse;
         if let Some(slot) = sret_slot {
-            let attrs = sig.sret_attrs.as_deref().expect("sret attribute");
+            let attrs = match sig.sret_attrs.as_deref() {
+                Some(attrs) => attrs,
+                None => {
+                    self.ice("memory return has no sret attribute");
+                    ""
+                }
+            };
             rendered.push(format_part("ptr", attrs, Some(slot)));
         }
         for (index, arg) in args.iter().enumerate() {
@@ -1500,7 +1590,10 @@ impl Gen {
     }
 
     fn emit_record_return(&mut self, src: &str, src_volatile: bool) {
-        let agg = self.ret_agg.clone().expect("record return");
+        let Some(agg) = self.ret_agg.clone() else {
+            self.ice("struct or union return from a function that returns a scalar");
+            return;
+        };
         let align = self.ret_ty.align();
         match agg {
             AggAbi::Memory => {
@@ -1589,7 +1682,12 @@ impl Gen {
     }
 
     fn load_bitfield_at(&mut self, addr: &str, expr: &Expr) -> String {
-        let info = bit_info(expr).expect("bit-field");
+        let Some(info) = bit_info(expr) else {
+            return self.ice_in(
+                expr,
+                "bit-field load from an expression that is not a bit-field",
+            );
+        };
         let container = container_type(
             info.container_bits,
             info.signed_field,
@@ -1685,7 +1783,12 @@ impl Gen {
     }
 
     fn store_bitfield(&mut self, addr: &str, expr: &Expr, value: &str, from: &CType) -> String {
-        let info = bit_info(expr).expect("bit-field");
+        let Some(info) = bit_info(expr) else {
+            return self.ice_in(
+                expr,
+                "bit-field store to an expression that is not a bit-field",
+            );
+        };
         let container = container_type(
             info.container_bits,
             info.signed_field,
@@ -1847,27 +1950,10 @@ impl Gen {
             ));
             return tmp;
         }
-        if let (Some(from_f), Some(to_f)) = (from.float_kind(), to.float_kind()) {
-            if from_f == to_f || from.ir_type() == to.ir_type() {
-                return value.to_string();
-            }
-            let op = if float_rank(to_f) > float_rank(from_f) {
-                "fpext"
-            } else {
-                "fptrunc"
-            };
-            let tmp = self.fresh();
-            self.emit(&format!(
-                "  {tmp} = {op} {} {value} to {}",
-                from.ir_type(),
-                to.ir_type()
-            ));
-            return tmp;
-        }
-        if from.is_float() && to.as_integer() == Some(TypeName::Bool) {
+        if let (Some(kind), Some(TypeName::Bool)) = (from.float_kind(), to.as_integer()) {
             let cmp = self.fresh();
             let tmp = self.fresh();
-            let zero = crate::float::llvm_const(from.float_kind().expect("float"), 0);
+            let zero = crate::float::llvm_const(kind, 0);
             self.emit(&format!(
                 "  {cmp} = fcmp une {} {value}, {zero}",
                 from.ir_type()
@@ -2113,11 +2199,9 @@ impl Gen {
         let entry = self.label();
         self.start(entry);
         self.gen_stmt(body);
-        assert_eq!(
-            self.switch_at,
-            self.switch_labels.len(),
-            "internal compiler error: switch label was not emitted"
-        );
+        if self.switch_at != self.switch_labels.len() {
+            self.ice("a case label of this switch was not emitted");
+        }
         self.breaks.pop();
         if !self.terminated {
             self.br(&end_label);
@@ -2161,10 +2245,15 @@ impl Gen {
                 value,
                 high_value,
                 stmt,
+                line,
+                column,
                 ..
             } => {
                 let label = self.label();
-                let bits = value.expect("case value");
+                let Some(bits) = *value else {
+                    self.ice_at(*line, *column, "case label has no value");
+                    return;
+                };
                 match high_value {
                     None => cases.push((bits, label.clone())),
                     Some(high) => self.switch_ranges.push((bits, *high, label.clone())),
@@ -2217,8 +2306,8 @@ impl Gen {
         let label = self
             .switch_labels
             .get(self.switch_at)
-            .expect("internal compiler error: case label was not collected")
-            .clone();
+            .cloned()
+            .unwrap_or_else(|| self.ice("case label was not collected for its switch"));
         self.switch_at += 1;
         label
     }
@@ -2640,7 +2729,7 @@ impl Gen {
 
     fn gen_val(&mut self, expr: &Expr) -> String {
         self.gen_expr(expr)
-            .expect("internal compiler error: void expression used as a value")
+            .unwrap_or_else(|| self.ice_in(expr, "void expression used as a value"))
     }
 
     fn gen_expr(&mut self, expr: &Expr) -> Option<String> {
@@ -2653,7 +2742,9 @@ impl Gen {
             Expr::Int { bits, value_ty, .. } => Some(value_ty.format_bits(u128::from(*bits))),
             Expr::Float { bits, kind, .. } => Some(crate::float::llvm_const(*kind, *bits)),
             Expr::LabelAddr { name, func, .. } => {
-                let func = func.as_deref().expect("label address in a function");
+                let Some(func) = func.as_deref() else {
+                    return Some(self.ice_in(expr, "label address outside a function"));
+                };
                 Some(format!(
                     "blockaddress({}, %{})",
                     llvm_global(renamed(func, &self.renames)),
@@ -2681,9 +2772,11 @@ impl Gen {
                 let src = expr.ty().expect("typed");
                 if src.is_float() {
                     Some(value)
-                } else {
-                    let promoted = CType::from_name(src.as_integer().expect("integer").promote());
+                } else if let Some(int) = src.as_integer() {
+                    let promoted = CType::from_name(int.promote());
                     Some(self.convert(&value, &src, &promoted))
+                } else {
+                    Some(self.ice_in(expr, "unary '+' on an operand that is not arithmetic"))
                 }
             }
             Expr::Unary {
@@ -2774,8 +2867,10 @@ impl Gen {
                 let size = match operand {
                     SizeofOperand::Type(ty) => ty.size(),
                     SizeofOperand::Expr(inner) => inner.ty().expect("typed").size(),
-                }
-                .expect("sizeof of a complete type");
+                };
+                let Some(size) = size else {
+                    return Some(self.ice_in(expr, "sizeof of an incomplete type"));
+                };
                 Some(TypeName::ULong.format_bits(u128::from(size)))
             }
             Expr::Cast { ty_name, expr, .. } => {
@@ -2947,7 +3042,10 @@ impl Gen {
             } => self.gen_val(expr),
             Expr::Index { base, index, .. } => self.gen_ptr_index(base, index),
             Expr::Decay { expr, .. } => self.gen_addr(expr),
-            Expr::Str { symbol, .. } => llvm_global(symbol.as_deref().expect("string symbol")),
+            Expr::Str { symbol, .. } => match symbol.as_deref() {
+                Some(symbol) => llvm_global(symbol),
+                None => self.ice_in(expr, "string literal has no symbol"),
+            },
             Expr::Member {
                 base,
                 arrow,
@@ -2981,21 +3079,16 @@ impl Gen {
                     self.unaligned.insert(tmp.clone());
                 }
                 if *bytewise {
-                    let offset = offset.expect("member offset");
+                    let Some(offset) = *offset else {
+                        return self.ice_in(expr, "member access has no byte offset");
+                    };
                     self.emit(&format!(
                         "  {tmp} = getelementptr inbounds i8, ptr {base_ptr}, i64 {offset}"
                     ));
                 } else {
-                    let struct_ty = if *arrow {
-                        base.ty()
-                            .as_ref()
-                            .and_then(CType::pointee)
-                            .expect("pointer to struct")
-                            .clone()
-                    } else {
-                        base.ty().expect("struct")
+                    let (Some(struct_ty), Some(index)) = (record_ty, *index) else {
+                        return self.ice_in(expr, "member access has no record type or index");
                     };
-                    let index = index.expect("member index");
                     self.emit(&format!(
                         "  {tmp} = getelementptr inbounds {}, ptr {base_ptr}, i32 0, i32 {index}",
                         struct_ty.ir_type()
@@ -3004,7 +3097,7 @@ impl Gen {
                 tmp
             }
             Expr::CompoundLit { decl, .. } => self.gen_compound_lit(decl),
-            _ => panic!("internal compiler error: address of a non-lvalue"),
+            _ => self.ice_in(expr, "address of an expression that is not an lvalue"),
         }
     }
 
@@ -3060,12 +3153,17 @@ impl Gen {
             self.emit(&format!("  {tmp} = sub i64 0, {idx}"));
             idx = tmp;
         }
-        let elem = ptr_expr
+        let Some(elem) = ptr_expr
             .ty()
             .as_ref()
             .and_then(CType::pointee)
-            .expect("pointer")
-            .ir_type();
+            .map(CType::ir_type)
+        else {
+            return self.ice_in(
+                ptr_expr,
+                "pointer arithmetic on an operand that is not a pointer",
+            );
+        };
         let tmp = self.fresh();
         self.emit(&format!(
             "  {tmp} = getelementptr inbounds {elem}, ptr {ptr}, i64 {idx}"
@@ -3085,12 +3183,14 @@ impl Gen {
         self.emit(&format!("  {right_int} = ptrtoint ptr {right_val} to i64"));
         let diff = self.fresh();
         self.emit(&format!("  {diff} = sub i64 {left_int}, {right_int}"));
-        let size = left
+        let Some(size) = left
             .ty()
             .as_ref()
             .and_then(CType::pointee)
             .and_then(CType::size)
-            .expect("complete pointee");
+        else {
+            return self.ice_in(left, "pointer subtraction with an incomplete pointee type");
+        };
         if size == 1 {
             return diff;
         }
@@ -3107,7 +3207,13 @@ impl Gen {
             self.emit(&format!("  {tmp} = fneg {} {value}", src.ir_type()));
             return tmp;
         }
-        let dest = CType::from_name(src.as_integer().expect("integer").promote());
+        let Some(int) = src.as_integer() else {
+            return self.ice_in(
+                expr,
+                "integer operator on an operand that is not an integer",
+            );
+        };
+        let dest = CType::from_name(int.promote());
         let value = self.gen_val(expr);
         let value = self.convert(&value, &src, &dest);
         let tmp = self.fresh();
@@ -3175,14 +3281,13 @@ impl Gen {
         } else {
             self.load(&dest, &addr)
         };
-        if dest.is_pointer() {
+        if let Some(elem) = dest.pointee().map(CType::ir_type) {
             let mut idx = self.extend_i64(&rhs, &rhs_ty);
             if op == BinOp::Sub {
                 let tmp = self.fresh();
                 self.emit(&format!("  {tmp} = sub i64 0, {idx}"));
                 idx = tmp;
             }
-            let elem = dest.pointee().expect("pointer").ir_type();
             let updated = self.fresh();
             self.emit(&format!(
                 "  {updated} = getelementptr inbounds {elem}, ptr {old}, i64 {idx}"
@@ -3204,8 +3309,9 @@ impl Gen {
             self.store(&dest, &stored, &addr);
             return stored;
         }
-        let dest_i = dest.as_integer().expect("integer");
-        let rhs_i = rhs_ty.as_integer().expect("integer");
+        let (Some(dest_i), Some(rhs_i)) = (dest.as_integer(), rhs_ty.as_integer()) else {
+            return self.ice_in(target, "compound assignment operands are not arithmetic");
+        };
         let common = if matches!(op, BinOp::Shl | BinOp::Shr) {
             dest_i.promote()
         } else {
@@ -3237,8 +3343,7 @@ impl Gen {
         } else {
             self.load(&dest, &addr)
         };
-        if dest.is_float() {
-            let kind = dest.float_kind().expect("float");
+        if let Some(kind) = dest.float_kind() {
             let one_bits: u128 = match crate::float::fold(kind) {
                 FloatKind::Float => 0x3f80_0000,
                 FloatKind::Double => 0x3ff0_0000_0000_0000,
@@ -3259,8 +3364,7 @@ impl Gen {
             };
             return if op.is_prefix() { written } else { old };
         }
-        if dest.is_pointer() {
-            let elem = dest.pointee().expect("pointer").ir_type();
+        if let Some(elem) = dest.pointee().map(CType::ir_type) {
             let step = if op.is_increment() { "1" } else { "-1" };
             let updated = self.fresh();
             self.emit(&format!(
@@ -3269,7 +3373,9 @@ impl Gen {
             self.store(&dest, &updated, &addr);
             return if op.is_prefix() { updated } else { old };
         }
-        let dest_i = dest.as_integer().expect("integer");
+        let Some(dest_i) = dest.as_integer() else {
+            return self.ice_in(target, "'++' or '--' on an operand that is not a scalar");
+        };
         let common = dest_i.usual(TypeName::Int);
         let common_ty = CType::from_name(common);
         let old_c = self.convert(&old, &dest, &common_ty);
@@ -3418,9 +3524,12 @@ impl Gen {
                 match crate::float::nan_tag_from_expr(&args[0]) {
                     Some(tag) => crate::float::nan_bits(kind, tag, signaling),
                     None => {
-                        let lib = fp
-                            .libm_nan()
-                            .expect("malformed __builtin_nans* tag should be diagnosed");
+                        let Some(lib) = fp.libm_nan() else {
+                            return Some(self.ice_in(
+                                &args[0],
+                                "malformed __builtin_nans tag was not diagnosed",
+                            ));
+                        };
                         return Some(self.gen_lib_nan(lib, fp.kind(), &args[0]));
                     }
                 }
@@ -3733,12 +3842,13 @@ impl Gen {
         let (left, left_ty) = operand(self, 0);
         let (right, right_ty) = operand(self, 1);
         let dest_ptr = self.gen_val(&args[2]);
-        let target = match fixed {
-            Some(ty) => ty,
-            None => args[2]
+        let target = match fixed.or_else(|| {
+            args[2]
                 .ty()
                 .and_then(|ty| ty.pointee().and_then(CType::as_integer))
-                .expect("pointer to an integer"),
+        }) {
+            Some(ty) => ty,
+            None => return self.ice_in(&args[2], "overflow result is not a pointer to an integer"),
         };
         let tir = target.ir_type();
         let tw = target.width();
@@ -4046,20 +4156,18 @@ impl Gen {
         let then_val = self
             .gen_expr(then_expr)
             .map(|value| self.convert(&value, &then_expr.ty().expect("typed"), &result));
-        assert!(
-            !self.terminated,
-            "internal compiler error: expression terminated a block"
-        );
+        if self.terminated {
+            self.ice("an expression ended its block");
+        }
         let then_block = self.cur.clone();
         self.br(&end_label);
         self.start(else_label);
         let else_val = self
             .gen_expr(else_expr)
             .map(|value| self.convert(&value, &else_expr.ty().expect("typed"), &result));
-        assert!(
-            !self.terminated,
-            "internal compiler error: expression terminated a block"
-        );
+        if self.terminated {
+            self.ice("an expression ended its block");
+        }
         let else_block = self.cur.clone();
         self.br(&end_label);
         self.start(end_label);
@@ -4073,7 +4181,8 @@ impl Gen {
                 Some(tmp)
             }
             (None, None) => None,
-            _ => unreachable!("conditional arms have different types"),
+            // Only after an earlier internal error, which is the one reported.
+            _ => Some(self.ice("conditional arms have different types")),
         }
     }
 
@@ -4697,9 +4806,13 @@ fn has_reloc_image(value: &ConstInit) -> bool {
 /// `ptrtoint`) pieces at their offsets. A struct or array around one is
 /// then a packed struct too, laid out from the C offsets, unless every
 /// array element still has the same type.
-fn render_typed_const(ty: &CType, value: &ConstInit, renames: &Renames) -> (String, String) {
+fn render_typed_const(
+    ty: &CType,
+    value: &ConstInit,
+    renames: &Renames,
+) -> Result<(String, String), Ice> {
     if !has_reloc_image(value) {
-        return (ty.ir_type(), render_const(ty, value, renames));
+        return Ok((ty.ir_type(), render_const(ty, value, renames)?));
     }
     let size = ty.size().unwrap_or(0);
     let mut pieces: Vec<(String, String)> = Vec::new();
@@ -4739,7 +4852,11 @@ fn render_typed_const(ty: &CType, value: &ConstInit, renames: &Renames) -> (Stri
                         pieces.push(("ptr".to_string(), render_ptr(ptr, renames)));
                         at = offset + 8;
                     }
-                    other => unreachable!("relocation {other:?}"),
+                    other => {
+                        return Err(Ice::global(format!(
+                            "initializer relocation is not an address: {other:?}"
+                        )))
+                    }
                 }
             }
             run(&mut pieces, at, bytes.len() as u64);
@@ -4747,39 +4864,38 @@ fn render_typed_const(ty: &CType, value: &ConstInit, renames: &Renames) -> (Stri
         }
         ConstInit::Aggregate(items) if ty.array_elem().is_some() => {
             let elem = ty.array_elem().expect("array element");
-            let parts: Vec<_> = items
+            let parts = items
                 .iter()
                 .map(|item| render_typed_const(elem, item, renames))
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
             if parts.iter().all(|(ir, _)| *ir == parts[0].0) && !parts.is_empty() {
                 let body = parts
                     .iter()
                     .map(|(ir, spelled)| format!("{ir} {spelled}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                return (
+                return Ok((
                     format!("[{} x {}]", parts.len(), parts[0].0),
                     format!("[{body}]"),
-                );
+                ));
             }
             let step = elem.size().unwrap_or(0);
             pieces.extend(parts);
             pad(&mut pieces, step * items.len() as u64, size);
         }
         ConstInit::Aggregate(items) => {
-            let fields = ty
-                .struct_ref()
-                .and_then(StructRef::fields)
-                .expect("aggregate with an image inside is a struct or array");
+            let fields = ty.struct_ref().and_then(StructRef::fields).ok_or_else(|| {
+                Ice::global("aggregate initializer with addresses is not a struct or array")
+            })?;
             let mut at = 0u64;
             for (field, item) in fields.iter().zip(items) {
                 pad(&mut pieces, at, field.offset);
-                pieces.push(render_typed_const(&field.ty, item, renames));
+                pieces.push(render_typed_const(&field.ty, item, renames)?);
                 at = at.max(field.offset + field.ty.size().unwrap_or(0));
             }
             pad(&mut pieces, at, size);
         }
-        other => unreachable!("constant {other:?} has no image"),
+        other => return Err(Ice::global(format!("constant {other:?} has no byte image"))),
     }
     let types = pieces
         .iter()
@@ -4791,21 +4907,24 @@ fn render_typed_const(ty: &CType, value: &ConstInit, renames: &Renames) -> (Stri
         .map(|(ir, spelled)| format!("{ir} {spelled}"))
         .collect::<Vec<_>>()
         .join(", ");
-    (format!("<{{ {types} }}>"), format!("<{{ {body} }}>"))
+    Ok((format!("<{{ {types} }}>"), format!("<{{ {body} }}>")))
 }
 
-fn render_const(ty: &CType, value: &ConstInit, renames: &Renames) -> String {
+fn render_const(ty: &CType, value: &ConstInit, renames: &Renames) -> Result<String, Ice> {
     if ty.is_union() || ty.record_has_bitfield() {
-        return render_union_const(ty, value);
+        return Ok(render_union_const(ty, value));
     }
-    match value {
+    let spelled = match value {
         ConstInit::Zero => zero_const_spelling(ty),
         ConstInit::Int(bits) => ty
             .as_integer()
-            .expect("integer constant")
+            .ok_or_else(|| Ice::global("integer initializer for an object of another type"))?
             .format_bits(*bits),
         ConstInit::Float(bits) => {
-            crate::float::llvm_const(ty.float_kind().expect("float constant"), *bits)
+            let kind = ty
+                .float_kind()
+                .ok_or_else(|| Ice::global("floating initializer for an object of another type"))?;
+            crate::float::llvm_const(kind, *bits)
         }
         ConstInit::Ptr(ptr) => render_ptr(ptr, renames),
         ConstInit::PtrToInt { ptr, width } => {
@@ -4819,41 +4938,50 @@ fn render_const(ty: &CType, value: &ConstInit, renames: &Renames) -> String {
         }
         ConstInit::Bytes(raw) => render_byte_blob(ty, raw),
         ConstInit::RelocBytes { .. } => {
-            unreachable!("an image with addresses is spelled by render_typed_const")
+            return Err(Ice::global(
+                "an initializer with addresses reached the plain constant printer",
+            ))
         }
         ConstInit::Aggregate(items) => {
             if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
                 if fields.len() != items.len() {
-                    return "zeroinitializer".to_string();
+                    return Ok("zeroinitializer".to_string());
                 }
                 let parts = items
                     .iter()
                     .zip(fields.iter())
                     .map(|(item, field)| {
-                        format!(
+                        Ok(format!(
                             "{} {}",
                             field.ty.ir_type(),
-                            render_const(&field.ty, item, renames)
-                        )
+                            render_const(&field.ty, item, renames)?
+                        ))
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Result<Vec<_>, Ice>>()?
                     .join(", ");
-                return format!("{{ {parts} }}");
+                return Ok(format!("{{ {parts} }}"));
             }
             let Some(elem) = ty.array_elem() else {
-                return "zeroinitializer".to_string();
+                return Ok("zeroinitializer".to_string());
             };
             if let Some(bytes) = i8_bytes(ty, items) {
-                return format!("c{}", llvm_bytes(&bytes));
+                return Ok(format!("c{}", llvm_bytes(&bytes)));
             }
             let parts = items
                 .iter()
-                .map(|item| format!("{} {}", elem.ir_type(), render_const(elem, item, renames)))
-                .collect::<Vec<_>>()
+                .map(|item| {
+                    Ok(format!(
+                        "{} {}",
+                        elem.ir_type(),
+                        render_const(elem, item, renames)?
+                    ))
+                })
+                .collect::<Result<Vec<_>, Ice>>()?
                 .join(", ");
             format!("[{parts}]")
         }
-    }
+    };
+    Ok(spelled)
 }
 
 /// A flat array of byte-sized integers can be spelled as an LLVM `c"..."`
@@ -4966,6 +5094,11 @@ fn is_unquoted_llvm_name(name: &str) -> bool {
             matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'$' | b'.' | b'_' | b'-')
         })
 }
+
+#[cfg(test)]
+mod ice_tests;
+#[cfg(test)]
+mod precise_tests;
 
 #[cfg(test)]
 mod tests {

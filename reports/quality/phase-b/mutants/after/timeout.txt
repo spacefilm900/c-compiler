@@ -1,0 +1,2 @@
+src/sema.rs:6825:13: delete match arm BinOp::Mul in arith
+src/sema.rs:6826:13: delete match arm BinOp::Div in arith
