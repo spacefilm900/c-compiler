@@ -57,6 +57,13 @@ if [ ! -x "$DEST/fetch.sh" ]; then
     echo "awk-volume-tests has no fetch.sh" >&2
     exit 1
 fi
+# fetch.sh reuses data/pg100.txt when its sha256 matches. Seed it from the
+# copy kept in this repo so the suite does not depend on gutenberg.org.
+PINNED_COPY="$ROOT/tests/data/gutenberg/pg100.txt.gz"
+if [ -f "$PINNED_COPY" ]; then
+    mkdir -p "$DEST/data"
+    gzip -dc "$PINNED_COPY" > "$DEST/data/pg100.txt"
+fi
 (cd "$DEST" && ./fetch.sh)
 touch "$DEST/.fetched"
 echo "fetched awk-volume-tests $PIN"
