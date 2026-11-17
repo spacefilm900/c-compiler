@@ -176,6 +176,50 @@ mod tests {
     }
 
     #[test]
+    fn switch_labels_do_not_jump_into_statement_expressions() {
+        // GCC manual, "Statements and Declarations in Expressions": a switch
+        // may not jump into a statement expression.
+        for (source, label) in [
+            ("int f(int x) { switch (x) { case 0: ({ case 1: x++; }); } return x; }", "case"),
+            ("int f(int x) { switch (x) { case 0: ({ default: x++; }); } return x; }", "default"),
+            ("int f(int x) { switch (x) { case 0: x = ({ while (x) { case 1: x--; } x; }); } return x; }", "case"),
+        ] {
+            let err = match compile(source, Dialect::Gnu11) {
+                Ok(_) => panic!("accepted: {source}"),
+                Err(err) => err,
+            };
+            assert!(!err.is_internal(), "{err}");
+            assert_eq!(
+                err.message,
+                format!("'{label}' label jumps into a statement expression from its switch"),
+                "{source}"
+            );
+        }
+        let err = match compile(
+            "int f(int x) { ({ case 1: x++; }); return x; }",
+            Dialect::Gnu11,
+        ) {
+            Ok(_) => panic!("accepted a case with no switch"),
+            Err(err) => err,
+        };
+        assert_eq!(err.message, "'case' label is not inside a switch");
+        // A switch of its own inside the statement expression, and break or
+        // continue out of one, stay valid.
+        gnu_ok(
+            "int f(int x) { switch (x) { case 0: x = ({ int t = 0; switch (x) { case 1: t = 2; break; default: t = 3; } t; }); } return x; }",
+        );
+        gnu_ok(
+            "int f(int x) { switch (x) { case 1: ({ if (x) break; x = 2; }); x++; } return x; }",
+        );
+        gnu_ok("int f(int x) { while (x) { int y = ({ if (x > 2) continue; x; }); x -= y; } return x; }");
+        let err = match compile("int f(int x) { ({ break; }); return x; }", Dialect::Gnu11) {
+            Ok(_) => panic!("accepted break outside a loop"),
+            Err(err) => err,
+        };
+        assert_eq!(err.message, "'break' is not inside a loop or switch");
+    }
+
+    #[test]
     fn empty_file_scope_declaration_from_an_empty_macro() {
         // SQLite's shell writes SQLITE_EXTENSION_INIT1; after the macro
         // expands to nothing. The smoke test has no directives, so the

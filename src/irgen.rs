@@ -42,9 +42,8 @@ use crate::diag::Diagnostic;
 /// is an internal compiler error: a case that analysis should have caught.
 /// It is reported at the source position being lowered, with phase `irgen`.
 pub fn render(unit: &TranslationUnit, filename: &str) -> Result<String, Diagnostic> {
-    render_module(unit, filename).map_err(|ice| {
-        Diagnostic::internal(filename, ice.line, ice.column, "irgen", ice.message)
-    })
+    render_module(unit, filename)
+        .map_err(|ice| Diagnostic::internal(filename, ice.line, ice.column, "irgen", ice.message))
 }
 
 /// An internal compiler error found while lowering. `line` 0 means that no
@@ -533,7 +532,10 @@ fn render_function(
     attrs: Option<&FnAttrs>,
 ) -> Result<(String, LowerNeeds), Ice> {
     let ice = |message: &str| Ice::new(func.line, func.column, message);
-    let body = func.body.as_ref().ok_or_else(|| ice("function has no body"))?;
+    let body = func
+        .body
+        .as_ref()
+        .ok_or_else(|| ice("function has no body"))?;
     let param_tys: Vec<CType> = func.params.iter().map(|param| param.ty.clone()).collect();
     // Semantic analysis rejects a definition whose aggregate needs an SSE
     // register or is still incomplete, so the signature is known here.
@@ -1681,7 +1683,10 @@ impl Gen {
 
     fn load_bitfield_at(&mut self, addr: &str, expr: &Expr) -> String {
         let Some(info) = bit_info(expr) else {
-            return self.ice_in(expr, "bit-field load from an expression that is not a bit-field");
+            return self.ice_in(
+                expr,
+                "bit-field load from an expression that is not a bit-field",
+            );
         };
         let container = container_type(
             info.container_bits,
@@ -1779,7 +1784,10 @@ impl Gen {
 
     fn store_bitfield(&mut self, addr: &str, expr: &Expr, value: &str, from: &CType) -> String {
         let Some(info) = bit_info(expr) else {
-            return self.ice_in(expr, "bit-field store to an expression that is not a bit-field");
+            return self.ice_in(
+                expr,
+                "bit-field store to an expression that is not a bit-field",
+            );
         };
         let container = container_type(
             info.container_bits,
@@ -3162,8 +3170,16 @@ impl Gen {
             self.emit(&format!("  {tmp} = sub i64 0, {idx}"));
             idx = tmp;
         }
-        let Some(elem) = ptr_expr.ty().as_ref().and_then(CType::pointee).map(CType::ir_type) else {
-            return self.ice_in(ptr_expr, "pointer arithmetic on an operand that is not a pointer");
+        let Some(elem) = ptr_expr
+            .ty()
+            .as_ref()
+            .and_then(CType::pointee)
+            .map(CType::ir_type)
+        else {
+            return self.ice_in(
+                ptr_expr,
+                "pointer arithmetic on an operand that is not a pointer",
+            );
         };
         let tmp = self.fresh();
         self.emit(&format!(
@@ -3209,7 +3225,10 @@ impl Gen {
             return tmp;
         }
         let Some(int) = src.as_integer() else {
-            return self.ice_in(expr, "integer operator on an operand that is not an integer");
+            return self.ice_in(
+                expr,
+                "integer operator on an operand that is not an integer",
+            );
         };
         let dest = CType::from_name(int.promote());
         let value = self.gen_val(expr);
@@ -3523,9 +3542,10 @@ impl Gen {
                     Some(tag) => crate::float::nan_bits(kind, tag, signaling),
                     None => {
                         let Some(lib) = fp.libm_nan() else {
-                            return Some(
-                                self.ice_in(&args[0], "malformed __builtin_nans tag was not diagnosed"),
-                            );
+                            return Some(self.ice_in(
+                                &args[0],
+                                "malformed __builtin_nans tag was not diagnosed",
+                            ));
                         };
                         return Some(self.gen_lib_nan(lib, fp.kind(), &args[0]));
                     }
@@ -4880,12 +4900,9 @@ fn render_typed_const(
             pad(&mut pieces, step * items.len() as u64, size);
         }
         ConstInit::Aggregate(items) => {
-            let fields = ty
-                .struct_ref()
-                .and_then(StructRef::fields)
-                .ok_or_else(|| {
-                    Ice::global("aggregate initializer with addresses is not a struct or array")
-                })?;
+            let fields = ty.struct_ref().and_then(StructRef::fields).ok_or_else(|| {
+                Ice::global("aggregate initializer with addresses is not a struct or array")
+            })?;
             let mut at = 0u64;
             for (field, item) in fields.iter().zip(items) {
                 pad(&mut pieces, at, field.offset);
@@ -4894,11 +4911,7 @@ fn render_typed_const(
             }
             pad(&mut pieces, at, size);
         }
-        other => {
-            return Err(Ice::global(format!(
-                "constant {other:?} has no byte image"
-            )))
-        }
+        other => return Err(Ice::global(format!("constant {other:?} has no byte image"))),
     }
     let types = pieces
         .iter()
@@ -4924,9 +4937,9 @@ fn render_const(ty: &CType, value: &ConstInit, renames: &Renames) -> Result<Stri
             .ok_or_else(|| Ice::global("integer initializer for an object of another type"))?
             .format_bits(*bits),
         ConstInit::Float(bits) => {
-            let kind = ty.float_kind().ok_or_else(|| {
-                Ice::global("floating initializer for an object of another type")
-            })?;
+            let kind = ty
+                .float_kind()
+                .ok_or_else(|| Ice::global("floating initializer for an object of another type"))?;
             crate::float::llvm_const(kind, *bits)
         }
         ConstInit::Ptr(ptr) => render_ptr(ptr, renames),
@@ -4972,7 +4985,13 @@ fn render_const(ty: &CType, value: &ConstInit, renames: &Renames) -> Result<Stri
             }
             let parts = items
                 .iter()
-                .map(|item| Ok(format!("{} {}", elem.ir_type(), render_const(elem, item, renames)?)))
+                .map(|item| {
+                    Ok(format!(
+                        "{} {}",
+                        elem.ir_type(),
+                        render_const(elem, item, renames)?
+                    ))
+                })
                 .collect::<Result<Vec<_>, Ice>>()?
                 .join(", ");
             format!("[{parts}]")
@@ -5091,6 +5110,9 @@ fn is_unquoted_llvm_name(name: &str) -> bool {
             matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'$' | b'.' | b'_' | b'-')
         })
 }
+
+#[cfg(test)]
+mod ice_tests;
 
 #[cfg(test)]
 mod tests {

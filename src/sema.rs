@@ -62,6 +62,7 @@ pub fn analyze_dialect(
         scopes: vec![HashMap::new()],
         loop_depth: 0,
         switches: Vec::new(),
+        switch_outside: false,
         current_ret: CType::int_type(),
         fn_name: String::new(),
         current_func: String::new(),
@@ -237,6 +238,11 @@ struct Sema<'t> {
     /// Innermost switch first at the end. A `case` or `default` belongs to
     /// `switches.last()`, not to a switch that encloses that one.
     switches: Vec<SwitchCtx>,
+    /// Set while checking a statement expression inside a switch. The
+    /// switch's labels are hidden there: a switch may not jump into a
+    /// statement expression (GCC manual, "Statements and Declarations in
+    /// Expressions").
+    switch_outside: bool,
     current_ret: CType,
     /// Name of the function whose body is being checked. Empty at file scope.
     /// `__func__` uses it. `current_func` is the same name, kept for the
@@ -2116,7 +2122,7 @@ impl Sema<'_> {
                 let line = *line;
                 let column = *column;
                 if self.switches.is_empty() {
-                    return self.err(line, column, "'case' label is not inside a switch");
+                    return self.err(line, column, self.no_switch_message("case"));
                 }
                 self.check_expr(expr)?;
                 self.decay(expr)?;
@@ -2172,7 +2178,7 @@ impl Sema<'_> {
                 let line = *line;
                 let column = *column;
                 if self.switches.is_empty() {
-                    return self.err(line, column, "'default' label is not inside a switch");
+                    return self.err(line, column, self.no_switch_message("default"));
                 }
                 if self.switches.last().expect("switch").has_default {
                     return self.err(line, column, "multiple default labels in one switch");
@@ -2223,7 +2229,7 @@ impl Sema<'_> {
                 Ok(())
             }
             Stmt::Break { line, column } => {
-                if self.loop_depth == 0 && self.switches.is_empty() {
+                if self.loop_depth == 0 && self.switches.is_empty() && !self.switch_outside {
                     return self.err(*line, *column, "'break' is not inside a loop or switch");
                 }
                 Ok(())
@@ -3752,7 +3758,13 @@ impl Sema<'_> {
         let mut next = 0;
         number_compound_in(body, &mut next, &format!("%se{}.", self.stmt_expr_seq));
         self.collect_labels(body)?;
-        self.check_compound(body, true)?;
+        let switches = std::mem::take(&mut self.switches);
+        let switch_outside = self.switch_outside;
+        self.switch_outside |= !switches.is_empty();
+        let checked = self.check_compound(body, true);
+        self.switches = switches;
+        self.switch_outside = switch_outside;
+        checked?;
         let ty = match body.items.last() {
             Some(Stmt::Expr {
                 expr: Some(last), ..
@@ -5074,6 +5086,15 @@ impl Sema<'_> {
             .map(|file| &**file)
             .unwrap_or(self.filename.as_str());
         Err(Diagnostic::new(file, line, column, message))
+    }
+
+    /// The error for a `case` or `default` label with no switch of its own.
+    fn no_switch_message(&self, label: &str) -> String {
+        if self.switch_outside {
+            format!("'{label}' label jumps into a statement expression from its switch")
+        } else {
+            format!("'{label}' label is not inside a switch")
+        }
     }
 
     /// An internal compiler error: a case that an earlier check should have

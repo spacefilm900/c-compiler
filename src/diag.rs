@@ -68,11 +68,7 @@ impl fmt::Display for Diagnostic {
         }
         match self.phase {
             None => write!(f, "error: {}", self.message),
-            Some(phase) => write!(
-                f,
-                "internal compiler error: {} (in {phase})",
-                self.message
-            ),
+            Some(phase) => write!(f, "internal compiler error: {} (in {phase})", self.message),
         }
     }
 }
@@ -95,5 +91,38 @@ impl fmt::Display for Warning {
                 diag.filename, diag.line, diag.column, diag.message
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn internal_errors_name_the_phase() {
+        let ice = Diagnostic::internal("a.c", 3, 7, "irgen", "case label was lost");
+        assert!(ice.is_internal());
+        assert_eq!(
+            ice.to_string(),
+            "a.c:3:7: internal compiler error: case label was lost (in irgen)"
+        );
+        let ice = Diagnostic::internal("a.c", 0, 0, "sema", "no type");
+        assert_eq!(
+            ice.to_string(),
+            "a.c: internal compiler error: no type (in sema)"
+        );
+        let err = Diagnostic::new("a.c", 3, 7, "expected ';'");
+        assert!(!err.is_internal());
+        assert_eq!(err.to_string(), "a.c:3:7: error: expected ';'");
+        assert_eq!(
+            Diagnostic::new("a.c", 0, 0, "x").to_string(),
+            "a.c: error: x"
+        );
+        let warning = Warning(Diagnostic::new("a.c", 1, 2, "w"));
+        assert_eq!(warning.to_string(), "a.c:1:2: warning: w");
+        assert_eq!(
+            Warning(Diagnostic::new("a.c", 0, 0, "w")).to_string(),
+            "a.c: warning: w"
+        );
     }
 }

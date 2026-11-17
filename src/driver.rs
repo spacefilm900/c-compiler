@@ -103,12 +103,17 @@ pub fn run(args: &[String]) -> i32 {
         }
         Err(diag) => {
             let _ = writeln!(io::stderr(), "{diag}");
-            if diag.is_internal() {
-                crate::diag::EXIT_INTERNAL_ERROR
-            } else {
-                1
-            }
+            error_status(&diag)
         }
+    }
+}
+
+/// Exit status for a diagnostic that stopped compilation.
+fn error_status(diag: &crate::Diagnostic) -> i32 {
+    if diag.is_internal() {
+        crate::diag::EXIT_INTERNAL_ERROR
+    } else {
+        1
     }
 }
 
@@ -364,6 +369,14 @@ mod tests {
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&out);
         let _ = std::fs::remove_file(&bad);
+    }
+
+    #[test]
+    fn internal_errors_exit_with_their_own_status() {
+        let ice = crate::Diagnostic::internal("a.c", 1, 1, "irgen", "lost");
+        assert_eq!(error_status(&ice), crate::diag::EXIT_INTERNAL_ERROR);
+        assert_eq!(crate::diag::EXIT_INTERNAL_ERROR, 3);
+        assert_eq!(error_status(&crate::Diagnostic::new("a.c", 1, 1, "bad")), 1);
     }
 
     #[test]
