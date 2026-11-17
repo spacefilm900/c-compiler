@@ -3252,10 +3252,8 @@ impl Sema<'_> {
                 op,
                 BinOp::Mod | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr
             ) {
-                self.require_integer(left)?;
-                self.require_integer(right)?;
-                let left_ty = integer_ty(left);
-                let right_ty = integer_ty(right);
+                let left_ty = self.require_integer(left)?;
+                let right_ty = self.require_integer(right)?;
                 let result = if matches!(op, BinOp::Shl | BinOp::Shr) {
                     left_ty.promote()
                 } else {
@@ -3289,8 +3287,8 @@ impl Sema<'_> {
         if let Some(common) = self.float_arith(&left_ty, &right_ty) {
             return Ok(common);
         }
-        if left_ty.is_integer() && right_ty.is_integer() {
-            return Ok(CType::from_name(integer_ty(left).usual(integer_ty(right))));
+        if let (Some(left), Some(right)) = (left_ty.as_integer(), right_ty.as_integer()) {
+            return Ok(CType::from_name(left.usual(right)));
         }
         self.err(
             line,
@@ -3418,8 +3416,8 @@ impl Sema<'_> {
         if let Some(common) = self.float_arith(&left_ty, &right_ty) {
             return Ok(common);
         }
-        if left_ty.is_integer() && right_ty.is_integer() {
-            return Ok(CType::from_name(integer_ty(left).usual(integer_ty(right))));
+        if let (Some(left), Some(right)) = (left_ty.as_integer(), right_ty.as_integer()) {
+            return Ok(CType::from_name(left.usual(right)));
         }
         if op == BinOp::Add {
             if let Some(ptr) = pointer_plus_int(&left_ty, &right_ty) {
@@ -3537,8 +3535,7 @@ impl Sema<'_> {
                 }
                 UnaryOp::BitNot => {
                     self.decay(expr)?;
-                    self.require_integer(expr)?;
-                    CType::from_name(integer_ty(expr).promote())
+                    CType::from_name(self.require_integer(expr)?.promote())
                 }
                 UnaryOp::Plus | UnaryOp::Minus => {
                     self.decay(expr)?;
@@ -3547,8 +3544,7 @@ impl Sema<'_> {
                         // Unary `+` and `-` do not promote a floating operand.
                         CType::Float(kind)
                     } else {
-                        self.require_integer(expr)?;
-                        CType::from_name(integer_ty(expr).promote())
+                        CType::from_name(self.require_integer(expr)?.promote())
                     }
                 }
             }
@@ -4939,9 +4935,13 @@ impl Sema<'_> {
         }
     }
 
-    fn require_integer(&self, expr: &Expr) -> Result<(), Diagnostic> {
-        match expr.ty() {
-            Some(ty) if ty.is_integer() => Ok(()),
+    /// The operand's integer type, or an error if it is not an integer.
+    fn require_integer(&self, expr: &Expr) -> Result<TypeName, Diagnostic> {
+        let ty = expr.ty();
+        if let Some(int) = ty.as_ref().and_then(CType::as_integer) {
+            return Ok(int);
+        }
+        match ty {
             Some(ty) if ty.is_void() => self.err(
                 expr.line(),
                 expr.column(),
@@ -4952,11 +4952,7 @@ impl Sema<'_> {
                 expr.column(),
                 format!("expected an integer, found '{}'", ty.display()),
             ),
-            None => self.err(
-                expr.line(),
-                expr.column(),
-                "internal compiler error: expression has no type",
-            ),
+            None => self.ice(expr.line(), expr.column(), "expression has no type"),
         }
     }
 
@@ -4973,11 +4969,7 @@ impl Sema<'_> {
                 expr.column(),
                 format!("expected a scalar, found '{}'", ty.display()),
             ),
-            None => self.err(
-                expr.line(),
-                expr.column(),
-                "internal compiler error: expression has no type",
-            ),
+            None => self.ice(expr.line(), expr.column(), "expression has no type"),
         }
     }
 
@@ -5082,6 +5074,15 @@ impl Sema<'_> {
             .map(|file| &**file)
             .unwrap_or(self.filename.as_str());
         Err(Diagnostic::new(file, line, column, message))
+    }
+
+    /// An internal compiler error: a case that an earlier check should have
+    /// rejected.
+    fn ice<T>(&self, line: usize, column: usize, message: &str) -> Result<T, Diagnostic> {
+        self.err(line, column, message).map_err(|diag| Diagnostic {
+            phase: Some("sema"),
+            ..diag
+        })
     }
 }
 
@@ -5472,12 +5473,6 @@ fn va_list_pointee(ty: &CType) -> bool {
     ty.pointee()
         .and_then(CType::struct_ref)
         .is_some_and(|handle| handle.tag() == "__va_list_tag")
-}
-
-fn integer_ty(expr: &Expr) -> TypeName {
-    expr.ty()
-        .and_then(|ty| ty.as_integer())
-        .expect("integer expression")
 }
 
 fn init_pos(init: &Init) -> (usize, usize) {

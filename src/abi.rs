@@ -335,10 +335,9 @@ pub fn classify_for(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
     if !bare.is_record() {
         return Ok(AggAbi::Memory);
     }
-    if !bare.is_complete() {
+    let Some(size) = bare.size() else {
         return Err(AbiFail::Incomplete);
-    }
-    let size = bare.size().expect("complete aggregate");
+    };
     if size == 0 {
         return Ok(AggAbi::Memory);
     }

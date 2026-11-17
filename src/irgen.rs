@@ -863,29 +863,26 @@ impl Gen {
     }
 
     fn start(&mut self, name: String) {
-        assert!(
-            self.terminated,
-            "internal compiler error: fallthrough into {name}"
-        );
+        if !self.terminated {
+            self.ice(&format!("block falls through into {name}"));
+        }
         self.emit(&format!("{name}:"));
         self.cur = name;
         self.terminated = false;
     }
 
     fn br(&mut self, label: &str) {
-        assert!(
-            !self.terminated,
-            "internal compiler error: branch after terminator"
-        );
+        if self.terminated {
+            self.ice("branch after the end of a block");
+        }
         self.emit(&format!("  br label %{label}"));
         self.terminated = true;
     }
 
     fn br_cond(&mut self, cond: &str, then_label: &str, else_label: &str) {
-        assert!(
-            !self.terminated,
-            "internal compiler error: branch after terminator"
-        );
+        if self.terminated {
+            self.ice("branch after the end of a block");
+        }
         self.emit(&format!(
             "  br i1 {cond}, label %{then_label}, label %{else_label}"
         ));
@@ -2211,11 +2208,9 @@ impl Gen {
         let entry = self.label();
         self.start(entry);
         self.gen_stmt(body);
-        assert_eq!(
-            self.switch_at,
-            self.switch_labels.len(),
-            "internal compiler error: switch label was not emitted"
-        );
+        if self.switch_at != self.switch_labels.len() {
+            self.ice("a case label of this switch was not emitted");
+        }
         self.breaks.pop();
         if !self.terminated {
             self.br(&end_label);
@@ -2743,7 +2738,7 @@ impl Gen {
 
     fn gen_val(&mut self, expr: &Expr) -> String {
         self.gen_expr(expr)
-            .expect("internal compiler error: void expression used as a value")
+            .unwrap_or_else(|| self.ice_in(expr, "void expression used as a value"))
     }
 
     fn gen_expr(&mut self, expr: &Expr) -> Option<String> {
@@ -2756,7 +2751,9 @@ impl Gen {
             Expr::Int { bits, value_ty, .. } => Some(value_ty.format_bits(u128::from(*bits))),
             Expr::Float { bits, kind, .. } => Some(crate::float::llvm_const(*kind, *bits)),
             Expr::LabelAddr { name, func, .. } => {
-                let func = func.as_deref().expect("label address in a function");
+                let Some(func) = func.as_deref() else {
+                    return Some(self.ice_in(expr, "label address outside a function"));
+                };
                 Some(format!(
                     "blockaddress({}, %{})",
                     llvm_global(renamed(func, &self.renames)),
@@ -2784,9 +2781,11 @@ impl Gen {
                 let src = expr.ty().expect("typed");
                 if src.is_float() {
                     Some(value)
-                } else {
-                    let promoted = CType::from_name(src.as_integer().expect("integer").promote());
+                } else if let Some(int) = src.as_integer() {
+                    let promoted = CType::from_name(int.promote());
                     Some(self.convert(&value, &src, &promoted))
+                } else {
+                    Some(self.ice_in(expr, "unary '+' on an operand that is not arithmetic"))
                 }
             }
             Expr::Unary {
@@ -2877,8 +2876,10 @@ impl Gen {
                 let size = match operand {
                     SizeofOperand::Type(ty) => ty.size(),
                     SizeofOperand::Expr(inner) => inner.ty().expect("typed").size(),
-                }
-                .expect("sizeof of a complete type");
+                };
+                let Some(size) = size else {
+                    return Some(self.ice_in(expr, "sizeof of an incomplete type"));
+                };
                 Some(TypeName::ULong.format_bits(u128::from(size)))
             }
             Expr::Cast { ty_name, expr, .. } => {
@@ -3050,7 +3051,10 @@ impl Gen {
             } => self.gen_val(expr),
             Expr::Index { base, index, .. } => self.gen_ptr_index(base, index),
             Expr::Decay { expr, .. } => self.gen_addr(expr),
-            Expr::Str { symbol, .. } => llvm_global(symbol.as_deref().expect("string symbol")),
+            Expr::Str { symbol, .. } => match symbol.as_deref() {
+                Some(symbol) => llvm_global(symbol),
+                None => self.ice_in(expr, "string literal has no symbol"),
+            },
             Expr::Member {
                 base,
                 arrow,
@@ -3084,21 +3088,16 @@ impl Gen {
                     self.unaligned.insert(tmp.clone());
                 }
                 if *bytewise {
-                    let offset = offset.expect("member offset");
+                    let Some(offset) = *offset else {
+                        return self.ice_in(expr, "member access has no byte offset");
+                    };
                     self.emit(&format!(
                         "  {tmp} = getelementptr inbounds i8, ptr {base_ptr}, i64 {offset}"
                     ));
                 } else {
-                    let struct_ty = if *arrow {
-                        base.ty()
-                            .as_ref()
-                            .and_then(CType::pointee)
-                            .expect("pointer to struct")
-                            .clone()
-                    } else {
-                        base.ty().expect("struct")
+                    let (Some(struct_ty), Some(index)) = (record_ty, *index) else {
+                        return self.ice_in(expr, "member access has no record type or index");
                     };
-                    let index = index.expect("member index");
                     self.emit(&format!(
                         "  {tmp} = getelementptr inbounds {}, ptr {base_ptr}, i32 0, i32 {index}",
                         struct_ty.ir_type()
@@ -3107,7 +3106,7 @@ impl Gen {
                 tmp
             }
             Expr::CompoundLit { decl, .. } => self.gen_compound_lit(decl),
-            _ => panic!("internal compiler error: address of a non-lvalue"),
+            _ => self.ice_in(expr, "address of an expression that is not an lvalue"),
         }
     }
 
@@ -3163,12 +3162,9 @@ impl Gen {
             self.emit(&format!("  {tmp} = sub i64 0, {idx}"));
             idx = tmp;
         }
-        let elem = ptr_expr
-            .ty()
-            .as_ref()
-            .and_then(CType::pointee)
-            .expect("pointer")
-            .ir_type();
+        let Some(elem) = ptr_expr.ty().as_ref().and_then(CType::pointee).map(CType::ir_type) else {
+            return self.ice_in(ptr_expr, "pointer arithmetic on an operand that is not a pointer");
+        };
         let tmp = self.fresh();
         self.emit(&format!(
             "  {tmp} = getelementptr inbounds {elem}, ptr {ptr}, i64 {idx}"
@@ -3188,12 +3184,14 @@ impl Gen {
         self.emit(&format!("  {right_int} = ptrtoint ptr {right_val} to i64"));
         let diff = self.fresh();
         self.emit(&format!("  {diff} = sub i64 {left_int}, {right_int}"));
-        let size = left
+        let Some(size) = left
             .ty()
             .as_ref()
             .and_then(CType::pointee)
             .and_then(CType::size)
-            .expect("complete pointee");
+        else {
+            return self.ice_in(left, "pointer subtraction with an incomplete pointee type");
+        };
         if size == 1 {
             return diff;
         }
@@ -3210,7 +3208,10 @@ impl Gen {
             self.emit(&format!("  {tmp} = fneg {} {value}", src.ir_type()));
             return tmp;
         }
-        let dest = CType::from_name(src.as_integer().expect("integer").promote());
+        let Some(int) = src.as_integer() else {
+            return self.ice_in(expr, "integer operator on an operand that is not an integer");
+        };
+        let dest = CType::from_name(int.promote());
         let value = self.gen_val(expr);
         let value = self.convert(&value, &src, &dest);
         let tmp = self.fresh();
@@ -3278,14 +3279,13 @@ impl Gen {
         } else {
             self.load(&dest, &addr)
         };
-        if dest.is_pointer() {
+        if let Some(elem) = dest.pointee().map(CType::ir_type) {
             let mut idx = self.extend_i64(&rhs, &rhs_ty);
             if op == BinOp::Sub {
                 let tmp = self.fresh();
                 self.emit(&format!("  {tmp} = sub i64 0, {idx}"));
                 idx = tmp;
             }
-            let elem = dest.pointee().expect("pointer").ir_type();
             let updated = self.fresh();
             self.emit(&format!(
                 "  {updated} = getelementptr inbounds {elem}, ptr {old}, i64 {idx}"
@@ -3307,8 +3307,9 @@ impl Gen {
             self.store(&dest, &stored, &addr);
             return stored;
         }
-        let dest_i = dest.as_integer().expect("integer");
-        let rhs_i = rhs_ty.as_integer().expect("integer");
+        let (Some(dest_i), Some(rhs_i)) = (dest.as_integer(), rhs_ty.as_integer()) else {
+            return self.ice_in(target, "compound assignment operands are not arithmetic");
+        };
         let common = if matches!(op, BinOp::Shl | BinOp::Shr) {
             dest_i.promote()
         } else {
@@ -3340,8 +3341,7 @@ impl Gen {
         } else {
             self.load(&dest, &addr)
         };
-        if dest.is_float() {
-            let kind = dest.float_kind().expect("float");
+        if let Some(kind) = dest.float_kind() {
             let one_bits: u128 = match crate::float::fold(kind) {
                 FloatKind::Float => 0x3f80_0000,
                 FloatKind::Double => 0x3ff0_0000_0000_0000,
@@ -3362,8 +3362,7 @@ impl Gen {
             };
             return if op.is_prefix() { written } else { old };
         }
-        if dest.is_pointer() {
-            let elem = dest.pointee().expect("pointer").ir_type();
+        if let Some(elem) = dest.pointee().map(CType::ir_type) {
             let step = if op.is_increment() { "1" } else { "-1" };
             let updated = self.fresh();
             self.emit(&format!(
@@ -3372,7 +3371,9 @@ impl Gen {
             self.store(&dest, &updated, &addr);
             return if op.is_prefix() { updated } else { old };
         }
-        let dest_i = dest.as_integer().expect("integer");
+        let Some(dest_i) = dest.as_integer() else {
+            return self.ice_in(target, "'++' or '--' on an operand that is not a scalar");
+        };
         let common = dest_i.usual(TypeName::Int);
         let common_ty = CType::from_name(common);
         let old_c = self.convert(&old, &dest, &common_ty);
@@ -3521,9 +3522,11 @@ impl Gen {
                 match crate::float::nan_tag_from_expr(&args[0]) {
                     Some(tag) => crate::float::nan_bits(kind, tag, signaling),
                     None => {
-                        let lib = fp
-                            .libm_nan()
-                            .expect("malformed __builtin_nans* tag should be diagnosed");
+                        let Some(lib) = fp.libm_nan() else {
+                            return Some(
+                                self.ice_in(&args[0], "malformed __builtin_nans tag was not diagnosed"),
+                            );
+                        };
                         return Some(self.gen_lib_nan(lib, fp.kind(), &args[0]));
                     }
                 }
@@ -3836,12 +3839,13 @@ impl Gen {
         let (left, left_ty) = operand(self, 0);
         let (right, right_ty) = operand(self, 1);
         let dest_ptr = self.gen_val(&args[2]);
-        let target = match fixed {
-            Some(ty) => ty,
-            None => args[2]
+        let target = match fixed.or_else(|| {
+            args[2]
                 .ty()
                 .and_then(|ty| ty.pointee().and_then(CType::as_integer))
-                .expect("pointer to an integer"),
+        }) {
+            Some(ty) => ty,
+            None => return self.ice_in(&args[2], "overflow result is not a pointer to an integer"),
         };
         let tir = target.ir_type();
         let tw = target.width();
@@ -4149,20 +4153,18 @@ impl Gen {
         let then_val = self
             .gen_expr(then_expr)
             .map(|value| self.convert(&value, &then_expr.ty().expect("typed"), &result));
-        assert!(
-            !self.terminated,
-            "internal compiler error: expression terminated a block"
-        );
+        if self.terminated {
+            self.ice("an expression ended its block");
+        }
         let then_block = self.cur.clone();
         self.br(&end_label);
         self.start(else_label);
         let else_val = self
             .gen_expr(else_expr)
             .map(|value| self.convert(&value, &else_expr.ty().expect("typed"), &result));
-        assert!(
-            !self.terminated,
-            "internal compiler error: expression terminated a block"
-        );
+        if self.terminated {
+            self.ice("an expression ended its block");
+        }
         let else_block = self.cur.clone();
         self.br(&end_label);
         self.start(end_label);
