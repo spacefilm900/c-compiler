@@ -1950,23 +1950,6 @@ impl Gen {
             ));
             return tmp;
         }
-        if let (Some(from_f), Some(to_f)) = (from.float_kind(), to.float_kind()) {
-            if from_f == to_f || from.ir_type() == to.ir_type() {
-                return value.to_string();
-            }
-            let op = if float_rank(to_f) > float_rank(from_f) {
-                "fpext"
-            } else {
-                "fptrunc"
-            };
-            let tmp = self.fresh();
-            self.emit(&format!(
-                "  {tmp} = {op} {} {value} to {}",
-                from.ir_type(),
-                to.ir_type()
-            ));
-            return tmp;
-        }
         if let (Some(kind), Some(TypeName::Bool)) = (from.float_kind(), to.as_integer()) {
             let cmp = self.fresh();
             let tmp = self.fresh();
@@ -5113,6 +5096,8 @@ fn is_unquoted_llvm_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod ice_tests;
+#[cfg(test)]
+mod precise_tests;
 
 #[cfg(test)]
 mod tests {
