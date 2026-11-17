@@ -24,48 +24,7 @@ impl Sema<'_> {
         let linkage =
             self.object_linkage(decl.storage, prior_linkage, decl.line, decl.column, &name)?;
         let prebound = prior.is_none();
-        // A hidden file entity from a block-scope extern is not a visible
-        // prior declaration (C11 6.2.7p4), so it is not composed into this
-        // declarator's type before the initializer is checked.
-        let mut hidden_ty = None;
-        if prebound {
-            // C11 6.2.1p7: the identifier is in scope after its declarator,
-            // including in the initializer.
-            let state = if decl.init.is_none() && decl.storage == Storage::Extern {
-                GlobalState::Declared
-            } else if decl.init.is_none() {
-                GlobalState::Tentative
-            } else {
-                GlobalState::Declared
-            };
-            self.global_order.push(name.clone());
-            self.object_decls
-                .entry(name.clone())
-                .or_insert((decl.line, decl.column));
-            self.insert_file(Symbol::Var(VarSym {
-                name: name.clone(),
-                slot: format!("@{name}"),
-                ty: ty.clone(),
-                global: Some(GlobalInfo { linkage, state }),
-                file_visible: true,
-            }));
-        } else if let Some(Symbol::Var(var)) = &prior {
-            if !var.file_visible {
-                // Reveal the name with this declarator's type (C11 6.2.1p7)
-                // so an initializer such as `{ [0 && sizeof a] = 7 }` on
-                // `int a[]` sees an incomplete type (6.5.3.4p1).
-                if !compatible(&var.ty, &ty) {
-                    return self.err(
-                        decl.line,
-                        decl.column,
-                        format!("conflicting types for '{name}'"),
-                    );
-                }
-                hidden_ty = Some(var.ty.clone());
-                self.reveal_file(&name);
-                self.set_global_type(&name, ty.clone());
-            }
-        }
+        let hidden_ty = self.bind_global_declarator(decl, &name, &ty, &prior, linkage)?;
         let shaped = if let Some(init) = &decl.init {
             Some(self.shape_initializer(&ty, init, decl.line, decl.column)?)
         } else {
@@ -74,28 +33,7 @@ impl Sema<'_> {
         if let Some((shaped_ty, _, _)) = &shaped {
             ty = shaped_ty.clone();
         }
-        if let Some(Symbol::Var(var)) = self.file_get(&name) {
-            if !prebound {
-                if let Some(hidden) = hidden_ty {
-                    // Compatible hidden and later types still form a composite
-                    // for the file entity. An initializer that completes an
-                    // incomplete array to a different length is not a
-                    // same-scope constraint (6.7p4); 6.2.7p2 would make a
-                    // mismatch undefined, but the later type is kept.
-                    if compatible(&hidden, &ty) {
-                        ty = composite(&hidden, &ty);
-                    }
-                } else if !compatible(&var.ty, &ty) {
-                    return self.err(
-                        decl.line,
-                        decl.column,
-                        format!("conflicting types for '{name}'"),
-                    );
-                } else {
-                    ty = composite(&var.ty, &ty);
-                }
-            }
-        }
+        let ty = self.compose_with_prior(decl, &name, ty, prebound, hidden_ty)?;
         decl.ty = ty.clone();
         // `extern struct S x;` may name an object completed in another
         // translation unit. A definition, including a tentative definition,
@@ -127,6 +65,98 @@ impl Sema<'_> {
             self.upgrade_tentative(&name);
         }
         Ok(())
+    }
+
+    /// Bind a file-scope object's name before its initializer is checked
+    /// (C11 6.2.1p7), or reveal a name hidden by a block-scope `extern`.
+    /// Returns the hidden declaration's type in the second case.
+    fn bind_global_declarator(
+        &mut self,
+        decl: &GlobalDecl,
+        name: &str,
+        ty: &CType,
+        prior: &Option<Symbol>,
+        linkage: Linkage,
+    ) -> Result<Option<CType>, Diagnostic> {
+        // A hidden file entity from a block-scope extern is not a visible
+        // prior declaration (C11 6.2.7p4), so it is not composed into this
+        // declarator's type before the initializer is checked.
+        let mut hidden_ty = None;
+        if prior.is_none() {
+            // C11 6.2.1p7: the identifier is in scope after its declarator,
+            // including in the initializer.
+            let state = if decl.init.is_none() && decl.storage == Storage::Extern {
+                GlobalState::Declared
+            } else if decl.init.is_none() {
+                GlobalState::Tentative
+            } else {
+                GlobalState::Declared
+            };
+            self.global_order.push(name.to_string());
+            self.object_decls
+                .entry(name.to_string())
+                .or_insert((decl.line, decl.column));
+            self.insert_file(Symbol::Var(VarSym {
+                name: name.to_string(),
+                slot: format!("@{name}"),
+                ty: ty.clone(),
+                global: Some(GlobalInfo { linkage, state }),
+                file_visible: true,
+            }));
+        } else if let Some(Symbol::Var(var)) = prior {
+            if !var.file_visible {
+                // Reveal the name with this declarator's type (C11 6.2.1p7)
+                // so an initializer such as `{ [0 && sizeof a] = 7 }` on
+                // `int a[]` sees an incomplete type (6.5.3.4p1).
+                if !compatible(&var.ty, ty) {
+                    return self.err(
+                        decl.line,
+                        decl.column,
+                        format!("conflicting types for '{name}'"),
+                    );
+                }
+                hidden_ty = Some(var.ty.clone());
+                self.reveal_file(name);
+                self.set_global_type(name, ty.clone());
+            }
+        }
+        Ok(hidden_ty)
+    }
+
+    /// The type of a redeclared file-scope object: the composite with the
+    /// visible prior declaration (C11 6.2.7p3), or with a hidden one when
+    /// the two are compatible.
+    fn compose_with_prior(
+        &self,
+        decl: &GlobalDecl,
+        name: &str,
+        mut ty: CType,
+        prebound: bool,
+        hidden_ty: Option<CType>,
+    ) -> Result<CType, Diagnostic> {
+        if let Some(Symbol::Var(var)) = self.file_get(name) {
+            if !prebound {
+                if let Some(hidden) = hidden_ty {
+                    // Compatible hidden and later types still form a composite
+                    // for the file entity. An initializer that completes an
+                    // incomplete array to a different length is not a
+                    // same-scope constraint (6.7p4); 6.2.7p2 would make a
+                    // mismatch undefined, but the later type is kept.
+                    if compatible(&hidden, &ty) {
+                        ty = composite(&hidden, &ty);
+                    }
+                } else if !compatible(&var.ty, &ty) {
+                    return self.err(
+                        decl.line,
+                        decl.column,
+                        format!("conflicting types for '{name}'"),
+                    );
+                } else {
+                    ty = composite(&var.ty, &ty);
+                }
+            }
+        }
+        Ok(ty)
     }
 
     pub(super) fn declare_func(&mut self, func: &mut FuncDef) -> Result<(), Diagnostic> {

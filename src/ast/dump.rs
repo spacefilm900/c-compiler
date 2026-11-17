@@ -231,17 +231,7 @@ pub(super) fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
         Expr::Bin {
             op, left, right, ..
         } => dump_node(out, indent, op.as_str(), [left.as_ref(), right.as_ref()]),
-        Expr::Unary { op, expr, .. } => {
-            let spelling = match op {
-                UnaryOp::Plus => "pos",
-                UnaryOp::Minus => "neg",
-                UnaryOp::Not => "not",
-                UnaryOp::BitNot => "bnot",
-                UnaryOp::Addr => "addr",
-                UnaryOp::Deref => "deref",
-            };
-            dump_node(out, indent, spelling, [expr.as_ref()]);
-        }
+        Expr::Unary { op, expr, .. } => dump_node(out, indent, unary_label(*op), [expr.as_ref()]),
         Expr::Assign { target, value, .. } => {
             dump_node(out, indent, "assign", [target.as_ref(), value.as_ref()]);
         }
@@ -254,13 +244,7 @@ pub(super) fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
             [target.as_ref(), value.as_ref()],
         ),
         Expr::IncDec { op, target, .. } => {
-            let spelling = match op {
-                IncOp::PreInc => "pre++",
-                IncOp::PreDec => "pre--",
-                IncOp::PostInc => "post++",
-                IncOp::PostDec => "post--",
-            };
-            dump_node(out, indent, spelling, [target.as_ref()]);
+            dump_node(out, indent, incdec_label(*op), [target.as_ref()]);
         }
         Expr::Cond {
             cond,
@@ -327,18 +311,40 @@ pub(super) fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
             };
             dump_node(out, indent, name, args);
         }
-        Expr::Call { callee, args, .. } => {
-            match callee.as_ref() {
-                Expr::Var { name, .. } => put(out, indent, &format!("call {name}")),
-                other => {
-                    put(out, indent, "call");
-                    dump_expr(out, other, indent + 1);
-                }
-            }
-            for arg in args {
-                dump_expr(out, arg, indent + 1);
-            }
+        Expr::Call { callee, args, .. } => dump_call(out, callee, args, indent),
+    }
+}
+
+fn dump_call(out: &mut String, callee: &Expr, args: &[Expr], indent: usize) {
+    match callee {
+        Expr::Var { name, .. } => put(out, indent, &format!("call {name}")),
+        other => {
+            put(out, indent, "call");
+            dump_expr(out, other, indent + 1);
         }
+    }
+    for arg in args {
+        dump_expr(out, arg, indent + 1);
+    }
+}
+
+fn unary_label(op: UnaryOp) -> &'static str {
+    match op {
+        UnaryOp::Plus => "pos",
+        UnaryOp::Minus => "neg",
+        UnaryOp::Not => "not",
+        UnaryOp::BitNot => "bnot",
+        UnaryOp::Addr => "addr",
+        UnaryOp::Deref => "deref",
+    }
+}
+
+fn incdec_label(op: IncOp) -> &'static str {
+    match op {
+        IncOp::PreInc => "pre++",
+        IncOp::PreDec => "pre--",
+        IncOp::PostInc => "post++",
+        IncOp::PostDec => "post--",
     }
 }
 

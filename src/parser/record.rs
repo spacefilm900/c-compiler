@@ -83,35 +83,7 @@ impl Parser<'_> {
         mut attrs: Vec<Attr>,
     ) -> Result<CType, Diagnostic> {
         let word = kind.word();
-        let handle = if let Some(tag) = tag {
-            if let Some(existing) = self.lookup_record_current(tag) {
-                if existing.kind() != kind {
-                    return Err(self.error_at(
-                        line,
-                        column,
-                        format!("'{tag}' defined as a different tag type"),
-                    ));
-                }
-                if existing.is_complete() || self.defining.contains(&existing.id()) {
-                    return Err(self.error_at(
-                        line,
-                        column,
-                        format!("redefinition of {word} '{tag}'"),
-                    ));
-                }
-                existing
-            } else if self.lookup_tag_current(tag).is_some() {
-                return Err(self.error_at(
-                    line,
-                    column,
-                    format!("'{tag}' defined as a different tag type"),
-                ));
-            } else {
-                self.declare_fresh_tag(tag, kind)
-            }
-        } else {
-            self.declare_fresh_tag("", kind)
-        };
+        let handle = self.record_being_defined(kind, tag, line, column)?;
         self.expect_skip(TokenKind::LBrace, "'{'")?;
         let id = handle.id();
         self.defining.insert(id);
@@ -125,32 +97,10 @@ impl Parser<'_> {
             return Err(self.error_at(line, column, format!("{word} '{label}' has no members")));
         }
         self.check_flexible_members(kind, &fields, line, column)?;
-        let natural_spec: Vec<LayoutMember> = fields
-            .iter()
-            .map(|field| LayoutMember {
-                size: field.ty.size().unwrap_or(0),
-                align: field.ty.member_align(),
-                bit_width: field.bit_width,
-                named: !field.name.is_empty(),
-            })
-            .collect();
+        let natural_spec = natural_layout_spec(&fields);
         let packed = attrs.iter().any(|attr| attr.name == "packed");
         let record_align = self.attrs_align(&attrs)?;
-        let spec: Vec<LayoutMember> = natural_spec
-            .iter()
-            .zip(&member_attrs)
-            .map(|(member, extra)| {
-                let base = if packed || extra.packed {
-                    1
-                } else {
-                    member.align
-                };
-                LayoutMember {
-                    align: extra.align.map_or(base, |align| base.max(align)),
-                    ..*member
-                }
-            })
-            .collect();
+        let spec = attributed_layout_spec(&natural_spec, &member_attrs, packed);
         let union_layout = kind == RecordKind::Union;
         let too_large = || self.error_at(line, column, format!("{word} '{label}' is too large"));
         let natural = layout_members(&natural_spec, union_layout).ok_or_else(too_large)?;
@@ -199,6 +149,42 @@ impl Parser<'_> {
         }
         self.structs.push(handle.clone());
         Ok(CType::Struct(handle))
+    }
+
+    /// The record a definition with `tag` completes: an incomplete one
+    /// declared in the current scope, or a fresh one.
+    fn record_being_defined(
+        &mut self,
+        kind: RecordKind,
+        tag: Option<&str>,
+        line: usize,
+        column: usize,
+    ) -> Result<StructRef, Diagnostic> {
+        let word = kind.word();
+        let Some(tag) = tag else {
+            return Ok(self.declare_fresh_tag("", kind));
+        };
+        if let Some(existing) = self.lookup_record_current(tag) {
+            if existing.kind() != kind {
+                return Err(self.error_at(
+                    line,
+                    column,
+                    format!("'{tag}' defined as a different tag type"),
+                ));
+            }
+            if existing.is_complete() || self.defining.contains(&existing.id()) {
+                return Err(self.error_at(line, column, format!("redefinition of {word} '{tag}'")));
+            }
+            Ok(existing)
+        } else if self.lookup_tag_current(tag).is_some() {
+            Err(self.error_at(
+                line,
+                column,
+                format!("'{tag}' defined as a different tag type"),
+            ))
+        } else {
+            Ok(self.declare_fresh_tag(tag, kind))
+        }
     }
 
     pub(super) fn parse_enum_specifier(&mut self) -> Result<(usize, usize), Diagnostic> {
@@ -801,4 +787,41 @@ pub(super) fn enum_int(value: BVal) -> Result<i32, ()> {
         return Err(());
     }
     Ok(signed as i32)
+}
+
+/// The layout input for `fields` with their natural alignments.
+fn natural_layout_spec(fields: &[StructField]) -> Vec<LayoutMember> {
+    fields
+        .iter()
+        .map(|field| LayoutMember {
+            size: field.ty.size().unwrap_or(0),
+            align: field.ty.member_align(),
+            bit_width: field.bit_width,
+            named: !field.name.is_empty(),
+        })
+        .collect()
+}
+
+/// The layout input after `packed` (on the record or a member) and a
+/// member's `aligned(N)` attribute adjust each member's alignment.
+fn attributed_layout_spec(
+    natural: &[LayoutMember],
+    member_attrs: &[MemberAttrs],
+    packed: bool,
+) -> Vec<LayoutMember> {
+    natural
+        .iter()
+        .zip(member_attrs)
+        .map(|(member, extra)| {
+            let base = if packed || extra.packed {
+                1
+            } else {
+                member.align
+            };
+            LayoutMember {
+                align: extra.align.map_or(base, |align| base.max(align)),
+                ..*member
+            }
+        })
+        .collect()
 }
