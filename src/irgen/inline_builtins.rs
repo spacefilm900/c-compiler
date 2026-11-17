@@ -207,75 +207,12 @@ impl Gen {
         args: &[Expr],
     ) -> Option<String> {
         use crate::builtins::Inline;
-        let int_result = |gen: &mut Self, value: &str, from: TypeName| -> String {
-            gen.convert(value, &CType::Int(from), &CType::int_type())
-        };
         match inline {
             Inline::Clz(ty) | Inline::Ctz(ty) | Inline::Popcount(ty) | Inline::Parity(ty) => {
-                let value = self.builtin_arg(inline, args, 0);
-                let ir = ty.ir_type();
-                let tmp = self.fresh();
-                match inline {
-                    Inline::Clz(_) | Inline::Ctz(_) => {
-                        let which = if matches!(inline, Inline::Clz(_)) {
-                            "ctlz"
-                        } else {
-                            "cttz"
-                        };
-                        self.intrinsic(&format!("declare {ir} @llvm.{which}.{ir}({ir}, i1)"));
-                        self.emit(&format!(
-                            "  {tmp} = call {ir} @llvm.{which}.{ir}({ir} {value}, i1 false)"
-                        ));
-                    }
-                    _ => {
-                        self.intrinsic(&format!("declare {ir} @llvm.ctpop.{ir}({ir})"));
-                        self.emit(&format!(
-                            "  {tmp} = call {ir} @llvm.ctpop.{ir}({ir} {value})"
-                        ));
-                    }
-                }
-                let result = if matches!(inline, Inline::Parity(_)) {
-                    let bit = self.fresh();
-                    self.emit(&format!("  {bit} = and {ir} {tmp}, 1"));
-                    bit
-                } else {
-                    tmp
-                };
-                Some(int_result(self, &result, ty))
+                Some(self.gen_count_bits(inline, ty, args))
             }
-            Inline::Ffs(ty) => {
-                let value = self.builtin_arg(inline, args, 0);
-                let ir = ty.ir_type();
-                self.intrinsic(&format!("declare {ir} @llvm.cttz.{ir}({ir}, i1)"));
-                let count = self.fresh();
-                self.emit(&format!(
-                    "  {count} = call {ir} @llvm.cttz.{ir}({ir} {value}, i1 false)"
-                ));
-                let plus = self.fresh();
-                self.emit(&format!("  {plus} = add {ir} {count}, 1"));
-                let zero = self.fresh();
-                self.emit(&format!("  {zero} = icmp eq {ir} {value}, 0"));
-                let pick = self.fresh();
-                self.emit(&format!("  {pick} = select i1 {zero}, {ir} 0, {ir} {plus}"));
-                Some(int_result(self, &pick, ty))
-            }
-            Inline::Clrsb(ty) => {
-                let value = self.builtin_arg(inline, args, 0);
-                let ir = ty.ir_type();
-                let width = ty.width();
-                self.intrinsic(&format!("declare {ir} @llvm.ctlz.{ir}({ir}, i1)"));
-                let sign = self.fresh();
-                self.emit(&format!("  {sign} = ashr {ir} {value}, {}", width - 1));
-                let flipped = self.fresh();
-                self.emit(&format!("  {flipped} = xor {ir} {value}, {sign}"));
-                let count = self.fresh();
-                self.emit(&format!(
-                    "  {count} = call {ir} @llvm.ctlz.{ir}({ir} {flipped}, i1 false)"
-                ));
-                let less = self.fresh();
-                self.emit(&format!("  {less} = sub {ir} {count}, 1"));
-                Some(int_result(self, &less, ty))
-            }
+            Inline::Ffs(ty) => Some(self.gen_ffs(inline, ty, args)),
+            Inline::Clrsb(ty) => Some(self.gen_clrsb(inline, ty, args)),
             Inline::Bswap(ty) => {
                 let value = self.builtin_arg(inline, args, 0);
                 let ir = ty.ir_type();
@@ -335,63 +272,157 @@ impl Gen {
                 Some(tmp)
             }
             Inline::IsNan | Inline::IsInf | Inline::IsFinite | Inline::IsNormal => {
-                let value = self.gen_val(&args[0]);
-                let ty = args[0].ty().expect("typed");
-                let kind = ty.float_kind().expect("floating argument");
-                let ir = ty.ir_type();
-                let cmp = self.fresh();
-                if inline == Inline::IsNan {
-                    self.emit(&format!("  {cmp} = fcmp uno {ir} {value}, {value}"));
-                } else {
-                    let suffix = match ir.as_str() {
-                        "float" => "f32",
-                        "double" => "f64",
-                        "fp128" => "f128",
-                        _ => "f80",
-                    };
-                    self.intrinsic(&format!("declare {ir} @llvm.fabs.{suffix}({ir})"));
-                    let abs = self.fresh();
-                    self.emit(&format!(
-                        "  {abs} = call {ir} @llvm.fabs.{suffix}({ir} {value})"
-                    ));
-                    let (inf, min_normal): (u128, u128) = match crate::float::fold(kind) {
-                        FloatKind::Float => (0x7f80_0000, 0x0080_0000),
-                        FloatKind::Double => (0x7ff0_0000_0000_0000, 0x0010_0000_0000_0000),
-                        FloatKind::LongDouble => {
-                            (0x7fff_8000_0000_0000_0000, 0x0001_8000_0000_0000_0000)
-                        }
-                    };
-                    let inf = crate::float::llvm_const(kind, inf);
-                    match inline {
-                        Inline::IsInf => {
-                            self.emit(&format!("  {cmp} = fcmp oeq {ir} {abs}, {inf}"));
-                        }
-                        Inline::IsFinite => {
-                            self.emit(&format!("  {cmp} = fcmp olt {ir} {abs}, {inf}"));
-                        }
-                        _ => {
-                            // The threshold is the run-time format's, not
-                            // the folding precision's: binary128 `long
-                            // double` is normal down to 2^-16382.
-                            let min = if ir == "fp128" {
-                                "0xL00000000000000000001000000000000".to_string()
-                            } else {
-                                crate::float::llvm_const(kind, min_normal)
-                            };
-                            let below = self.fresh();
-                            self.emit(&format!("  {below} = fcmp olt {ir} {abs}, {inf}"));
-                            let above = self.fresh();
-                            self.emit(&format!("  {above} = fcmp oge {ir} {abs}, {min}"));
-                            self.emit(&format!("  {cmp} = and i1 {below}, {above}"));
-                        }
-                    }
-                }
-                let tmp = self.fresh();
-                self.emit(&format!("  {tmp} = zext i1 {cmp} to i32"));
-                Some(tmp)
+                Some(self.gen_fp_classify(inline, args))
             }
             Inline::Overflow { op, fixed } => Some(self.gen_overflow(op, fixed, args)),
         }
+    }
+
+    /// A bit-counting builtin's result, of type `from`, as an `int`.
+    fn int_result(&mut self, value: &str, from: TypeName) -> String {
+        self.convert(value, &CType::Int(from), &CType::int_type())
+    }
+
+    /// `__builtin_clz`, `ctz`, `popcount` and `parity` on an operand of
+    /// type `ty`.
+    fn gen_count_bits(
+        &mut self,
+        inline: crate::builtins::Inline,
+        ty: TypeName,
+        args: &[Expr],
+    ) -> String {
+        use crate::builtins::Inline;
+        let value = self.builtin_arg(inline, args, 0);
+        let ir = ty.ir_type();
+        let tmp = self.fresh();
+        match inline {
+            Inline::Clz(_) | Inline::Ctz(_) => {
+                let which = if matches!(inline, Inline::Clz(_)) {
+                    "ctlz"
+                } else {
+                    "cttz"
+                };
+                self.intrinsic(&format!("declare {ir} @llvm.{which}.{ir}({ir}, i1)"));
+                self.emit(&format!(
+                    "  {tmp} = call {ir} @llvm.{which}.{ir}({ir} {value}, i1 false)"
+                ));
+            }
+            _ => {
+                self.intrinsic(&format!("declare {ir} @llvm.ctpop.{ir}({ir})"));
+                self.emit(&format!(
+                    "  {tmp} = call {ir} @llvm.ctpop.{ir}({ir} {value})"
+                ));
+            }
+        }
+        let result = if matches!(inline, Inline::Parity(_)) {
+            let bit = self.fresh();
+            self.emit(&format!("  {bit} = and {ir} {tmp}, 1"));
+            bit
+        } else {
+            tmp
+        };
+        self.int_result(&result, ty)
+    }
+
+    /// `__builtin_ffs`: one plus the index of the least significant set
+    /// bit, or zero for a zero operand.
+    fn gen_ffs(&mut self, inline: crate::builtins::Inline, ty: TypeName, args: &[Expr]) -> String {
+        let value = self.builtin_arg(inline, args, 0);
+        let ir = ty.ir_type();
+        self.intrinsic(&format!("declare {ir} @llvm.cttz.{ir}({ir}, i1)"));
+        let count = self.fresh();
+        self.emit(&format!(
+            "  {count} = call {ir} @llvm.cttz.{ir}({ir} {value}, i1 false)"
+        ));
+        let plus = self.fresh();
+        self.emit(&format!("  {plus} = add {ir} {count}, 1"));
+        let zero = self.fresh();
+        self.emit(&format!("  {zero} = icmp eq {ir} {value}, 0"));
+        let pick = self.fresh();
+        self.emit(&format!("  {pick} = select i1 {zero}, {ir} 0, {ir} {plus}"));
+        self.int_result(&pick, ty)
+    }
+
+    /// `__builtin_clrsb`: the number of leading redundant sign bits.
+    fn gen_clrsb(
+        &mut self,
+        inline: crate::builtins::Inline,
+        ty: TypeName,
+        args: &[Expr],
+    ) -> String {
+        let value = self.builtin_arg(inline, args, 0);
+        let ir = ty.ir_type();
+        let width = ty.width();
+        self.intrinsic(&format!("declare {ir} @llvm.ctlz.{ir}({ir}, i1)"));
+        let sign = self.fresh();
+        self.emit(&format!("  {sign} = ashr {ir} {value}, {}", width - 1));
+        let flipped = self.fresh();
+        self.emit(&format!("  {flipped} = xor {ir} {value}, {sign}"));
+        let count = self.fresh();
+        self.emit(&format!(
+            "  {count} = call {ir} @llvm.ctlz.{ir}({ir} {flipped}, i1 false)"
+        ));
+        let less = self.fresh();
+        self.emit(&format!("  {less} = sub {ir} {count}, 1"));
+        self.int_result(&less, ty)
+    }
+
+    /// `__builtin_isnan`, `isinf`, `isfinite` and `isnormal`, as an `int`
+    /// 0 or 1.
+    fn gen_fp_classify(&mut self, inline: crate::builtins::Inline, args: &[Expr]) -> String {
+        use crate::builtins::Inline;
+        let value = self.gen_val(&args[0]);
+        let ty = args[0].ty().expect("typed");
+        let kind = ty.float_kind().expect("floating argument");
+        let ir = ty.ir_type();
+        let cmp = self.fresh();
+        if inline == Inline::IsNan {
+            self.emit(&format!("  {cmp} = fcmp uno {ir} {value}, {value}"));
+        } else {
+            let suffix = match ir.as_str() {
+                "float" => "f32",
+                "double" => "f64",
+                "fp128" => "f128",
+                _ => "f80",
+            };
+            self.intrinsic(&format!("declare {ir} @llvm.fabs.{suffix}({ir})"));
+            let abs = self.fresh();
+            self.emit(&format!(
+                "  {abs} = call {ir} @llvm.fabs.{suffix}({ir} {value})"
+            ));
+            let (inf, min_normal): (u128, u128) = match crate::float::fold(kind) {
+                FloatKind::Float => (0x7f80_0000, 0x0080_0000),
+                FloatKind::Double => (0x7ff0_0000_0000_0000, 0x0010_0000_0000_0000),
+                FloatKind::LongDouble => (0x7fff_8000_0000_0000_0000, 0x0001_8000_0000_0000_0000),
+            };
+            let inf = crate::float::llvm_const(kind, inf);
+            match inline {
+                Inline::IsInf => {
+                    self.emit(&format!("  {cmp} = fcmp oeq {ir} {abs}, {inf}"));
+                }
+                Inline::IsFinite => {
+                    self.emit(&format!("  {cmp} = fcmp olt {ir} {abs}, {inf}"));
+                }
+                _ => {
+                    // The threshold is the run-time format's, not
+                    // the folding precision's: binary128 `long
+                    // double` is normal down to 2^-16382.
+                    let min = if ir == "fp128" {
+                        "0xL00000000000000000001000000000000".to_string()
+                    } else {
+                        crate::float::llvm_const(kind, min_normal)
+                    };
+                    let below = self.fresh();
+                    self.emit(&format!("  {below} = fcmp olt {ir} {abs}, {inf}"));
+                    let above = self.fresh();
+                    self.emit(&format!("  {above} = fcmp oge {ir} {abs}, {min}"));
+                    self.emit(&format!("  {cmp} = and i1 {below}, {above}"));
+                }
+            }
+        }
+        let tmp = self.fresh();
+        self.emit(&format!("  {tmp} = zext i1 {cmp} to i32"));
+        tmp
     }
 
     /// `__builtin_add_overflow` and friends. Both operands are widened to
@@ -407,24 +438,8 @@ impl Gen {
         args: &[Expr],
     ) -> String {
         use crate::builtins::OverflowOp;
-        let operand = |gen: &mut Self, index: usize| -> (String, TypeName) {
-            let value = gen.gen_val(&args[index]);
-            let src = args[index].ty().expect("typed");
-            let ty = fixed.unwrap_or_else(|| src.as_integer().expect("integer operand"));
-            let value = gen.convert(&value, &src, &CType::Int(ty));
-            if ty.width() == 128 {
-                return (value, ty);
-            }
-            let wide = gen.fresh();
-            let ext = if ty.is_signed() { "sext" } else { "zext" };
-            gen.emit(&format!(
-                "  {wide} = {ext} {} {value} to i128",
-                ty.ir_type()
-            ));
-            (wide, ty)
-        };
-        let (left, left_ty) = operand(self, 0);
-        let (right, right_ty) = operand(self, 1);
+        let (left, left_ty) = self.overflow_operand(fixed, args, 0);
+        let (right, right_ty) = self.overflow_operand(fixed, args, 1);
         let dest_ptr = self.gen_val(&args[2]);
         let target = match fixed.or_else(|| {
             args[2]
@@ -435,8 +450,7 @@ impl Gen {
             None => return self.ice_in(&args[2], "overflow result is not a pointer to an integer"),
         };
         let tir = target.ir_type();
-        let tw = target.width();
-        if left_ty.width() == 128 || right_ty.width() == 128 || tw == 128 {
+        if left_ty.width() == 128 || right_ty.width() == 128 || target.width() == 128 {
             return self.gen_overflow_i256(
                 op,
                 [(&left, left_ty), (&right, right_ty)],
@@ -460,67 +474,109 @@ impl Gen {
                 ov
             }
             OverflowOp::Mul => {
-                let magnitude = |gen: &mut Self, value: &str, ty: TypeName| -> (String, String) {
-                    if !ty.is_signed() {
-                        return (value.to_string(), "false".to_string());
-                    }
-                    let neg = gen.fresh();
-                    gen.emit(&format!("  {neg} = icmp slt i128 {value}, 0"));
-                    let flipped = gen.fresh();
-                    gen.emit(&format!("  {flipped} = sub i128 0, {value}"));
-                    let abs = gen.fresh();
-                    gen.emit(&format!(
-                        "  {abs} = select i1 {neg}, i128 {flipped}, i128 {value}"
-                    ));
-                    (abs, neg)
-                };
-                let (left_abs, left_neg) = magnitude(self, &left, left_ty);
-                let (right_abs, right_neg) = magnitude(self, &right, right_ty);
-                let mag = self.fresh();
-                self.emit(&format!("  {mag} = mul i128 {left_abs}, {right_abs}"));
-                let neg = self.fresh();
-                self.emit(&format!("  {neg} = xor i1 {left_neg}, {right_neg}"));
-                let flipped = self.fresh();
-                self.emit(&format!("  {flipped} = sub i128 0, {mag}"));
-                let exact = self.fresh();
-                self.emit(&format!(
-                    "  {exact} = select i1 {neg}, i128 {flipped}, i128 {mag}"
-                ));
-                let low = self.fresh();
-                self.emit(&format!("  {low} = trunc i128 {exact} to {tir}"));
-                self.store(&CType::Int(target), &low, &dest_ptr);
-                // A zero product is never negative.
-                let nonzero = self.fresh();
-                self.emit(&format!("  {nonzero} = icmp ne i128 {mag}, 0"));
-                let negative = self.fresh();
-                self.emit(&format!("  {negative} = and i1 {neg}, {nonzero}"));
-                if target.is_signed() {
-                    let max = (1u128 << (tw - 1)) - 1;
-                    let limit = self.fresh();
-                    self.emit(&format!(
-                        "  {limit} = select i1 {negative}, i128 {}, i128 {max}",
-                        max + 1
-                    ));
-                    let ov = self.fresh();
-                    self.emit(&format!("  {ov} = icmp ugt i128 {mag}, {limit}"));
-                    ov
-                } else {
-                    let max = if tw == 64 {
-                        u128::from(u64::MAX)
-                    } else {
-                        (1u128 << tw) - 1
-                    };
-                    let big = self.fresh();
-                    self.emit(&format!("  {big} = icmp ugt i128 {mag}, {max}"));
-                    let ov = self.fresh();
-                    self.emit(&format!("  {ov} = or i1 {big}, {negative}"));
-                    ov
-                }
+                self.overflow_mul([(&left, left_ty), (&right, right_ty)], &dest_ptr, target)
             }
         };
         let tmp = self.fresh();
         self.emit(&format!("  {tmp} = zext i1 {overflow} to i8"));
         tmp
+    }
+
+    /// Operand `index` of an overflow builtin, converted to its type (the
+    /// builtin's fixed type, or the operand's own) and widened to `i128`
+    /// unless it is 128 bits already.
+    fn overflow_operand(
+        &mut self,
+        fixed: Option<TypeName>,
+        args: &[Expr],
+        index: usize,
+    ) -> (String, TypeName) {
+        let value = self.gen_val(&args[index]);
+        let src = args[index].ty().expect("typed");
+        let ty = fixed.unwrap_or_else(|| src.as_integer().expect("integer operand"));
+        let value = self.convert(&value, &src, &CType::Int(ty));
+        if ty.width() == 128 {
+            return (value, ty);
+        }
+        let wide = self.fresh();
+        let ext = if ty.is_signed() { "sext" } else { "zext" };
+        self.emit(&format!(
+            "  {wide} = {ext} {} {value} to i128",
+            ty.ir_type()
+        ));
+        (wide, ty)
+    }
+
+    /// The magnitude of an `i128` operand of type `ty` and an `i1` that is
+    /// set when it is negative (the constant `false` when unsigned).
+    fn overflow_magnitude(&mut self, value: &str, ty: TypeName) -> (String, String) {
+        if !ty.is_signed() {
+            return (value.to_string(), "false".to_string());
+        }
+        let neg = self.fresh();
+        self.emit(&format!("  {neg} = icmp slt i128 {value}, 0"));
+        let flipped = self.fresh();
+        self.emit(&format!("  {flipped} = sub i128 0, {value}"));
+        let abs = self.fresh();
+        self.emit(&format!(
+            "  {abs} = select i1 {neg}, i128 {flipped}, i128 {value}"
+        ));
+        (abs, neg)
+    }
+
+    /// `__builtin_mul_overflow` on operands widened to `i128`: store the
+    /// truncated product through `dest_ptr` and return the `i1` overflow
+    /// flag for the `target` type.
+    fn overflow_mul(
+        &mut self,
+        [(left, left_ty), (right, right_ty)]: [(&str, TypeName); 2],
+        dest_ptr: &str,
+        target: TypeName,
+    ) -> String {
+        let tir = target.ir_type();
+        let tw = target.width();
+        let (left_abs, left_neg) = self.overflow_magnitude(left, left_ty);
+        let (right_abs, right_neg) = self.overflow_magnitude(right, right_ty);
+        let mag = self.fresh();
+        self.emit(&format!("  {mag} = mul i128 {left_abs}, {right_abs}"));
+        let neg = self.fresh();
+        self.emit(&format!("  {neg} = xor i1 {left_neg}, {right_neg}"));
+        let flipped = self.fresh();
+        self.emit(&format!("  {flipped} = sub i128 0, {mag}"));
+        let exact = self.fresh();
+        self.emit(&format!(
+            "  {exact} = select i1 {neg}, i128 {flipped}, i128 {mag}"
+        ));
+        let low = self.fresh();
+        self.emit(&format!("  {low} = trunc i128 {exact} to {tir}"));
+        self.store(&CType::Int(target), &low, dest_ptr);
+        // A zero product is never negative.
+        let nonzero = self.fresh();
+        self.emit(&format!("  {nonzero} = icmp ne i128 {mag}, 0"));
+        let negative = self.fresh();
+        self.emit(&format!("  {negative} = and i1 {neg}, {nonzero}"));
+        if target.is_signed() {
+            let max = (1u128 << (tw - 1)) - 1;
+            let limit = self.fresh();
+            self.emit(&format!(
+                "  {limit} = select i1 {negative}, i128 {}, i128 {max}",
+                max + 1
+            ));
+            let ov = self.fresh();
+            self.emit(&format!("  {ov} = icmp ugt i128 {mag}, {limit}"));
+            ov
+        } else {
+            let max = if tw == 64 {
+                u128::from(u64::MAX)
+            } else {
+                (1u128 << tw) - 1
+            };
+            let big = self.fresh();
+            self.emit(&format!("  {big} = icmp ugt i128 {mag}, {max}"));
+            let ov = self.fresh();
+            self.emit(&format!("  {ov} = or i1 {big}, {negative}"));
+            ov
+        }
     }
 
     /// Overflow checking for a 128-bit operand or destination.

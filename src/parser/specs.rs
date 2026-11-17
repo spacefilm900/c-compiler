@@ -14,148 +14,159 @@ impl Parser<'_> {
 
     pub(super) fn parse_specs_inner(&mut self, where_: SpecPlace) -> Result<Specs, Diagnostic> {
         let mut flags = SpecFlags::default();
-        loop {
-            let token = self.current().clone();
-            match token.kind {
-                TokenKind::KwStatic | TokenKind::KwExtern => {
-                    let storage = if token.kind == TokenKind::KwStatic {
-                        Storage::Static
-                    } else {
-                        Storage::Extern
-                    };
-                    self.note_storage(&mut flags, storage, &token, where_)?;
-                }
-                TokenKind::KwVoid
-                | TokenKind::KwChar
-                | TokenKind::KwShort
-                | TokenKind::KwInt
-                | TokenKind::KwLong
-                | TokenKind::KwSigned
-                | TokenKind::KwUnsigned => {
-                    self.bump();
-                    self.note_type(&mut flags, &token)?;
-                }
-                TokenKind::KwConst | TokenKind::KwVolatile => {
-                    self.bump();
-                    self.note_qualifier(&mut flags, &token)?;
-                }
-                TokenKind::KwRestrict => {
-                    self.bump();
-                    self.note_restrict(&mut flags, &token)?;
-                }
-                TokenKind::KwTypedef => {
-                    self.note_storage(&mut flags, Storage::Typedef, &token, where_)?;
-                }
-                TokenKind::KwInline => {
-                    // A function specifier. It does not change the type;
-                    // see [`Parser::note_inline`] for what it does to a
-                    // definition's linkage.
-                    self.bump();
-                    flags.inline_ = true;
-                }
-                TokenKind::KwNoreturn => {
-                    // A function specifier. It does not change the type.
-                    self.bump();
-                }
-                TokenKind::KwRegister | TokenKind::KwAuto => {
-                    self.note_storage(&mut flags, Storage::None, &token, where_)?;
-                    flags.plain_storage = true;
-                }
-                TokenKind::KwBool => {
-                    self.bump();
-                    self.note_bool(&mut flags, &token)?;
-                }
-                TokenKind::KwFloat | TokenKind::KwDouble => {
-                    self.bump();
-                    self.note_float(&mut flags, &token)?;
-                }
-                TokenKind::KwStruct => {
-                    self.note_record(&mut flags, RecordKind::Struct)?;
-                }
-                TokenKind::KwUnion => {
-                    self.note_record(&mut flags, RecordKind::Union)?;
-                }
-                TokenKind::KwEnum => {
-                    self.note_enum(&mut flags)?;
-                }
-                TokenKind::Ident
-                    if matches!(
-                        token.spelling.as_str(),
-                        "__int128" | "__int128_t" | "__uint128_t"
-                    ) =>
-                {
-                    self.note_int128(&mut flags, &token)?;
-                }
-                TokenKind::Ident
-                    if token.spelling == "__builtin_va_list" || token.spelling == "_Float16" =>
-                {
-                    if flags.struct_ty.is_some()
-                        || flags.bool_ty
-                        || flags.float_ty.is_some()
-                        || flags.has_scalar()
-                    {
-                        break;
-                    }
-                    self.bump();
-                    flags.any = true;
-                    flags.struct_ty = Some(if token.spelling == "_Float16" {
-                        self.float16()
-                    } else {
-                        self.builtin_va_list()
-                    });
-                    flags.line = token.line;
-                    flags.column = token.column;
-                }
-                TokenKind::Ident if self.is_typeof_word(&token) => {
-                    if flags.struct_ty.is_some()
-                        || flags.bool_ty
-                        || flags.float_ty.is_some()
-                        || flags.has_scalar()
-                    {
-                        return Err(self.error("invalid combination of type specifiers"));
-                    }
-                    let ty = self.parse_typeof()?;
-                    flags.any = true;
-                    flags.struct_ty = Some(ty);
-                    flags.line = token.line;
-                    flags.column = token.column;
-                }
-                TokenKind::Ident if self.is_typedef(&token.spelling) => {
-                    // A typedef name is a type specifier only when the list
-                    // does not already have one. `typedef T T` is a declarator
-                    // named T, not two type specifiers.
-                    if flags.struct_ty.is_some()
-                        || flags.bool_ty
-                        || flags.float_ty.is_some()
-                        || flags.has_scalar()
-                    {
-                        break;
-                    }
-                    self.note_typedef_name(&mut flags)?;
-                }
-                TokenKind::Ident
-                    if self.spec_word(&[
-                        "__extension__",
-                        "__inline",
-                        "__inline__",
-                        "__restrict",
-                        "__restrict__",
-                    ]) =>
-                {
-                    self.note_ident_spec(&mut flags, where_)?;
-                }
-                kind => {
-                    if self.spec_word(&["__attribute__", "__attribute"]) {
-                        self.skip_attribute()?;
-                        continue;
-                    }
-                    if let Some(message) = unsupported(kind) {
-                        return Err(self.error(message));
-                    }
-                    break;
-                }
+        while self.parse_spec_word(&mut flags, where_)? {}
+        self.finish_specs(flags, where_)
+    }
+
+    /// Take one declaration specifier into `flags`. `Ok(false)` means the
+    /// current token does not continue the list.
+    fn parse_spec_word(
+        &mut self,
+        flags: &mut SpecFlags,
+        where_: SpecPlace,
+    ) -> Result<bool, Diagnostic> {
+        let token = self.current().clone();
+        match token.kind {
+            TokenKind::KwStatic | TokenKind::KwExtern => {
+                let storage = if token.kind == TokenKind::KwStatic {
+                    Storage::Static
+                } else {
+                    Storage::Extern
+                };
+                self.note_storage(flags, storage, &token, where_)?;
             }
+            TokenKind::KwVoid
+            | TokenKind::KwChar
+            | TokenKind::KwShort
+            | TokenKind::KwInt
+            | TokenKind::KwLong
+            | TokenKind::KwSigned
+            | TokenKind::KwUnsigned => {
+                self.bump();
+                self.note_type(flags, &token)?;
+            }
+            TokenKind::KwConst | TokenKind::KwVolatile => {
+                self.bump();
+                self.note_qualifier(flags, &token)?;
+            }
+            TokenKind::KwRestrict => {
+                self.bump();
+                self.note_restrict(flags, &token)?;
+            }
+            TokenKind::KwTypedef => {
+                self.note_storage(flags, Storage::Typedef, &token, where_)?;
+            }
+            TokenKind::KwInline => {
+                // A function specifier. It does not change the type;
+                // see [`Parser::note_inline`] for what it does to a
+                // definition's linkage.
+                self.bump();
+                flags.inline_ = true;
+            }
+            TokenKind::KwNoreturn => {
+                // A function specifier. It does not change the type.
+                self.bump();
+            }
+            TokenKind::KwRegister | TokenKind::KwAuto => {
+                self.note_storage(flags, Storage::None, &token, where_)?;
+                flags.plain_storage = true;
+            }
+            TokenKind::KwBool => {
+                self.bump();
+                self.note_bool(flags, &token)?;
+            }
+            TokenKind::KwFloat | TokenKind::KwDouble => {
+                self.bump();
+                self.note_float(flags, &token)?;
+            }
+            TokenKind::KwStruct => {
+                self.note_record(flags, RecordKind::Struct)?;
+            }
+            TokenKind::KwUnion => {
+                self.note_record(flags, RecordKind::Union)?;
+            }
+            TokenKind::KwEnum => {
+                self.note_enum(flags)?;
+            }
+            TokenKind::Ident => return self.parse_spec_ident(flags, &token, where_),
+            kind => return self.parse_spec_other(kind),
         }
+        Ok(true)
+    }
+
+    /// An identifier among declaration specifiers: a GNU type word,
+    /// `typeof`, a typedef name, or a GNU spelling of a keyword.
+    fn parse_spec_ident(
+        &mut self,
+        flags: &mut SpecFlags,
+        token: &Token,
+        where_: SpecPlace,
+    ) -> Result<bool, Diagnostic> {
+        if matches!(
+            token.spelling.as_str(),
+            "__int128" | "__int128_t" | "__uint128_t"
+        ) {
+            self.note_int128(flags, token)?;
+        } else if token.spelling == "__builtin_va_list" || token.spelling == "_Float16" {
+            if flags.has_type_specifier() {
+                return Ok(false);
+            }
+            self.bump();
+            flags.any = true;
+            flags.struct_ty = Some(if token.spelling == "_Float16" {
+                self.float16()
+            } else {
+                self.builtin_va_list()
+            });
+            flags.line = token.line;
+            flags.column = token.column;
+        } else if self.is_typeof_word(token) {
+            if flags.has_type_specifier() {
+                return Err(self.error("invalid combination of type specifiers"));
+            }
+            let ty = self.parse_typeof()?;
+            flags.any = true;
+            flags.struct_ty = Some(ty);
+            flags.line = token.line;
+            flags.column = token.column;
+        } else if self.is_typedef(&token.spelling) {
+            // A typedef name is a type specifier only when the list
+            // does not already have one. `typedef T T` is a declarator
+            // named T, not two type specifiers.
+            if flags.has_type_specifier() {
+                return Ok(false);
+            }
+            self.note_typedef_name(flags)?;
+        } else if self.spec_word(&[
+            "__extension__",
+            "__inline",
+            "__inline__",
+            "__restrict",
+            "__restrict__",
+        ]) {
+            self.note_ident_spec(flags, where_)?;
+        } else {
+            return self.parse_spec_other(TokenKind::Ident);
+        }
+        Ok(true)
+    }
+
+    /// A token that is no declaration specifier: a GNU attribute is
+    /// skipped, a keyword this compiler does not support is an error, and
+    /// anything else ends the list.
+    fn parse_spec_other(&mut self, kind: TokenKind) -> Result<bool, Diagnostic> {
+        if self.spec_word(&["__attribute__", "__attribute"]) {
+            self.skip_attribute()?;
+            return Ok(true);
+        }
+        if let Some(message) = unsupported(kind) {
+            return Err(self.error(message));
+        }
+        Ok(false)
+    }
+
+    /// The type and storage the specifier list `flags` denotes.
+    fn finish_specs(&mut self, flags: SpecFlags, where_: SpecPlace) -> Result<Specs, Diagnostic> {
         if !flags.any {
             return Err(self.error(format!("expected a type, found {}", found(self.current()))));
         }

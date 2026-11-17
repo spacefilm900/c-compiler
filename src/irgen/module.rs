@@ -13,6 +13,40 @@ pub(super) fn render_module(unit: &TranslationUnit, filename: &str) -> Result<St
         target.data_layout()
     ));
     out.push_str(&format!("target triple = \"{}\"\n\n", target.triple()));
+    let mut wrote_prelude = render_types_and_strings(unit, &mut out);
+    // Function bodies are rendered first because they decide which library
+    // functions IR lowering calls. An internal object that shares such a
+    // name is then given a private symbol and the bodies are rendered again.
+    let (mut functions, mut needs) = render_functions(unit, &Renames::new())?;
+    let renames = library_renames(unit, &needs);
+    if !renames.is_empty() {
+        (functions, needs) = render_functions(unit, &renames)?;
+    }
+    for global in &unit.globals {
+        out.push_str(&render_global(global, &renames)?);
+        out.push('\n');
+        wrote_prelude = true;
+    }
+    for decl in &unit.func_decls {
+        out.push_str(&render_declare(decl, unit.fn_attrs.get(&decl.name)));
+        out.push('\n');
+        wrote_prelude = true;
+    }
+    wrote_prelude |= render_lowering_declares(unit, &needs, &mut out);
+    wrote_prelude |= render_special_arrays(unit, &renames, &mut out);
+    if wrote_prelude {
+        out.push('\n');
+    }
+    for text in functions {
+        out.push_str(&text);
+        out.push_str("\n\n");
+    }
+    Ok(out)
+}
+
+/// Named struct types (opaque for an incomplete type a global uses) and
+/// string constants. Returns whether anything was written.
+fn render_types_and_strings(unit: &TranslationUnit, out: &mut String) -> bool {
     let mut wrote_prelude = false;
     for handle in &unit.structs {
         if handle.is_complete() {
@@ -37,24 +71,13 @@ pub(super) fn render_module(unit: &TranslationUnit, filename: &str) -> Result<St
         out.push('\n');
         wrote_prelude = true;
     }
-    // Function bodies are rendered first because they decide which library
-    // functions IR lowering calls. An internal object that shares such a
-    // name is then given a private symbol and the bodies are rendered again.
-    let (mut functions, mut needs) = render_functions(unit, &Renames::new())?;
-    let renames = library_renames(unit, &needs);
-    if !renames.is_empty() {
-        (functions, needs) = render_functions(unit, &renames)?;
-    }
-    for global in &unit.globals {
-        out.push_str(&render_global(global, &renames)?);
-        out.push('\n');
-        wrote_prelude = true;
-    }
-    for decl in &unit.func_decls {
-        out.push_str(&render_declare(decl, unit.fn_attrs.get(&decl.name)));
-        out.push('\n');
-        wrote_prelude = true;
-    }
+    wrote_prelude
+}
+
+/// Declarations of the intrinsics and library functions that lowering
+/// calls. Returns whether anything was written.
+fn render_lowering_declares(unit: &TranslationUnit, needs: &LowerNeeds, out: &mut String) -> bool {
+    let mut wrote_prelude = false;
     if needs.va {
         out.push_str("declare void @llvm.va_start(ptr)\n");
         out.push_str("declare void @llvm.va_end(ptr)\n");
@@ -96,11 +119,19 @@ pub(super) fn render_module(unit: &TranslationUnit, filename: &str) -> Result<St
         out.push('\n');
         wrote_prelude = true;
     }
+    wrote_prelude
+}
+
+/// `@llvm.used`, `@llvm.global_ctors` and `@llvm.global_dtors` for the
+/// `used`, `constructor` and `destructor` attributes. Returns whether
+/// anything was written.
+fn render_special_arrays(unit: &TranslationUnit, renames: &Renames, out: &mut String) -> bool {
+    let mut wrote_prelude = false;
     let used: Vec<String> = unit
         .globals
         .iter()
         .filter(|global| global.attrs.used && global.init.is_some())
-        .map(|global| llvm_global(renamed(&global.name, &renames)))
+        .map(|global| llvm_global(renamed(&global.name, renames)))
         .chain(
             unit.decls
                 .iter()
@@ -113,7 +144,7 @@ pub(super) fn render_module(unit: &TranslationUnit, filename: &str) -> Result<St
                         .get(&func.symbol)
                         .is_some_and(|attrs| attrs.used)
                 })
-                .map(|func| llvm_global(renamed(&func.symbol, &renames))),
+                .map(|func| llvm_global(renamed(&func.symbol, renames))),
         )
         .collect();
     if !used.is_empty() {
@@ -145,7 +176,7 @@ pub(super) fn render_module(unit: &TranslationUnit, filename: &str) -> Result<St
             .map(|func| {
                 format!(
                     "{{ i32, ptr, ptr }} {{ i32 65535, ptr {}, ptr null }}",
-                    llvm_global(renamed(&func.symbol, &renames))
+                    llvm_global(renamed(&func.symbol, renames))
                 )
             })
             .collect();
@@ -158,15 +189,7 @@ pub(super) fn render_module(unit: &TranslationUnit, filename: &str) -> Result<St
             wrote_prelude = true;
         }
     }
-
-    if wrote_prelude {
-        out.push('\n');
-    }
-    for text in functions {
-        out.push_str(&text);
-        out.push_str("\n\n");
-    }
-    Ok(out)
+    wrote_prelude
 }
 
 /// LLVM symbol replacements: C linker name to the private name used in IR.

@@ -170,7 +170,14 @@ pub(super) fn target_macros(target: Target) -> Vec<(&'static str, &'static str)>
     } else {
         out.push(("__WINT_TYPE__", "unsigned int"));
     }
-    match target.long_double() {
+    float_macros(target.long_double(), &mut out);
+    out
+}
+
+/// The floating-type characteristics, `__FLT_*__`, `__DBL_*__` and
+/// `__LDBL_*__`, for a target whose `long double` is `long_double`.
+fn float_macros(long_double: LongDouble, out: &mut Vec<(&'static str, &'static str)>) {
+    match long_double {
         LongDouble::X87 => out.extend([
             ("__SIZEOF_LONG_DOUBLE__", "16"),
             ("__LDBL_MANT_DIG__", "64"),
@@ -211,7 +218,7 @@ pub(super) fn target_macros(target: Target) -> Vec<(&'static str, &'static str)>
         ("__DBL_EPSILON__", "0x1p-52"),
         ("__DBL_DENORM_MIN__", "0x1p-1074"),
     ]);
-    match target.long_double() {
+    match long_double {
         LongDouble::Double => out.extend([
             ("__LDBL_DIG__", "15"),
             ("__LDBL_MIN_EXP__", "(-1021)"),
@@ -261,7 +268,6 @@ pub(super) fn target_macros(target: Target) -> Vec<(&'static str, &'static str)>
             ("__LDBL_DENORM_MIN__", "3.64519953188247460253e-4951L"),
         ]),
     }
-    out
 }
 
 pub(super) fn push_compiler(dirs: &mut Vec<PathBuf>, path: PathBuf) {

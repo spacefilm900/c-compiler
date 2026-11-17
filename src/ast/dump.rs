@@ -230,11 +230,7 @@ pub(super) fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
         Expr::Var { name, .. } => put(out, indent, &format!("var {name}")),
         Expr::Bin {
             op, left, right, ..
-        } => {
-            put(out, indent, op.as_str());
-            dump_expr(out, left, indent + 1);
-            dump_expr(out, right, indent + 1);
-        }
+        } => dump_node(out, indent, op.as_str(), [left.as_ref(), right.as_ref()]),
         Expr::Unary { op, expr, .. } => {
             let spelling = match op {
                 UnaryOp::Plus => "pos",
@@ -244,21 +240,19 @@ pub(super) fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
                 UnaryOp::Addr => "addr",
                 UnaryOp::Deref => "deref",
             };
-            put(out, indent, spelling);
-            dump_expr(out, expr, indent + 1);
+            dump_node(out, indent, spelling, [expr.as_ref()]);
         }
         Expr::Assign { target, value, .. } => {
-            put(out, indent, "assign");
-            dump_expr(out, target, indent + 1);
-            dump_expr(out, value, indent + 1);
+            dump_node(out, indent, "assign", [target.as_ref(), value.as_ref()]);
         }
         Expr::CompoundAssign {
             op, target, value, ..
-        } => {
-            put(out, indent, op.compound_spelling());
-            dump_expr(out, target, indent + 1);
-            dump_expr(out, value, indent + 1);
-        }
+        } => dump_node(
+            out,
+            indent,
+            op.compound_spelling(),
+            [target.as_ref(), value.as_ref()],
+        ),
         Expr::IncDec { op, target, .. } => {
             let spelling = match op {
                 IncOp::PreInc => "pre++",
@@ -266,83 +260,55 @@ pub(super) fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
                 IncOp::PostInc => "post++",
                 IncOp::PostDec => "post--",
             };
-            put(out, indent, spelling);
-            dump_expr(out, target, indent + 1);
+            dump_node(out, indent, spelling, [target.as_ref()]);
         }
         Expr::Cond {
             cond,
             then_expr,
             else_expr,
             ..
-        } => {
-            put(out, indent, "?:");
-            dump_expr(out, cond, indent + 1);
-            dump_expr(out, then_expr, indent + 1);
-            dump_expr(out, else_expr, indent + 1);
-        }
+        } => dump_node(
+            out,
+            indent,
+            "?:",
+            [cond.as_ref(), then_expr.as_ref(), else_expr.as_ref()],
+        ),
         Expr::CondShort {
             cond, else_expr, ..
-        } => {
-            put(out, indent, "?:");
-            dump_expr(out, cond, indent + 1);
-            dump_expr(out, else_expr, indent + 1);
-        }
+        } => dump_node(out, indent, "?:", [cond.as_ref(), else_expr.as_ref()]),
         Expr::LabelAddr { name, .. } => put(out, indent, &format!("&&{name}")),
         Expr::StmtExpr { body, .. } => {
             put(out, indent, "({})");
             dump_compound(out, body, indent + 1);
         }
         Expr::Comma { left, right, .. } => {
-            put(out, indent, ",");
-            dump_expr(out, left, indent + 1);
-            dump_expr(out, right, indent + 1);
+            dump_node(out, indent, ",", [left.as_ref(), right.as_ref()]);
         }
         Expr::Sizeof { operand, .. } => match operand {
             SizeofOperand::Type(ty) => put(out, indent, &format!("sizeof {}", ty.display())),
-            SizeofOperand::Expr(expr) => {
-                put(out, indent, "sizeof");
-                dump_expr(out, expr, indent + 1);
-            }
+            SizeofOperand::Expr(expr) => dump_node(out, indent, "sizeof", [expr.as_ref()]),
         },
-        Expr::Cast { ty_name, expr, .. } => {
-            put(out, indent, &format!("cast {}", ty_name.display()));
-            dump_expr(out, expr, indent + 1);
-        }
+        Expr::Cast { ty_name, expr, .. } => dump_node(
+            out,
+            indent,
+            &format!("cast {}", ty_name.display()),
+            [expr.as_ref()],
+        ),
         Expr::Index { base, index, .. } => {
-            put(out, indent, "index");
-            dump_expr(out, base, indent + 1);
-            dump_expr(out, index, indent + 1);
+            dump_node(out, indent, "index", [base.as_ref(), index.as_ref()]);
         }
-        Expr::Decay { expr, .. } => {
-            put(out, indent, "decay");
-            dump_expr(out, expr, indent + 1);
-        }
+        Expr::Decay { expr, .. } => dump_node(out, indent, "decay", [expr.as_ref()]),
         Expr::Str { bytes, .. } => put(out, indent, &dump_string(bytes)),
         Expr::Member {
             base, field, arrow, ..
         } => {
             let kind = if *arrow { "arrow" } else { "member" };
-            put(out, indent, &format!("{kind} {field}"));
-            dump_expr(out, base, indent + 1);
+            dump_node(out, indent, &format!("{kind} {field}"), [base.as_ref()]);
         }
-        Expr::VaArg { ap, .. } => {
-            put(out, indent, "va_arg");
-            dump_expr(out, ap, indent + 1);
-        }
+        Expr::VaArg { ap, .. } => dump_node(out, indent, "va_arg", [ap.as_ref()]),
         Expr::Generic {
             control, assocs, ..
-        } => {
-            put(out, indent, "generic");
-            dump_expr(out, control, indent + 1);
-            for assoc in assocs {
-                let label = match &assoc.ty {
-                    Some(ty) => format!("assoc {}", ty.display()),
-                    None => "default".to_string(),
-                };
-                put(out, indent + 1, &label);
-                dump_expr(out, &assoc.expr, indent + 2);
-            }
-        }
+        } => dump_generic(out, control, assocs, indent),
         Expr::CompoundLit { decl, .. } => {
             put(
                 out,
@@ -359,10 +325,7 @@ pub(super) fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
                 VaOp::End => "va_end",
                 VaOp::Copy => "va_copy",
             };
-            put(out, indent, name);
-            for arg in args {
-                dump_expr(out, arg, indent + 1);
-            }
+            dump_node(out, indent, name, args);
         }
         Expr::Call { callee, args, .. } => {
             match callee.as_ref() {
@@ -376,6 +339,32 @@ pub(super) fn dump_expr(out: &mut String, expr: &Expr, indent: usize) {
                 dump_expr(out, arg, indent + 1);
             }
         }
+    }
+}
+
+/// A line `label` followed by `children`, one level deeper.
+fn dump_node<'e>(
+    out: &mut String,
+    indent: usize,
+    label: &str,
+    children: impl IntoIterator<Item = &'e Expr>,
+) {
+    put(out, indent, label);
+    for child in children {
+        dump_expr(out, child, indent + 1);
+    }
+}
+
+fn dump_generic(out: &mut String, control: &Expr, assocs: &[GenericAssoc], indent: usize) {
+    put(out, indent, "generic");
+    dump_expr(out, control, indent + 1);
+    for assoc in assocs {
+        let label = match &assoc.ty {
+            Some(ty) => format!("assoc {}", ty.display()),
+            None => "default".to_string(),
+        };
+        put(out, indent + 1, &label);
+        dump_expr(out, &assoc.expr, indent + 2);
     }
 }
 

@@ -515,6 +515,12 @@ impl SpecFlags {
             || self.unsigned
             || self.int128
     }
+
+    /// Whether the list already has a type specifier, so a typedef name or
+    /// another type word cannot start one.
+    fn has_type_specifier(&self) -> bool {
+        self.struct_ty.is_some() || self.bool_ty || self.float_ty.is_some() || self.has_scalar()
+    }
 }
 
 struct NamedDecl {
