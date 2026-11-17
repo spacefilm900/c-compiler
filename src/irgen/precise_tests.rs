@@ -91,7 +91,7 @@ fn union_and_bit_field_types_use_the_alignment_unit() {
 fn gnu_case_ranges_small_wide_and_empty() {
     // `gen_switch`: a range of up to 256 values is listed case by case; a
     // wider one is tested as `value - low <= span`; an empty range is
-    // dropped. Signed and unsigned bounds, at several widths. The expected
+    // dropped; a one-value range is not empty. Signed and unsigned bounds, at several widths. The expected
     // output is Clang's.
     let source = r#"
 int printf(const char *, ...);
@@ -101,7 +101,7 @@ static int sw_int(int x) {
     case 5 ... 1: return 2;
     case 10 ... 265: return 3;
     case 300 ... 556: return 4;
-    case 600: return 5;
+    case 600 ... 600: return 5;
     default: return 0;
     }
 }
@@ -110,6 +110,7 @@ static int sw_uns(unsigned x) {
     case 3u ... 1u: return 1;
     case 4000000000u ... 4000000300u: return 2;
     case 7u ... 9u: return 3;
+    case 20u ... 20u: return 4;
     default: return 0;
     }
 }
@@ -138,7 +139,7 @@ int main(void) {
     int ints[] = {-301, -300, -150, -2, -1, 0, 1, 3, 5, 9, 10, 100, 265, 266, 299, 300, 400, 556, 557, 600, 601};
     for (unsigned i = 0; i < sizeof ints / sizeof ints[0]; i++) printf("%d", sw_int(ints[i]));
     printf("\n");
-    unsigned uns[] = {0, 1, 2, 3, 4, 6, 7, 9, 10, 3999999999u, 4000000000u, 4000000150u, 4000000300u, 4000000301u, 4294967295u};
+    unsigned uns[] = {0, 1, 2, 3, 4, 6, 7, 9, 10, 20, 3999999999u, 4000000000u, 4000000150u, 4000000300u, 4000000301u, 4294967295u};
     for (unsigned i = 0; i < sizeof uns / sizeof uns[0]; i++) printf("%d", sw_uns(uns[i]));
     printf("\n");
     for (int c = -128; c < 128; c += 3) printf("%d", sw_schar((signed char)c));
@@ -154,12 +155,13 @@ int main(void) {
     assert_eq!(
         run(source),
         "011100000033300444050\n\
-         000000330022200\n\
+         0000003304022200\n\
          11111111110000000000000000000000000000000000000000000000000000000000000000002222222222\n\
          1100000000000000000000000000000000000000222222222222\n\
          0111000220\n"
     );
-    // Listed values: 256 for 10 ... 265, 1 for 600, 3 for 7u ... 9u, 29
+    // Listed values: 256 for 10 ... 265, 1 for 600, 3 for 7u ... 9u, 1 for
+    // 20u, 29
     // and 28 for the signed char ranges, 10 and 56 for the unsigned char
     // ones, and 256 for 4000000000L ... 4000000255L. The four wider ranges
     // are tested after the switch, and the two empty ones are dropped.
@@ -168,7 +170,7 @@ int main(void) {
         .lines()
         .filter(|line| line.starts_with("    i") && line.contains(", label %"))
         .count();
-    assert_eq!(listed, 256 + 1 + 3 + 29 + 28 + 10 + 56 + 256);
+    assert_eq!(listed, 256 + 1 + 3 + 1 + 29 + 28 + 10 + 56 + 256);
     assert_eq!(ir.matches("icmp ule").count(), 4);
 }
 
