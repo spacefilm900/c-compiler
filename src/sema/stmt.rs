@@ -47,37 +47,7 @@ impl Sema<'_> {
         match stmt {
             Stmt::Compound(compound) => self.check_compound(compound, true),
             Stmt::Decl(decl) => self.check_decl(decl),
-            Stmt::Return { expr, line, column } => {
-                let line = *line;
-                let column = *column;
-                match expr {
-                    None => {
-                        if !self.current_ret.is_void() {
-                            return self.err(
-                                line,
-                                column,
-                                format!(
-                                    "return with no value in a function returning '{}'",
-                                    self.current_ret.display()
-                                ),
-                            );
-                        }
-                        Ok(())
-                    }
-                    Some(expr) => {
-                        self.check_expr(expr)?;
-                        self.decay(expr)?;
-                        if self.current_ret.is_void() {
-                            return self.err(
-                                line,
-                                column,
-                                "return with a value in a function returning 'void'",
-                            );
-                        }
-                        self.can_assign(&self.current_ret.clone(), expr)
-                    }
-                }
-            }
+            Stmt::Return { expr, line, column } => self.check_return(expr.as_mut(), *line, *column),
             Stmt::If {
                 cond,
                 then_stmt,
@@ -115,27 +85,7 @@ impl Sema<'_> {
                 body,
                 promoted,
                 ..
-            } => {
-                self.check_expr(cond)?;
-                self.decay(cond)?;
-                self.require_integer(cond)?;
-                let prom = cond
-                    .ty()
-                    .expect("typed switch condition")
-                    .as_integer()
-                    .expect("integer switch condition")
-                    .promote();
-                *promoted = Some(prom);
-                self.switches.push(SwitchCtx {
-                    promoted: prom,
-                    seen: HashSet::new(),
-                    ranges: Vec::new(),
-                    has_default: false,
-                });
-                self.check_stmt(body)?;
-                self.switches.pop();
-                Ok(())
-            }
+            } => self.check_switch(cond, body, promoted),
             Stmt::Case {
                 expr,
                 value,
@@ -144,62 +94,14 @@ impl Sema<'_> {
                 stmt,
                 line,
                 column,
-            } => {
-                let line = *line;
-                let column = *column;
-                if self.switches.is_empty() {
-                    return self.err(line, column, self.no_switch_message("case"));
-                }
-                self.check_expr(expr)?;
-                self.decay(expr)?;
-                let prom = self.switches.last().expect("switch").promoted;
-                let bits = self.case_value(expr, prom)?;
-                if let Some(high) = high {
-                    self.check_expr(high)?;
-                    self.decay(high)?;
-                    let high_bits = self.case_value(high, prom)?;
-                    if !case_le(bits, high_bits, prom) {
-                        // GCC and Clang warn and drop the label.
-                        self.warn(line, column, "empty case range specified");
-                    } else {
-                        let ctx = self.switches.last().expect("switch");
-                        let clash =
-                            ctx.seen
-                                .iter()
-                                .any(|seen| case_in_range(*seen, bits, high_bits, prom))
-                                || ctx.ranges.iter().any(|(lo, hi)| {
-                                    ranges_overlap(bits, high_bits, *lo, *hi, prom)
-                                });
-                        if clash {
-                            return self.err(line, column, "duplicate case value in case range");
-                        }
-                        self.switches
-                            .last_mut()
-                            .expect("switch")
-                            .ranges
-                            .push((bits, high_bits));
-                    }
-                    *value = Some(bits);
-                    *high_value = Some(high_bits);
-                    return self.check_stmt(stmt);
-                }
-                let in_range = self
-                    .switches
-                    .last()
-                    .expect("switch")
-                    .ranges
-                    .iter()
-                    .any(|(lo, hi)| case_in_range(bits, *lo, *hi, prom));
-                if in_range || !self.switches.last_mut().expect("switch").seen.insert(bits) {
-                    return self.err(
-                        line,
-                        column,
-                        format!("duplicate case value '{}'", prom.format_bits(bits)),
-                    );
-                }
-                *value = Some(bits);
-                self.check_stmt(stmt)
-            }
+            } => self.check_case(
+                expr,
+                value,
+                high.as_mut(),
+                high_value,
+                stmt,
+                (*line, *column),
+            ),
             Stmt::Default { stmt, line, column } => {
                 let line = *line;
                 let column = *column;
@@ -219,34 +121,7 @@ impl Sema<'_> {
                 step,
                 body,
                 ..
-            } => {
-                self.push();
-                self.loop_depth += 1;
-                match init {
-                    ForInit::Empty => {}
-                    ForInit::Decl(decls) => {
-                        for decl in decls {
-                            self.check_decl(decl)?;
-                        }
-                    }
-                    ForInit::Expr(expr) => {
-                        self.check_expr(expr)?;
-                        self.decay(expr)?;
-                    }
-                }
-                if let Some(cond) = cond {
-                    self.check_expr(cond)?;
-                    self.decay(cond)?;
-                    self.require_scalar(cond)?;
-                }
-                if let Some(step) = step {
-                    self.check_expr(step)?;
-                }
-                self.check_stmt(body)?;
-                self.loop_depth -= 1;
-                self.pop();
-                Ok(())
-            }
+            } => self.check_for(init, cond.as_mut(), step.as_mut(), body),
             Stmt::Expr { expr, .. } => {
                 if let Some(expr) = expr {
                     self.check_expr(expr)?;
@@ -273,21 +148,210 @@ impl Sema<'_> {
                 }
                 Ok(())
             }
-            Stmt::GotoPtr { expr, line, column } => {
-                let line = *line;
-                let column = *column;
-                self.check_expr(expr)?;
-                self.decay(expr)?;
-                if !expr.ty().is_some_and(|ty| ty.is_pointer()) {
+            Stmt::GotoPtr { expr, line, column } => self.check_goto_ptr(expr, *line, *column),
+        }
+    }
+
+    /// `return` with or without a value (C11 6.8.6.4).
+    fn check_return(
+        &mut self,
+        expr: Option<&mut Expr>,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        match expr {
+            None => {
+                if !self.current_ret.is_void() {
                     return self.err(
                         line,
                         column,
-                        "the operand of a computed 'goto' must be a pointer",
+                        format!(
+                            "return with no value in a function returning '{}'",
+                            self.current_ret.display()
+                        ),
                     );
                 }
                 Ok(())
             }
+            Some(expr) => {
+                self.check_expr(expr)?;
+                self.decay(expr)?;
+                if self.current_ret.is_void() {
+                    return self.err(
+                        line,
+                        column,
+                        "return with a value in a function returning 'void'",
+                    );
+                }
+                self.can_assign(&self.current_ret.clone(), expr)
+            }
         }
+    }
+
+    /// A `switch` statement: the controlling expression is promoted
+    /// (C11 6.8.4.2p5) and the body sees a fresh set of case labels.
+    fn check_switch(
+        &mut self,
+        cond: &mut Expr,
+        body: &mut Stmt,
+        promoted: &mut Option<TypeName>,
+    ) -> Result<(), Diagnostic> {
+        self.check_expr(cond)?;
+        self.decay(cond)?;
+        self.require_integer(cond)?;
+        let prom = cond
+            .ty()
+            .expect("typed switch condition")
+            .as_integer()
+            .expect("integer switch condition")
+            .promote();
+        *promoted = Some(prom);
+        self.switches.push(SwitchCtx {
+            promoted: prom,
+            seen: HashSet::new(),
+            ranges: Vec::new(),
+            has_default: false,
+        });
+        self.check_stmt(body)?;
+        self.switches.pop();
+        Ok(())
+    }
+
+    /// A `case` label, or a GNU `case low ... high` range, in the
+    /// innermost switch.
+    fn check_case(
+        &mut self,
+        expr: &mut Expr,
+        value: &mut Option<u128>,
+        high: Option<&mut Expr>,
+        high_value: &mut Option<u128>,
+        stmt: &mut Stmt,
+        (line, column): (usize, usize),
+    ) -> Result<(), Diagnostic> {
+        if self.switches.is_empty() {
+            return self.err(line, column, self.no_switch_message("case"));
+        }
+        self.check_expr(expr)?;
+        self.decay(expr)?;
+        let prom = self.switches.last().expect("switch").promoted;
+        let bits = self.case_value(expr, prom)?;
+        if let Some(high) = high {
+            self.check_expr(high)?;
+            self.decay(high)?;
+            let high_bits = self.case_value(high, prom)?;
+            self.note_case_range(bits, high_bits, prom, line, column)?;
+            *value = Some(bits);
+            *high_value = Some(high_bits);
+            return self.check_stmt(stmt);
+        }
+        let in_range = self
+            .switches
+            .last()
+            .expect("switch")
+            .ranges
+            .iter()
+            .any(|(lo, hi)| case_in_range(bits, *lo, *hi, prom));
+        if in_range || !self.switches.last_mut().expect("switch").seen.insert(bits) {
+            return self.err(
+                line,
+                column,
+                format!("duplicate case value '{}'", prom.format_bits(bits)),
+            );
+        }
+        *value = Some(bits);
+        self.check_stmt(stmt)
+    }
+
+    /// Record the range `bits ... high_bits` in the innermost switch, after
+    /// checking that it overlaps no earlier label. An empty range is only
+    /// warned about.
+    fn note_case_range(
+        &mut self,
+        bits: u128,
+        high_bits: u128,
+        prom: TypeName,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        if !case_le(bits, high_bits, prom) {
+            // GCC and Clang warn and drop the label.
+            self.warn(line, column, "empty case range specified");
+            return Ok(());
+        }
+        let ctx = self.switches.last().expect("switch");
+        let clash = ctx
+            .seen
+            .iter()
+            .any(|seen| case_in_range(*seen, bits, high_bits, prom))
+            || ctx
+                .ranges
+                .iter()
+                .any(|(lo, hi)| ranges_overlap(bits, high_bits, *lo, *hi, prom));
+        if clash {
+            return self.err(line, column, "duplicate case value in case range");
+        }
+        self.switches
+            .last_mut()
+            .expect("switch")
+            .ranges
+            .push((bits, high_bits));
+        Ok(())
+    }
+
+    /// A `for` statement; its clause-1 declarations get their own scope
+    /// (C11 6.8.5p5).
+    fn check_for(
+        &mut self,
+        init: &mut ForInit,
+        cond: Option<&mut Expr>,
+        step: Option<&mut Expr>,
+        body: &mut Stmt,
+    ) -> Result<(), Diagnostic> {
+        self.push();
+        self.loop_depth += 1;
+        match init {
+            ForInit::Empty => {}
+            ForInit::Decl(decls) => {
+                for decl in decls {
+                    self.check_decl(decl)?;
+                }
+            }
+            ForInit::Expr(expr) => {
+                self.check_expr(expr)?;
+                self.decay(expr)?;
+            }
+        }
+        if let Some(cond) = cond {
+            self.check_expr(cond)?;
+            self.decay(cond)?;
+            self.require_scalar(cond)?;
+        }
+        if let Some(step) = step {
+            self.check_expr(step)?;
+        }
+        self.check_stmt(body)?;
+        self.loop_depth -= 1;
+        self.pop();
+        Ok(())
+    }
+
+    /// GNU computed `goto *expr`: the operand must be a pointer.
+    fn check_goto_ptr(
+        &mut self,
+        expr: &mut Expr,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        self.check_expr(expr)?;
+        self.decay(expr)?;
+        if !expr.ty().is_some_and(|ty| ty.is_pointer()) {
+            return self.err(
+                line,
+                column,
+                "the operand of a computed 'goto' must be a pointer",
+            );
+        }
+        Ok(())
     }
 
     /// The diagnostic for a `goto` or `&&` naming a label that is not

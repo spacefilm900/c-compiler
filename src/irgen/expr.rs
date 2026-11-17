@@ -39,93 +39,19 @@ impl Gen {
                 }
             }
             Expr::Unary {
-                op: UnaryOp::Not, ..
-            } => Some(self.zext_cond(expr)),
-            Expr::Unary {
-                op: UnaryOp::Plus,
-                expr,
-                ..
-            } => {
-                let value = self.gen_val(expr);
-                let src = expr.ty().expect("typed");
-                if src.is_float() {
-                    Some(value)
-                } else if let Some(int) = src.as_integer() {
-                    let promoted = CType::from_name(int.promote());
-                    Some(self.convert(&value, &src, &promoted))
-                } else {
-                    Some(self.ice_in(expr, "unary '+' on an operand that is not arithmetic"))
-                }
-            }
-            Expr::Unary {
-                op: UnaryOp::Minus,
-                expr,
-                ..
-            } => Some(self.gen_neg_or_not(expr, "sub")),
-            Expr::Unary {
-                op: UnaryOp::BitNot,
-                expr,
-                ..
-            } => Some(self.gen_neg_or_not(expr, "xor")),
-            Expr::Unary {
-                op: UnaryOp::Addr,
-                expr,
-                ..
-            } => Some(self.gen_addr(expr)),
-            Expr::Unary {
-                op: UnaryOp::Deref,
-                expr,
+                op,
+                expr: inner,
                 ty,
                 ..
-            } => {
-                let addr = self.gen_val(expr);
-                let ty = ty.clone().expect("typed");
-                if ty.is_void() {
-                    None
-                } else if ty.is_array() {
-                    Some(addr)
-                } else {
-                    Some(self.load(&ty, &addr))
-                }
-            }
-            Expr::Bin { op, .. } if op.is_cmp() || matches!(op, BinOp::And | BinOp::Or) => {
-                Some(self.zext_cond(expr))
-            }
-            Expr::Bin {
-                op: BinOp::Sub,
-                left,
-                right,
-                ..
-            } if left.ty().is_some_and(|ty| ty.is_pointer())
-                && right.ty().is_some_and(|ty| ty.is_pointer()) =>
-            {
-                Some(self.gen_ptr_diff(left, right))
-            }
+            } => self.gen_unary(expr, *op, inner, ty.as_ref()),
             Expr::Bin {
                 op,
                 left,
                 right,
                 ty,
                 ..
-            } if ty.as_ref().is_some_and(|ty| ty.is_pointer()) => {
-                Some(self.gen_ptr_arith(*op, left, right))
-            }
-            Expr::Bin {
-                op, left, right, ..
-            } => Some(self.gen_arith(*op, left, right)),
-            Expr::Assign { target, value, .. } => {
-                let addr = self.gen_addr(target);
-                let dest = target.ty().expect("lvalue type");
-                let raw = self.gen_val(value);
-                let src_ty = value.ty().expect("typed");
-                if bit_info(target).is_some() {
-                    Some(self.store_bitfield(&addr, target, &raw, &src_ty))
-                } else {
-                    let stored = self.convert(&raw, &src_ty, &dest);
-                    self.store(&dest, &stored, &addr);
-                    Some(stored)
-                }
-            }
+            } => Some(self.gen_binary(expr, *op, left, right, ty.as_ref())),
+            Expr::Assign { target, value, .. } => Some(self.gen_assign(target, value)),
             Expr::CompoundAssign {
                 op, target, value, ..
             } => Some(self.gen_compound_assign(*op, target, value)),
@@ -141,16 +67,7 @@ impl Gen {
                 let _ = self.gen_expr(left);
                 self.gen_expr(right)
             }
-            Expr::Sizeof { operand, .. } => {
-                let size = match operand {
-                    SizeofOperand::Type(ty) => ty.size(),
-                    SizeofOperand::Expr(inner) => inner.ty().expect("typed").size(),
-                };
-                let Some(size) = size else {
-                    return Some(self.ice_in(expr, "sizeof of an incomplete type"));
-                };
-                Some(TypeName::ULong.format_bits(u128::from(size)))
-            }
+            Expr::Sizeof { operand, .. } => Some(self.gen_sizeof(expr, operand)),
             Expr::Cast { ty_name, expr, .. } => {
                 if ty_name.is_void() {
                     let _ = self.gen_expr(expr);
@@ -164,12 +81,7 @@ impl Gen {
                 base, index, ty, ..
             } => {
                 let addr = self.gen_ptr_index(base, index);
-                let ty = ty.clone().expect("typed");
-                if ty.is_array() {
-                    Some(addr)
-                } else {
-                    Some(self.load(&ty, &addr))
-                }
+                Some(self.value_at(&ty.clone().expect("typed"), addr))
             }
             Expr::Decay { expr, .. } => Some(self.gen_addr(expr)),
             Expr::Str { .. } => Some(self.gen_addr(expr)),
@@ -178,12 +90,7 @@ impl Gen {
                     Some(self.load_bitfield(expr))
                 } else {
                     let addr = self.gen_addr(expr);
-                    let ty = ty.clone().expect("typed");
-                    if ty.is_array() {
-                        Some(addr)
-                    } else {
-                        Some(self.load(&ty, &addr))
-                    }
+                    Some(self.value_at(&ty.clone().expect("typed"), addr))
                 }
             }
             Expr::Call {
@@ -199,11 +106,7 @@ impl Gen {
             }
             Expr::CompoundLit { decl, .. } => {
                 let slot = self.gen_compound_lit(decl);
-                if decl.ty.is_array() {
-                    Some(slot)
-                } else {
-                    Some(self.load(&decl.ty, &slot))
-                }
+                Some(self.value_at(&decl.ty, slot))
             }
             Expr::Generic { .. } => {
                 unreachable!("semantic analysis replaces a generic selection")
@@ -225,6 +128,107 @@ impl Gen {
                 ..
             } => self.gen_cond_short(cond, else_expr, ty.clone().expect("typed")),
         }
+    }
+
+    /// The value of an object of type `ty` at `addr`; an array is its
+    /// address.
+    fn value_at(&mut self, ty: &CType, addr: String) -> String {
+        if ty.is_array() {
+            addr
+        } else {
+            self.load(ty, &addr)
+        }
+    }
+
+    /// A unary operator other than `++` / `--`; `whole` is the unary
+    /// expression and `operand` its operand.
+    fn gen_unary(
+        &mut self,
+        whole: &Expr,
+        op: UnaryOp,
+        operand: &Expr,
+        ty: Option<&CType>,
+    ) -> Option<String> {
+        match op {
+            UnaryOp::Not => Some(self.zext_cond(whole)),
+            UnaryOp::Plus => {
+                let value = self.gen_val(operand);
+                let src = operand.ty().expect("typed");
+                if src.is_float() {
+                    Some(value)
+                } else if let Some(int) = src.as_integer() {
+                    let promoted = CType::from_name(int.promote());
+                    Some(self.convert(&value, &src, &promoted))
+                } else {
+                    Some(self.ice_in(operand, "unary '+' on an operand that is not arithmetic"))
+                }
+            }
+            UnaryOp::Minus => Some(self.gen_neg_or_not(operand, "sub")),
+            UnaryOp::BitNot => Some(self.gen_neg_or_not(operand, "xor")),
+            UnaryOp::Addr => Some(self.gen_addr(operand)),
+            UnaryOp::Deref => {
+                let addr = self.gen_val(operand);
+                let ty = ty.cloned().expect("typed");
+                if ty.is_void() {
+                    None
+                } else {
+                    Some(self.value_at(&ty, addr))
+                }
+            }
+        }
+    }
+
+    /// A binary operator; `whole` is the binary expression. Comparisons and
+    /// `&&` / `||` give an `int` 0 or 1.
+    fn gen_binary(
+        &mut self,
+        whole: &Expr,
+        op: BinOp,
+        left: &Expr,
+        right: &Expr,
+        ty: Option<&CType>,
+    ) -> String {
+        if op.is_cmp() || matches!(op, BinOp::And | BinOp::Or) {
+            self.zext_cond(whole)
+        } else if op == BinOp::Sub
+            && left.ty().is_some_and(|ty| ty.is_pointer())
+            && right.ty().is_some_and(|ty| ty.is_pointer())
+        {
+            self.gen_ptr_diff(left, right)
+        } else if ty.is_some_and(|ty| ty.is_pointer()) {
+            self.gen_ptr_arith(op, left, right)
+        } else {
+            self.gen_arith(op, left, right)
+        }
+    }
+
+    /// Simple assignment: the value converted to the target's type is
+    /// stored and is the result.
+    fn gen_assign(&mut self, target: &Expr, value: &Expr) -> String {
+        let addr = self.gen_addr(target);
+        let dest = target.ty().expect("lvalue type");
+        let raw = self.gen_val(value);
+        let src_ty = value.ty().expect("typed");
+        if bit_info(target).is_some() {
+            self.store_bitfield(&addr, target, &raw, &src_ty)
+        } else {
+            let stored = self.convert(&raw, &src_ty, &dest);
+            self.store(&dest, &stored, &addr);
+            stored
+        }
+    }
+
+    /// `sizeof` that reached code generation: its operand's size as a
+    /// `size_t` constant.
+    fn gen_sizeof(&mut self, whole: &Expr, operand: &SizeofOperand) -> String {
+        let size = match operand {
+            SizeofOperand::Type(ty) => ty.size(),
+            SizeofOperand::Expr(inner) => inner.ty().expect("typed").size(),
+        };
+        let Some(size) = size else {
+            return self.ice_in(whole, "sizeof of an incomplete type");
+        };
+        TypeName::ULong.format_bits(u128::from(size))
     }
 
     /// Emit a statement expression's block up to its last expression
