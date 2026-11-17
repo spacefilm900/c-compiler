@@ -221,6 +221,7 @@ jobs:
           python3 harness/run_onetrueawk.py
 
       - name: AWK Builder suites
+        timeout-minutes: 20
         env:
           GH_TOKEN: ${{ secrets.AWK_SUITE_READ_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
