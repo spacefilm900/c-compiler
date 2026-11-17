@@ -108,7 +108,7 @@ fn compile_impl(
     )?);
     times.sema = start.elapsed();
     let start = Instant::now();
-    let ir = irgen::render(&unit, filename);
+    let ir = irgen::render(&unit, filename).map_err(|diag| in_source_file(diag, &tokens))?;
     times.irgen = start.elapsed();
     if leak {
         std::mem::forget(unit);
@@ -119,6 +119,19 @@ fn compile_impl(
         warnings,
         times,
     })
+}
+
+/// IR generation knows only the line and column. Like semantic analysis,
+/// take the file name from the token at that position, so an internal
+/// error inside an included header names the header.
+fn in_source_file(mut diag: Diagnostic, tokens: &[token::Token]) -> Diagnostic {
+    if let Some(token) = tokens
+        .iter()
+        .find(|token| (token.line, token.column) == (diag.line, diag.column))
+    {
+        diag.filename = token.filename.to_string();
+    }
+    diag
 }
 
 #[cfg(test)]

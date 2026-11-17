@@ -103,7 +103,11 @@ pub fn run(args: &[String]) -> i32 {
         }
         Err(diag) => {
             let _ = writeln!(io::stderr(), "{diag}");
-            1
+            if diag.is_internal() {
+                crate::diag::EXIT_INTERNAL_ERROR
+            } else {
+                1
+            }
         }
     }
 }

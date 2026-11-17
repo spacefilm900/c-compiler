@@ -2727,6 +2727,31 @@ pub enum Stmt {
     },
 }
 
+impl Stmt {
+    /// Line and column where the statement starts.
+    pub fn pos(&self) -> (usize, usize) {
+        match self {
+            Stmt::Compound(compound) => (compound.line, compound.column),
+            Stmt::Decl(decl) => (decl.line, decl.column),
+            Stmt::FuncDecl(func) => (func.line, func.column),
+            Stmt::Return { line, column, .. }
+            | Stmt::If { line, column, .. }
+            | Stmt::While { line, column, .. }
+            | Stmt::For { line, column, .. }
+            | Stmt::Do { line, column, .. }
+            | Stmt::Switch { line, column, .. }
+            | Stmt::Case { line, column, .. }
+            | Stmt::Default { line, column, .. }
+            | Stmt::Expr { line, column, .. }
+            | Stmt::Break { line, column }
+            | Stmt::Continue { line, column }
+            | Stmt::Label { line, column, .. }
+            | Stmt::Goto { line, column, .. }
+            | Stmt::GotoPtr { line, column, .. } => (*line, *column),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Compound {
     pub items: Vec<Stmt>,

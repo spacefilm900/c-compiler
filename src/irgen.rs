@@ -34,8 +34,44 @@ use crate::abi::{
     RegPiece,
 };
 use crate::ast::*;
+use crate::diag::Diagnostic;
 
-pub fn render(unit: &TranslationUnit, filename: &str) -> String {
+/// Render the checked unit as a textual LLVM IR module.
+///
+/// Semantic analysis has rejected every invalid program, so an error here
+/// is an internal compiler error: a case that analysis should have caught.
+/// It is reported at the source position being lowered, with phase `irgen`.
+pub fn render(unit: &TranslationUnit, filename: &str) -> Result<String, Diagnostic> {
+    render_module(unit, filename).map_err(|ice| {
+        Diagnostic::internal(filename, ice.line, ice.column, "irgen", ice.message)
+    })
+}
+
+/// An internal compiler error found while lowering. `line` 0 means that no
+/// source position is known, as for a file-scope initializer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Ice {
+    line: usize,
+    column: usize,
+    message: String,
+}
+
+impl Ice {
+    fn new(line: usize, column: usize, message: impl Into<String>) -> Self {
+        Self {
+            line,
+            column,
+            message: message.into(),
+        }
+    }
+
+    /// An error with no source position.
+    fn global(message: impl Into<String>) -> Self {
+        Self::new(0, 0, message)
+    }
+}
+
+fn render_module(unit: &TranslationUnit, filename: &str) -> Result<String, Ice> {
     let mut out = String::new();
     out.push_str(&format!("source_filename = {}\n", llvm_string(filename)));
     let target = crate::target::current();
@@ -71,13 +107,13 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
     // Function bodies are rendered first because they decide which library
     // functions IR lowering calls. An internal object that shares such a
     // name is then given a private symbol and the bodies are rendered again.
-    let (mut functions, mut needs) = render_functions(unit, &Renames::new());
+    let (mut functions, mut needs) = render_functions(unit, &Renames::new())?;
     let renames = library_renames(unit, &needs);
     if !renames.is_empty() {
-        (functions, needs) = render_functions(unit, &renames);
+        (functions, needs) = render_functions(unit, &renames)?;
     }
     for global in &unit.globals {
-        out.push_str(&render_global(global, &renames));
+        out.push_str(&render_global(global, &renames)?);
         out.push('\n');
         wrote_prelude = true;
     }
@@ -197,7 +233,7 @@ pub fn render(unit: &TranslationUnit, filename: &str) -> String {
         out.push_str(&text);
         out.push_str("\n\n");
     }
-    out
+    Ok(out)
 }
 
 /// LLVM symbol replacements: C linker name to the private name used in IR.
@@ -211,20 +247,23 @@ type Renames = std::collections::HashMap<String, String>;
 /// `__builtin_nan*` tag.
 const MEMORY_LIBCALLS: [&str; 3] = ["memcpy", "memmove", "memset"];
 
-fn render_functions(unit: &TranslationUnit, renames: &Renames) -> (Vec<String>, LowerNeeds) {
+fn render_functions(
+    unit: &TranslationUnit,
+    renames: &Renames,
+) -> Result<(Vec<String>, LowerNeeds), Ice> {
     let mut functions = Vec::new();
     let mut needs = LowerNeeds::default();
     for decl in &unit.decls {
         if let TopDecl::Func(func) = decl {
             if func.body.is_some() {
                 let (text, fn_needs) =
-                    render_function(func, renames, unit.fn_attrs.get(&func.symbol));
+                    render_function(func, renames, unit.fn_attrs.get(&func.symbol))?;
                 needs.merge(fn_needs);
                 functions.push(text);
             }
         }
     }
-    (functions, needs)
+    Ok((functions, needs))
 }
 
 /// Private LLVM names for internal-linkage entities whose C name is a
@@ -297,7 +336,7 @@ fn renamed<'a>(name: &'a str, renames: &'a Renames) -> &'a str {
     renames.get(name).map_or(name, String::as_str)
 }
 
-fn render_global(global: &IrGlobal, renames: &Renames) -> String {
+fn render_global(global: &IrGlobal, renames: &Renames) -> Result<String, Ice> {
     let name = llvm_global(renamed(&global.name, renames));
     let ir = global.ty.ir_type();
     let align = global.ty.align().max(global.attrs.align.unwrap_or(0));
@@ -324,12 +363,14 @@ fn render_global(global: &IrGlobal, renames: &Renames) -> String {
         // its own shape. The global then has that type instead of `ir`;
         // every access goes through an opaque `ptr`, so only the size and
         // alignment have to agree.
-        let (ir, spelled) = render_typed_const(&global.ty, value, renames);
-        format!("{name} = {linkage}{kind} {ir} {spelled}{section}, align {align}")
+        let (ir, spelled) = render_typed_const(&global.ty, value, renames)?;
+        Ok(format!(
+            "{name} = {linkage}{kind} {ir} {spelled}{section}, align {align}"
+        ))
     } else if global.attrs.weak {
-        format!("{name} = extern_weak {kind} {ir}, align {align}")
+        Ok(format!("{name} = extern_weak {kind} {ir}, align {align}"))
     } else {
-        format!("{name} = external {kind} {ir}, align {align}")
+        Ok(format!("{name} = external {kind} {ir}, align {align}"))
     }
 }
 
@@ -490,13 +531,14 @@ fn render_function(
     func: &FuncDef,
     renames: &Renames,
     attrs: Option<&FnAttrs>,
-) -> (String, LowerNeeds) {
-    let body = func.body.as_ref().expect("defined function");
+) -> Result<(String, LowerNeeds), Ice> {
+    let ice = |message: &str| Ice::new(func.line, func.column, message);
+    let body = func.body.as_ref().ok_or_else(|| ice("function has no body"))?;
     let param_tys: Vec<CType> = func.params.iter().map(|param| param.ty.clone()).collect();
     // Semantic analysis rejects a definition whose aggregate needs an SSE
     // register or is still incomplete, so the signature is known here.
     let sig = function_sig(&func.ret_type, &param_tys)
-        .expect("defined function has a System V signature");
+        .map_err(|_| ice("defined function has no calling-convention signature"))?;
     let names: Vec<Vec<String>> = sig
         .params
         .iter()
@@ -547,12 +589,16 @@ fn render_function(
         gen.store_param(param, names, parts);
     }
 
+    gen.pos = (func.line, func.column);
     gen.gen_compound(body);
     if !gen.terminated {
         gen.emit_implicit_return();
     }
+    if let Some(ice) = gen.ice.take() {
+        return Err(ice);
+    }
     gen.emit("}");
-    (
+    Ok((
         gen.lines.join("\n"),
         LowerNeeds {
             memmove: gen.needs_memmove,
@@ -564,7 +610,7 @@ fn render_function(
             nanl: gen.needs_nanl,
             intrinsics: gen.intrinsics,
         },
-    )
+    ))
 }
 
 fn local_slots(compound: &Compound) -> Vec<(String, CType, u32)> {
@@ -706,6 +752,13 @@ struct Gen {
     /// GNU case ranges of the switch being collected: low and high bits
     /// and the case block.
     switch_ranges: Vec<(u128, u128, String)>,
+    /// Line and column of the statement or expression being lowered, for an
+    /// internal compiler error.
+    pos: (usize, usize),
+    /// The first internal compiler error. Lowering goes on with a
+    /// placeholder operand, so callers need not check; `render_function`
+    /// then returns this instead of the function's IR.
+    ice: Option<Ice>,
 }
 
 /// One store of an automatic aggregate initializer, evaluated and waiting
@@ -744,11 +797,32 @@ impl Gen {
             unaligned: std::collections::HashSet::new(),
             intrinsics: std::collections::BTreeSet::new(),
             switch_ranges: Vec::new(),
+            pos: (0, 0),
+            ice: None,
         }
     }
 }
 
 impl Gen {
+    /// Record an internal compiler error at the current source position and
+    /// return a placeholder operand. Only the first error is kept.
+    fn ice(&mut self, message: &str) -> String {
+        let (line, column) = self.pos;
+        self.ice_at(line, column, message)
+    }
+
+    /// [`Gen::ice`] at the position of `expr`.
+    fn ice_in(&mut self, expr: &Expr, message: &str) -> String {
+        self.ice_at(expr.line(), expr.column(), message)
+    }
+
+    fn ice_at(&mut self, line: usize, column: usize, message: &str) -> String {
+        if self.ice.is_none() {
+            self.ice = Some(Ice::new(line, column, message));
+        }
+        "poison".to_string()
+    }
+
     fn emit(&mut self, line: &str) {
         self.lines.push(line.to_string());
     }
@@ -825,6 +899,7 @@ impl Gen {
     }
 
     fn gen_stmt(&mut self, stmt: &Stmt) {
+        self.pos = stmt.pos();
         match stmt {
             Stmt::Compound(compound) => self.gen_compound(compound),
             Stmt::Decl(decl) => {
@@ -4697,9 +4772,13 @@ fn has_reloc_image(value: &ConstInit) -> bool {
 /// `ptrtoint`) pieces at their offsets. A struct or array around one is
 /// then a packed struct too, laid out from the C offsets, unless every
 /// array element still has the same type.
-fn render_typed_const(ty: &CType, value: &ConstInit, renames: &Renames) -> (String, String) {
+fn render_typed_const(
+    ty: &CType,
+    value: &ConstInit,
+    renames: &Renames,
+) -> Result<(String, String), Ice> {
     if !has_reloc_image(value) {
-        return (ty.ir_type(), render_const(ty, value, renames));
+        return Ok((ty.ir_type(), render_const(ty, value, renames)?));
     }
     let size = ty.size().unwrap_or(0);
     let mut pieces: Vec<(String, String)> = Vec::new();
@@ -4739,7 +4818,11 @@ fn render_typed_const(ty: &CType, value: &ConstInit, renames: &Renames) -> (Stri
                         pieces.push(("ptr".to_string(), render_ptr(ptr, renames)));
                         at = offset + 8;
                     }
-                    other => unreachable!("relocation {other:?}"),
+                    other => {
+                        return Err(Ice::global(format!(
+                            "initializer relocation is not an address: {other:?}"
+                        )))
+                    }
                 }
             }
             run(&mut pieces, at, bytes.len() as u64);
@@ -4747,20 +4830,20 @@ fn render_typed_const(ty: &CType, value: &ConstInit, renames: &Renames) -> (Stri
         }
         ConstInit::Aggregate(items) if ty.array_elem().is_some() => {
             let elem = ty.array_elem().expect("array element");
-            let parts: Vec<_> = items
+            let parts = items
                 .iter()
                 .map(|item| render_typed_const(elem, item, renames))
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
             if parts.iter().all(|(ir, _)| *ir == parts[0].0) && !parts.is_empty() {
                 let body = parts
                     .iter()
                     .map(|(ir, spelled)| format!("{ir} {spelled}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                return (
+                return Ok((
                     format!("[{} x {}]", parts.len(), parts[0].0),
                     format!("[{body}]"),
-                );
+                ));
             }
             let step = elem.size().unwrap_or(0);
             pieces.extend(parts);
@@ -4770,16 +4853,22 @@ fn render_typed_const(ty: &CType, value: &ConstInit, renames: &Renames) -> (Stri
             let fields = ty
                 .struct_ref()
                 .and_then(StructRef::fields)
-                .expect("aggregate with an image inside is a struct or array");
+                .ok_or_else(|| {
+                    Ice::global("aggregate initializer with addresses is not a struct or array")
+                })?;
             let mut at = 0u64;
             for (field, item) in fields.iter().zip(items) {
                 pad(&mut pieces, at, field.offset);
-                pieces.push(render_typed_const(&field.ty, item, renames));
+                pieces.push(render_typed_const(&field.ty, item, renames)?);
                 at = at.max(field.offset + field.ty.size().unwrap_or(0));
             }
             pad(&mut pieces, at, size);
         }
-        other => unreachable!("constant {other:?} has no image"),
+        other => {
+            return Err(Ice::global(format!(
+                "constant {other:?} has no byte image"
+            )))
+        }
     }
     let types = pieces
         .iter()
@@ -4791,21 +4880,24 @@ fn render_typed_const(ty: &CType, value: &ConstInit, renames: &Renames) -> (Stri
         .map(|(ir, spelled)| format!("{ir} {spelled}"))
         .collect::<Vec<_>>()
         .join(", ");
-    (format!("<{{ {types} }}>"), format!("<{{ {body} }}>"))
+    Ok((format!("<{{ {types} }}>"), format!("<{{ {body} }}>")))
 }
 
-fn render_const(ty: &CType, value: &ConstInit, renames: &Renames) -> String {
+fn render_const(ty: &CType, value: &ConstInit, renames: &Renames) -> Result<String, Ice> {
     if ty.is_union() || ty.record_has_bitfield() {
-        return render_union_const(ty, value);
+        return Ok(render_union_const(ty, value));
     }
-    match value {
+    let spelled = match value {
         ConstInit::Zero => zero_const_spelling(ty),
         ConstInit::Int(bits) => ty
             .as_integer()
-            .expect("integer constant")
+            .ok_or_else(|| Ice::global("integer initializer for an object of another type"))?
             .format_bits(*bits),
         ConstInit::Float(bits) => {
-            crate::float::llvm_const(ty.float_kind().expect("float constant"), *bits)
+            let kind = ty.float_kind().ok_or_else(|| {
+                Ice::global("floating initializer for an object of another type")
+            })?;
+            crate::float::llvm_const(kind, *bits)
         }
         ConstInit::Ptr(ptr) => render_ptr(ptr, renames),
         ConstInit::PtrToInt { ptr, width } => {
@@ -4819,41 +4911,44 @@ fn render_const(ty: &CType, value: &ConstInit, renames: &Renames) -> String {
         }
         ConstInit::Bytes(raw) => render_byte_blob(ty, raw),
         ConstInit::RelocBytes { .. } => {
-            unreachable!("an image with addresses is spelled by render_typed_const")
+            return Err(Ice::global(
+                "an initializer with addresses reached the plain constant printer",
+            ))
         }
         ConstInit::Aggregate(items) => {
             if let Some(fields) = ty.struct_ref().and_then(StructRef::fields) {
                 if fields.len() != items.len() {
-                    return "zeroinitializer".to_string();
+                    return Ok("zeroinitializer".to_string());
                 }
                 let parts = items
                     .iter()
                     .zip(fields.iter())
                     .map(|(item, field)| {
-                        format!(
+                        Ok(format!(
                             "{} {}",
                             field.ty.ir_type(),
-                            render_const(&field.ty, item, renames)
-                        )
+                            render_const(&field.ty, item, renames)?
+                        ))
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Result<Vec<_>, Ice>>()?
                     .join(", ");
-                return format!("{{ {parts} }}");
+                return Ok(format!("{{ {parts} }}"));
             }
             let Some(elem) = ty.array_elem() else {
-                return "zeroinitializer".to_string();
+                return Ok("zeroinitializer".to_string());
             };
             if let Some(bytes) = i8_bytes(ty, items) {
-                return format!("c{}", llvm_bytes(&bytes));
+                return Ok(format!("c{}", llvm_bytes(&bytes)));
             }
             let parts = items
                 .iter()
-                .map(|item| format!("{} {}", elem.ir_type(), render_const(elem, item, renames)))
-                .collect::<Vec<_>>()
+                .map(|item| Ok(format!("{} {}", elem.ir_type(), render_const(elem, item, renames)?)))
+                .collect::<Result<Vec<_>, Ice>>()?
                 .join(", ");
             format!("[{parts}]")
         }
-    }
+    };
+    Ok(spelled)
 }
 
 /// A flat array of byte-sized integers can be spelled as an LLVM `c"..."`
