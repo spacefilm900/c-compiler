@@ -937,7 +937,12 @@ impl Gen {
                 body,
                 promoted,
                 ..
-            } => self.gen_switch(cond, body, promoted.expect("switch type")),
+            } => match promoted {
+                Some(promoted) => self.gen_switch(cond, body, *promoted),
+                None => {
+                    self.ice("switch has no promoted controlling type");
+                }
+            },
             Stmt::Case { stmt, .. } | Stmt::Default { stmt, .. } => {
                 let label = self.take_switch_label();
                 self.place_label(&label);
@@ -987,8 +992,8 @@ impl Gen {
                 let end = self
                     .breaks
                     .last()
-                    .expect("break outside loop or switch")
-                    .clone();
+                    .cloned()
+                    .unwrap_or_else(|| self.ice("'break' is not inside a loop or switch"));
                 self.br(&end);
             }
             Stmt::Continue { .. } => {
@@ -996,8 +1001,8 @@ impl Gen {
                 let cont = self
                     .continues
                     .last()
-                    .expect("continue outside loop")
-                    .clone();
+                    .cloned()
+                    .unwrap_or_else(|| self.ice("'continue' is not inside a loop"));
                 self.br(&cont);
             }
         }
@@ -1162,9 +1167,12 @@ impl Gen {
             }
             Expr::StmtExpr { body, ty, .. } => {
                 let ty = ty.clone().expect("typed statement expression");
-                let last = self
-                    .gen_stmt_expr_body(body)
-                    .expect("a record-valued statement expression ends in an expression");
+                let Some(last) = self.gen_stmt_expr_body(body) else {
+                    return self.ice_in(
+                        expr,
+                        "a struct or union statement expression does not end in an expression",
+                    );
+                };
                 let volatile = last.ty().is_some_and(|ty| ty.is_volatile());
                 let src = self.record_ptr(last);
                 self.ensure_block();
@@ -1173,7 +1181,7 @@ impl Gen {
                 self.copy_struct(&ty, &src, &tmp, volatile);
                 tmp
             }
-            _ => panic!("internal compiler error: aggregate expression has no address"),
+            _ => self.ice_in(expr, "struct or union expression has no address"),
         }
     }
 
@@ -1202,7 +1210,7 @@ impl Gen {
                 let rendered = self.render_call_args(args, resolved, &sig, None);
                 let value = self
                     .emit_call(callee, resolved, &sig, &rendered)
-                    .expect("x87 aggregate returns a value");
+                    .unwrap_or_else(|| self.ice_in(expr, "call returning a struct gave no value"));
                 let align = ty.align().max(16);
                 self.emit(&format!(
                     "  store x86_fp80 {value}, ptr {tmp}, align {align}"
@@ -1212,17 +1220,19 @@ impl Gen {
                 let rendered = self.render_call_args(args, resolved, &sig, None);
                 let value = self
                     .emit_call(callee, resolved, &sig, &rendered)
-                    .expect("register aggregate returns a value");
+                    .unwrap_or_else(|| self.ice_in(expr, "call returning a struct gave no value"));
                 self.store_pieces(&tmp, ty.align(), &pieces, &value);
             }
             Some(AggAbi::Coerce { ty: ir, size }) => {
                 let rendered = self.render_call_args(args, resolved, &sig, None);
                 let value = self
                     .emit_call(callee, resolved, &sig, &rendered)
-                    .expect("register aggregate returns a value");
+                    .unwrap_or_else(|| self.ice_in(expr, "call returning a struct gave no value"));
                 self.store_coerced(&value, &tmp, &ty, &ir, size);
             }
-            Some(AggAbi::Indirect) | None => unreachable!("aggregate call"),
+            Some(AggAbi::Indirect) | None => {
+                self.ice_in(expr, "call returning a struct has no return convention");
+            }
         }
         tmp
     }
@@ -1239,7 +1249,13 @@ impl Gen {
         let mut free_int = sig.free_int;
         let mut free_sse = sig.free_sse;
         if let Some(slot) = sret_slot {
-            let attrs = sig.sret_attrs.as_deref().expect("sret attribute");
+            let attrs = match sig.sret_attrs.as_deref() {
+                Some(attrs) => attrs,
+                None => {
+                    self.ice("memory return has no sret attribute");
+                    ""
+                }
+            };
             rendered.push(format_part("ptr", attrs, Some(slot)));
         }
         for (index, arg) in args.iter().enumerate() {
@@ -1575,7 +1591,10 @@ impl Gen {
     }
 
     fn emit_record_return(&mut self, src: &str, src_volatile: bool) {
-        let agg = self.ret_agg.clone().expect("record return");
+        let Some(agg) = self.ret_agg.clone() else {
+            self.ice("struct or union return from a function that returns a scalar");
+            return;
+        };
         let align = self.ret_ty.align();
         match agg {
             AggAbi::Memory => {
@@ -1664,7 +1683,9 @@ impl Gen {
     }
 
     fn load_bitfield_at(&mut self, addr: &str, expr: &Expr) -> String {
-        let info = bit_info(expr).expect("bit-field");
+        let Some(info) = bit_info(expr) else {
+            return self.ice_in(expr, "bit-field load from an expression that is not a bit-field");
+        };
         let container = container_type(
             info.container_bits,
             info.signed_field,
@@ -1760,7 +1781,9 @@ impl Gen {
     }
 
     fn store_bitfield(&mut self, addr: &str, expr: &Expr, value: &str, from: &CType) -> String {
-        let info = bit_info(expr).expect("bit-field");
+        let Some(info) = bit_info(expr) else {
+            return self.ice_in(expr, "bit-field store to an expression that is not a bit-field");
+        };
         let container = container_type(
             info.container_bits,
             info.signed_field,
@@ -1939,10 +1962,10 @@ impl Gen {
             ));
             return tmp;
         }
-        if from.is_float() && to.as_integer() == Some(TypeName::Bool) {
+        if let (Some(kind), Some(TypeName::Bool)) = (from.float_kind(), to.as_integer()) {
             let cmp = self.fresh();
             let tmp = self.fresh();
-            let zero = crate::float::llvm_const(from.float_kind().expect("float"), 0);
+            let zero = crate::float::llvm_const(kind, 0);
             self.emit(&format!(
                 "  {cmp} = fcmp une {} {value}, {zero}",
                 from.ir_type()
@@ -2236,10 +2259,15 @@ impl Gen {
                 value,
                 high_value,
                 stmt,
+                line,
+                column,
                 ..
             } => {
                 let label = self.label();
-                let bits = value.expect("case value");
+                let Some(bits) = *value else {
+                    self.ice_at(*line, *column, "case label has no value");
+                    return;
+                };
                 match high_value {
                     None => cases.push((bits, label.clone())),
                     Some(high) => self.switch_ranges.push((bits, *high, label.clone())),
@@ -2292,8 +2320,8 @@ impl Gen {
         let label = self
             .switch_labels
             .get(self.switch_at)
-            .expect("internal compiler error: case label was not collected")
-            .clone();
+            .cloned()
+            .unwrap_or_else(|| self.ice("case label was not collected for its switch"));
         self.switch_at += 1;
         label
     }
