@@ -1,0 +1,19 @@
+src/irgen.rs:2153:52: replace > with == in Gen::gen_switch
+src/irgen.rs:2153:52: replace > with >= in Gen::gen_switch
+src/irgen.rs:2155:28: replace > with == in Gen::gen_switch
+src/irgen.rs:2153:52: replace > with < in Gen::gen_switch
+src/irgen.rs:2155:28: replace > with < in Gen::gen_switch
+src/irgen.rs:2155:21: replace & with ^ in Gen::gen_switch
+src/irgen.rs:2155:28: replace > with >= in Gen::gen_switch
+src/irgen.rs:2155:21: replace & with | in Gen::gen_switch
+src/irgen.rs:2155:35: replace & with | in Gen::gen_switch
+src/irgen.rs:2155:35: replace & with ^ in Gen::gen_switch
+src/irgen.rs:2160:47: replace & with ^ in Gen::gen_switch
+src/irgen.rs:2160:47: replace & with | in Gen::gen_switch
+src/irgen.rs:2161:21: replace < with == in Gen::gen_switch
+src/irgen.rs:2163:56: replace & with | in Gen::gen_switch
+src/irgen.rs:2161:21: replace < with <= in Gen::gen_switch
+src/irgen.rs:2161:21: replace < with > in Gen::gen_switch
+src/irgen.rs:2206:12: delete ! in Gen::gen_switch
+src/irgen.rs:2202:27: replace != with == in Gen::gen_switch
+src/irgen.rs:2163:56: replace & with ^ in Gen::gen_switch

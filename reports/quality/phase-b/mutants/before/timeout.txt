@@ -1,0 +1,2 @@
+src/sema.rs:6823:13: delete match arm BinOp::BitOr in arith
+src/sema.rs:6822:13: delete match arm BinOp::BitAnd in arith
