@@ -4181,7 +4181,8 @@ impl Gen {
                 Some(tmp)
             }
             (None, None) => None,
-            _ => unreachable!("conditional arms have different types"),
+            // Only after an earlier internal error, which is the one reported.
+            _ => Some(self.ice("conditional arms have different types")),
         }
     }
 

@@ -307,3 +307,24 @@ fn overflow_builtin_result_of_the_wrong_type() {
     args[2].set_ty(pointer_to(CType::Float(FloatKind::Double)));
     assert!(ice(&unit).contains("overflow result is not a pointer to an integer"));
 }
+
+#[test]
+fn an_error_inside_one_arm_of_a_conditional_is_reported() {
+    // The damaged arm yields no value and the other does; the first error
+    // is reported rather than a panic on the mismatch.
+    let mut unit = checked("int f(int c) {\n  return c ? ({ 1; }) : 2;\n}");
+    let Expr::Cond { then_expr, .. } = stmt_expr(&mut unit, "f", 0) else {
+        panic!("conditional");
+    };
+    let Expr::StmtExpr { body, .. } = &mut **then_expr else {
+        panic!("statement expression: {then_expr:?}");
+    };
+    body.items[0] = Stmt::Break {
+        line: 2,
+        column: 16,
+    };
+    assert_eq!(
+        ice(&unit),
+        "t.c:2:16: internal compiler error: 'break' is not inside a loop or switch (in irgen)"
+    );
+}
