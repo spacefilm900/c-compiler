@@ -234,3 +234,76 @@ fn only_the_first_internal_error_is_reported() {
     };
     assert!(ice(&unit).starts_with("t.c:1:15:"));
 }
+
+fn pointer_to(ty: CType) -> CType {
+    CType::Pointer(Box::new(ty))
+}
+
+/// The operand of the unary or `++`/`--` expression `expr`, or the
+/// right-hand side of a compound assignment.
+fn operand(expr: &mut Expr) -> &mut Expr {
+    match expr {
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => expr,
+        Expr::IncDec { target, .. } => target,
+        Expr::CompoundAssign { value, .. } => value,
+        other => panic!("no operand: {other:?}"),
+    }
+}
+
+#[test]
+fn operators_on_operands_of_the_wrong_type() {
+    let mut unit = checked("int f(int x) { return +x; }");
+    operand(stmt_expr(&mut unit, "f", 0)).set_ty(pointer_to(CType::int_type()));
+    assert!(ice(&unit).contains("unary '+' on an operand that is not arithmetic"));
+
+    let mut unit = checked("int f(int x) { return -x; }");
+    operand(stmt_expr(&mut unit, "f", 0)).set_ty(pointer_to(CType::int_type()));
+    assert!(ice(&unit).contains("integer operator on an operand that is not an integer"));
+
+    let mut unit = checked("struct S { int a; } g;\nvoid f(int x) { x++; }");
+    let record = unit.globals[0].ty.clone();
+    operand(stmt_expr(&mut unit, "f", 0)).set_ty(record);
+    assert!(ice(&unit).contains("'++' or '--' on an operand that is not a scalar"));
+
+    let mut unit = checked("void f(int x) { x += 1; }");
+    operand(stmt_expr(&mut unit, "f", 0)).set_ty(pointer_to(CType::int_type()));
+    assert!(ice(&unit).contains("compound assignment operands are not arithmetic"));
+}
+
+#[test]
+fn pointer_difference_with_an_incomplete_pointee() {
+    let mut unit = checked("long f(int *p, int *q) { return p - q; }");
+    let Expr::Bin { left, .. } = stmt_expr(&mut unit, "f", 0) else {
+        panic!("p - q");
+    };
+    left.set_ty(pointer_to(CType::Void));
+    assert!(ice(&unit).contains("pointer subtraction with an incomplete pointee type"));
+}
+
+#[test]
+fn label_address_outside_a_function() {
+    let mut unit = checked("void *f(void) { l: return &&l; }");
+    let Stmt::Label { stmt, .. } = &mut body(&mut unit, "f")[0] else {
+        panic!("label");
+    };
+    let Stmt::Return {
+        expr: Some(Expr::LabelAddr { func, .. }),
+        ..
+    } = &mut **stmt
+    else {
+        panic!("return &&l");
+    };
+    *func = None;
+    assert!(ice(&unit).contains("label address outside a function"));
+}
+
+#[test]
+fn overflow_builtin_result_of_the_wrong_type() {
+    let mut unit =
+        checked("_Bool f(int a, int b, int *r) { return __builtin_add_overflow(a, b, r); }");
+    let Expr::Call { args, .. } = stmt_expr(&mut unit, "f", 0) else {
+        panic!("call");
+    };
+    args[2].set_ty(pointer_to(CType::Float(FloatKind::Double)));
+    assert!(ice(&unit).contains("overflow result is not a pointer to an integer"));
+}
