@@ -1,0 +1,349 @@
+
+use super::*;
+
+fn pp(source: &str) -> String {
+    let mut options = PpOptions::default();
+    options.system_dirs.clear();
+    preprocess(source, "t.c", &options).unwrap()
+}
+
+fn pp_err(source: &str) -> String {
+    let mut options = PpOptions::default();
+    options.system_dirs.clear();
+    preprocess(source, "t.c", &options).unwrap_err().to_string()
+}
+
+fn squash(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[test]
+fn splices_lines_and_drops_comments() {
+    let text = pp("int ab\\\nc = 1; // hidden\\\nstill\n/* a \\\nb */ int y;\n");
+    assert_eq!(squash(&text), "int abc = 1; int y;");
+}
+
+#[test]
+fn expansions_longer_than_the_consumed_prefix() {
+    // The first token of the file expands to more tokens than have been
+    // read, and each of those expands again, so `splice` has to make
+    // room in front of the cursor several times over.
+    let text = pp("#define A B B B B\n#define B C C C C\n#define C 1\nA\n#define E\nE # x\n#define F(p) p p p p p p p p\nF(F(F(2)))\n");
+    let flat = squash(&text);
+    assert!(flat.starts_with(&"1 ".repeat(16)), "{flat}");
+    // A '#' that comes out of an expansion does not start a directive.
+    assert!(flat.contains("# x"), "{flat}");
+    assert_eq!(flat.matches('2').count(), 512, "{flat}");
+}
+
+#[test]
+fn object_and_function_macros() {
+    let text = pp("#define A 2\n#define B A+A\n#define C (A+A)\nint x = B*2;\nint y = C*2;\n#define ID(x) x\n#define ADD(a, b) ((a)+(b))\nint z = ADD(ID(1), 2);\n");
+    assert!(text.contains("int x = 2+2*2;"), "{text}");
+    assert!(text.contains("int y = (2+2)*2;"), "{text}");
+    assert!(text.contains("int z = ((1)+(2));"), "{text}");
+}
+
+#[test]
+fn hides_recursive_macros_and_rescans() {
+    let text = pp("#define x 3\n#define f(a) f(x * (a))\n#undef x\n#define x 2\n#define g f\n#define z z[0]\n#define h g(~\n#define m(a) a(w)\n#define w 0,1\n#define t(a) a\nf(y+1)\nh 5)\nm(f)\n");
+    let flat = squash(&text);
+    assert!(flat.contains("f(2 * (y+1))"), "{flat}");
+    assert!(flat.contains("f(2 * (~ 5))"), "{flat}");
+    assert!(flat.contains("f(2 * (0,1))"), "{flat}");
+}
+
+#[test]
+fn stringifies_and_pastes() {
+    let text = pp("#define STR(x) #x\n#define XSTR(x) STR(x)\n#define N 40\nconst char *a = STR(a + b);\nconst char *b = XSTR(N);\nconst char *c = STR();\n#define CAT(a, b) a ## b\n#define CAT3(a, b, c) a ## b ## c\nint CAT(x, y) = CAT3(1, 2, 3);\n");
+    assert!(text.contains("\"a + b\""), "{text}");
+    assert!(text.contains("\"40\""), "{text}");
+    assert!(text.contains("\"\""), "{text}");
+    assert!(text.contains("int xy = 123;"), "{text}");
+}
+
+#[test]
+fn variadic_macros_and_omitted_comma() {
+    let text = pp("#define FIRST(a, ...) a\n#define REST(a, ...) __VA_ARGS__\n#define F(a, ...) [a, ## __VA_ARGS__]\nint a = FIRST(3, 4, 5);\nint b = REST(9, 1, 2);\nF(1)\nF(1,)\nF(1, 2, 3)\n");
+    assert!(text.contains("int a = 3;"), "{text}");
+    assert!(text.contains("int b = 1, 2;"), "{text}");
+    assert!(text.contains("[1]"), "{text}");
+    assert!(text.contains("[1,]"), "{text}");
+    assert!(text.contains("[1, 2, 3]"), "{text}");
+}
+
+#[test]
+fn conditionals_skip_groups_and_evaluate() {
+    let text = pp("#if (1+2)*3 == 9 && 4 < 5\n#define P 1\n#else\n#define P 0\n#endif\n#if -1 < 1u\n#define Q 1\n#else\n#define Q 0\n#endif\n#if 0\n#error no\n#if 1\n#error still no\n#endif\n#elif 0\n#define S 0\n#else\n#define S 1\n#endif\nint x = P+Q+S;\n");
+    assert!(text.contains("int x = 1+0+1;"), "{text}");
+    assert!(!text.contains("error"), "{text}");
+    // Unary ! in a preprocessor expression (C11 6.10.1, 6.5.3.3p5).
+    let text = pp(
+            "#if !0\nint t;\n#else\nint f;\n#endif\n#if !1\nint u;\n#else\nint v;\n#endif\n#if !!0\nint w;\n#else\nint x;\n#endif\n#if !!!0\nint y;\n#else\nint z;\n#endif\n",
+        );
+    assert!(text.contains("int t;"), "{text}");
+    assert!(!text.contains("int f;"), "{text}");
+    assert!(text.contains("int v;"), "{text}");
+    assert!(!text.contains("int u;"), "{text}");
+    assert!(text.contains("int x;"), "{text}");
+    assert!(!text.contains("int w;"), "{text}");
+    assert!(text.contains("int y;"), "{text}");
+    assert!(!text.contains("int z;"), "{text}");
+}
+
+#[test]
+fn defined_operator_and_undefined_identifiers() {
+    let text = pp("#define FOO 3\n#if defined FOO && defined(FOO) && !defined(BAR)\nint a = FOO;\n#endif\n#if unknown\nint b;\n#else\nint c;\n#endif\n");
+    assert!(text.contains("int a = 3;"), "{text}");
+    assert!(text.contains("int c;"), "{text}");
+    assert!(!text.contains("int b;"), "{text}");
+}
+
+#[test]
+fn line_and_file_macros_follow_the_invocation() {
+    let text = pp("int a = __LINE__;\nint b = \\\n__LINE__;\n#define L __LINE__\nint c = L;\n");
+    assert!(text.contains("int a = 1;"), "{text}");
+    assert!(text.contains("int b = 3;"), "{text}");
+    assert!(text.contains("int c = 5;"), "{text}");
+    let file = pp("__FILE__\n");
+    assert!(file.contains("\"t.c\""), "{file}");
+}
+
+#[test]
+fn reports_directive_errors() {
+    assert!(pp_err("#error boom\n").contains("t.c:1:1: error: #error boom"));
+    assert!(pp_err("#if 1\n").contains("unterminated conditional"));
+    assert!(pp_err("#else\n").contains("#else without #if"));
+    assert!(pp_err("#foo\n").contains("unknown preprocessing directive"));
+    assert!(pp_err("#define F(a, b) a\nF(1)\n").contains("requires 2 argument"));
+    assert!(pp_err("#define A 1\n#define A 2\n").contains("redefined"));
+    assert!(pp("#define A 1\n#define A 1\nint x;\n").contains("int x;"));
+    assert!(pp_err("#if 1/0\n#endif\n").contains("division by zero"));
+}
+
+#[test]
+fn include_guard_and_error_in_header() {
+    let dir = std::env::temp_dir().join(format!("cc-pp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(
+        dir.join("guard.h"),
+        "#ifndef GUARD_H\n#define GUARD_H\nint value;\n#endif\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("sub").join("bad.h"), "#error from header\n").unwrap();
+    let main = dir.join("main.c");
+    let source = "#include \"guard.h\"\n#include \"guard.h\"\n#include \"sub/bad.h\"\n";
+    let err = preprocess(source, main.to_str().unwrap(), &PpOptions::default())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("bad.h"), "{err}");
+    assert!(err.contains("#error from header"), "{err}");
+    let ok = "#include \"guard.h\"\n#include \"guard.h\"\n";
+    let text = preprocess(ok, main.to_str().unwrap(), &PpOptions::default()).unwrap();
+    assert_eq!(text.matches("int value;").count(), 1, "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn compiler_headers_provide_stdalign_and_max_align_t() {
+    let options = PpOptions {
+        system_dirs: vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("include")],
+        ..PpOptions::default()
+    };
+    let source = "#include <stdalign.h>\n#include <stddef.h>\n\
+            int a = alignof(max_align_t) + __alignas_is_defined + __alignof_is_defined;\n";
+    let text = preprocess(source, "t.c", &options).unwrap();
+    assert!(text.contains("} max_align_t;"), "{text}");
+    assert!(
+        squash(&text).contains("int a = _Alignof(max_align_t) + 1 + 1;"),
+        "{text}"
+    );
+}
+
+#[test]
+fn command_line_defines_and_angle_include() {
+    let dir = std::env::temp_dir().join(format!("cc-pp-inc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("n.h"), "int from_header = NAME;\n").unwrap();
+    let mut options = PpOptions {
+        system_dirs: vec![dir.clone()],
+        ..PpOptions::default()
+    };
+    options.definitions.push(CliMacro::Define {
+        name: "NAME".to_string(),
+        replacement: Some("5".to_string()),
+    });
+    let text = preprocess("#include <n.h>\n", "t.c", &options).unwrap();
+    assert!(text.contains("int from_header = 5;"), "{text}");
+    options
+        .definitions
+        .push(CliMacro::Undef("NAME".to_string()));
+    let err = preprocess("#include <n.h>\n", "t.c", &options).unwrap();
+    assert!(err.contains("int from_header = NAME;"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn has_include_and_feature_queries() {
+    let dir = std::env::temp_dir().join(format!("cc-pp-has-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("a")).unwrap();
+    std::fs::create_dir_all(dir.join("b")).unwrap();
+    std::fs::write(
+        dir.join("a/n.h"),
+        "#if __has_include_next(<n.h>)\nint next;\n#endif\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("b/n.h"), "").unwrap();
+    std::fs::write(
+        dir.join("a/only.h"),
+        "#if !__has_include_next(<only.h>)\nint last;\n#endif\n",
+    )
+    .unwrap();
+    let options = PpOptions {
+        system_dirs: vec![dir.join("a"), dir.join("b")],
+        ..PpOptions::default()
+    };
+    let source = "#if __has_include(<n.h>) && !__has_include(<missing.h>)\nint found;\n#endif\n\
+            #define HAS(h) __has_include(h)\n#if HAS(<n.h>)\nint via_macro;\n#endif\n\
+            #define NAME <n.h>\n#if __has_include(NAME)\nint named;\n#endif\n\
+            #if defined(__has_include) && defined __has_feature && !__has_feature(blocks) \\\n\
+              && !__has_attribute(availability) && __has_builtin(__builtin_expect) \\\n\
+              && __has_builtin(__builtin_bswap16) && __has_builtin(__builtin_memcpy) \\\n\
+              && __has_builtin(__builtin_nanf) && __has_builtin(__builtin_huge_val) \\\n\
+              && !__has_builtin(__builtin_no_such_thing) && !__has_builtin(memcpy) \\\n\
+              && !__has_extension(x) && !__building_module(m)\nint plain_c;\n#endif\n\
+            #include <n.h>\n#include <only.h>\n";
+    let text = preprocess(source, "t.c", &options).unwrap();
+    for want in [
+        "int found;",
+        "int via_macro;",
+        "int plain_c;",
+        "int next;",
+        "int last;",
+    ] {
+        assert!(text.contains(want), "{want}: {text}");
+    }
+    // A program's own definition of a query name wins.
+    let text = preprocess(
+        "#define __has_feature(x) 1\n#if __has_feature(anything)\nint own;\n#endif\n",
+        "t.c",
+        &options,
+    )
+    .unwrap();
+    assert!(text.contains("int own;"), "{text}");
+    let err = preprocess("#if __has_include(<n.h>\n#endif\n", "t.c", &options).unwrap_err();
+    assert!(err.to_string().contains("missing ')'"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn named_variadic_parameter_only_in_system_headers() {
+    let dir = std::env::temp_dir().join(format!("cc-pp-namedva-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let header = "#define GROUP(TAG, MEMBERS...) struct TAG { MEMBERS }\n\
+                      #define SHOW(fmt, args...) show(fmt, ## args)\n";
+    std::fs::write(dir.join("sys.h"), header).unwrap();
+    // A header reached with `#include "..."` from a system header in a
+    // subdirectory is a system header too.
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub/outer.h"), "#include \"inner.h\"\n").unwrap();
+    std::fs::write(dir.join("sub/inner.h"), "#define INNER(a...) inner(a)\n").unwrap();
+    std::fs::write(dir.join("user.h"), header).unwrap();
+    let options = PpOptions {
+        system_dirs: vec![dir.clone()],
+        ..PpOptions::default()
+    };
+    let text = preprocess(
+        "#include <sys.h>\n#include <sub/outer.h>\nGROUP(g, int a; int b;);\n\
+             SHOW(\"x\");\nSHOW(\"y\", 1, 2);\nINNER(3, 4);\n",
+        "t.c",
+        &options,
+    )
+    .unwrap();
+    let text = squash(&text);
+    assert!(text.contains("struct g { int a; int b; };"), "{text}");
+    assert!(text.contains("show(\"x\");"), "{text}");
+    assert!(text.contains("show(\"y\", 1, 2);"), "{text}");
+    assert!(text.contains("inner(3, 4);"), "{text}");
+    // In a header found through -I it is still an error.
+    let options = PpOptions {
+        include_dirs: vec![dir.clone()],
+        system_dirs: Vec::new(),
+        ..PpOptions::default()
+    };
+    let err = preprocess("#include \"user.h\"\n", "t.c", &options).unwrap_err();
+    assert!(err.to_string().contains("macro parameter list"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn predefined_stdc_and_no_recursion_on_line() {
+    let text = pp("#if __STDC__ == 1 && __STDC_VERSION__ == 201112L && __x86_64__ && __linux__ && __LP64__\nint ok;\n#endif\n#define ID(x) x\nID(ID)(1)\n");
+    assert!(text.contains("int ok;"), "{text}");
+    assert!(squash(&text).contains("ID(1)"), "{text}");
+}
+
+#[test]
+fn review_fixes_match_clang() {
+    let glued = pp("#define NEG -1\n1-NEG\n");
+    assert!(glued.contains("1- -1"), "{glued}");
+    assert!(!glued.contains("1--1"), "{glued}");
+
+    let empty = pp_err("#if\n#endif\n");
+    assert!(empty.contains("t.c:1:"), "{empty}");
+    assert!(empty.contains("expected an expression"), "{empty}");
+
+    let after_else = pp_err("#if 0\n#else\n#elif 1\n#endif\n");
+    assert!(after_else.contains("#elif after #else"), "{after_else}");
+    let nested = pp_err("#if 0\n#if 0\n#else\n#else\n#endif\n#endif\n");
+    assert!(nested.contains("#else after #else"), "{nested}");
+
+    let hex = pp("#if -1 < 0xFFFFFFFF\nA\n#else\nB\n#endif\n#if -1 < 0x8000000000000000\nG\n#else\nH\n#endif\n#if (1 ? -1 : (1 << 0u)) < 0\nI\n#else\nJ\n#endif\n");
+    assert!(hex.contains('A') && !hex.contains('B'), "{hex}");
+    assert!(hex.contains('H') && !hex.contains('G'), "{hex}");
+    assert!(hex.contains('I') && !hex.contains('J'), "{hex}");
+
+    let dir = std::env::temp_dir().join(format!("cc-pp-nonl-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("nonl.h"), "#define X 1").unwrap();
+    let main = dir.join("main.c");
+    let text = preprocess(
+        "#include \"nonl.h\"\nint y = X;\n",
+        main.to_str().unwrap(),
+        &PpOptions::default(),
+    )
+    .unwrap();
+    assert!(text.contains("int y = 1;"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn prefixed_character_constants_in_if() {
+    // C11 6.10.1p4: the value and type of `L'\400'` and `U'...'` are those
+    // of the constant in program text.
+    let text = pp("#if L'\\400' == 256 && u'\\xffff' == 65535 && U'\\xffffffff' > 0\nint ok;\n#endif\n#if L'Ä' == 0xC4 && U'\\U0001F600' == 0x1F600\nint wide;\n#endif\n#if '\\377' < 0\nint neg;\n#endif\n");
+    assert_eq!(squash(&text), "int ok; int wide; int neg;");
+    assert!(pp_err("#if u'\\x10000'\n#endif\n").contains("out of range"));
+    // The character `u` is not an unsigned suffix: `L'u'` is a signed int.
+    let text = pp("#if L'u' - 118 < 0 && L'\\u00c4' - 200 < 0\nint signed_wide;\n#endif\n");
+    assert_eq!(squash(&text), "int signed_wide;");
+    assert!(pp_err("#if 'é'\n#endif\n").contains("character too large"));
+}
+
+#[test]
+fn utf8_literals_pass_through() {
+    let text = pp("const char *s = \"Ä€\"; /* é */ int c = L'é';\n");
+    assert_eq!(squash(&text), "const char *s = \"Ä€\"; int c = L'é';");
+    assert!(pp_err("int café;\n").contains("non-ASCII"));
+}
+
+#[test]
+fn conditional_feature_macros() {
+    let text = pp("#if __STDC_NO_ATOMICS__ && __STDC_NO_COMPLEX__ && __STDC_NO_THREADS__ && __STDC_NO_VLA__ && __STDC_UTF_16__ && __STDC_UTF_32__\nint ok;\n#endif\n");
+    assert_eq!(squash(&text), "int ok;");
+}
