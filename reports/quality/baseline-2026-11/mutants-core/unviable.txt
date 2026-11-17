@@ -1,0 +1,9 @@
+src/irgen.rs:571:5: replace local_slots -> Vec<(String, CType, u32)> with vec![(String::new(), Default::default(), 0)]
+src/irgen.rs:571:5: replace local_slots -> Vec<(String, CType, u32)> with vec![(String::new(), Default::default(), 1)]
+src/irgen.rs:571:5: replace local_slots -> Vec<(String, CType, u32)> with vec![("xyzzy".into(), Default::default(), 0)]
+src/irgen.rs:571:5: replace local_slots -> Vec<(String, CType, u32)> with vec![("xyzzy".into(), Default::default(), 1)]
+src/irgen.rs:624:5: replace slot_of -> (String, CType, u32) with (String::new(), Default::default(), 0)
+src/irgen.rs:624:5: replace slot_of -> (String, CType, u32) with (String::new(), Default::default(), 1)
+src/irgen.rs:624:5: replace slot_of -> (String, CType, u32) with ("xyzzy".into(), Default::default(), 0)
+src/irgen.rs:624:5: replace slot_of -> (String, CType, u32) with ("xyzzy".into(), Default::default(), 1)
+src/irgen.rs:2861:9: replace Gen::gen_stmt_expr_body -> Option<&'b Expr> with Some(Box::leak(Box::new(Default::default())))

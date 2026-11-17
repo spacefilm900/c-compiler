@@ -1,0 +1,8 @@
+src/parser.rs:802:9: replace Parser<'_>::note_int128 -> Result<(), Diagnostic> with Ok(())
+src/parser.rs:4867:32: replace != with == in Parser<'_>::bump
+src/parser.rs:5383:34: replace match guard left.is_integer() && right.is_integer() with false in eval_ice
+src/parser.rs:5559:66: replace && with || in check_uneval
+src/parser.rs:5473:34: delete ! in check_generic_assocs
+src/pp.rs:1836:24: replace += with -= in Processor::take_line
+src/sema.rs:4866:30: replace && with || in Sema<'_>::can_assign
+src/sema.rs:4966:25: replace match guard ty.is_void() with false in Sema<'_>::require_scalar

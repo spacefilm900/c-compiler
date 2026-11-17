@@ -1,0 +1,279 @@
+src/irgen.rs:39:5: replace render -> String with String::new()
+src/irgen.rs:39:5: replace render -> String with "xyzzy".into()
+src/irgen.rs:60:33: replace || with && in render
+src/irgen.rs:76:8: delete ! in render
+src/irgen.rs:119:22: delete ! in render
+src/irgen.rs:60:36: delete ! in render
+src/irgen.rs:119:19: replace && with || in render
+src/irgen.rs:150:8: delete ! in render
+src/irgen.rs:215:5: replace render_functions -> (Vec<String>, LowerNeeds) with (vec![], Default::default())
+src/irgen.rs:215:5: replace render_functions -> (Vec<String>, LowerNeeds) with (vec![String::new()], Default::default())
+src/irgen.rs:215:5: replace render_functions -> (Vec<String>, LowerNeeds) with (vec!["xyzzy".into()], Default::default())
+src/irgen.rs:242:5: replace library_renames -> Renames with Default::default()
+src/irgen.rs:260:13: replace || with && in library_renames
+src/irgen.rs:260:25: replace && with || in library_renames
+src/irgen.rs:260:69: replace && with || in library_renames
+src/irgen.rs:264:27: replace == with != in library_renames
+src/irgen.rs:260:77: replace == with != in library_renames
+src/irgen.rs:271:17: replace && with || in library_renames
+src/irgen.rs:272:17: replace && with || in library_renames
+src/irgen.rs:264:48: replace && with || in library_renames
+src/irgen.rs:271:33: replace == with != in library_renames
+src/irgen.rs:297:5: replace renamed -> &'a str with ""
+src/irgen.rs:297:5: replace renamed -> &'a str with "xyzzy"
+src/irgen.rs:301:5: replace render_global -> String with String::new()
+src/irgen.rs:301:5: replace render_global -> String with "xyzzy".into()
+src/irgen.rs:337:5: replace render_struct -> String with String::new()
+src/irgen.rs:337:5: replace render_struct -> String with "xyzzy".into()
+src/irgen.rs:337:26: replace || with && in render_struct
+src/irgen.rs:320:34: replace match guard global.attrs.weak with true in render_global
+src/irgen.rs:320:34: replace match guard global.attrs.weak with false in render_global
+src/irgen.rs:340:29: replace != with == in render_struct
+src/irgen.rs:340:50: replace == with != in render_struct
+src/irgen.rs:340:42: replace % with / in render_struct
+src/irgen.rs:340:42: replace % with + in render_struct
+src/irgen.rs:342:17: delete match arm 1 in render_struct
+src/irgen.rs:344:17: delete match arm 4 in render_struct
+src/irgen.rs:345:17: delete match arm 8 in render_struct
+src/irgen.rs:364:5: replace render_string -> String with "xyzzy".into()
+src/irgen.rs:364:5: replace render_string -> String with String::new()
+src/irgen.rs:365:13: replace == with != in render_string
+src/irgen.rs:394:5: replace render_declare -> String with String::new()
+src/irgen.rs:394:5: replace render_declare -> String with "xyzzy".into()
+src/irgen.rs:416:5: replace fn_attr_suffix -> String with "xyzzy".into()
+src/irgen.rs:416:5: replace fn_attr_suffix -> String with String::new()
+src/irgen.rs:418:26: delete ! in fn_attr_suffix
+src/irgen.rs:460:5: replace sig_params -> String with String::new()
+src/irgen.rs:460:5: replace sig_params -> String with "xyzzy".into()
+src/irgen.rs:480:5: replace param_ir -> String with String::new()
+src/irgen.rs:480:5: replace param_ir -> String with "xyzzy".into()
+src/irgen.rs:494:5: replace render_function -> (String, LowerNeeds) with (String::new(), Default::default())
+src/irgen.rs:511:30: replace match guard attrs.is_some_and(|attrs| attrs.available_externally) with true in render_function
+src/irgen.rs:494:5: replace render_function -> (String, LowerNeeds) with ("xyzzy".into(), Default::default())
+src/irgen.rs:551:8: delete ! in render_function
+src/irgen.rs:571:5: replace local_slots -> Vec<(String, CType, u32)> with vec![]
+src/irgen.rs:579:5: replace collect_slots with ()
+src/irgen.rs:514:30: replace match guard attrs.is_some_and(|attrs| attrs.weak) with true in render_function
+src/irgen.rs:511:30: replace match guard attrs.is_some_and(|attrs| attrs.available_externally) with false in render_function
+src/irgen.rs:580:29: replace match guard decl.storage == Storage::None with false in collect_slots
+src/irgen.rs:580:29: replace match guard decl.storage == Storage::None with true in collect_slots
+src/irgen.rs:580:42: replace == with != in collect_slots
+src/irgen.rs:604:37: replace == with != in collect_slots
+src/irgen.rs:644:22: replace |= with &= in LowerNeeds::merge
+src/irgen.rs:643:9: replace LowerNeeds::merge with ()
+src/irgen.rs:648:18: replace |= with &= in LowerNeeds::merge
+src/irgen.rs:650:19: replace |= with &= in LowerNeeds::merge
+src/irgen.rs:649:19: replace |= with &= in LowerNeeds::merge
+src/irgen.rs:655:5: replace has_func_symbol -> bool with true
+src/irgen.rs:753:9: replace Gen::emit with ()
+src/irgen.rs:759:9: replace Gen::var_slot -> String with String::new()
+src/irgen.rs:759:9: replace Gen::var_slot -> String with "xyzzy".into()
+src/irgen.rs:655:5: replace has_func_symbol -> bool with false
+src/irgen.rs:656:9: replace || with && in has_func_symbol
+src/irgen.rs:655:49: replace == with != in has_func_symbol
+src/irgen.rs:766:31: replace match guard !name.starts_with('"') && !is_unquoted_llvm_name(name) with false in Gen::var_slot
+src/irgen.rs:766:31: delete ! in Gen::var_slot
+src/irgen.rs:775:18: replace += with -= in Gen::fresh
+src/irgen.rs:775:9: replace Gen::fresh -> String with String::new()
+src/irgen.rs:775:9: replace Gen::fresh -> String with "xyzzy".into()
+src/irgen.rs:775:18: replace += with *= in Gen::fresh
+src/irgen.rs:780:9: replace Gen::label -> String with String::new()
+src/irgen.rs:780:18: replace += with -= in Gen::label
+src/irgen.rs:766:57: delete ! in Gen::var_slot
+src/irgen.rs:792:9: replace Gen::start with ()
+src/irgen.rs:802:9: replace Gen::br with ()
+src/irgen.rs:811:9: replace Gen::br_cond with ()
+src/irgen.rs:822:9: replace Gen::gen_compound with ()
+src/irgen.rs:828:9: replace Gen::gen_stmt with ()
+src/irgen.rs:932:9: replace Gen::gen_decl with ()
+src/irgen.rs:955:53: replace == with != in Gen::gen_decl
+src/irgen.rs:967:41: replace > with == in Gen::gen_decl
+src/irgen.rs:967:41: replace > with < in Gen::gen_decl
+src/irgen.rs:1017:9: replace Gen::copy_struct with ()
+src/irgen.rs:1036:9: replace Gen::record_ptr -> String with String::new()
+src/irgen.rs:1021:44: replace || with && in Gen::copy_struct
+src/irgen.rs:1036:9: replace Gen::record_ptr -> String with "xyzzy".into()
+src/irgen.rs:1037:13: delete match arm Expr::Var{..} | Expr::Index{..} | Expr::Str{..} | Expr::Unary{op:UnaryOp::Deref, ..} | Expr::Member{..} | Expr::CompoundLit{..} in Gen::record_ptr
+src/irgen.rs:1045:13: delete match arm Expr::VaArg{..} in Gen::record_ptr
+src/irgen.rs:1056:13: delete match arm Expr::Call{..} in Gen::record_ptr
+src/irgen.rs:1046:13: delete match arm Expr::Assign{target, value, ..} in Gen::record_ptr
+src/irgen.rs:1057:13: delete match arm Expr::Cond{cond, then_expr, else_expr, ty, ..} in Gen::record_ptr
+src/irgen.rs:1106:9: replace Gen::materialize_call -> String with String::new()
+src/irgen.rs:1106:9: replace Gen::materialize_call -> String with "xyzzy".into()
+src/irgen.rs:1163:9: replace Gen::render_call_args -> Vec<String> with vec![]
+src/irgen.rs:1163:9: replace Gen::render_call_args -> Vec<String> with vec![String::new()]
+src/irgen.rs:1163:9: replace Gen::render_call_args -> Vec<String> with vec!["xyzzy".into()]
+src/irgen.rs:1171:22: replace < with == in Gen::render_call_args
+src/irgen.rs:1171:22: replace < with > in Gen::render_call_args
+src/irgen.rs:1173:37: replace && with || in Gen::render_call_args
+src/irgen.rs:1171:22: replace < with <= in Gen::render_call_args
+src/irgen.rs:1179:21: replace && with || in Gen::render_call_args
+src/irgen.rs:1173:32: replace == with != in Gen::render_call_args
+src/irgen.rs:1220:27: delete ! in Gen::render_call_args
+src/irgen.rs:1227:33: replace >= with < in Gen::render_call_args
+src/irgen.rs:1226:52: replace == with != in Gen::render_call_args
+src/irgen.rs:1244:9: replace Gen::variadic_record -> Vec<String> with vec![]
+src/irgen.rs:1228:34: replace -= with += in Gen::render_call_args
+src/irgen.rs:1244:9: replace Gen::variadic_record -> Vec<String> with vec![String::new()]
+src/irgen.rs:1228:34: replace -= with /= in Gen::render_call_args
+src/irgen.rs:1178:32: replace == with != in Gen::render_call_args
+src/irgen.rs:1289:9: replace Gen::emit_call -> Option<String> with None
+src/irgen.rs:1289:9: replace Gen::emit_call -> Option<String> with Some(String::new())
+src/irgen.rs:1289:9: replace Gen::emit_call -> Option<String> with Some("xyzzy".into())
+src/irgen.rs:1244:9: replace Gen::variadic_record -> Vec<String> with vec!["xyzzy".into()]
+src/irgen.rs:1303:25: replace == with != in Gen::emit_call
+src/irgen.rs:1317:9: replace Gen::store_param with ()
+src/irgen.rs:1317:29: replace && with || in Gen::store_param
+src/irgen.rs:1317:24: replace == with != in Gen::store_param
+src/irgen.rs:1372:9: replace Gen::aapcs64_record_arg -> String with String::new()
+src/irgen.rs:1375:13: delete match arm PartKind::Coerce{size} in Gen::aapcs64_record_arg
+src/irgen.rs:1372:9: replace Gen::aapcs64_record_arg -> String with "xyzzy".into()
+src/irgen.rs:1399:9: replace Gen::load_coerced -> String with String::new()
+src/irgen.rs:1399:9: replace Gen::load_coerced -> String with "xyzzy".into()
+src/irgen.rs:1400:37: replace > with == in Gen::load_coerced
+src/irgen.rs:1400:37: replace > with >= in Gen::load_coerced
+src/irgen.rs:1414:31: replace && with || in Gen::load_coerced
+src/irgen.rs:1449:9: replace Gen::entry_alloca -> String with String::new()
+src/irgen.rs:1449:9: replace Gen::entry_alloca -> String with "xyzzy".into()
+src/irgen.rs:1452:24: replace += with -= in Gen::entry_alloca
+src/irgen.rs:1457:9: replace Gen::offset_ptr -> String with String::new()
+src/irgen.rs:1457:9: replace Gen::offset_ptr -> String with "xyzzy".into()
+src/irgen.rs:1457:19: replace == with != in Gen::offset_ptr
+src/irgen.rs:1468:9: replace Gen::load_piece -> String with String::new()
+src/irgen.rs:1468:9: replace Gen::load_piece -> String with "xyzzy".into()
+src/irgen.rs:1479:9: replace Gen::store_piece with ()
+src/irgen.rs:1490:9: replace Gen::store_pieces with ()
+src/irgen.rs:1490:25: replace == with != in Gen::store_pieces
+src/irgen.rs:1503:9: replace Gen::emit_record_return with ()
+src/irgen.rs:1537:30: replace == with != in Gen::emit_record_return
+src/irgen.rs:1527:33: replace == with != in Gen::emit_record_return
+src/irgen.rs:1556:9: replace Gen::emit_implicit_return with ()
+src/irgen.rs:1587:9: replace Gen::load_bitfield -> String with String::new()
+src/irgen.rs:1587:9: replace Gen::load_bitfield -> String with "xyzzy".into()
+src/irgen.rs:1592:9: replace Gen::load_bitfield_at -> String with String::new()
+src/irgen.rs:1592:9: replace Gen::load_bitfield_at -> String with "xyzzy".into()
+src/irgen.rs:1599:34: replace - with / in Gen::load_bitfield_at
+src/irgen.rs:1599:64: replace * with + in Gen::load_bitfield_at
+src/irgen.rs:1599:34: replace - with + in Gen::load_bitfield_at
+src/irgen.rs:1600:32: replace == with != in Gen::load_bitfield_at
+src/irgen.rs:1610:34: replace >= with < in Gen::load_bitfield_at
+src/irgen.rs:1599:64: replace * with / in Gen::load_bitfield_at
+src/irgen.rs:1613:34: replace - with + in Gen::load_bitfield_at
+src/irgen.rs:1613:34: replace - with / in Gen::load_bitfield_at
+src/irgen.rs:1613:19: replace << with >> in Gen::load_bitfield_at
+src/irgen.rs:1636:9: replace Gen::finish_bitfield -> String with String::new()
+src/irgen.rs:1636:9: replace Gen::finish_bitfield -> String with "xyzzy".into()
+src/irgen.rs:1636:42: replace && with || in Gen::finish_bitfield
+src/irgen.rs:1636:56: replace < with == in Gen::finish_bitfield
+src/irgen.rs:1636:56: replace < with > in Gen::finish_bitfield
+src/irgen.rs:1637:42: replace - with + in Gen::finish_bitfield
+src/irgen.rs:1637:42: replace - with / in Gen::finish_bitfield
+src/irgen.rs:1656:34: replace % with + in Gen::write_bits
+src/irgen.rs:1653:9: replace Gen::write_bits with ()
+src/irgen.rs:1656:34: replace % with / in Gen::write_bits
+src/irgen.rs:1663:31: replace == with != in Gen::write_bits
+src/irgen.rs:1673:55: replace & with ^ in Gen::write_bits
+src/irgen.rs:1673:27: delete ! in Gen::write_bits
+src/irgen.rs:1673:44: replace << with >> in Gen::write_bits
+src/irgen.rs:1688:9: replace Gen::store_bitfield -> String with String::new()
+src/irgen.rs:1688:9: replace Gen::store_bitfield -> String with "xyzzy".into()
+src/irgen.rs:1702:34: replace - with / in Gen::store_bitfield
+src/irgen.rs:1702:64: replace * with + in Gen::store_bitfield
+src/irgen.rs:1709:31: replace == with != in Gen::store_bitfield
+src/irgen.rs:1719:55: replace & with | in Gen::store_bitfield
+src/irgen.rs:1719:55: replace & with ^ in Gen::store_bitfield
+src/irgen.rs:1719:27: delete ! in Gen::store_bitfield
+src/irgen.rs:1719:44: replace << with >> in Gen::store_bitfield
+src/irgen.rs:1735:9: replace Gen::store with ()
+src/irgen.rs:1744:9: replace Gen::load -> String with String::new()
+src/irgen.rs:1744:9: replace Gen::load -> String with "xyzzy".into()
+src/irgen.rs:1757:9: replace Gen::access_align -> u32 with 0
+src/irgen.rs:1775:9: replace Gen::convert -> String with String::new()
+src/irgen.rs:1775:9: replace Gen::convert -> String with "xyzzy".into()
+src/irgen.rs:1775:30: replace && with || in Gen::convert
+src/irgen.rs:1785:39: replace && with || in Gen::convert
+src/irgen.rs:1775:49: replace == with != in Gen::convert
+src/irgen.rs:1785:21: replace == with != in Gen::convert
+src/irgen.rs:1795:31: replace == with != in Gen::convert
+src/irgen.rs:1785:49: replace != with == in Gen::convert
+src/irgen.rs:1798:38: replace < with == in Gen::convert
+src/irgen.rs:1798:38: replace < with > in Gen::convert
+src/irgen.rs:1814:23: replace == with != in Gen::convert
+src/irgen.rs:1814:49: replace == with != in Gen::convert
+src/irgen.rs:1817:42: replace > with == in Gen::convert
+src/irgen.rs:1817:42: replace > with < in Gen::convert
+src/irgen.rs:1830:30: replace && with || in Gen::convert
+src/irgen.rs:1833:30: replace && with || in Gen::convert
+src/irgen.rs:1842:30: replace && with || in Gen::convert
+src/irgen.rs:1834:22: replace == with != in Gen::convert
+src/irgen.rs:1867:28: replace && with || in Gen::convert
+src/irgen.rs:1867:47: replace == with != in Gen::convert
+src/irgen.rs:1910:9: replace Gen::extend_i64 -> String with String::new()
+src/irgen.rs:1910:9: replace Gen::extend_i64 -> String with "xyzzy".into()
+src/irgen.rs:1915:9: replace Gen::as_ptr -> String with String::new()
+src/irgen.rs:1915:9: replace Gen::as_ptr -> String with "xyzzy".into()
+src/irgen.rs:1925:9: replace Gen::gen_if with ()
+src/irgen.rs:1937:12: delete ! in Gen::gen_if
+src/irgen.rs:1943:16: delete ! in Gen::gen_if
+src/irgen.rs:1965:12: delete ! in Gen::gen_while
+src/irgen.rs:1951:9: replace Gen::gen_while with ()
+src/irgen.rs:2025:12: delete ! in Gen::gen_for
+src/irgen.rs:1995:9: replace Gen::gen_for with ()
+src/irgen.rs:2046:9: replace Gen::gen_switch with ()
+src/irgen.rs:1974:9: replace Gen::gen_do with ()
+src/irgen.rs:1985:12: delete ! in Gen::gen_do
+src/irgen.rs:2122:12: delete ! in Gen::gen_switch
+src/irgen.rs:2137:9: replace Gen::emit_switch with ()
+src/irgen.rs:2158:9: replace Gen::collect_switch_targets with ()
+src/irgen.rs:2217:9: replace Gen::take_switch_label -> String with String::new()
+src/irgen.rs:2217:9: replace Gen::take_switch_label -> String with "xyzzy".into()
+src/irgen.rs:2222:24: replace += with -= in Gen::take_switch_label
+src/irgen.rs:2222:24: replace += with *= in Gen::take_switch_label
+src/irgen.rs:2227:9: replace Gen::place_label with ()
+src/irgen.rs:2227:12: delete ! in Gen::place_label
+src/irgen.rs:2234:9: replace Gen::gen_va_op with ()
+src/irgen.rs:2238:39: replace == with != in Gen::gen_va_op
+src/irgen.rs:2261:9: replace Gen::va_arg_addr -> String with String::new()
+src/irgen.rs:2261:9: replace Gen::va_arg_addr -> String with "xyzzy".into()
+src/irgen.rs:2294:9: replace Gen::va_reg_or_stack -> String with String::new()
+src/irgen.rs:2294:9: replace Gen::va_reg_or_stack -> String with "xyzzy".into()
+src/irgen.rs:2305:37: replace * with + in Gen::va_reg_or_stack
+src/irgen.rs:2305:37: replace * with / in Gen::va_reg_or_stack
+src/irgen.rs:2338:9: replace Gen::va_overflow -> String with String::new()
+src/irgen.rs:2338:9: replace Gen::va_overflow -> String with "xyzzy".into()
+src/irgen.rs:2350:9: replace Gen::align_ptr -> String with String::new()
+src/irgen.rs:2350:9: replace Gen::align_ptr -> String with "xyzzy".into()
+src/irgen.rs:2350:18: replace <= with > in Gen::align_ptr
+src/irgen.rs:2512:9: replace Gen::gen_va_arg -> String with String::new()
+src/irgen.rs:2512:9: replace Gen::gen_va_arg -> String with "xyzzy".into()
+src/irgen.rs:2546:9: replace Gen::gen_va_record -> String with String::new()
+src/irgen.rs:2546:9: replace Gen::gen_va_record -> String with "xyzzy".into()
+src/irgen.rs:2532:33: replace > with == in Gen::gen_va_arg
+src/irgen.rs:2532:33: replace > with < in Gen::gen_va_arg
+src/irgen.rs:2571:9: replace Gen::va_split -> String with String::new()
+src/irgen.rs:2571:9: replace Gen::va_split -> String with "xyzzy".into()
+src/irgen.rs:2572:40: replace - with / in Gen::va_split
+src/irgen.rs:2642:9: replace Gen::gen_val -> String with String::new()
+src/irgen.rs:2642:9: replace Gen::gen_val -> String with "xyzzy".into()
+src/irgen.rs:2649:9: replace Gen::gen_expr -> Option<String> with None
+src/irgen.rs:2649:9: replace Gen::gen_expr -> Option<String> with Some(String::new())
+src/irgen.rs:2649:9: replace Gen::gen_expr -> Option<String> with Some("xyzzy".into())
+src/irgen.rs:2720:37: replace match guard op.is_cmp() || matches!(op, BinOp::And | BinOp::Or) with true in Gen::gen_expr
+src/irgen.rs:2720:37: replace match guard op.is_cmp() || matches!(op, BinOp::And | BinOp::Or) with false in Gen::gen_expr
+src/irgen.rs:2739:18: replace match guard ty.as_ref().is_some_and(|ty| ty.is_pointer()) with true in Gen::gen_expr
+src/irgen.rs:2728:18: replace match guard left.ty().is_some_and(|ty| ty.is_pointer()) && right.ty().is_some_and(|ty| ty.is_pointer()) with true in Gen::gen_expr
+src/irgen.rs:2728:18: replace match guard left.ty().is_some_and(|ty| ty.is_pointer()) && right.ty().is_some_and(|ty| ty.is_pointer()) with false in Gen::gen_expr
+src/irgen.rs:2739:18: replace match guard ty.as_ref().is_some_and(|ty| ty.is_pointer()) with false in Gen::gen_expr
+src/irgen.rs:2720:49: replace || with && in Gen::gen_expr
+src/irgen.rs:2861:9: replace Gen::gen_stmt_expr_body -> Option<&'b Expr> with None
+src/irgen.rs:2867:13: delete match arm Some((Stmt::Expr{expr:Some(last), ..}, rest,)) in Gen::gen_stmt_expr_body
+src/irgen.rs:2885:9: replace Gen::gen_cond_short -> Option<String> with None
+src/irgen.rs:2909:13: delete match arm (Some(then_val), Some(else_val)) in Gen::gen_cond_short
+src/irgen.rs:2939:9: replace Gen::gen_addr -> String with String::new()
+src/irgen.rs:2940:13: delete match arm Expr::Var{resolved, ..} in Gen::gen_addr
+src/irgen.rs:2939:9: replace Gen::gen_addr -> String with "xyzzy".into()
+src/irgen.rs:2943:13: delete match arm Expr::Unary{op:UnaryOp::Deref, expr, ..} in Gen::gen_addr
+src/irgen.rs:2948:13: delete match arm Expr::Index{base, index, ..} in Gen::gen_addr
+src/irgen.rs:2950:13: delete match arm Expr::Str{symbol, ..} in Gen::gen_addr
+src/irgen.rs:2951:13: delete match arm Expr::Member{base, arrow, index, offset, bytewise, ..} in Gen::gen_addr
+src/irgen.rs:3006:13: delete match arm Expr::CompoundLit{decl, ..} in Gen::gen_addr

@@ -1,0 +1,234 @@
+src/parser.rs:347:55: replace == with != in Parser<'_>::parse_external
+src/parser.rs:757:20: replace == with != in Parser<'_>::note_storage
+src/parser.rs:810:27: replace != with == in Parser<'_>::note_int128
+src/parser.rs:679:24: replace match guard self.spec_word(&[ "__extension__", "__inline", "__inline__", "__restrict", "__restrict__", ]) with false in Parser<'_>::parse_specs_inner
+src/parser.rs:1061:13: delete match arm TokenKind::KwShort in Parser<'_>::note_type
+src/parser.rs:1074:62: replace && with || in Parser<'_>::note_type
+src/parser.rs:949:12: delete ! in Parser<'_>::parse_typeof
+src/parser.rs:1004:35: replace == with != in Parser<'_>::note_qualifier
+src/parser.rs:1249:63: replace == with != in Parser<'_>::parse_record_specifier
+src/parser.rs:1348:33: replace == with != in Parser<'_>::define_record
+src/parser.rs:1160:47: replace || with && in Parser<'_>::resolve_scalar
+src/parser.rs:1391:29: replace != with == in Parser<'_>::define_record
+src/parser.rs:1680:9: replace Parser<'_>::at_type_specifier -> bool with true
+src/parser.rs:1473:23: delete ! in Parser<'_>::parse_enumerators
+src/parser.rs:1695:21: replace || with && in Parser<'_>::at_type_specifier
+src/parser.rs:1827:9: replace Parser<'_>::skip_attributes -> Result<(), Diagnostic> with Ok(())
+src/parser.rs:1878:63: replace == with != in Parser<'_>::skip_attribute
+src/parser.rs:1972:38: replace match guard depth == 0 with false in Parser<'_>::parse_attr_arg
+src/parser.rs:1718:38: replace match guard pointee.is_func() with false in Parser<'_>::reject_bad_restrict::walk
+src/parser.rs:1767:12: delete ! in Parser<'_>::note_inline
+src/parser.rs:2023:44: replace > with < in Parser<'_>::attr_align
+src/parser.rs:1940:16: delete ! in Parser<'_>::skip_attribute
+src/parser.rs:2045:13: delete match arm AttrArg::Str(text) in Parser<'_>::attr_string
+src/parser.rs:2254:36: replace == with != in Parser<'_>::parse_member_list
+src/parser.rs:2087:17: delete match arm "section" in Parser<'_>::var_attrs_of
+src/parser.rs:2227:23: replace & with | in Parser<'_>::parse_static_assert
+src/parser.rs:2437:19: replace > with < in Parser<'_>::parse_bit_width
+src/parser.rs:2486:12: delete ! in Parser<'_>::declare_fresh_tag
+src/parser.rs:2582:9: replace Parser<'_>::alloc_llvm_name -> String with String::new()
+src/parser.rs:2737:44: replace + with * in Parser<'_>::check_flexible_members
+src/parser.rs:2358:9: replace Parser<'_>::member_attrs -> Result<MemberAttrs, Diagnostic> with Ok(Default::default())
+src/parser.rs:2807:73: replace == with != in Parser<'_>::parse_param_list_in_scope
+src/parser.rs:3040:24: replace match guard matches!( self.current().spelling.as_str(), "__restrict" | "__restrict__" ) with false in Parser<'_>::parse_pointer_quals
+src/parser.rs:3213:12: delete ! in Parser<'_>::make_array
+src/parser.rs:3284:22: replace || with && in Parser<'_>::reject_incomplete_initializer
+src/parser.rs:2721:9: replace Parser<'_>::check_flexible_members -> Result<(), Diagnostic> with Ok(())
+src/parser.rs:3089:21: replace && with || in Parser<'_>::parse_array_len
+src/parser.rs:3714:43: replace == with != in Parser<'_>::parse_for_in_scope
+src/parser.rs:3825:12: delete ! in Parser<'_>::parse_conditional
+src/parser.rs:3888:35: replace == with != in Parser<'_>::parse_bit_xor
+src/parser.rs:3944:35: replace == with != in Parser<'_>::parse_shift
+src/parser.rs:4009:40: replace == with != in Parser<'_>::parse_unary
+src/parser.rs:4018:13: delete match arm TokenKind::KwAlignof in Parser<'_>::parse_unary
+src/parser.rs:4120:36: replace != with == in Parser<'_>::parse_designator
+src/parser.rs:4322:9: replace Parser<'_>::lookahead_is_type -> bool with true
+src/parser.rs:4689:17: delete match arm TokenKind::PlusPlus | TokenKind::MinusMinus in Parser<'_>::parse_postfix_tail
+src/parser.rs:4398:24: delete ! in Parser<'_>::parse_builtin_offsetof
+src/parser.rs:4726:25: replace | with & in Parser<'_>::parse_primary
+src/parser.rs:4657:29: delete match arm "__builtin_va_copy" in Parser<'_>::parse_postfix_tail
+src/parser.rs:4873:32: replace == with != in Parser<'_>::match_kind
+src/parser.rs:4968:9: delete match arm (LitPrefix::None, other) |(other, LitPrefix::None) in merge_prefix
+src/parser.rs:4992:28: replace == with != in named_members_besides_flexible
+src/parser.rs:5094:9: replace SpecFlags::has_scalar -> bool with true
+src/parser.rs:5208:5: replace decl_name -> Option<(String, usize, usize)> with Some(("xyzzy".into(), 0, 0))
+src/parser.rs:5098:26: replace != with == in SpecFlags::has_scalar
+src/parser.rs:5299:5: replace ice_message -> &'static str with ""
+src/parser.rs:5705:14: replace match guard ty_name .pointee() .is_some_and(|pointee| pointee.is_void() && pointee.quals().is_empty()) with true in uneval_null_constant
+src/parser.rs:5677:13: replace && with || in check_uneval_compare
+src/parser.rs:5671:13: replace || with && in check_uneval_compare
+src/parser.rs:5730:9: replace && with || in check_uneval_fp_compare
+src/parser.rs:5766:17: replace match guard is_memory_builtin(name) with false in builtin_arity
+src/parser.rs:5934:28: replace || with && in type_only
+src/parser.rs:5840:5: replace uneval_lvalue -> bool with true
+src/parser.rs:5810:5: replace check_uneval_signbit -> Result<(), BoundErr> with Ok(())
+src/parser.rs:6100:64: replace + with * in infer_init_len
+src/parser.rs:6127:38: replace && with || in infer_init_len
+src/parser.rs:6216:9: delete match arm BinOp::Or in eval_ice_bin
+src/parser.rs:6238:32: replace & with ^ in eval_ice_bin
+src/parser.rs:6253:39: replace & with ^ in eval_ice_bin
+src/parser.rs:6306:25: replace & with ^ in ice_compare
+src/parser.rs:6310:31: replace != with == in ice_compare
+src/parser.rs:6349:59: replace == with != in ice_arith
+src/parser.rs:6356:32: replace / with * in ice_arith
+src/parser.rs:6364:24: replace & with ^ in ice_arith
+src/parser.rs:6435:5: replace unsupported -> Option<&'static str> with Some("xyzzy")
+src/parser.rs:6384:9: delete match arm TokenKind::PipeEq in assign_kind
+src/pp.rs:97:40: replace || with && in preprocess_tokens
+src/parser.rs:6412:27: replace & with ^ in enum_int
+src/pp.rs:216:5: replace target_macros -> Vec<(&'static str, &'static str)> with vec![("", "")]
+src/pp.rs:479:29: replace != with == in convert_token
+src/pp.rs:561:9: replace PpToken::is_rparen -> bool with true
+src/pp.rs:569:9: replace PpToken::is_hash -> bool with true
+src/pp.rs:771:9: replace Processor::push_main with ()
+src/pp.rs:793:28: replace += with -= in Processor::expand_all
+src/pp.rs:426:5: replace tokens_glue -> bool with false
+src/pp.rs:441:13: delete ! in tokens_glue
+src/pp.rs:845:51: replace - with + in Processor::at_line_start
+src/pp.rs:853:9: replace Processor::try_expand -> Result<bool, Diagnostic> with Ok(false)
+src/pp.rs:819:24: replace += with *= in Processor::expand_all
+src/pp.rs:937:40: replace + with - in Processor::splice
+src/pp.rs:942:53: replace - with / in Processor::splice
+src/pp.rs:807:32: replace += with -= in Processor::expand_all
+src/pp.rs:1002:36: replace != with == in Processor::expand_object
+src/pp.rs:1051:20: delete ! in Processor::substitute
+src/pp.rs:1094:9: replace Processor::expand_list -> Result<Vec<PpToken>, Diagnostic> with Ok(vec![])
+src/pp.rs:1036:17: replace && with || in Processor::substitute
+src/pp.rs:1122:38: replace && with || in Processor::collect_args
+src/pp.rs:1039:31: replace + with - in Processor::substitute
+src/pp.rs:1232:20: replace += with *= in Processor::handle_directive
+src/pp.rs:1186:38: replace == with != in Processor::finish_args
+src/pp.rs:1346:23: replace != with == in Processor::do_ifdef
+src/pp.rs:1456:9: replace Processor::include_file -> Result<(), Diagnostic> with Ok(())
+src/pp.rs:1607:24: replace += with *= in Processor::skip_until_clause
+src/pp.rs:1632:27: replace match guard depth == 0 with true in Processor::skip_until_clause
+src/pp.rs:1642:34: replace == with != in Processor::skip_until_clause
+src/pp.rs:1686:9: replace Processor::eval_line -> Result<bool, Diagnostic> with Ok(false)
+src/pp.rs:1727:17: replace && with || in Processor::replace_has_queries
+src/pp.rs:1483:26: replace != with == in Processor::include_file
+src/pp.rs:1729:48: replace - with / in Processor::replace_has_queries
+src/pp.rs:1739:59: replace + with - in Processor::replace_has_queries
+src/pp.rs:1751:43: replace + with * in Processor::replace_has_queries
+src/pp.rs:1058:23: replace += with -= in Processor::substitute
+src/pp.rs:1732:37: replace - with + in Processor::replace_has_queries
+src/pp.rs:1796:12: delete ! in Processor::install
+src/pp.rs:1964:19: replace -= with += in paren_closes
+src/pp.rs:1977:5: replace param_uses -> (HashSet<String>, HashSet<String>) with (HashSet::from_iter(["xyzzy".into()]), HashSet::from_iter([String::new()]))
+src/pp.rs:1984:51: replace == with != in param_uses
+src/pp.rs:1921:5: replace escape_string -> String with "xyzzy".into()
+src/pp.rs:1995:29: replace && with || in hashhash_operand
+src/pp.rs:1996:19: replace > with == in hashhash_operand
+src/pp.rs:2046:22: replace < with == in paste_tokens
+src/pp.rs:2108:18: replace > with == in join_va
+src/pp.rs:2053:30: replace >= with < in paste_tokens
+src/pp.rs:2187:31: replace == with != in replace_defined
+src/pp.rs:2197:41: replace + with * in replace_defined
+src/pp.rs:2191:30: replace >= with < in replace_defined
+src/pp.rs:2256:27: replace == with != in header_from
+src/pp.rs:2210:19: replace += with -= in replace_defined
+src/pp.rs:2136:9: replace || with && in is_implemented_builtin
+src/pp.rs:2267:19: replace += with *= in header_from
+src/pp.rs:2246:71: replace == with != in starts_header
+src/pp.rs:2380:13: replace && with || in parse_function_header
+src/pp.rs:2337:15: replace += with *= in parse_function_header
+src/pp.rs:2403:19: replace += with *= in parse_function_header
+src/pp.rs:2480:5: replace same_body -> bool with false
+src/pp.rs:2495:5: replace body_tokens -> Result<Vec<PpToken>, Diagnostic> with Ok(vec![])
+src/pp.rs:2386:22: replace >= with < in parse_function_header
+src/pp.rs:2506:50: replace == with != in is_ident_text
+src/pp.rs:2545:26: replace & with ^ in val_from_compiler
+src/pp.rs:2772:24: replace += with *= in IfParser<'_>::parse_primary
+src/pp.rs:2794:41: replace == with != in IfParser<'_>::peek_punct
+src/pp.rs:3085:27: replace >= with < in Scanner<'_>::run
+src/pp.rs:3099:21: replace == with != in Scanner<'_>::run
+src/pp.rs:3117:26: replace == with != in Scanner<'_>::run
+src/pp.rs:3165:56: replace == with != in Scanner<'_>::block_comment
+src/pp.rs:3302:9: replace Scanner<'_>::match_punct -> Option<&'static str> with None
+src/pp.rs:3356:39: replace == with != in Scanner<'_>::skip_splices
+src/pp.rs:3239:9: replace Scanner<'_>::read_quoted -> Result<String, Diagnostic> with Ok(String::new())
+src/pp.rs:3395:18: replace += with *= in Scanner<'_>::peek_logical_at
+src/pp.rs:3409:34: replace == with != in Scanner<'_>::peek_logical_into
+src/pp.rs:3387:43: replace && with || in Scanner<'_>::peek_logical_at
+src/pp.rs:3416:19: replace += with *= in Scanner<'_>::peek_logical_into
+src/pp.rs:3009:29: replace < with == in compare
+src/pp.rs:3441:5: replace canonical_punct -> &str with ""
+src/pp.rs:3366:9: replace Scanner<'_>::next_logical -> Option<(u8, usize, usize)> with Some((1, 1, 0))
+src/sema.rs:40:5: replace analyze_tokens -> Result<(), Diagnostic> with Ok(())
+src/sema.rs:345:16: delete ! in Sema<'_>::declare_global
+src/sema.rs:691:50: replace == with != in Sema<'_>::check_library_nan_clash
+src/sema.rs:864:26: replace match guard value.ty.is_integer() with false in Sema<'_>::designator_index
+src/sema.rs:912:23: replace > with < in Sema<'_>::infer_array_len
+src/sema.rs:396:51: delete ! in Sema<'_>::declare_global
+src/sema.rs:923:42: replace || with && in Sema<'_>::infer_array_len
+src/sema.rs:1001:9: replace Sema<'_>::fill_object -> Result<(), Diagnostic> with Ok(())
+src/sema.rs:960:25: replace && with || in Sema<'_>::infer_array_len
+src/sema.rs:967:32: replace + with - in Sema<'_>::infer_array_len
+src/sema.rs:1305:48: replace + with * in Sema<'_>::init_field
+src/sema.rs:1257:32: replace != with == in Sema<'_>::scalar_expr
+src/sema.rs:1431:28: replace == with != in Sema<'_>::seek_designator
+src/sema.rs:1378:9: delete ! in Sema<'_>::elides_into
+src/sema.rs:1465:26: replace += with -= in Sema<'_>::seek_designator
+src/sema.rs:1609:24: replace + with - in Sema<'_>::select_member
+src/sema.rs:1205:16: replace < with > in Sema<'_>::fill_struct
+src/sema.rs:1676:60: replace || with && in Sema<'_>::fold_stores
+src/sema.rs:1571:31: replace > with >= in Sema<'_>::fill_from_string
+src/sema.rs:1777:54: replace >= with < in Sema<'_>::fold_nested_bits
+src/sema.rs:2023:28: delete ! in Sema<'_>::check_stmt
+src/sema.rs:1845:55: replace || with && in Sema<'_>::fold_one
+src/sema.rs:1912:13: delete match arm Err(ConstError::Shift) in Sema<'_>::const_diag
+src/sema.rs:2239:20: delete ! in Sema<'_>::check_stmt
+src/sema.rs:2491:9: replace Sema<'_>::declare_block_extern -> Result<(), Diagnostic> with Ok(())
+src/sema.rs:2305:28: delete ! in Sema<'_>::end_unevaluated
+src/sema.rs:2759:9: replace Sema<'_>::bind_file_func -> Result<(), Diagnostic> with Ok(())
+src/sema.rs:3100:13: delete match arm Expr::Str{bytes, enc, ..} in Sema<'_>::check_str
+src/sema.rs:3004:33: replace && with || in Sema<'_>::check_generic
+src/sema.rs:3134:52: replace == with != in Sema<'_>::intern_string
+src/sema.rs:2891:20: delete ! in Sema<'_>::check_expr
+src/sema.rs:3578:9: replace Sema<'_>::check_compound_assign -> Result<(), Diagnostic> with Ok(())
+src/sema.rs:3685:9: replace Sema<'_>::check_cond -> Result<(), Diagnostic> with Ok(())
+src/sema.rs:3849:21: replace || with && in Sema<'_>::check_cast
+src/sema.rs:3913:12: delete ! in Sema<'_>::check_call
+src/sema.rs:3987:26: replace < with == in Sema<'_>::check_call
+src/sema.rs:3362:59: replace && with || in Sema<'_>::check_compare
+src/sema.rs:4188:23: replace != with == in Sema<'_>::check_signbit
+src/sema.rs:4270:9: replace Sema<'_>::check_fp_format_builtin -> Result<(), Diagnostic> with Ok(())
+src/sema.rs:4364:12: delete ! in Sema<'_>::check_memory_builtin
+src/sema.rs:4665:31: replace != with == in Sema<'_>::check_va_op
+src/sema.rs:4772:13: delete match arm Expr::Unary{op:UnaryOp::Deref, ..} in Sema<'_>::prepare_lvalue
+src/sema.rs:4918:9: replace Sema<'_>::case_value -> Result<u128, Diagnostic> with Ok(1)
+src/sema.rs:5110:15: replace < with == in bitfield_value_type
+src/sema.rs:5152:64: replace + with - in store_within
+src/sema.rs:5197:5: replace init_children -> Vec<InitChild> with vec![]
+src/sema.rs:5149:39: replace < with == in store_within
+src/sema.rs:5238:24: replace < with == in advance_frames
+src/sema.rs:5251:21: delete ! in initializable_fields
+src/sema.rs:5339:26: replace + with - in ByteImage::pack_bits
+src/sema.rs:5351:25: replace - with / in ByteImage::slice
+src/sema.rs:5356:69: replace > with < in ByteImage::slice
+src/sema.rs:5397:26: replace - with / in pack_bits
+src/sema.rs:5406:25: replace % with + in pack_bits
+src/sema.rs:5416:5: replace write_folded_bytes -> bool with true
+src/sema.rs:5422:23: replace < with == in write_folded_bytes
+src/sema.rs:5514:5: replace pointer_assignable -> bool with true
+src/sema.rs:5598:5: replace is_integer_zero -> bool with false
+src/sema.rs:5698:50: replace <= with > in UnionImages::absorb
+src/sema.rs:5704:81: replace - with + in UnionImages::absorb
+src/sema.rs:5571:5: replace flexible_member_named -> bool with true
+src/sema.rs:5741:30: replace + with - in union_ranges
+src/sema.rs:5823:5: replace is_bit_image -> bool with true
+src/sema.rs:5766:45: replace == with != in assemble
+src/sema.rs:5901:42: replace + with - in bit_record_ranges
+src/sema.rs:5855:19: replace && with || in is_image_record
+src/sema.rs:5948:45: replace + with - in splice_bit_blobs
+src/sema.rs:5994:9: delete match arm Expr::Decay{expr, ..} in eval_ptr
+src/sema.rs:6138:5: replace designator -> Result<(String, i64), ConstError> with Ok(("xyzzy".into(), -1))
+src/sema.rs:6281:60: replace && with || in function_types_match
+src/sema.rs:6338:9: replace NumConst::to_real -> Option<u128> with None
+src/sema.rs:6199:5: replace pointer_object -> Result<(String, i64), ConstError> with Ok(("xyzzy".into(), 1))
+src/sema.rs:6760:13: delete match arm BinOp::Eq in compare
+src/sema.rs:6791:13: delete match arm BinOp::Div in arith
+src/sema.rs:6795:40: replace ^ with & in arith
+src/sema.rs:6836:14: replace < with > in bits_from_signed
+src/sema.rs:6851:5: replace div_overflows -> bool with true
+src/sema.rs:6955:23: replace += with *= in number_stmt
+src/sema.rs:6902:31: replace & with | in eval_shift

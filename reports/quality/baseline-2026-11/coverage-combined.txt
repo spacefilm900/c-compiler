@@ -1,0 +1,73 @@
+file                    lines    hit  line%   fns   hit    fn%
+src/sema.rs              5407   4825   89.2   313   300   95.8
+src/parser.rs            4845   4423   91.3   307   290   94.5
+src/irgen.rs             3916   3622   92.5   227   222   97.8
+src/pp.rs                2652   2359   89.0   197   189   95.9
+src/ast.rs               1749   1548   88.5   200   189   94.5
+src/fp80.rs              1015    711   70.0    66    60   90.9
+src/lexer.rs              889    863   97.1    68    68  100.0
+src/float.rs              538    470   87.4    47    46   97.9
+src/abi.rs                470    441   93.8    34    33   97.1
+src/driver.rs             222    174   78.4    12    12  100.0
+src/builtins.rs           216    205   94.9    19    19  100.0
+src/aapcs64.rs            198    183   92.4    16    16  100.0
+src/target.rs             134    122   91.0    22    20   90.9
+src/lib.rs                 62     62  100.0     6     6  100.0
+src/token.rs               52     52  100.0     1     1  100.0
+src/diag.rs                32     30   93.8     3     3  100.0
+src/fxhash.rs              30     21   70.0     7     4   57.1
+src/timing.rs              27      7   25.9     6     3   50.0
+src/dialect.rs              9      9  100.0     2     2  100.0
+src/main.rs                 3      3  100.0     1     1  100.0
+TOTAL                   22466  20130   89.6  1554  1484   95.5
+
+Largest uncovered runs in src/irgen.rs:
+  src/irgen.rs:4286-4318  32 lines  in aarch64_va_class
+  src/irgen.rs:4416-4447  28 lines  in render_byte_blob
+  src/irgen.rs:2462-2476  14 lines  in aapcs64_va_arg_addr
+  src/irgen.rs:1851-1865  13 lines  in convert
+  src/irgen.rs:3023-3034  12 lines  in spill
+  src/irgen.rs:4643-4656  12 lines  in write_const_bytes
+  src/irgen.rs:4597-4608  11 lines  in write_const_bytes
+  src/irgen.rs:1401-1409  9 lines  in load_coerced
+  src/irgen.rs:3326-3334  9 lines  in gen_signbit
+  src/irgen.rs:4329-4337  9 lines  in aarch64_va_class
+  src/irgen.rs:1143-1150  8 lines  in materialize_call
+  src/irgen.rs:4659-4670  8 lines  in write_const_bytes
+  src/irgen.rs:184-189  6 lines  in render
+  src/irgen.rs:2431-2435  5 lines  in aapcs64_va_arg_addr
+  src/irgen.rs:3626-3630  5 lines  in gen_inline_builtin
+
+Largest uncovered runs in src/parser.rs:
+  src/parser.rs:5432-5450  15 lines  in eval_ice
+  src/parser.rs:1423-1434  10 lines  in parse_enum_specifier
+  src/parser.rs:4471-4477  7 lines  in parse_builtin_offsetof
+  src/parser.rs:5528-5534  7 lines  in check_uneval
+  src/parser.rs:1104-1109  6 lines  in resolve_type
+  src/parser.rs:2116-2121  6 lines  in apply_mode
+  src/parser.rs:5638-5646  6 lines  in check_uneval
+  src/parser.rs:6223-6228  6 lines  in eval_ice_bin
+  src/parser.rs:376-380  5 lines  in finish_definition
+  src/parser.rs:786-790  5 lines  in note_bool
+  src/parser.rs:819-823  5 lines  in note_int128
+  src/parser.rs:906-910  5 lines  in note_typedef_name
+  src/parser.rs:962-966  5 lines  in parse_typeof
+  src/parser.rs:971-975  5 lines  in parse_typeof
+  src/parser.rs:1298-1302  5 lines  in define_record
+
+Largest uncovered runs in src/sema.rs:
+  src/sema.rs:5308-5328  18 lines  in write
+  src/sema.rs:6405-6426  15 lines  in eval_num
+  src/sema.rs:6661-6679  15 lines  in eval_const_expr
+  src/sema.rs:649-659  10 lines  in finish
+  src/sema.rs:3630-3639  10 lines  in check_compound_assign
+  src/sema.rs:4094-4105  10 lines  in check_inline_builtin
+  src/sema.rs:6107-6118  9 lines  in narrow_ptr
+  src/sema.rs:6484-6495  9 lines  in eval_real_unary
+  src/sema.rs:1726-1735  8 lines  in fold_bit_object
+  src/sema.rs:816-822  7 lines  in shape_initializer_inner
+  src/sema.rs:1782-1788  7 lines  in fold_nested_bits
+  src/sema.rs:4042-4048  7 lines  in check_library_builtin
+  src/sema.rs:4153-4159  7 lines  in check_inline_builtin
+  src/sema.rs:6022-6031  7 lines  in eval_ptr
+  src/sema.rs:1101-1106  6 lines  in fill_unbraced
