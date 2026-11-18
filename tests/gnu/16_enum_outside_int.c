@@ -1,8 +1,9 @@
 /* GNU C: enumerators outside int (a constraint violation in C11 6.7.2.2p2).
    While the list is read, such a constant has the type of its value; after
    it, the enumerated type is unsigned int or unsigned long when no value is
-   negative, else long, and each constant outside int has that type while
-   the others stay int (Clang; GCC retypes them all). The
+   negative, else long. The type of a constant of such a list that fits in
+   int is not printed: GCC and Apple clang 21 give it the enumerated type,
+   Clang 19 keeps int. The
    macOS SDK's <mach_debug/ipc_info.h> declares IPC_OTYPE_UNKNOWN = ~0u in
    an enum on Intel and Apple Silicon alike; SQLite reaches it. */
 int printf(const char *, ...);
@@ -27,16 +28,16 @@ static unsigned long pass(enum E e) { return e; }
 int main(void) {
     enum E e = E1;
     U u = U1;
-    printf("E %s %s %zu %s %lu %d\n", T(E0), T(E1), sizeof(enum E), T(e), pass(E1), e > 0);
-    printf("F %s %s %zu %ld\n", T(F0), T(F1), sizeof(enum F), (long)F0);
+    printf("E %d %s %zu %s %lu %d\n", E0, T(E1), sizeof(enum E), T(e), pass(E1), e > 0);
+    printf("F %d %s %zu %ld\n", (int)F0, T(F1), sizeof(enum F), (long)F0);
     printf("G %s %zu %lu\n", T(G0), sizeof(enum G), (unsigned long)G0);
-    printf("I %s %s %s %zu %lu\n", T(I0), T(I1), T(I2), sizeof(enum I), (unsigned long)I2);
-    printf("M %s %s %zu %ld\n", T(M0), T(M1), sizeof(enum M), (long)M1);
+    printf("I %d %s %s %zu %lu\n", (int)I0, T(I1), T(I2), sizeof(enum I), (unsigned long)I2);
+    printf("M %d %s %zu %ld\n", (int)M0, T(M1), sizeof(enum M), (long)M1);
     printf("N %d %d %s\n", N1, N2, T(N0));
     printf("P %s %zu Q %s %zu %lu\n", T(P1), sizeof(enum P), T(Q0), sizeof(enum Q),
            (unsigned long)Q0);
-    printf("R %s %s %zu %ld S %s %s %zu\n", T(R0), T(R1), sizeof(enum R), (long)R0, T(S0),
-           T(S1), sizeof(enum S));
-    printf("U %s %zu %u %d\n", T(u), sizeof u, u, (int)(U0 - 4 > 0));
+    printf("R %s %zu %ld S %s %d %zu\n", T(R1), sizeof(enum R), (long)R0, T(S0), (int)S1,
+           sizeof(enum S));
+    printf("U %s %zu %u %d\n", T(u), sizeof u, u, (int)U0);
     return 0;
 }

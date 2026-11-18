@@ -196,6 +196,28 @@ impl Parser<'_> {
         } else {
             (None, kw.line, kw.column)
         };
+        // GNU mode: a fixed underlying type, `enum E : uint64_t { ... }`
+        // (C23 6.7.2.2; Clang accepts it in C as an extension). The macOS
+        // SDK's <malloc/malloc.h> uses one unconditionally.
+        let fixed = if self.current().kind == TokenKind::Colon && self.dialect.gnu() {
+            let colon = self.advance();
+            let ty = self.parse_specs(SpecPlace::TypeName)?.ty;
+            match ty.peel() {
+                CType::Int(name) if *name != TypeName::Bool => Some(*name),
+                _ => {
+                    return Err(self.error_at(
+                        colon.line,
+                        colon.column,
+                        "an enumeration's underlying type must be an integer type",
+                    ))
+                }
+            }
+        } else {
+            None
+        };
+        if fixed.is_some() && self.current().kind != TokenKind::LBrace {
+            return Err(self.error("expected '{' after an enumeration's underlying type"));
+        }
         if self.current().kind != TokenKind::LBrace {
             let Some(tag) = tag else {
                 return Err(self.error_at(kw.line, kw.column, "expected an enum tag or '{'"));
@@ -235,7 +257,7 @@ impl Parser<'_> {
             }
         }
         self.bump();
-        let base = self.parse_enumerators()?;
+        let base = self.parse_enumerators(fixed)?;
         self.expect_skip(TokenKind::RBrace, "'}'")?;
         if let (Some(tag), true) = (&tag, base != TypeName::Int) {
             self.tags
@@ -253,13 +275,22 @@ impl Parser<'_> {
     /// may be outside `int`: while the list is read such a constant has the
     /// type of its value; afterwards the enumerated type is `unsigned int`
     /// or `unsigned long` when no value is negative (the first that holds
-    /// the largest), else `long`, and each constant outside `int` has that
-    /// type; the others stay `int`. (Clang's choice, the reference here;
-    /// GCC gives every constant of such a list the enumerated type.) The macOS SDK needs this (`IPC_OTYPE_UNKNOWN = ~0u` in
+    /// the largest), else `long`, and every constant of the list has that
+    /// type (GCC, and Apple clang 21; Clang 19 keeps the constants that fit
+    /// in `int` as `int`). The macOS SDK needs this (`IPC_OTYPE_UNKNOWN = ~0u` in
     /// <mach_debug/ipc_info.h>).
-    pub(super) fn parse_enumerators(&mut self) -> Result<TypeName, Diagnostic> {
+    ///
+    /// With a fixed underlying type every value must fit in it, and the
+    /// constants and the enumerated type have that type.
+    pub(super) fn parse_enumerators(
+        &mut self,
+        fixed: Option<TypeName>,
+    ) -> Result<TypeName, Diagnostic> {
         if self.current().kind == TokenKind::RBrace {
             return Err(self.error("enum has no enumerators"));
+        }
+        if let Some(base) = fixed {
+            return self.parse_fixed_enumerators(base);
         }
         let gnu = self.dialect.gnu();
         let out_of_int = "enumeration constant is not representable as int";
@@ -322,11 +353,52 @@ impl Parser<'_> {
         };
         let scope = self.names.last_mut().expect("name scope");
         for name in names {
-            if let Some(NameBinding::EnumConst(value, ty)) = scope.get_mut(&name) {
-                if *ty != TypeName::Int || i32::try_from(*value).is_err() {
-                    *ty = base;
-                }
+            if let Some(NameBinding::EnumConst(_, ty)) = scope.get_mut(&name) {
+                *ty = base;
             }
+        }
+        Ok(base)
+    }
+
+    /// The enumerator list of `enum : base { ... }`.
+    fn parse_fixed_enumerators(&mut self, base: TypeName) -> Result<TypeName, Diagnostic> {
+        let width = base.width().min(127);
+        let (lo, hi) = if base.is_signed() {
+            (-(1i128 << (width - 1)), (1i128 << (width - 1)) - 1)
+        } else {
+            (0, (1i128 << width) - 1)
+        };
+        let too_wide = "enumerator value is not representable in the underlying type";
+        let mut next: i128 = 0;
+        loop {
+            if self.current().kind != TokenKind::Ident {
+                return Err(self.error("expected an enumerator"));
+            }
+            let name = self.advance();
+            let (value, line, column) = if self.match_kind(TokenKind::Assign) {
+                let expr = self.parse_assignment()?;
+                check_uneval(&expr, self.env())
+                    .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
+                let folded = eval_ice(&expr, self.env())
+                    .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
+                let value = enum_wide(&folded)
+                    .ok_or_else(|| self.error_at(expr.line(), expr.column(), too_wide))?;
+                (value, expr.line(), expr.column())
+            } else {
+                (next, name.line, name.column)
+            };
+            if !(lo..=hi).contains(&value) {
+                return Err(self.error_at(line, column, too_wide));
+            }
+            self.bind_enum(&name.spelling, value, base, name.line, name.column)?;
+            next = value + 1;
+            if self.match_kind(TokenKind::Comma) {
+                if self.current().kind == TokenKind::RBrace {
+                    break;
+                }
+                continue;
+            }
+            break;
         }
         Ok(base)
     }
