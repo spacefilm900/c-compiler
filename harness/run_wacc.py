@@ -377,8 +377,15 @@ def run_one(task: dict) -> dict:
                 f"got exit={got['return_code']} stdout={got['stdout'][:120]!r}; "
                 f"expected exit={exp_rc} stdout={exp_out[:120]!r}",
             )
-        if got["stderr"]:
-            return finish(task, "fail", f"unexpected stderr: {clip(got['stderr'])}")
+        # The book's fixtures expect no stderr; the Clang oracle's program
+        # may legitimately write some, and then it must match.
+        exp_err = expected.get("stderr", "")
+        if got["stderr"] != exp_err:
+            return finish(
+                task,
+                "fail",
+                f"stderr: got {clip(got['stderr'])!r}; expected {clip(exp_err)!r}",
+            )
         return finish(task, "pass")
 
 
