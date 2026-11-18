@@ -248,7 +248,7 @@ def main():
             if label in known:
                 now_passing.append(label)
             print(f"PASS {label}")
-        elif label in known and ORACLE_INCOMPLETE not in r:
+        elif label in known and not r.startswith(ORACLE_INCOMPLETE):
             expected_failures.append(label)
             print(f"KNOWN {label}: {r}")
         else:
