@@ -45,10 +45,12 @@ on:
 permissions:
   contents: read
 
-# A manual dispatch (an Intel run, say) and an automatic run of the same ref
-# are in different groups, so neither cancels the other.
+# A manual dispatch and an automatic run of the same ref are in different
+# groups, and so are manual dispatches with different job selections (an
+# Intel-only run and an arm64-only run), so none cancels another; only a
+# repeat of the same selection replaces the older run.
 concurrency:
-  group: macos-${{ github.event_name }}-${{ github.ref }}
+  group: macos-${{ github.event_name }}-${{ github.ref }}-${{ inputs.arm64 }}-${{ inputs.intel }}-${{ inputs.doom }}
   cancel-in-progress: true
 
 jobs:

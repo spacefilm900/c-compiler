@@ -91,12 +91,16 @@ MIN_LLVM = 18  # the oldest backend whose i128 stack arguments the checks trust
 
 
 def llvm_major(tool):
-    """The LLVM major version `tool --version` reports, or None."""
+    """The LLVM major version `tool --version` reports, or None (also when
+    the probe exits nonzero)."""
     try:
-        out = subprocess.run([tool, "--version"], capture_output=True, text=True,
-                             timeout=30).stdout
+        proc = subprocess.run([tool, "--version"], capture_output=True, text=True,
+                              timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return None
+    if proc.returncode != 0:
+        return None
+    out = proc.stdout
     m = re.search(r"LLVM version (\d+)", out)
     return int(m.group(1)) if m else None
 
