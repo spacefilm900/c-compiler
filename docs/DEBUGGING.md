@@ -27,7 +27,8 @@ make
 python3 tools/reduce/reduce.py big.c --mode miscompile -o small.c
 python3 tools/reduce/reduce.py big.c --mode ice --message "in irgen" -o small.c
 python3 tools/reduce/reduce.py big.c --mode reject --message "incompatible types" -o small.c
-python3 tools/reduce/reduce.py big.c --mode cmd --cmd "$PWD/still_bad.sh {}" -o small.c
+export STILL_BAD="$PWD/still_bad.sh"   # commands run in a scratch directory
+python3 tools/reduce/reduce.py big.c --mode cmd --cmd '"$STILL_BAD" {}' -o small.c
 ```
 
 Add `--std gnu11` for GNU C, `--flags '-target aarch64-linux-gnu'` for
