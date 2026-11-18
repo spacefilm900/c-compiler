@@ -1,4 +1,4 @@
-typedef int wchar_t;
+typedef __WCHAR_TYPE__ wchar_t; // int on x86_64, unsigned int on AArch64 Linux
 int printf(const char *, ...);
 
 int main(void) {

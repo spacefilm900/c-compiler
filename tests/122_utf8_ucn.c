@@ -2,7 +2,7 @@ int printf(const char *, ...);
 int puts(const char *);
 unsigned long strlen(const char *);
 typedef unsigned long size_t;
-typedef int wchar_t;
+typedef __WCHAR_TYPE__ wchar_t; // int on x86_64, unsigned int on AArch64 Linux
 typedef unsigned short char16_t;
 typedef unsigned int char32_t;
 static const char s8[] = u8"Ä€😀\u00e9";
