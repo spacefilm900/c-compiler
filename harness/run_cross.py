@@ -136,6 +136,9 @@ class Toolchain:
             cmd += ["-isysroot", str(self.sysroot)]
         if self.intel:
             cmd += intel.OURS_FLAGS
+        if self.apple:
+            # The glibc stand-in sysroot: see intel_mac_proxy.OURS_FLAGS.
+            cmd.append("-D_GCC_LIMITS_H_")
         if std != "c11":
             cmd.append(f"-std={std}")
         return run(cmd + [str(src), "-o", str(ll)])

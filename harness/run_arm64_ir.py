@@ -227,10 +227,10 @@ def battery():
 
 
 def proxy_flags(target):
-    """Extra flags for this compiler on the glibc stand-in sysroot (see
-    intel_mac_proxy.OURS_FLAGS); the label prefix stays `_` here because
-    the IR is only compared and assembled, never linked against glibc."""
-    return ["-D_GCC_LIMITS_H_"] if target == intel.TARGET else []
+    """Extra flags for this compiler on a glibc stand-in sysroot for macOS
+    (see intel_mac_proxy.OURS_FLAGS); the label prefix stays `_` here
+    because the IR is only compared and assembled, never linked."""
+    return ["-D_GCC_LIMITS_H_"] if "-apple-" in target else []
 
 
 def check_signatures(target, tmp, sysroot):
