@@ -375,3 +375,20 @@ fn unsigned_character_constants_are_uintmax_in_if() {
     // An integer constant still picks its type by value: 0xFFFFFFFF fits.
     assert_eq!(squash(&pp("#if 0xFFFFFFFF - 0x100000000 < 0\ngood\n#else\nbad\n#endif\n")), "good");
 }
+
+#[test]
+fn hashhash_from_an_argument_is_not_the_paste_operator() {
+    // C11 6.10.3.3p2: `##` is the operator only in the replacement list.
+    let src = "#define S(x) #x\n#define G(x) S(x)\nG(a ## b)\n\
+               #define C(p, q) p ## q\n#define X(m) S(m)\nX(C(x ## y, z))\n\
+               #define ID(x) x\nID(1 ## 2)\n";
+    assert_eq!(squash(&pp(src)), "\"a ## b\" \"x ## yz\" 1 ## 2");
+    // Pasting itself still works, including a chain, and the `##` that
+    // pasting `#` and `#` makes is an ordinary token (C11 6.10.3.3p4).
+    let src = "#define P(a, b, c) a ## b ## c\nP(x, y, z)\n\
+               #define OBJ x ## y\nOBJ\n\
+               #define hash_hash # ## #\n#define mkstr(a) # a\n\
+               #define in_between(a) mkstr(a)\n\
+               #define join(c, d) in_between(c hash_hash d)\njoin(x, y)\n";
+    assert_eq!(squash(&pp(src)), "xyz xy \"x ## y\"");
+}
