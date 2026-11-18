@@ -21,7 +21,8 @@ compiler for both. All four must print the same text.
 Usage: tools/abi_fuzz.py [--seed-start N] [--count N] [--out DIR]
                          [--int128] [--target x86_64-apple-macos]
 (--out DIR keeps each failing pair in DIR/seedN.)
---int128 adds `__int128` and `unsigned __int128` to the scalar types (an
+--int128 adds `__int128` and `unsigned __int128` to the scalar types (in a
+variadic function only as the last argument, see only_last_int128; an
 x86-64 or AArch64 target; the programs for a seed differ from those
 without it). --target x86_64-apple-macos builds both compilers' code for
 Intel macOS and runs it through the Linux stand-in in
@@ -216,6 +217,24 @@ def print_stmt(label, t, expr):
     return f'  printf("{label} {fmt}\\n", {args});'
 
 
+def only_last_int128(params, variadic):
+    """In a variadic function, a scalar __int128 only as the last argument.
+
+    When a scalar __int128 goes on the stack because only one general
+    register is left, Clang's caller (LLVM) leaves that register unused
+    while Clang's va_arg for a later variadic argument reads it, so Clang's
+    own two-unit build reads memory nobody wrote and is no reference. GCC
+    uses the register on both sides (System V AMD64 3.2.3). This compiler
+    emits what Clang does, with the same disagreement (STATUS.md). Earlier
+    ones become unsigned long long; no random numbers are drawn, so the
+    rest of the seed is unchanged."""
+    u64 = ("scalar",) + next(t for t in INTS if t[0] == "unsigned long long")
+    every = params + variadic
+    fixed = [u64 if t[0] == "scalar" and t[1] in ("__int128", "unsigned __int128")
+             and i != len(every) - 1 else t for i, t in enumerate(every)]
+    return fixed[:len(params)], fixed[len(params):]
+
+
 def make_pair(seed: int) -> tuple[str, str]:
     rng = random.Random(seed)
     g = Gen(rng)
@@ -235,6 +254,8 @@ def make_pair(seed: int) -> tuple[str, str]:
             # va_start's parameter must not change under the default
             # argument promotions (C11 7.16.1.4p4).
             params.append(("scalar",) + INTS[5])
+        if variadic:
+            params, variadic = only_last_int128(params, variadic)
         funcs.append((fi, ret, params, variadic))
 
     head = ["#include <stdio.h>", "#include <stdarg.h>"]
@@ -401,11 +422,8 @@ def main() -> int:
             elif any(run([str(work / "abi.clang")]) != ref for _ in range(3)):
                 # Clang's own two-unit build prints something different on
                 # another run (three more are tried): it reads memory nobody
-                # wrote, so there is no reference to compare with. Seen with
-                # a variadic __int128 that goes on the stack while one
-                # general register is left: Clang's caller leaves that
-                # register unused, and its va_arg for the next argument
-                # reads it.
+                # wrote, so there is no reference to compare with. A backstop:
+                # the one known cause is avoided by only_last_int128.
                 skipped += 1
                 print(f"seed {seed}: SKIP (Clang's own build is not repeatable)")
                 continue
