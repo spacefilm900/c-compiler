@@ -18,7 +18,8 @@ Four builds are compared: Clang for both files (the oracle), this
 compiler for one file and Clang for the other (both ways), and this
 compiler for both. All four must print the same text.
 
-Usage: tools/abi_fuzz.py [--seed-start N] [--count N] [--out DIR] [--keep]
+Usage: tools/abi_fuzz.py [--seed-start N] [--count N] [--out DIR]
+(--out DIR keeps each failing pair in DIR/seedN.)
 Env: CC_UNDER_TEST (default build/compiler), CLANG (default clang). The
 target is whatever both produce by default; for AArch64 under qemu, use
 wrappers that add --target and -target.
@@ -101,8 +102,10 @@ class Gen:
                 base = self.rng.choice(["int", "unsigned"])
                 width = self.rng.randint(1, 31)
                 parts.append(f"{base} b{i} : {width};")
-                fmt = "%d" if base == "int" else "%u"
-                fields.append((f"b{i}", ("bits", base, fmt, "", "int", width)))
+                # A bit-field narrower than int promotes to int, so the
+                # unsigned one is cast back for %u.
+                fmt, cast = ("%d", "") if base == "int" else ("%u", "(unsigned)")
+                fields.append((f"b{i}", ("bits", base, fmt, cast, "int", width)))
             elif r < 0.3:
                 t = self.scalar()
                 k = self.rng.randint(1, 3)
@@ -202,6 +205,10 @@ def make_pair(seed: int) -> tuple[str, str]:
                     t = ("scalar",) + rng.choice(
                         [x for x in INTS + FLOATS if x[0] in PROMOTED])
                 variadic.append(t)
+        if variadic and params[-1][0] == "scalar" and params[-1][1] not in PROMOTED:
+            # va_start's parameter must not change under the default
+            # argument promotions (C11 7.16.1.4p4).
+            params.append(("scalar",) + INTS[5])
         funcs.append((fi, ret, params, variadic))
 
     head = ["#include <stdio.h>", "#include <stdarg.h>"] + g.decls
@@ -246,7 +253,11 @@ def make_pair(seed: int) -> tuple[str, str]:
 
 
 def run(cmd, timeout=60):
-    p = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    """(exit status, stdout, stderr); the status is "timeout" on a timeout."""
+    try:
+        p = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return "timeout", b"", b""
     return p.returncode, p.stdout, p.stderr
 
 
@@ -289,15 +300,19 @@ def main() -> int:
             d.write_text(dsrc)
             u.write_text(usrc)
             ref = build_and_run(work, d, u, set(), "clang")
-            if isinstance(ref, str) or ref[0] != 0:
-                print(f"seed {seed}: oracle failed: {ref if isinstance(ref, str) else ref[2][:200]}")
-                failures += 1
-                continue
             bad = []
-            for tag, ours in (("def", {d.name}), ("use", {u.name}), ("both", {d.name, u.name})):
-                got = build_and_run(work, d, u, ours, tag)
-                if got != ref:
-                    bad.append(tag if not isinstance(got, str) else f"{tag}: {got}")
+            if isinstance(ref, str) or ref[0] != 0:
+                detail = ref if isinstance(ref, str) else f"exit {ref[0]}: {ref[2][:200]!r}"
+                bad.append(f"oracle failed: {detail}")
+            else:
+                for tag, ours in (("def", {d.name}), ("use", {u.name}), ("both", {d.name, u.name})):
+                    got = build_and_run(work, d, u, ours, tag)
+                    if isinstance(got, str):
+                        bad.append(f"{tag}: {got}")
+                    elif got[0] == "timeout":
+                        bad.append(f"{tag}: timeout")
+                    elif got != ref:
+                        bad.append(tag)
             if bad:
                 failures += 1
                 print(f"seed {seed}: FAIL ({'; '.join(bad)})")
