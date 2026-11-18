@@ -346,3 +346,19 @@ fn conditional_feature_macros() {
     let text = pp("#if __STDC_NO_ATOMICS__ && __STDC_NO_COMPLEX__ && __STDC_NO_THREADS__ && __STDC_NO_VLA__ && __STDC_UTF_16__ && __STDC_UTF_32__\nint ok;\n#endif\n");
     assert_eq!(squash(&text), "int ok;");
 }
+
+#[test]
+fn line_directive_takes_a_decimal_digit_sequence() {
+    // C11 6.10.4p3: a digit sequence, read as decimal even with a leading 0.
+    assert_eq!(squash(&pp("#line 010\n__LINE__\n")), "10");
+    assert_eq!(squash(&pp("#line 2147483647\n__LINE__\n")), "2147483647");
+    for bad in ["0x10", "10u", "5L", "'a'", "1e3", "07.5"] {
+        let err = pp_err(&format!("#line {bad}\nint x;\n"));
+        assert!(err.contains("simple digit sequence"), "{bad}: {err}");
+    }
+    assert!(pp_err("#line 0\n").contains("out of range"));
+    assert!(pp_err("#line 2147483648\n").contains("out of range"));
+    assert!(pp_err("#line 99999999999999999999999\n").contains("out of range"));
+    // A macro may expand to the digit sequence (6.10.4p5).
+    assert_eq!(squash(&pp("#define N 42\n#line N\n__LINE__\n")), "42");
+}

@@ -875,20 +875,27 @@ pub(super) fn decode_string(tok: &PpToken) -> Result<String, Diagnostic> {
     }
 }
 
+/// C11 6.10.4p3: the line number is a digit sequence, read as a decimal
+/// integer (a leading zero does not make it octal), from 1 to 2147483647.
+/// A suffix, a hexadecimal constant, or a character constant is not one.
 pub(super) fn line_number(tok: &PpToken) -> Result<usize, Diagnostic> {
-    let value = literal_val(tok)?;
-    if value.unsigned {
-        if value.bits == 0 || value.bits > 2_147_483_647 {
-            return Err(error_at(tok, "line number is out of range"));
-        }
-        Ok(value.bits as usize)
-    } else {
-        let signed = value.bits as i64;
-        if !(1..=2_147_483_647).contains(&signed) {
-            return Err(error_at(tok, "line number is out of range"));
-        }
-        Ok(signed as usize)
+    if tok.kind != PpKind::Number || !tok.spelling.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(error_at(
+            tok,
+            "#line directive requires a simple digit sequence",
+        ));
     }
+    let mut value: u64 = 0;
+    for byte in tok.spelling.bytes() {
+        value = value * 10 + u64::from(byte - b'0');
+        if value > 2_147_483_647 {
+            return Err(error_at(tok, "line number is out of range"));
+        }
+    }
+    if value == 0 {
+        return Err(error_at(tok, "line number is out of range"));
+    }
+    Ok(value as usize)
 }
 
 pub(super) fn read_source(path: &Path, at: &PpToken) -> Result<String, Diagnostic> {
