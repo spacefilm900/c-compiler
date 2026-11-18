@@ -10,8 +10,9 @@
 # The Intel job (PLAN.md step 10) runs only by hand, on GitHub's Intel
 # runner, when the "intel" input is not "off":
 #   gh workflow run macos.yml --ref BRANCH -f intel=all -f arm64=false
-# It never runs on a push, a pull request or a schedule. "all" takes about
-# 25 minutes of Intel macOS time; "torture" builds and runs only GCC
+# It never runs on a push, a pull request or a schedule. "all" took 10 to
+# 15 minutes of Intel macOS time (11 billed minutes, about $0.70, on the
+# last step 10 run); "torture" builds and runs only GCC
 # torture. Day-to-day Intel macOS coverage is the Linux stand-in in ci.yml
 # (harness/intel_mac_proxy.py).
 
