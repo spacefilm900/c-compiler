@@ -1,0 +1,250 @@
+# Linux on AArch64 (PLAN.md step 9), on GitHub's native arm64 runner
+# (ubuntu-24.04-arm). There the compiler's default target is
+# aarch64-linux-gnu and the native Clang is the oracle, so every harness
+# runs unchanged, as it does on x86-64.
+#
+# Cost (private repo, Nov 2026 prices): ubuntu-24.04-arm 2-core is
+# $0.005/min, x64 2-core $0.006/min, macOS $0.062/min. Native arm64 is
+# cheaper per minute than the x64 runner and several times faster than
+# the same suites under qemu, so qemu stays only for the quick cross
+# checks in ci.yml (no extra runner there).
+#
+# - Pull requests: the "arm64 quick" job only (unit tests, the
+#   differential harness with tests/arm64, stage dumps, random
+#   calling-convention pairs). About 3-4 billed
+#   minutes per run.
+# - Pushes to main (merges) and manual dispatch: also every suite, one
+#   job each. About 20-25 billed minutes per run.
+# See reports/platforms/linux-arm64/README.md for the monthly estimate.
+# Documentation-only changes skip this workflow, as they skip ci.yml.
+
+name: linux-arm64
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick:
+    name: arm64 quick (unit tests, harness, dumps, ABI pairs)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+
+      - name: Install Clang, LLVM, make, and Python
+        run: |
+          set -euo pipefail
+          scripts/ci-apt-install.sh clang llvm make python3
+          uname -m
+          clang --version
+          clang -dumpmachine
+          major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
+            exit 1
+          fi
+
+      - name: Unit tests
+        run: cargo test --offline --lib
+
+      - name: Release build and differential harness
+        run: |
+          set -euo pipefail
+          make
+          python3 harness/run_tests.py
+
+      - name: Stage dump golden tests and reducer unit tests
+        run: |
+          set -euo pipefail
+          python3 harness/run_dump_tests.py
+          python3 -m unittest tools/reduce/test_reduce.py
+
+      # AAPCS64 argument passing: HFAs, long double (binary128), bit-fields,
+      # structs, and va_arg, crossed between this compiler and Clang.
+      - name: Random calling-convention pairs
+        run: python3 tools/abi_fuzz.py --count 100
+
+  suites:
+    name: arm64 ${{ matrix.suite }}
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: wacc
+            apt: clang llvm make python3
+            cache: tests/external/wacc
+            key: wacc-ae12014d2dec14488f3f80d14df4b6d8e4634d7d
+          - suite: csmith
+            apt: clang llvm make python3 g++
+            cache: tests/external/csmith
+            key: csmith-30dccd73b78652c4719f36572994778a5b233a4e
+          - suite: onetrueawk
+            apt: clang llvm make python3 bison
+            cache: tests/external/onetrueawk
+            key: onetrueawk-5739fd79bcfc75ba7526773d0cf634521f8aca3c
+          - suite: gcc-torture
+            apt: clang llvm make python3
+            cache: tests/external/gcc-torture
+            key: gcc-torture-5115c7e447fc07457443df874bf57840e8316d5f
+          - suite: lua
+            apt: clang llvm make python3
+            cache: tests/external/lua
+            key: lua-5.4.7-9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30-8a4898ffe4c7613c8009327a0722db7a41ef861d526c77c5b46114e59ebf811e
+          - suite: sqlite
+            apt: clang llvm make python3 unzip
+            cache: tests/external/sqlite
+            key: sqlite-3.54.1-0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9-92281c86e2957f9b9305890f9ac04204caa7b677cc868dc326d942689df28e30
+          - suite: doom
+            apt: clang llvm make python3 unzip
+            cache: |
+              tests/external/doomgeneric
+              tests/external/freedoom
+            key: doom-e257a09527062bfb986b6e5e0780839b6cbd5b71-freedoom-0.13.0-7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d-a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b
+          - suite: perf
+            apt: clang llvm make python3 bison
+            cache: tests/external/onetrueawk
+            key: onetrueawk-5739fd79bcfc75ba7526773d0cf634521f8aca3c
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+
+      - name: Install ${{ matrix.apt }}
+        env:
+          PACKAGES: ${{ matrix.apt }}
+        run: |
+          set -euo pipefail
+          # PACKAGES is a fixed list from the matrix; split on spaces.
+          # shellcheck disable=SC2086
+          scripts/ci-apt-install.sh ${PACKAGES}
+          clang --version
+          clang -dumpmachine
+          major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
+            exit 1
+          fi
+
+      # Keyed by architecture as well: the Csmith cache holds a built binary.
+      - name: Cache the pinned sources
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ matrix.cache }}
+          key: ${{ matrix.key }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Build and run ${{ matrix.suite }}
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          set -euo pipefail
+          case "${SUITE}" in
+            wacc)
+              scripts/fetch_wacc_tests.sh
+              make
+              python3 harness/run_wacc.py
+              ;;
+            csmith)
+              scripts/fetch_csmith.sh
+              make
+              python3 harness/run_csmith.py
+              ;;
+            onetrueawk)
+              scripts/fetch_onetrueawk.sh
+              make
+              python3 harness/run_onetrueawk.py
+              ;;
+            gcc-torture)
+              scripts/fetch_gcc_torture.sh
+              make
+              python3 harness/run_gcc_torture.py
+              ;;
+            lua)
+              scripts/fetch_lua.sh
+              make
+              python3 harness/run_lua.py --opt O0 --opt O2 --run-jobs "$(nproc)"
+              ;;
+            sqlite)
+              scripts/fetch_sqlite.sh
+              make
+              python3 harness/run_sqlite.py --opt O0 --opt O2
+              python3 tools/perf_guard.py
+              ;;
+            doom)
+              scripts/fetch_doomgeneric.sh
+              scripts/fetch_freedoom.sh
+              make
+              python3 harness/run_doom.py --opt O0 --opt O2 --play-jobs "$(nproc)"
+              ;;
+            perf)
+              scripts/fetch_onetrueawk.sh
+              make
+              python3 harness/perf.py
+              ;;
+            *)
+              echo "unknown suite ${SUITE}" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: AWK Builder suites
+        if: matrix.suite == 'onetrueawk'
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ secrets.AWK_SUITE_READ_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "SKIP: AWK Builder suites need the AWK_SUITE_READ_TOKEN secret."
+            exit 0
+          fi
+          scripts/build_onetrueawk.sh clang build/otawk-clang
+          scripts/build_onetrueawk.sh ccomp build/otawk-ccomp
+          scripts/fetch_awk_posix_challenge.sh
+          scripts/fetch_awk_volume.sh
+          AWK_CLANG="$PWD/build/otawk-clang/awk" \
+            AWK_CCOMP="$PWD/build/otawk-ccomp/awk" \
+            python3 harness/run_awk_extra.py
+
+      - name: Upload raw performance numbers
+        if: matrix.suite == 'perf'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: perf-numbers-linux-arm64
+          path: reports/perf.json
+          if-no-files-found: error
