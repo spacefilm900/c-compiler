@@ -13,3 +13,5 @@ Measurement scripts for the quality phase. They are run by hand and not in CI. R
 | `rust_scan.py` | Shared helper: blanks comments and strings and finds `#[cfg(test)]` code. |
 
 Tests: `python3 -m unittest tools/quality/test_quality_tools.py`. Exact commands are in the baseline README, section 6.
+
+The test-case reducer of part D is in `tools/reduce/` (see its README); the stage dumps are compiler options (`docs/DEBUGGING.md`).

@@ -193,3 +193,67 @@ pub fn keyword(spelling: &str) -> Option<TokenKind> {
         _ => return None,
     })
 }
+
+/// One line per token, for `--dump-tokens`:
+/// `FILE:LINE:COLUMN KIND 'SPELLING'`, then the decoded value of a constant
+/// or string literal. The format is described in `docs/DEBUGGING.md`.
+pub fn dump_tokens(tokens: &[Token]) -> String {
+    let mut out = String::new();
+    for token in tokens {
+        out.push_str(&format!(
+            "{}:{}:{} {:?} '{}'",
+            token.filename,
+            token.line,
+            token.column,
+            token.kind,
+            escape_text(token.spelling.as_bytes())
+        ));
+        match token.kind {
+            TokenKind::Int => {
+                if let (Some(value), Some(ty)) = (token.value, token.int_ty) {
+                    out.push_str(&format!(
+                        " {} {}",
+                        ty.as_str(),
+                        ty.format_bits(u128::from(value))
+                    ));
+                }
+            }
+            TokenKind::Float => {
+                if let (Some(value), Some(kind)) = (token.value, token.float_kind) {
+                    let bits = u128::from(value) | (u128::from(token.float_hi) << 64);
+                    out.push_str(&format!(
+                        " {} {}",
+                        kind.as_str(),
+                        crate::float::llvm_const(kind, bits)
+                    ));
+                }
+            }
+            TokenKind::String => {
+                if let Some(bytes) = &token.bytes {
+                    out.push_str(&format!(" \"{}\"", escape_text(bytes)));
+                }
+            }
+            _ => {}
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Printable ASCII as itself; `\n`, `\t`, `\\`, `\'`, `\"` and every other
+/// byte as an escape.
+fn escape_text(bytes: &[u8]) -> String {
+    let mut text = String::new();
+    for &byte in bytes {
+        match byte {
+            b'\n' => text.push_str("\\n"),
+            b'\t' => text.push_str("\\t"),
+            b'\\' => text.push_str("\\\\"),
+            b'\'' => text.push_str("\\'"),
+            b'"' => text.push_str("\\\""),
+            0x20..=0x7e => text.push(byte as char),
+            _ => text.push_str(&format!("\\x{byte:02x}")),
+        }
+    }
+    text
+}

@@ -67,7 +67,7 @@ pub fn compile_dialect(
     options: &PpOptions,
     dialect: Dialect,
 ) -> Result<Output, Diagnostic> {
-    compile_impl(source, filename, options, dialect, false)
+    compile_impl(source, filename, options, dialect, false, None)
 }
 
 /// Like [`compile_dialect`] for a process that exits right afterwards: the
@@ -80,7 +80,36 @@ pub fn compile_and_exit(
     options: &PpOptions,
     dialect: Dialect,
 ) -> Result<Output, Diagnostic> {
-    compile_impl(source, filename, options, dialect, true)
+    compile_impl(source, filename, options, dialect, true, None)
+}
+
+/// A frontend stage whose result `--dump-*` prints instead of compiling on.
+/// Preprocessed text (`-E`) is [`pp::preprocess`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    /// The phase-7 tokens the parser reads, one per line.
+    Tokens,
+    /// The syntax tree as parsed, before semantic analysis.
+    Ast,
+    /// The tree after semantic analysis: types, conversions, layouts and
+    /// folded constants.
+    Sema,
+    /// The LLVM IR module, as a normal compilation writes it.
+    Ir,
+}
+
+/// Run the frontend up to and including `stage` and return its dump in
+/// [`Output::ir`]. Warnings found up to that stage are in
+/// [`Output::warnings`]. A normal compilation is [`compile_dialect`]; this
+/// takes the same path and only stops early.
+pub fn dump_stage(
+    source: &str,
+    filename: &str,
+    options: &PpOptions,
+    dialect: Dialect,
+    stage: Stage,
+) -> Result<Output, Diagnostic> {
+    compile_impl(source, filename, options, dialect, false, Some(stage))
 }
 
 fn compile_impl(
@@ -89,6 +118,7 @@ fn compile_impl(
     options: &PpOptions,
     dialect: Dialect,
     leak: bool,
+    stop: Option<Stage>,
 ) -> Result<Output, Diagnostic> {
     use std::time::Instant;
     target::set(options.target);
@@ -98,15 +128,36 @@ fn compile_impl(
     let tokens = pp::preprocess_tokens(source, filename, options)?;
     times.lex = timing::take_lex();
     times.preprocess = start.elapsed().saturating_sub(times.lex);
+    if stop == Some(Stage::Tokens) {
+        return Ok(Output {
+            ir: token::dump_tokens(&tokens),
+            warnings: Vec::new(),
+            times,
+        });
+    }
     let start = Instant::now();
     let mut unit = parser::parse_with(&tokens, filename, dialect, options.gnu89_inline)?;
     times.parse = start.elapsed();
+    if stop == Some(Stage::Ast) {
+        return Ok(Output {
+            ir: ast::dump_parsed(&unit),
+            warnings: std::mem::take(&mut unit.warnings),
+            times,
+        });
+    }
     let start = Instant::now();
     let mut warnings = std::mem::take(&mut unit.warnings);
     warnings.extend(sema::analyze_dialect(
         &mut unit, filename, &tokens, dialect,
     )?);
     times.sema = start.elapsed();
+    if stop == Some(Stage::Sema) {
+        return Ok(Output {
+            ir: ast::dump_checked(&unit),
+            warnings,
+            times,
+        });
+    }
     let start = Instant::now();
     let ir = irgen::render(&unit, filename).map_err(|diag| in_source_file(diag, &tokens))?;
     times.irgen = start.elapsed();
@@ -151,6 +202,65 @@ mod tests {
 
     fn gnu_ok(source: &str) -> Output {
         compile(source, Dialect::Gnu11).unwrap_or_else(|err| panic!("{source}: {err}"))
+    }
+
+    /// Every stage dump comes from the same pipeline as a normal
+    /// compilation, and `--dump-ir` is exactly the normal IR.
+    #[test]
+    fn stage_dumps_follow_the_pipeline() {
+        let source = "struct P { char c; int n; } p;\n\
+                      int f(char c) { long l = c + 1; return (int)l + p.n; }\n";
+        let options = PpOptions::default();
+        let dump = |stage| {
+            dump_stage(source, "t.c", &options, Dialect::C11, stage)
+                .expect("dumped")
+                .ir
+        };
+        let tokens = dump(Stage::Tokens);
+        assert!(
+            tokens.starts_with("t.c:1:1 KwStruct 'struct'\n"),
+            "{tokens}"
+        );
+        assert!(tokens.contains("t.c:2:30 Int '1' int 1\n"), "{tokens}");
+        let ast = dump(Stage::Ast);
+        assert!(ast.contains("func int f @2:5\n"), "{ast}");
+        assert!(!ast.contains(" : "), "the parsed tree has no types: {ast}");
+        let sema = dump(Stage::Sema);
+        // The usual arithmetic conversions on `c + 1`, and the
+        // initializer's conversion of the `int` sum to `long`.
+        assert!(sema.contains("+ : int -> long @2:28"), "{sema}");
+        assert!(sema.contains("var c [%v1] : char -> int @2:26"), "{sema}");
+        assert!(sema.contains("struct P struct.P size 8 align 4"), "{sema}");
+        assert!(sema.contains("field int n at 4"), "{sema}");
+        let ir = dump(Stage::Ir);
+        let normal = compile_dialect(source, "t.c", &options, Dialect::C11)
+            .expect("compiled")
+            .ir;
+        assert_eq!(ir, normal);
+        // The dumps are deterministic.
+        assert_eq!(dump(Stage::Sema), sema);
+    }
+
+    /// Index designators show their expressions and `va_arg` its type.
+    #[test]
+    fn dumps_show_designator_indexes_and_va_arg_types() {
+        let source = "int a[4] = { [1 + 1] = 5 };\n\
+                      int f(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n);\n\
+                      long v = __builtin_va_arg(ap, long); return (int)v; }\n";
+        let ast = dump_stage(
+            source,
+            "t.c",
+            &PpOptions::default(),
+            Dialect::C11,
+            Stage::Ast,
+        )
+        .expect("dumped")
+        .ir;
+        assert!(
+            ast.contains("designated [] @1:14\n      index\n        + @1:17\n"),
+            "{ast}"
+        );
+        assert!(ast.contains("va_arg long @3:10\n"), "{ast}");
     }
 
     #[test]

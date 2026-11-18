@@ -1,0 +1,92 @@
+proto int putchar [external] @4:5
+  param int @4:13
+static func long scale [internal] @6:13
+  param short s [%v1] @6:25
+  param unsigned char u [%v2] @6:42
+  block @6:45
+    decl long total [%v3] = @7:10
+      * : int -> long @7:20
+        var s [%v1] : short -> int @7:18
+        var u [%v2] : unsigned char -> int @7:22
+    expr @8:5
+      += : long @8:5
+        var total [%v3] : long @8:5
+        int 1 : int @8:14
+    return @9:5
+      var total [%v3] : long @9:12
+func double mix [external] @12:8
+  param int i [%v1] @12:16
+  param float f [%v2] @12:25
+  block @12:28
+    decl double d [%v3] = @13:12
+      + : float -> double @13:18
+        var i [%v1] : int -> float @13:16
+        var f [%v2] : float @13:20
+    if @14:5
+      cond
+        > : int @14:11
+          var d [%v3] : double @14:9
+          int 10 : int -> double @14:13
+      then
+        expr @15:9
+          assign : double @15:9
+            var d [%v3] : double @15:9
+            / : double @15:15
+              var d [%v3] : double @15:13
+              int 2 : int -> double @15:17
+    return @16:5
+      var d [%v3] : double @16:12
+func int main [external] @19:5
+  block @19:16
+    decl int sum [%v1] = @20:9
+      int 0 : int @20:15
+    for @21:5
+      init
+        decl int i [%v2] = @21:14
+          int 0 : int @21:18
+      cond
+        < : int @21:23
+          var i [%v2] : int @21:21
+          int 4 : int @21:25
+      step
+        post++ : int @21:29
+          var i [%v2] : int @21:28
+      body
+        expr @22:9
+          += : int @22:9
+            var sum [%v1] : int @22:9
+            cast int : int @22:16
+              call scale [@scale long(short, unsigned char)] : long @22:21
+                cast short : short @22:27
+                  var i [%v2] : int @22:34
+                int 3 : int -> unsigned char @22:37
+    while @23:5
+      cond
+        > : int @23:16
+          var sum [%v1] : int @23:12
+          int 20 : int @23:18
+      body
+        expr @24:9
+          post-- : int @24:12
+            var sum [%v1] : int @24:9
+    expr @25:5
+      call putchar [@putchar int(int)] : int @25:5
+        + : int @25:17
+          int 48 : int @25:13
+          % : int @25:23
+            var sum [%v1] : int @25:19
+            int 10 : int @25:25
+    expr @26:5
+      call putchar [@putchar int(int)] : int @26:5
+        int 10 : int @26:13
+    return @27:5
+      ?: : int @27:27
+        > : int @27:27
+          call mix [@mix double(int, float)] : double @27:12
+            var sum [%v1] : int @27:16
+            float 0x3FF8000000000000 : float @27:21
+          double 0x4014000000000000 : double @27:29
+        int 0 : int @27:35
+        int 1 : int @27:39
+declarations
+  declare int putchar(int) [external]

@@ -1,0 +1,90 @@
+proto int putchar @4:5
+  param int @4:13
+static func long scale @6:13
+  param short s @6:25
+  param unsigned char u @6:42
+  block @6:45
+    decl long total = @7:10
+      * @7:20
+        var s @7:18
+        var u @7:22
+    expr @8:5
+      += @8:5
+        var total @8:5
+        int 1 @8:14
+    return @9:5
+      var total @9:12
+func double mix @12:8
+  param int i @12:16
+  param float f @12:25
+  block @12:28
+    decl double d = @13:12
+      + @13:18
+        var i @13:16
+        var f @13:20
+    if @14:5
+      cond
+        > @14:11
+          var d @14:9
+          int 10 @14:13
+      then
+        expr @15:9
+          assign @15:9
+            var d @15:9
+            / @15:15
+              var d @15:13
+              int 2 @15:17
+    return @16:5
+      var d @16:12
+func int main @19:5
+  block @19:16
+    decl int sum = @20:9
+      int 0 @20:15
+    for @21:5
+      init
+        decl int i = @21:14
+          int 0 @21:18
+      cond
+        < @21:23
+          var i @21:21
+          int 4 @21:25
+      step
+        post++ @21:29
+          var i @21:28
+      body
+        expr @22:9
+          += @22:9
+            var sum @22:9
+            cast int @22:16
+              call scale @22:21
+                cast short @22:27
+                  var i @22:34
+                int 3 @22:37
+    while @23:5
+      cond
+        > @23:16
+          var sum @23:12
+          int 20 @23:18
+      body
+        expr @24:9
+          post-- @24:12
+            var sum @24:9
+    expr @25:5
+      call putchar @25:5
+        + @25:17
+          int 48 @25:13
+          % @25:23
+            var sum @25:19
+            int 10 @25:25
+    expr @26:5
+      call putchar @26:5
+        int 10 @26:13
+    return @27:5
+      ?: @27:27
+        > @27:27
+          call mix @27:12
+            var sum @27:16
+            float 0x3FF8000000000000 @27:21
+          double 0x4014000000000000 @27:29
+        int 0 @27:35
+        int 1 @27:39

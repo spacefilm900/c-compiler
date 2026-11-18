@@ -1,0 +1,141 @@
+global struct point origin = @20:14
+  list @20:23
+    int 111 @20:25
+    int 0 @20:30
+    int 0 @20:33
+global struct point * where = @21:15
+  addr @21:23
+    var origin @21:24
+global int [4] table = @22:5
+  list @22:16
+    int 1 @22:18
+    int 2 @22:21
+    designated [] @22:24
+      index
+        int 3 @22:25
+      int 4 @22:30
+global int * third = @23:6
+  addr @23:14
+    index @23:20
+      var table @23:15
+      int 2 @23:21
+global const char * name = @24:13
+  string "point" @24:20
+func int area [external] @26:5
+  param const struct point * p [%v1] @26:30
+  param struct flags f [%v2] @26:46
+  block @26:49
+    decl union word w [%v3] @27:16
+    expr @28:5
+      assign : unsigned int @28:6
+        member value [field 0 at 0 bytewise] : unsigned int @28:6
+          var w [%v3] : union word @28:5
+        int 0 : int -> unsigned int @28:15
+    expr @29:5
+      assign : unsigned char @29:12
+        index : unsigned char @29:12
+          decay : unsigned char * @29:6
+            member bytes [field 1 at 0 bytewise] : unsigned char [4] @29:6
+              var w [%v3] : union word @29:5
+          int 1 : int @29:13
+        member extra [field 3 at 1 bytewise] : unsigned char @29:19
+          var f [%v2] : struct flags @29:18
+    expr @30:5
+      += : int @30:6
+        member mode [field 1 at 0 bytewise bits 3 at bit 1 unit 32] : int @30:6
+          var f [%v2] : struct flags @30:5
+        int 2 : int @30:15
+    return @31:5
+      + : int @31:43
+        + : int @31:33
+          + : int @31:24
+            * : int @31:17
+              arrow x [field 1 at 4] : const int @31:13
+                var p [%v1] : const struct point * @31:12
+              arrow y [field 2 at 8] : const int @31:20
+                var p [%v1] : const struct point * @31:19
+            member mode [field 1 at 0 bytewise bits 3 at bit 1 unit 32] : int @31:27
+              var f [%v2] : struct flags @31:26
+          member level [field 2 at 0 bytewise bits 4 at bit 4 unit 32 signed] : int @31:36
+            var f [%v2] : struct flags @31:35
+        cast int : int @31:45
+          member value [field 0 at 0 bytewise] : unsigned int @31:51
+            var w [%v3] : union word @31:50
+func int main [external] @34:5
+  block @34:16
+    decl struct flags f [%v1] = @35:18
+      stores
+        store int at 0 bits 1 at bit 0 unit 32
+          int 1 : int @35:24
+        store int at 0 bits 3 at bit 1 unit 32
+          int 2 : int @35:27
+        store int at 0 bits 4 at bit 4 unit 32 signed
+          neg : int @35:30
+            int 3 : int @35:31
+        store unsigned char at 1
+          int 4 : int -> unsigned char @35:34
+    decl struct point p [%v2] = @36:18
+      stores
+        store int at 4
+          int 3 : int @36:29
+        store int at 8
+          int 5 : int @36:37
+    return @37:5
+      - : int @37:72
+        - : int @37:51
+          - : int @37:42
+            + : int @37:31
+              - : int @37:24
+                call area [@area int(const struct point *, struct flags)] : int @37:12
+                  addr : struct point * -> const struct point * @37:17
+                    var p [%v2] : struct point @37:18
+                  var f [%v1] : struct flags @37:21
+                int 1043 : int @37:26
+              index : int @37:38
+                decay : int * @37:33
+                  var table [@table] : int [4] @37:33
+                int 3 : int @37:39
+            deref : int @37:44
+              var third [@third] : int * @37:45
+          == : int @37:60
+            var where [@where] : struct point * @37:54
+            addr : struct point * @37:63
+              var origin [@origin] : struct point @37:64
+        - : int @37:83
+          index : const char -> int @37:79
+            var name [@name] : const char * @37:75
+            int 0 : int @37:80
+          int 112 : int @37:85
+records
+  struct point struct.point size 12 align 4
+    field char tag at 0
+    field int x at 4
+    field int y at 8
+  struct flags struct.flags size 4 align 4
+    bitfield unsigned int ready : 1 unit at 0 bit 0
+    bitfield unsigned int mode : 3 unit at 0 bit 1
+    bitfield int level : 4 unit at 0 bit 4
+    field unsigned char extra at 1
+  union word union.word size 4 align 4
+    field unsigned int value at 0
+    field unsigned char [4] bytes at 0
+globals
+  global struct point origin [external] =
+    aggregate
+      char 111
+      int 0
+      int 0
+  global struct point * where [external] =
+    &origin
+  global int [4] table [external] =
+    aggregate
+      int 1
+      int 2
+      int 0
+      int 4
+  global int * third [external] =
+    &table + 8
+  global const char * name [external] =
+    &.str
+strings
+  @.str = string "point\x00"
