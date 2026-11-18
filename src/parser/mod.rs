@@ -452,6 +452,9 @@ struct InlineSeen {
 struct Specs {
     /// The `inline` function specifier.
     inline_: bool,
+    /// The first function specifier (`inline` or `_Noreturn`) and where it
+    /// was. C11 6.7.4p2 allows one only in a function's declaration.
+    func_spec: Option<(&'static str, usize, usize)>,
     storage: Storage,
     storage_at: Option<(usize, usize)>,
     ty: CType,
@@ -505,6 +508,11 @@ struct SpecFlags {
     any: bool,
     /// The `inline` function specifier.
     inline_: bool,
+    /// See [`Specs::func_spec`].
+    func_spec: Option<(&'static str, usize, usize)>,
+    /// An enum specifier was read; it is the type specifier (C11 6.7.2p2),
+    /// and the enumerated type is compatible with `int` here.
+    enum_ty: bool,
     line: usize,
     column: usize,
 }
@@ -524,7 +532,19 @@ impl SpecFlags {
     /// Whether the list already has a type specifier, so a typedef name or
     /// another type word cannot start one.
     fn has_type_specifier(&self) -> bool {
-        self.struct_ty.is_some() || self.bool_ty || self.float_ty.is_some() || self.has_scalar()
+        self.has_tagged_type() || self.bool_ty || self.float_ty.is_some() || self.has_scalar()
+    }
+
+    /// A struct, union, enum, typedef name or other complete type specifier
+    /// that no other type word may join.
+    fn has_tagged_type(&self) -> bool {
+        self.struct_ty.is_some() || self.enum_ty
+    }
+
+    fn note_func_spec(&mut self, name: &'static str, token: &Token) {
+        if self.func_spec.is_none() {
+            self.func_spec = Some((name, token.line, token.column));
+        }
     }
 }
 

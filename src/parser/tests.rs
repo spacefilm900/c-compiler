@@ -1335,3 +1335,53 @@ fn folded_null_pointer_constants_generic_and_nested_casts() {
         );
     }
 }
+
+#[test]
+fn enum_specifier_is_the_type_specifier() {
+    // C11 6.7.2p2: an enum specifier takes no other type word. Clang 19 and
+    // GCC 14 reject each of these.
+    for source in [
+        "enum { A } unsigned x;",
+        "enum E { B } enum E y;",
+        "enum F { C } struct S *p;",
+        "enum G { D } long z;",
+        "struct R { int i; } enum N { O } r;",
+        "enum H { E1 } _Bool b;",
+        "enum I { E2 } double d;",
+    ] {
+        assert!(
+            parse_err(source).contains("invalid combination of type specifiers"),
+            "{source}"
+        );
+    }
+    parsed("enum { A }; enum E { B } const volatile q; enum E y; typedef int T; enum J { K } T2;");
+}
+
+#[test]
+fn function_specifiers_only_on_functions() {
+    // C11 6.7.4p2. Clang 19 rejects every one of these.
+    for source in [
+        "_Noreturn int x;",
+        "inline int y;",
+        "void g(void) { _Noreturn int z; }",
+        "_Noreturn void (*fp)(void);",
+        "_Noreturn int a(void), b;",
+        "typedef inline int F(void);",
+        "typedef _Noreturn void G(void);",
+        "void h(inline int x);",
+        "void k(_Noreturn void f(void));",
+        "struct T { inline int m; };",
+        "inline struct S { int x; };",
+        "__inline__ int w;",
+    ] {
+        assert!(
+            parse_err(source).contains("can only appear on functions"),
+            "{source}"
+        );
+    }
+    parsed(
+        "_Noreturn void stop(void); static inline _Noreturn void halt(void); \
+         void g(void) { _Noreturn void h(void); inline int k(void); } \
+         static __inline__ int sq(int x) { return x * x; } _Noreturn void stop(void) { for (;;); }",
+    );
+}

@@ -517,6 +517,7 @@ impl Parser<'_> {
 
     /// A declaration that is only a tag (`struct node;` or `enum { A };`).
     pub(super) fn finish_tag_only(&mut self, specs: &Specs) -> Result<(), Diagnostic> {
+        self.reject_func_spec(specs)?;
         if specs.introduced_tag || specs.ty.unqualified().is_record() {
             if specs.storage != Storage::None {
                 return Err(self.error(
