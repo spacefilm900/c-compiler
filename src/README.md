@@ -1,16 +1,16 @@
 # src
 
-Rust sources for the clean-room frontend. `make` (or `cargo build --release`) produces `build/compiler`.
+Rust sources for the clean-room frontend. `make` (or `cargo build --release`) produces `build/compiler`. Each directory is one module: `mod.rs` holds the shared types and entry points, and unit tests live in the directory's `tests.rs` (plus `ice_tests.rs` and `precise_tests.rs` in `irgen/`).
 
-| File | Role |
+| File or directory | Role |
 | --- | --- |
-| `pp.rs` | Translation phases 2–4: splicing, preprocessing tokens, macros, conditionals, and `#include`. |
+| `pp/` | Translation phases 2–4: splicing, preprocessing tokens, macros, conditionals, and `#include`. `mod.rs` holds the preprocessor state; `predefined.rs` the predefined macros and include list, `scan.rs` phase 2–3 scanning, `directive.rs` directives and include search, `ifexpr.rs` `#if` expressions, `expand.rs` macro expansion. |
 | `lexer.rs` | Phase-7 tokens, integer suffixes, floating constants (including `long double`), character constants, and `L` / `u` / `U` / `u8` literals. Rejects a stray `#`, `u8` character constants, and other input this milestone does not lex. |
 | `float.rs` | Decimal and hexadecimal floating constants, and conversions between floating values and integers. |
 | `abi.rs` | System V AMD64 classification for aggregates, including SSE eightbytes. |
-| `parser.rs`, `ast.rs` | Recursive-descent parser and AST, including pointers, arrays, structs, unions, typedefs, enums, `const`/`volatile`/`restrict`, and variadic prototypes. |
-| `sema.rs` | Scopes, tag scopes, typedefs, promotions, pointer conversions, array decay, struct and union layout, qualifiers, string initializers, calls, lvalues, linkage, and constant initializers. |
-| `irgen.rs` | Textual LLVM IR (`define`, `declare`, globals, named struct types, `getelementptr`, string constants, pointer arithmetic, and variadic calls). |
+| `parser/`, `ast/` | Recursive-descent parser and AST, including pointers, arrays, structs, unions, typedefs, enums, `const`/`volatile`/`restrict`, and variadic prototypes. Parser: `decl.rs`, `specs.rs`, `record.rs`, `attrs.rs`, `declarator.rs`, `stmt.rs`, `expr.rs`, `ice.rs` (integer constant expressions), `uneval.rs` (checks and types for operands that are not evaluated). AST: `types.rs`, `record.rs`, `compat.rs` (type spelling, compatibility and composite types), `tree.rs` (expressions, statements, declarations), `dump.rs` (text dump for the tests). |
+| `sema/` | Scopes, tag scopes, typedefs, promotions, pointer conversions, array decay, struct and union layout, qualifiers, string initializers, calls, lvalues, linkage, and constant initializers. Split into `decl.rs`, `init.rs`, `image.rs` (static initializer bytes), `stmt.rs`, `expr.rs`, `call.rs`, `convert.rs`, and `consteval.rs`. |
+| `irgen/` | Textual LLVM IR (`define`, `declare`, globals, named struct types, `getelementptr`, string constants, pointer arithmetic, and variadic calls). Split into `module.rs`, `consts.rs` (static initializers), `stmt.rs`, `expr.rs`, `call.rs`, `access.rs` (loads, stores, members, conversions), `vaarg.rs`, and `inline_builtins.rs`. |
 | `driver.rs`, `main.rs` | `compiler [options] INPUT.c -o OUTPUT.ll`, including `-E`, `-I`, `-D`, `-U`, and `--time-phases`. |
 | `diag.rs`, `token.rs` | Diagnostics and token kinds. |
 | `timing.rs` | Frontend phase timing for `--time-phases`. |
