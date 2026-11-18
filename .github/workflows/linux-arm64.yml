@@ -92,7 +92,8 @@ jobs:
 
   suites:
     name: arm64 ${{ matrix.group }}
-    if: github.event_name != 'pull_request'
+    # TEMPORARY: one run of the suites on this pull request, reverted before merge.
+    # if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     strategy:
