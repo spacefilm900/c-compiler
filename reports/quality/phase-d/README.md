@@ -26,7 +26,7 @@ A dump goes to standard output, or to `-o FILE`. Warnings and errors are reporte
 
 How it is built: `lib.rs` gains `Stage` and `dump_stage`, which run the normal pipeline (`compile_impl`) with a stop point. A normal compilation passes no stop point, so it runs the same code as before. `ast/dump.rs` became a small `Dumper` with two switches (positions, and sema details); the parser unit tests still get exactly the old plain tree from `ast::dump`. `token::dump_tokens` is new. The sema dump computes the conversion shown for a binary operator with the same rules the compiler uses (`TypeName::usual`, `float::usual_real`), and reads everything else from what semantic analysis stored.
 
-Golden tests: `tests/dumps/` holds four small programs (scalars and control flow; records, bit-fields, unions and static addresses; the preprocessor, constants, `enum`, `sizeof` and `_Generic`; GNU extensions with `-std=gnu11`) and the expected dump of each stage, 20 files. `harness/run_dump_tests.py` checks each dump byte for byte with `-target x86_64-linux-gnu`. It also checks that `--dump-ir` equals the IR written by `-o`, that `-o` and standard output give the same dump, and that a second run gives the same bytes: 24 checks. `--update` rewrites the expected files. Three new Rust unit tests cover the option parsing and conflicts, that each dump stops at its stage (a program sema rejects still dumps its tokens and tree), and the contents of each dump.
+Golden tests: `harness/dumps/` holds four small programs (scalars and control flow; records, bit-fields, unions and static addresses; the preprocessor, constants, `enum`, `sizeof` and `_Generic`; GNU extensions with `-std=gnu11`) and the expected dump of each stage, 20 files. `harness/run_dump_tests.py` checks each dump byte for byte with `-target x86_64-linux-gnu`. It also checks that `--dump-ir` equals the IR written by `-o`, that `-o` and standard output give the same dump, and that a second run gives the same bytes: 24 checks. `--update` rewrites the expected files. Four new Rust unit tests cover the option parsing and conflicts, that each dump stops at its stage (a program sema rejects still dumps its tokens and tree), the contents of each dump, and index designators and `va_arg` types in the tree.
 
 ## 2. The reducer
 
@@ -37,8 +37,8 @@ Modes (built-in predicates):
 | Mode | Interesting when |
 |---|---|
 | `ice` | this compiler exits 3; `--message` must be in its stderr |
-| `crash` | this compiler panics (exit 101) or is killed by a signal |
-| `miscompile` | the program's exit status or stdout differs between Clang's build and ours (our IR linked by Clang). Guarded against undefined behaviour: the reference must compile without a list of UB-related Clang warnings, and a `-fsanitize=address,undefined` build must agree. The box's Clang has no sanitizer runtime, so the reducer picks GCC for that build automatically (`--ub-cc`) |
+| `crash` | this compiler panics (exit 101) or is killed by a signal (other than `SIGXFSZ` from `--file-limit`) |
+| `miscompile` | the program's exit status or stdout differs between Clang's build and ours (our IR linked by Clang). Guarded against undefined behaviour: the reference must compile without a list of UB-related Clang warnings, and a `-fsanitize=address,undefined` build must agree and report nothing (its exit status is set to 86 through `ASAN_OPTIONS` / `UBSAN_OPTIONS`, and its stderr is searched for sanitizer reports). The box's Clang has no sanitizer runtime, so the reducer picks GCC for that build automatically (`--ub-cc`) |
 | `reject` | we report an error and Clang accepts (`-fsyntax-only`, plus `-pedantic-errors` in C11 mode) |
 | `accept` | we accept and Clang rejects |
 | `bad-ir` | we accept and Clang cannot compile our IR |
@@ -46,9 +46,9 @@ Modes (built-in predicates):
 
 `--clang-valid` keeps every candidate acceptable to Clang in the `ice`, `crash` and `cmd` modes. `--std gnu11`, `--flags` and `--clang-flags` pass options through.
 
-Passes, repeated until a round removes nothing: ddmin over lines; over top-level declarations (directive, function definition, or declaration to its `;`); inside each balanced `{ }` over its statements, and inside other `{ }` and `( )` over comma-separated items (initializers, enumerators, arguments, parameters); then over single tokens. A small tokenizer keeps each token's preceding whitespace and comments, so the unreduced text renders back exactly; removed tokens never let two neighbours merge into one, and directives stay on their own lines. Every command has a timeout (default 10 s; a timeout is not interesting), and each candidate's result is cached by SHA-256, so nothing is tested twice.
+Passes, repeated until a round removes nothing: ddmin over lines; over top-level declarations (directive, function definition, or declaration to its `;`); inside each balanced `{ }` over its statements, and inside other `{ }` and `( )` over comma-separated items (initializers, enumerators, arguments, parameters); then over single tokens. A small tokenizer keeps each token's preceding whitespace and comments, so the unreduced text renders back exactly; removed tokens never let two neighbours merge into one, and directives stay on their own lines. Every command has a timeout (default 10 s) and runs in its own process group, which is killed with all its descendants when the time is up. Its stdout and stderr go to files limited to `--output-limit` (16 MiB), and no file it writes may pass `--file-limit` (1 GiB, through `RLIMIT_FSIZE`). A timeout, a limit, or a command that cannot be started is never interesting, and `reduce.py` checks before reducing that the compilers it needs exist (exit 2 otherwise). Each candidate's result is cached by SHA-256, so nothing is tested twice.
 
-Tests: `tools/reduce/test_reduce.py`, 28 unit tests in about 4 s: ddmin on synthetic predicates (the result holds, is 1-minimal, keeps order, needs complements, can be empty), the tokenizer's exact round trip, the unit splitters, the cache (no candidate tested twice), `--max-tests`, timeouts, an uninteresting input (exit 2), and each mode with stand-in compilers: `ice` with a message filter, `crash` by signal (and that an ordinary error is not a crash), `miscompile`, `reject` (the result still passes `clang -std=c11 -pedantic-errors`), and `cmd` with and without `{}`.
+Tests: `tools/reduce/test_reduce.py`, 32 unit tests in about 13 s: ddmin on synthetic predicates (the result holds, is 1-minimal, keeps order, needs complements, can be empty), the tokenizer's exact round trip, the unit splitters, the cache (no candidate tested twice), `--max-tests`, timeouts (and that a timeout kills the command's children), the output limit, a missing compiler, an uninteresting input (exit 2), a sanitizer report rejecting a `miscompile` candidate, and each mode with stand-in compilers: `ice` with a message filter, `crash` by signal (and that an ordinary error is not a crash), `miscompile`, `reject` (the result still passes `clang -std=c11 -pedantic-errors`), and `cmd` with and without `{}`.
 
 ## 3. Demo on real bugs
 
@@ -67,15 +67,15 @@ The first result keeps only the bit-field struct, the function with `flags->leve
 |---|---|
 | `cargo fmt --all -- --check` | clean |
 | `cargo clippy --offline --all-targets -- -D warnings` | clean |
-| `cargo test --offline --lib` | **212 passed** (209 on `main`, 3 new) |
+| `cargo test --offline --lib` | **213 passed** (209 on `main`, 4 new) |
 | `make` and `python3 harness/run_tests.py` | **187/187** |
 | `python3 harness/run_dump_tests.py` | **24/24** |
-| `python3 -m unittest tools/reduce/test_reduce.py` | **28 passed** |
-| `tools/reduce/demo/run_demo.sh` | ok (section 3) |
+| `python3 -m unittest tools/reduce/test_reduce.py` | **32 passed** |
+| `tools/reduce/demo/run_demo.sh` | ok (section 3): the current compiler compiles both reduced files and agrees with Clang on the first, and rejects the second with the expected error (exit 1) |
 | Old (`2846773`) vs new compiler on every `.c` file under `tests/`, WACC, GCC torture, Csmith, One True AWK and the C11 challenge, no flag and `-std=gnu11` | **13,172 compilations, 0 differences** in exit status, messages or IR (9,558 accepted, 3,614 rejected) |
 | Same, on SQLite 3.54.1 (`sqlite3.c`, `shell.c`), Lua 5.4.7 (34 files) and DOOM (95 files), `-std=gnu11` with `-D_DEFAULT_SOURCE` (`sqlite3.c` also with `-DSQLITE_THREADSAFE=0`) | **0 differences.** Identical IR for both SQLite files, all 34 Lua files and 84 DOOM files. The other 11 DOOM files are front ends for SDL, Allegro, X11, Windows and other platforms whose headers are not installed here (and `doomgeneric_linuxvt.c`, which redefines a kernel header macro); both compilers reject them with the same message |
 
-Earlier phases compared 13,148 compilations (6,574 files). This run has 6,586 files: the 8 test files pull request 46 added and the 4 new `tests/dumps/` programs. The comparison script is the same `irdiff.py` as parts B and C (`/workspace/scratch/phased/irdiff.py`, not committed).
+Earlier phases compared 13,148 compilations (6,574 files, 2 modes each). This run has 6,586 files (13,172 compilations): those 6,574, the 8 test files pull request 46 added, and the 4 new `harness/dumps/` programs. So the 13,148 compilations of the earlier phases are all included, with 0 differences. The comparison script is the same `irdiff.py` as parts B and C (`/workspace/scratch/phased/irdiff.py`, not committed).
 
 Compile time: `sqlite3.c` (whole compilation, 5 alternating runs) took a median of 1.49 s on `main` and 1.53 s on this branch. The only new work on the normal path is three comparisons of the stop point, so this is probably code layout or noise; CI's `tools/perf_guard.py` still checks the budget.
 

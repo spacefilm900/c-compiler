@@ -27,7 +27,7 @@ make
 python3 tools/reduce/reduce.py big.c --mode miscompile -o small.c
 python3 tools/reduce/reduce.py big.c --mode ice --message "in irgen" -o small.c
 python3 tools/reduce/reduce.py big.c --mode reject --message "incompatible types" -o small.c
-python3 tools/reduce/reduce.py big.c --mode cmd --cmd './still_bad.sh {}' -o small.c
+python3 tools/reduce/reduce.py big.c --mode cmd --cmd "$PWD/still_bad.sh {}" -o small.c
 ```
 
 Add `--std gnu11` for GNU C, `--flags '-target aarch64-linux-gnu'` for
@@ -63,7 +63,7 @@ if the sema dump has a wrong type, conversion or offset, it is in
 ### Dump formats
 
 All dumps are plain text, deterministic (the same input always gives the
-same bytes) and in source order. `tests/dumps/` has a complete example of
+same bytes) and in source order. `harness/dumps/` has a complete example of
 each for four small programs.
 
 **Tokens.** One line per token:
@@ -82,7 +82,10 @@ ending in `@LINE:COLUMN`. Declarations are `func`, `proto`, `global` and
 `return`, `expr` and so on; expressions are the operator (`+`, `assign`,
 `+=`, `?:`, `call NAME`, `member F`, `arrow F`, `index`, `cast TYPE`, `neg`,
 `addr`, `deref`, ...) or a leaf (`var NAME`, `int 42`, `double 0x...`,
-`string "..."`). The unit tests in `src/parser/tests.rs` use the same tree
+`string "..."`, `va_arg TYPE`). An initializer is a `list` of items; a
+designated item is `designated .f[]...` (one `[]` per index designator), then
+an `index` line with each index expression, in order, then the value. The
+unit tests in `src/parser/tests.rs` use the same tree
 without the positions.
 
 **Sema.** The AST format after semantic analysis, with more on each line:
