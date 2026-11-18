@@ -14,6 +14,10 @@
 //!   `long double` is the IEEE double format, the caller extends integer
 //!   arguments narrower than 32 bits, every variadic argument is passed on
 //!   the stack in 8-byte slots, and `va_list` is a plain `char *`.
+//! - `x86_64-apple-macos`: the System V AMD64 psABI, as Apple's public
+//!   "Writing 64-bit Intel code for Apple Platforms" adopts it, with Mach-O
+//!   symbol names (a leading `_`), `int64_t` as `long long`, and `wint_t`
+//!   as `int`. `long double` is the x87 80-bit format, as on Linux.
 //! - `aarch64-linux-gnu`: AAPCS64 and its Linux (GNU) C type mapping:
 //!   `char` and `wchar_t` are unsigned, `long double` is IEEE binary128,
 //!   and `va_list` is the AAPCS64 register-save structure. It exists to run
@@ -35,6 +39,9 @@ pub enum Target {
     Arm64Apple { macos_major: u32, macos_minor: u32 },
     /// `aarch64-unknown-linux-gnu`, AAPCS64 with glibc.
     Aarch64Linux,
+    /// `x86_64-apple-macosx`, System V AMD64 on Darwin (Intel Macs).
+    /// `macos_major.macos_minor` is the minimum macOS version.
+    X86_64Apple { macos_major: u32, macos_minor: u32 },
 }
 
 /// How `long double` is represented.
@@ -69,6 +76,14 @@ pub const APPLE_DEFAULT: Target = Target::Arm64Apple {
     macos_minor: 0,
 };
 
+/// The default Intel macOS target: macOS 10.15, the first release that
+/// runs only 64-bit programs. Earlier versions select older C library
+/// symbol variants in the SDK headers (32-bit `ino_t` among them).
+pub const APPLE_X86_64_DEFAULT: Target = Target::X86_64Apple {
+    macos_major: 10,
+    macos_minor: 15,
+};
+
 impl Target {
     /// The machine this compiler binary runs on, when it is a supported
     /// target; otherwise `x86_64-linux-gnu`.
@@ -87,6 +102,8 @@ impl Target {
     pub fn host() -> Target {
         if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             APPLE_DEFAULT
+        } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+            APPLE_X86_64_DEFAULT
         } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
             Target::Aarch64Linux
         } else {
@@ -102,12 +119,28 @@ impl Target {
     ///   `aarch64-apple-darwin`, with an optional version such as
     ///   `arm64-apple-macos13` or `arm64-apple-macosx11.0.0`
     /// - `aarch64-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-linux-gnu`
+    /// - `x86_64-apple-macos`, `x86_64-apple-macosx`, `x86_64-apple-darwin`,
+    ///   with an optional version of 10.0 or later, such as
+    ///   `x86_64-apple-macos13` or `x86_64-apple-macosx10.15.0`
     pub fn parse(triple: &str) -> Option<Target> {
         let parts: Vec<&str> = triple.split('-').collect();
         let arch = *parts.first()?;
         let rest = &parts[1..];
         match arch {
             "x86_64" | "amd64" => {
+                if rest.first() == Some(&"apple") {
+                    if rest.len() != 2 || arch != "x86_64" {
+                        return None;
+                    }
+                    let (major, minor) = parse_apple_os(rest[1], 10)?;
+                    return Some(match (major, minor) {
+                        (0, _) => APPLE_X86_64_DEFAULT,
+                        (macos_major, macos_minor) => Target::X86_64Apple {
+                            macos_major,
+                            macos_minor,
+                        },
+                    });
+                }
                 let rest: Vec<&str> = rest
                     .iter()
                     .copied()
@@ -120,7 +153,14 @@ impl Target {
                     if rest.len() != 2 {
                         return None;
                     }
-                    return parse_apple_os(rest[1]);
+                    let (major, minor) = parse_apple_os(rest[1], 11)?;
+                    return Some(match (major, minor) {
+                        (0, _) => APPLE_DEFAULT,
+                        (macos_major, macos_minor) => Target::Arm64Apple {
+                            macos_major,
+                            macos_minor,
+                        },
+                    });
                 }
                 let rest: Vec<&str> = rest
                     .iter()
@@ -139,6 +179,7 @@ impl Target {
             Target::X86_64Linux => "x86_64-linux-gnu",
             Target::Arm64Apple { .. } => "arm64-apple-macos",
             Target::Aarch64Linux => "aarch64-linux-gnu",
+            Target::X86_64Apple { .. } => "x86_64-apple-macos",
         }
     }
 
@@ -151,6 +192,10 @@ impl Target {
                 macos_minor,
             } => format!("arm64-apple-macosx{macos_major}.{macos_minor}.0"),
             Target::Aarch64Linux => "aarch64-unknown-linux-gnu".to_string(),
+            Target::X86_64Apple {
+                macos_major,
+                macos_minor,
+            } => format!("x86_64-apple-macosx{macos_major}.{macos_minor}.0"),
         }
     }
 
@@ -168,11 +213,30 @@ impl Target {
             // to every C symbol.
             Target::Arm64Apple { .. } => "e-m:o-i64:64-i128:128-n32:64-S128",
             Target::Aarch64Linux => "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128",
+            Target::X86_64Apple { .. } => {
+                "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+            }
         }
     }
 
+    /// An Apple (Darwin, Mach-O) target on either architecture.
     pub fn is_apple(self) -> bool {
-        matches!(self, Target::Arm64Apple { .. })
+        matches!(self, Target::Arm64Apple { .. } | Target::X86_64Apple { .. })
+    }
+
+    /// The minimum macOS version of an Apple target, `(major, minor)`.
+    pub fn macos_version(self) -> Option<(u32, u32)> {
+        match self {
+            Target::Arm64Apple {
+                macos_major,
+                macos_minor,
+            }
+            | Target::X86_64Apple {
+                macos_major,
+                macos_minor,
+            } => Some((macos_major, macos_minor)),
+            _ => None,
+        }
     }
 
     pub fn is_aarch64(self) -> bool {
@@ -181,7 +245,7 @@ impl Target {
 
     pub fn abi(self) -> Abi {
         match self {
-            Target::X86_64Linux => Abi::SysV,
+            Target::X86_64Linux | Target::X86_64Apple { .. } => Abi::SysV,
             Target::Arm64Apple { .. } => Abi::Aapcs64 { apple: true },
             Target::Aarch64Linux => Abi::Aapcs64 { apple: false },
         }
@@ -201,17 +265,17 @@ impl Target {
 
     pub fn long_double(self) -> LongDouble {
         match self {
-            Target::X86_64Linux => LongDouble::X87,
+            Target::X86_64Linux | Target::X86_64Apple { .. } => LongDouble::X87,
             Target::Arm64Apple { .. } => LongDouble::Double,
             Target::Aarch64Linux => LongDouble::Quad,
         }
     }
 
     /// An array object of 16 bytes or more is aligned to at least 16 bytes
-    /// (System V AMD64 psABI 3.1.2). AAPCS64 and Apple's arm64 ABI align an
-    /// array as its element type.
+    /// (System V AMD64 psABI 3.1.2), on Linux and on Intel Macs. AAPCS64
+    /// and Apple's arm64 ABI align an array as its element type.
     pub fn boosts_large_arrays(self) -> bool {
-        matches!(self, Target::X86_64Linux)
+        matches!(self, Target::X86_64Linux | Target::X86_64Apple { .. })
     }
 
     /// The caller extends an integer argument or return value narrower
@@ -231,30 +295,35 @@ impl Target {
 
     /// Function attributes every definition carries. Apple's arm64 ABI
     /// requires a valid frame record in x29 at all times, so frame
-    /// pointers are kept in non-leaf functions.
+    /// pointers are kept in non-leaf functions. On Intel Macs every
+    /// function keeps its frame pointer, so that Apple's tools can walk
+    /// the stack (Clang does the same, observed as a black box).
     pub fn function_attrs(self) -> &'static str {
         match self {
             Target::Arm64Apple { .. } => "\"frame-pointer\"=\"non-leaf\"",
+            Target::X86_64Apple { .. } => "\"frame-pointer\"=\"all\"",
             _ => "",
         }
     }
 }
 
-fn parse_apple_os(os: &str) -> Option<Target> {
+/// The version in an Apple OS name (`macos`, `macosx`, `darwin`), as
+/// `(major, minor)`; `(0, 0)` means none was given, so the target's default
+/// applies. A version below `min_major` is rejected.
+fn parse_apple_os(os: &str, min_major: u32) -> Option<(u32, u32)> {
     let version = if let Some(rest) = os.strip_prefix("macosx") {
         rest
     } else if let Some(rest) = os.strip_prefix("macos") {
         rest
-    } else if let Some(rest) = os.strip_prefix("darwin") {
-        // A Darwin kernel version is not a macOS version; Darwin 20 is
-        // macOS 11, the first release for Apple silicon.
-        let _ = rest;
-        return Some(APPLE_DEFAULT);
+    } else if os.strip_prefix("darwin").is_some() {
+        // A Darwin kernel version is not a macOS version (Darwin 19 is
+        // macOS 10.15, Darwin 20 is macOS 11); the default is used.
+        return Some((0, 0));
     } else {
         return None;
     };
     if version.is_empty() {
-        return Some(APPLE_DEFAULT);
+        return Some((0, 0));
     }
     let mut numbers = version.split('.');
     let major: u32 = numbers.next()?.parse().ok()?;
@@ -270,13 +339,10 @@ fn parse_apple_os(os: &str) -> Option<Target> {
             return None;
         }
     }
-    if numbers.next().is_some() || major < 11 {
+    if numbers.next().is_some() || major < min_major || minor > 99 {
         return None;
     }
-    Some(Target::Arm64Apple {
-        macos_major: major,
-        macos_minor: minor,
-    })
+    Some((major, minor))
 }
 
 thread_local! {
@@ -333,7 +399,51 @@ mod tests {
         assert_eq!(Target::parse("arm64-apple-macos13.2.1"), None);
         assert_eq!(Target::parse("arm64-apple-ios"), None);
         assert_eq!(Target::parse("riscv64-linux-gnu"), None);
-        assert_eq!(Target::parse("x86_64-apple-darwin"), None);
+        assert_eq!(
+            Target::parse("x86_64-apple-darwin"),
+            Some(APPLE_X86_64_DEFAULT)
+        );
+        assert_eq!(
+            Target::parse("x86_64-apple-macos"),
+            Some(APPLE_X86_64_DEFAULT)
+        );
+        assert_eq!(
+            Target::parse("x86_64-apple-macosx10.9"),
+            Some(Target::X86_64Apple {
+                macos_major: 10,
+                macos_minor: 9
+            })
+        );
+        assert_eq!(
+            Target::parse("x86_64-apple-macos13.0.0"),
+            Some(Target::X86_64Apple {
+                macos_major: 13,
+                macos_minor: 0
+            })
+        );
+        assert_eq!(Target::parse("x86_64-apple-macos9"), None);
+        assert_eq!(Target::parse("x86_64-apple-macos10.15.1"), None);
+        assert_eq!(Target::parse("amd64-apple-macos"), None);
+        assert_eq!(Target::parse("x86_64-apple-ios"), None);
+    }
+
+    #[test]
+    fn intel_mac_type_model() {
+        let t = APPLE_X86_64_DEFAULT;
+        assert_eq!(t.triple(), "x86_64-apple-macosx10.15.0");
+        assert_eq!(
+            t.data_layout(),
+            "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+        );
+        assert!(t.is_apple() && !t.is_aarch64());
+        assert_eq!(t.abi(), Abi::SysV);
+        assert_eq!(t.long_double(), LongDouble::X87);
+        assert!(t.char_is_signed() && t.wchar_is_signed());
+        assert!(t.boosts_large_arrays() && t.extends_narrow_args());
+        assert!(!t.unnamed_bitfield_aligns());
+        assert_eq!(t.function_attrs(), "\"frame-pointer\"=\"all\"");
+        assert_eq!(t.macos_version(), Some((10, 15)));
+        assert_eq!(Target::X86_64Linux.macos_version(), None);
     }
 
     #[test]

@@ -618,7 +618,7 @@ impl Parser<'_> {
                 self.va_list = Some(ty.clone());
                 return ty;
             }
-            crate::target::Target::X86_64Linux => {}
+            crate::target::Target::X86_64Linux | crate::target::Target::X86_64Apple { .. } => {}
         }
         let handle = self.declare_fresh_tag("__va_list_tag", RecordKind::Struct);
         let fields = vec![

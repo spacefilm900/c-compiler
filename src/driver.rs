@@ -9,7 +9,7 @@
 //! extensions listed in [`crate::dialect`]. The last `-std` wins.
 //! `-target TRIPLE` (or `--target=TRIPLE`) selects the machine; the host is
 //! the default. `-isysroot DIR` names the C library headers' root (the
-//! macOS SDK when compiling for `arm64-apple-macos`).
+//! macOS SDK when compiling for `arm64-apple-macos` or `x86_64-apple-macos`).
 
 use std::fs;
 use std::io::{self, Write};
@@ -38,7 +38,8 @@ options:
   -fgnu89-inline  GNU89 inline semantics: plain `inline` definitions are
                   external, `extern inline` ones are only for inlining
   -target TRIPLE  compile for TRIPLE (also --target=TRIPLE): x86_64-linux-gnu,
-                  arm64-apple-macos[VERSION], or aarch64-linux-gnu;
+                  x86_64-apple-macos[VERSION], arm64-apple-macos[VERSION],
+                  or aarch64-linux-gnu;
                   the default is the host
   -isysroot DIR   find the C library headers under DIR/usr/include
   --time-phases   print frontend phase times as JSON on stderr
@@ -331,7 +332,7 @@ fn dump_flag(arg: &str) -> Option<crate::Stage> {
 fn parse_target(triple: &str) -> Result<crate::target::Target, String> {
     crate::target::Target::parse(triple).ok_or_else(|| {
         format!(
-            "unsupported target '{triple}'; use x86_64-linux-gnu, arm64-apple-macos, or aarch64-linux-gnu"
+            "unsupported target '{triple}'; use x86_64-linux-gnu, x86_64-apple-macos, arm64-apple-macos, or aarch64-linux-gnu"
         )
     })
 }
@@ -542,6 +543,14 @@ mod tests {
                 "aarch64-unknown-linux-gnu",
             ),
             (vec!["-target", "x86_64-linux-gnu"], "x86_64-pc-linux-gnu"),
+            (
+                vec!["-target", "x86_64-apple-macos"],
+                "x86_64-apple-macosx10.15.0",
+            ),
+            (
+                vec!["--target=x86_64-apple-macos13"],
+                "x86_64-apple-macosx13.0.0",
+            ),
         ] {
             let mut args = vec!["compiler".to_string()];
             args.extend(flags.iter().map(|flag| flag.to_string()));

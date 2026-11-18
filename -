@@ -1,0 +1,35 @@
+source_filename = "/tmp/s.c"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-apple-macosx10.15.0"
+
+%struct.S = type { i8, x86_fp80 }
+declare i32 @"\01myh$INODE64"(i32)
+declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)
+
+define x86_fp80 @f(ptr byval(%struct.S) align 16 %p0, i16 signext %p1, ...) "frame-pointer"="all" {
+entry:
+  %v1 = alloca %struct.S, align 16
+  %v2 = alloca i16, align 2
+  call void @llvm.memmove.p0.p0.i64(ptr %v1, ptr %p0, i64 32, i1 false)
+  store i16 %p1, ptr %v2, align 2
+  %t1 = getelementptr inbounds %struct.S, ptr %v1, i32 0, i32 1
+  %t2 = load x86_fp80, ptr %t1, align 16
+  %t3 = load i16, ptr %v2, align 2
+  %t4 = sitofp i16 %t3 to x86_fp80
+  %t5 = fadd x86_fp80 %t2, %t4
+  ret x86_fp80 %t5
+}
+
+define i32 @g() "frame-pointer"="all" {
+entry:
+  %v1 = alloca [20 x i8], align 16
+  %t1 = trunc i64 20 to i32
+  ret i32 %t1
+}
+
+define i32 @k() "frame-pointer"="all" {
+entry:
+  %t1 = call i32 @"\01myh$INODE64"(i32 1)
+  ret i32 %t1
+}
+

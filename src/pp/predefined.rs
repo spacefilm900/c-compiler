@@ -54,7 +54,7 @@ pub fn system_dirs_for(target: Target, sysroot: Option<&Path>) -> Vec<PathBuf> {
                 library.push("/usr/aarch64-linux-gnu/include".into());
             }
         }
-        Target::Arm64Apple { .. } => {
+        Target::Arm64Apple { .. } | Target::X86_64Apple { .. } => {
             if let Some(sdk) = apple_sdk(sysroot) {
                 library.push(sdk.join("usr/include"));
             }
@@ -98,7 +98,7 @@ pub(super) fn apple_sdk(sysroot: Option<&Path>) -> Option<PathBuf> {
 pub(super) fn target_macros(target: Target) -> Vec<(&'static str, &'static str)> {
     let mut out: Vec<(&'static str, &'static str)> = Vec::new();
     match target {
-        Target::X86_64Linux => out.extend([
+        Target::X86_64Linux | Target::X86_64Apple { .. } => out.extend([
             ("__x86_64__", "1"),
             ("__x86_64", "1"),
             ("__amd64__", "1"),
@@ -126,24 +126,19 @@ pub(super) fn target_macros(target: Target) -> Vec<(&'static str, &'static str)>
             ("__ELF__", "1"),
             ("__USER_LABEL_PREFIX__", ""),
         ]),
-        Target::Arm64Apple { .. } => out.extend([
+        Target::Arm64Apple { .. } | Target::X86_64Apple { .. } => out.extend([
             ("__APPLE__", "1"),
             ("__APPLE_CC__", "6000"),
             ("__MACH__", "1"),
-            ("__arm64__", "1"),
-            ("__arm64", "1"),
             ("__DYNAMIC__", "1"),
             ("__USER_LABEL_PREFIX__", "_"),
         ]),
     }
-    if let Target::Arm64Apple {
-        macos_major,
-        macos_minor,
-    } = target
-    {
-        // `110000` for macOS 11.0, as Availability.h expects.
-        let version: &'static str =
-            Box::leak(format!("{}", macos_major * 10000 + macos_minor * 100).into_boxed_str());
+    if let Target::Arm64Apple { .. } = target {
+        out.extend([("__arm64__", "1"), ("__arm64", "1")]);
+    }
+    if let Some((major, minor)) = target.macos_version() {
+        let version: &'static str = Box::leak(macos_version_macro(major, minor).into_boxed_str());
         out.push(("__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__", version));
         out.push(("__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__", version));
     }
@@ -172,6 +167,17 @@ pub(super) fn target_macros(target: Target) -> Vec<(&'static str, &'static str)>
     }
     float_macros(target.long_double(), &mut out);
     out
+}
+
+/// `__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__` as Availability.h
+/// expects it: `1090` for 10.9 (the old four-digit form, used before 10.10),
+/// `101500` for 10.15, `110000` for 11.0.
+pub(super) fn macos_version_macro(major: u32, minor: u32) -> String {
+    if major == 10 && minor < 10 {
+        format!("{}", 1000 + minor * 10)
+    } else {
+        format!("{}", major * 10000 + minor * 100)
+    }
 }
 
 /// The floating-type characteristics, `__FLT_*__`, `__DBL_*__` and
