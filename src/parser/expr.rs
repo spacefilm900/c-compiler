@@ -993,10 +993,10 @@ impl Parser<'_> {
             }
             TokenKind::Ident => {
                 self.bump();
-                if let Some(NameBinding::EnumConst(value)) = self.lookup_name(&token.spelling) {
+                if let Some(NameBinding::EnumConst(value, ty)) = self.lookup_name(&token.spelling) {
                     return Ok(Expr::int(
-                        value as u32 as u64,
-                        TypeName::Int,
+                        (value as u128 & ty.mask()) as u64,
+                        ty,
                         token.line,
                         token.column,
                     ));
