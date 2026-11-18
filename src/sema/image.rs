@@ -746,6 +746,13 @@ pub(super) fn designator(expr: &Expr) -> Result<(String, i64), ConstError> {
                 .as_ref()
                 .and_then(CType::size)
                 .ok_or(ConstError::NotConst)? as i64;
+            // `E1[E2]` is `*(E1 + E2)` (C11 6.5.2.1p2), so either operand may
+            // be the pointer: `&1[a]` is `&a[1]`.
+            let (base, index) = if base.ty().is_some_and(|ty| ty.is_integer()) {
+                (index, base)
+            } else {
+                (base, index)
+            };
             let step = const_index(index)?;
             let (name, offset) = pointer_object(base)?;
             Ok((

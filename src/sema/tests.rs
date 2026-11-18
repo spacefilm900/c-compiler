@@ -880,6 +880,13 @@ int main(void) {
     assert!(sema_err("int g; int x = (int)&g;").contains("truncates an address"));
     assert!(sema_err("int g; long x = (int)&g;").contains("truncates an address"));
     sema_ok("int g; long x = (long)&g;");
+    // `_Bool` from an address constant: 1 unless null, but a weak symbol's
+    // address may be null at run time, as Clang and GCC also reject.
+    sema_ok("int g; _Bool b = &g; _Bool n = (void *)0; int a[2]; _Bool c = &1[a];");
+    assert!(
+        sema_err("extern int w __attribute__((weak)); _Bool b = &w;")
+            .contains("not a constant expression")
+    );
     sema_ok("int g; unsigned long x = (unsigned long)&g;");
     // Wider than a pointer: no `ptrtoint` of matching width can be emitted,
     // and Clang rejects each of these.

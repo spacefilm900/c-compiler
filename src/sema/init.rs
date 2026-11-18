@@ -1094,6 +1094,23 @@ impl Sema<'_> {
         Ok(value)
     }
 
+    /// A pointer converted to `_Bool` is 0 when it is null and 1 otherwise
+    /// (C11 6.3.1.2). The address of an object or function is never null
+    /// (6.3.2.3p3), so `_Bool b = &g;` is the constant 1 and
+    /// `_Bool n = (void *)0;` is 0. A weak symbol may be null, so it is
+    /// not folded.
+    fn address_truth(&self, expr: &Expr) -> Option<bool> {
+        if !expr.ty().is_some_and(|ty| ty.is_pointer()) {
+            return None;
+        }
+        match eval_ptr(expr).ok()? {
+            PtrConst::Null => Some(false),
+            PtrConst::IntToPtr(bits) => Some(bits != 0),
+            PtrConst::Label { .. } => Some(true),
+            PtrConst::Addr { name, .. } => (!self.weak_symbols.contains(&name)).then_some(true),
+        }
+    }
+
     pub(super) fn fold_one(
         &self,
         name: &str,
@@ -1161,6 +1178,11 @@ impl Sema<'_> {
                             other => other,
                         });
                     }
+                }
+            }
+            if dest_int == TypeName::Bool {
+                if let Some(truth) = self.address_truth(expr) {
+                    return Ok(ConstInit::Int(u128::from(truth)));
                 }
             }
             return self.const_diag(name, expr);
