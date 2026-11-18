@@ -359,7 +359,17 @@ fn binary128_constants_are_folded_exactly() {
          int big = (long double)9007199254740993.0L > 9007199254740992.0L;\n\
          int fits = (int)1.9L;\n",
     );
-    for constant in [
+    // The `fp128` operands of `@a`, in initializer order.
+    let line = module
+        .lines()
+        .find(|line| line.starts_with("@a = "))
+        .unwrap_or_else(|| panic!("no @a: {module}"));
+    let got: Vec<&str> = line
+        .split("fp128 ")
+        .skip(1)
+        .map(|rest| rest.split([',', ']']).next().unwrap_or("").trim())
+        .collect();
+    let expected = [
         "0xL999999999999999A3FFB999999999999",
         "0xL33333333333333343FFD333333333333",
         "0xL55555555555555553FFD555555555555",
@@ -368,9 +378,8 @@ fn binary128_constants_are_folded_exactly() {
         "0xL0000000000000000FFFF000000000000",
         "0xLA0000000000000003FFB999999999999",
         "0xL00000000000000004002300000000000",
-    ] {
-        assert!(module.contains(constant), "{constant}: {module}");
-    }
+    ];
+    assert_eq!(got, expected, "{module}");
     assert!(module.contains("@big = global i32 1"), "{module}");
     assert!(module.contains("@fits = global i32 1"), "{module}");
 }
