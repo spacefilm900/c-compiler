@@ -58,6 +58,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "harness"))
 import intel_mac_proxy as intel  # noqa: E402
+from run_gcc_torture import dg_flags  # noqa: E402
 COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
 CLANG = os.environ.get("CLANG", "clang")
 QEMU = os.environ.get("QEMU_AARCH64", "qemu-aarch64")
@@ -94,7 +95,7 @@ class Toolchain:
         self.intel = target == intel.TARGET
         self.tmp = tmp
         self.shims = []
-        self.llc = None
+        self.llc = self.opt = None
         if self.apple:
             sysroot = tmp / "sysroot"
             (sysroot / "usr").mkdir(parents=True)
@@ -108,9 +109,9 @@ class Toolchain:
             self.sysroot = intel.make_sysroot(self.tmp)
             if self.sysroot is None:
                 return "the x86_64 glibc headers are missing"
-            self.llc = intel.find_llc()
-            if self.llc is None:
-                return "llc not found (set LLC)"
+            self.llc, self.opt = intel.find_tool("llc"), intel.find_tool("opt")
+            if self.llc is None or self.opt is None:
+                return "llc or opt not found (set LLC and OPT)"
             return None
         if not self.apple:
             return None
@@ -127,8 +128,8 @@ class Toolchain:
         self.shims = [str(shim_a), str(shim_l)]
         return None
 
-    def ours(self, src, ll, std):
-        cmd = [str(COMPILER), "-target", self.target]
+    def ours(self, src, ll, std, extra=()):
+        cmd = [str(COMPILER), "-target", self.target, *extra]
         if self.apple or self.intel:
             cmd += ["-isysroot", str(self.sysroot)]
         if self.intel:
@@ -162,8 +163,11 @@ class Toolchain:
         if self.intel:
             proxy = ll.with_suffix(".proxy.ll")
             proxy.write_text(intel.proxy_ir(ll.read_text(errors="replace")))
-            return run([self.llc, f"-mtriple={intel.PROXY_TRIPLE}", "-relocation-model=pic",
-                        "-filetype=obj", str(proxy), "-o", str(obj)])
+            for cmd in intel.object_commands(self.llc, self.opt, proxy, obj):
+                result = run(cmd)
+                if result[0] != 0:
+                    return result
+            return result
         if self.apple:
             text = ll.read_text(errors="replace")
             renamed = ll.with_suffix(".proxy.ll")
@@ -182,9 +186,9 @@ class Toolchain:
         return run([QEMU, str(binary)])
 
 
-def build_ours(tc, src, base, std):
+def build_ours(tc, src, base, std, extra=()):
     ll, obj = base.with_suffix(".ll"), base.with_suffix(".o")
-    rc, _, err = tc.ours(src, ll, std)
+    rc, _, err = tc.ours(src, ll, std, extra)
     if rc != 0:
         return None, f"compiler failed ({rc}): {short(err)}"
     rc, _, err = tc.ll_obj(ll, obj)
@@ -308,8 +312,9 @@ def known_failures(target):
 
 
 def torture(target, label_filter):
-    """Run gcc.c-torture/execute for an arm64 target, built by this compiler
-    alone (`-std=gnu11`), each program's own self-test deciding. This is a
+    """Run gcc.c-torture/execute for a cross target, built by this compiler
+    alone (`-std=gnu11`, and `-fgnu89-inline` where the test's dg-options
+    ask for it), each program's own self-test deciding. This is a
     report, not a gate: it lists failures that are not already in the
     x86_64 list harness/gcc_torture_known_failures.txt, and exits 0. Under
     the Apple proxy, programs that call glibc's `long double` functions or
@@ -339,7 +344,7 @@ def torture(target, label_filter):
             label = str(src.relative_to(root))
             work = tmp / label.replace("/", "_")
             work.mkdir()
-            obj, err = build_ours(tc, src, work / "t", "gnu11")
+            obj, err = build_ours(tc, src, work / "t", "gnu11", dg_flags(src))
             if err:
                 return label, err
             rc, _, e = tc.link([obj], work / "t.bin")

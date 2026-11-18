@@ -13,9 +13,11 @@ details are set aside:
    rather than a Mach-O one with a leading `_`.
 2. Objects. Each IR file, written for `x86_64-apple-macosx10.15.0` with
    the Mach-O data layout, has its triple changed to
-   `x86_64-apple-darwin-elf` and its mangling to ELF (`m:e`), and `llc`
-   builds an ELF object: the backend still applies its Darwin rules, but
-   the symbols are the plain C names glibc exports.
+   `x86_64-apple-darwin-elf` and its mangling to ELF (`m:e`); `opt` runs
+   LLVM's -O0 pipeline (as Clang does for an IR file: it inlines
+   `alwaysinline` functions) and `llc` builds an ELF object. The backend
+   still applies its Darwin rules, but the symbols are the plain C names
+   glibc exports.
 3. Linking and running use the host's glibc and Linux.
 
 What this cannot show: the macOS SDK headers, Apple's C library, the Mach-O
@@ -80,10 +82,23 @@ def proxy_ir(text):
     return re.sub(r'^(target datalayout = "e)-m:o-', r"\1-m:e-", text, flags=re.M)
 
 
-def find_llc():
-    if os.environ.get("LLC"):
-        return os.environ["LLC"]
-    for name in ["llc"] + [f"llc-{v}" for v in (21, 20, 19, 18)]:
-        if shutil.which(name):
-            return name
+def find_tool(name):
+    """`llc` or `opt`: $LLC / $OPT, else the first of name, name-21 .. name-18
+    on PATH."""
+    if os.environ.get(name.upper()):
+        return os.environ[name.upper()]
+    for candidate in [name] + [f"{name}-{v}" for v in (21, 20, 19, 18)]:
+        if shutil.which(candidate):
+            return candidate
     return None
+
+
+def object_commands(llc, opt, proxy_ll, obj):
+    """The commands that build the stand-in's ELF object from `proxy_ll`
+    (already passed through proxy_ir)."""
+    bc = Path(proxy_ll).with_suffix(".bc")
+    return [
+        [opt, "-passes=default<O0>", str(proxy_ll), "-o", str(bc)],
+        [llc, f"-mtriple={PROXY_TRIPLE}", "-relocation-model=pic", "-filetype=obj", str(bc),
+         "-o", str(obj)],
+    ]

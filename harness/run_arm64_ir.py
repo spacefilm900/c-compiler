@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Check this compiler's arm64 IR without running it.
+"""Check this compiler's IR for the non-default targets without running it.
 
-    python3 harness/run_arm64_ir.py [--target arm64-apple-macos|aarch64-linux-gnu]
+    python3 harness/run_arm64_ir.py [--target arm64-apple-macos|aarch64-linux-gnu|x86_64-apple-macos]
 
-Two checks, for each AArch64 target (both by default):
+Two checks, for each of the AArch64 targets and Intel macOS (all three by
+default):
 
 1. Signature lowering. The calling-convention battery
    (tests/arm64/xabi/*_def.c and tests/xabi/*_def.c), and every other test
@@ -19,10 +20,12 @@ Two checks, for each AArch64 target (both by default):
 2. Backend acceptance. Every test program (tests/*.c, tests/gnu/both/*.c,
    tests/arm64/**/*.c) that this compiler accepts for x86_64 is compiled
    for the target and handed to `llc -mtriple=<triple> -filetype=obj`; for
-   arm64-apple-macos that writes a Mach-O object. A program this compiler
-   rejects for the target passes only if Clang rejects it too. Programs that include
-   system headers are skipped unless the AArch64 glibc headers are present
-   (AARCH64_INCLUDE, default /usr/aarch64-linux-gnu/include); this needs no
+   arm64-apple-macos and x86_64-apple-macos that writes a Mach-O object. A
+   program this compiler rejects for the target passes only if Clang
+   rejects it too. Programs that include system headers are skipped unless
+   the AArch64 glibc headers are present (AARCH64_INCLUDE, default
+   /usr/aarch64-linux-gnu/include); for x86_64-apple-macos they read the
+   x86_64 glibc headers through harness/intel_mac_proxy.py. This needs no
    Mac, and the macOS SDK headers are not used.
 
 Env: CC_UNDER_TEST, CLANG (default clang), LLC (default: llc, llc-18..21),
@@ -32,12 +35,15 @@ import argparse, concurrent.futures, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "harness"))
+import intel_mac_proxy as intel  # noqa: E402
 COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
 CLANG = os.environ.get("CLANG", "clang")
 INCLUDE = Path(os.environ.get("AARCH64_INCLUDE", "/usr/aarch64-linux-gnu/include"))
 TARGETS = {
     "arm64-apple-macos": ("arm64-apple-macos11", "arm64-apple-macosx11.0.0"),
     "aarch64-linux-gnu": ("aarch64-linux-gnu", "aarch64-unknown-linux-gnu"),
+    intel.TARGET: (intel.CLANG_TRIPLE, intel.IR_TRIPLE),
 }
 ABI_ATTRS = ("signext", "zeroext", "inreg", "sret", "byval", "alignstack")
 
@@ -101,6 +107,37 @@ def leaves(ty, types):
     return [ty]
 
 
+SCALAR_LAYOUT = {"i1": (1, 1), "i8": (1, 1), "i16": (2, 2), "i24": (3, 4), "i32": (4, 4),
+                 "i64": (8, 8), "i128": (16, 16), "ptr": (8, 8), "half": (2, 2), "float": (4, 4),
+                 "double": (8, 8), "x86_fp80": (16, 16), "fp128": (16, 16)}
+
+
+def ir_layout(ty, types):
+    """(size, alignment) in bytes of an IR type, for the x86-64 data layout
+    (i128 and x86_fp80 aligned to 16)."""
+    ty = ty.strip()
+    if ty.startswith("%"):
+        return ir_layout(types[ty], types)
+    m = re.fullmatch(r"\[\s*(\d+) x (.*?)\s*\]", ty)
+    if m:
+        size, align = ir_layout(m.group(2), types)
+        return size * int(m.group(1)), align
+    m = re.fullmatch(r"<(\d+) x (.*)>", ty)
+    if m:
+        size, _ = ir_layout(m.group(2), types)
+        return size * int(m.group(1)), size * int(m.group(1))
+    packed = ty.startswith("<{")
+    if packed or ty.startswith("{"):
+        size, align = 0, 1
+        for part in split_top(ty.strip("<>")[1:-1]):
+            psize, palign = ir_layout(part, types)
+            palign = 1 if packed else palign
+            size = (size + palign - 1) // palign * palign + psize
+            align = max(align, palign)
+        return (size + align - 1) // align * align, align
+    return SCALAR_LAYOUT[ty]
+
+
 def canon_type(ty, types):
     ty = ty.strip()
     if ty.startswith(("%", "{", "<{", "[")):
@@ -120,6 +157,10 @@ def canon_param(param, types):
         if am:
             if attr == "alignstack":
                 attrs.append(am.group(0))
+            elif attr == "byval" and am.group(2) and X86_LAYOUT[0]:
+                # A byval copy is memory: only its size matters to the
+                # convention, not how the IR spells its type.
+                attrs.append(f"byval(size {ir_layout(am.group(2), types)[0]})")
             elif attr in ("sret", "byval") and am.group(2):
                 attrs.append(f"{attr}({canon_type(am.group(2), types)})")
             else:
@@ -128,6 +169,24 @@ def canon_param(param, types):
     if ty == "i1":
         ty = "i8"  # Clang passes _Bool as i1; this compiler as i8
     return " ".join([ty] + attrs)
+
+
+# Set while the x86_64 target is checked (see split_i128 and canon_param).
+X86_LAYOUT = [False]
+
+
+def split_i128(sig_params, ret):
+    """On x86-64, an `__int128` argument in registers is `i64, i64` in
+    Clang's IR and `i128` in this compiler's; LLVM passes both in the same
+    two registers, and an `i128` on the stack when they run out (System V
+    AMD64 3.2.3), which is what Clang writes then. A 16-byte INTEGER result
+    is `{ i64, i64 }` or `i128`, both in %rax:%rdx. Both spellings are
+    reduced to one: `i128` arguments to two `i64`, `{ i64, i64 }` results to
+    `i128`."""
+    params = []
+    for p in sig_params:
+        params += ["i64", "i64"] if p == "i128" else [p]
+    return params, "i128" if ret == "agg(i64,i64)" else ret
 
 
 def signatures(ir, local=None):
@@ -154,6 +213,8 @@ def signatures(ir, local=None):
         if ret == "i1":
             ret = "i8"
         ps = [canon_param(p, types) for p in split_top(params)]
+        if X86_LAYOUT[0]:
+            ps, ret = split_i128(ps, ret)
         sigs[name] = " ".join([ret] + attrs) + " (" + ", ".join(ps) + ")"
         if "internal" in words or "private" in words:
             local.add(name)
@@ -197,6 +258,7 @@ def check_signatures(target, tmp, sysroot):
         if rc2:
             return 0, [f"{src.name}: clang failed: {err2.strip()[:300]}"]
         local = set()
+        X86_LAYOUT[0] = target == intel.TARGET
         mine, theirs = signatures(ours.read_text()), signatures(ref.read_text(), local)
         compared, failures = 0, []
         for name in sorted(theirs):
@@ -282,12 +344,13 @@ def main():
     bad = 0
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
-        sysroot = None
+        arm_sysroot = None
         if INCLUDE.is_dir():
-            sysroot = tmp / "sysroot"
-            (sysroot / "usr").mkdir(parents=True)
-            (sysroot / "usr" / "include").symlink_to(INCLUDE)
+            arm_sysroot = tmp / "sysroot"
+            (arm_sysroot / "usr").mkdir(parents=True)
+            (arm_sysroot / "usr" / "include").symlink_to(INCLUDE)
         for target in args.target or sorted(TARGETS):
+            sysroot = intel.make_sysroot(tmp) if target == intel.TARGET else arm_sysroot
             compared, failures = check_signatures(target, tmp, sysroot)
             for f in failures:
                 print(f"FAIL signature {target} {f}")
