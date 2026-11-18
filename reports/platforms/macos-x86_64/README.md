@@ -195,6 +195,10 @@ GCC for the enum rules) as a black box:
       after a signed one and `unsigned long` after an unsigned one (GCC and
       Clang agree). `enum { A = 0x7fffffff, B, C = sizeof(B) }` gives 8.
     - The underlying type is in force inside the list (`sizeof(enum E)`).
+      Without one, the enum is incomplete until its `}` (C11 6.7.2.2p4),
+      so `sizeof(enum E)` inside its own list is an error.
+    - An enumeration spelled with `enum` is rejected as an underlying
+      type.
     - Underlying types and values wider than 64 bits are rejected instead
       of being truncated.
 
@@ -202,9 +206,12 @@ GCC for the enum rules) as a black box:
     `gnu_enum_values_stay_within_64_bits` and
     `gnu_enum_colon_needs_a_type_after_it`.
 11. **`-target x86_64-apple-darwinN`** now maps the Darwin version to macOS
-    as Clang does (`darwin20` is macOS 11, `darwin19` is 10.15), and junk
-    (`darwinjunk`) or versions above 99 are rejected.
-12. **Only one compiler header tree is searched**, so `#include_next` in
+    as Clang does (`darwin25` is macOS 26, `darwin20` is macOS 11,
+    `darwin19` is 10.15), and junk (`darwinjunk`) or versions above 99 are
+    rejected. An arm64 Darwin version below 20 still means the arm64
+    default, as before.
+12. **Only one compiler header tree is searched** (the first candidate
+    that has all of the compiler's headers), so `#include_next` in
     the compiler's `<limits.h>` cannot land in a second copy at another
     path.
 
