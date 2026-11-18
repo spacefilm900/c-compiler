@@ -267,7 +267,12 @@ def run(cmd, timeout=60):
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            proc.communicate()
+            # A descendant that left the group may still hold the pipes, so
+            # do not wait for EOF: close them and reap the direct child.
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe:
+                    pipe.close()
+            proc.wait()
             return "timeout", b"", f"timed out after {timeout} s".encode()
         return proc.returncode, out, err
 
