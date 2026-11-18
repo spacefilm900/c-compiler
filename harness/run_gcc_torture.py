@@ -27,6 +27,13 @@ harness/gcc_torture_known_failures.txt lists failures with a reason
 category. An unlisted failure fails the run. A listed test that passes
 fails the run. A compiler panic fails the run even when listed.
 
+The list is for x86_64 Linux. On another target (read from `clang
+-dumpmachine`; a native AArch64 Linux host, or CLANG and CC_UNDER_TEST
+wrappers that add the target), harness/gcc_torture_known_failures_<arch>.txt
+adjusts it: `-TEST reason` drops an x86_64 entry that passes there, and
+`+TEST category reason` adds a failure only that target has. Every line
+gives its reason.
+
 Env: CC_UNDER_TEST, CLANG, TORTURE_ROOT, TORTURE_JOBS, TORTURE_RUN_TIMEOUT.
 """
 
@@ -43,6 +50,9 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "harness"))
+from target_arch import arch_of, clang_triple  # noqa: E402
+
 COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
 CLANG = os.environ.get("CLANG", "clang")
 SUITE = Path(
@@ -72,6 +82,29 @@ def load_known(path: Path) -> dict[str, str]:
             sys.exit(f"{path}:{lineno}: duplicate entry for {rel}")
         known[rel] = reason
     return known
+
+
+def apply_target_overlay(known: dict[str, str], arch: str) -> None:
+    """Adjust the x86_64 list for `arch` from its overlay file, if any."""
+    path = ROOT / "harness" / f"gcc_torture_known_failures_{arch}.txt"
+    if arch == "x86_64" or not path.is_file():
+        return
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        sign, body = text[0], text[1:]
+        rel, _, reason = body.partition(" ")
+        if sign not in "+-" or not reason.strip():
+            sys.exit(f"{path}:{lineno}: expected '+TEST category reason' or '-TEST reason'")
+        if sign == "-":
+            if rel not in known:
+                sys.exit(f"{path}:{lineno}: {rel} is not in the x86_64 list")
+            del known[rel]
+        else:
+            if rel in known:
+                sys.exit(f"{path}:{lineno}: {rel} is already in the x86_64 list")
+            known[rel] = reason.strip().split()[0]
 
 
 def category(detail: str) -> str:
@@ -211,6 +244,12 @@ def main() -> int:
 
     sources = tests()
     known = {} if args.record else load_known(KNOWN_PATH)
+    triple = clang_triple(CLANG)
+    arch = arch_of(triple)
+    if not args.record:
+        apply_target_overlay(known, arch)
+    if arch != "x86_64":
+        print(f"target {triple or 'unknown'}")
     results: list[tuple[str, str, str]] = []
     jobs = max(1, args.jobs)
     with ProcessPoolExecutor(max_workers=jobs) as pool:
