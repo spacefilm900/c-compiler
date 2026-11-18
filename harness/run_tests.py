@@ -32,6 +32,11 @@ tests/gnu/both/*.c use GNU spellings that strict C11 also accepts
 identifiers, not constraint violations. Each is compared with Clang in
 both modes, -std=c11 and -std=gnu11.
 
+On an AArch64 target (read from `clang -dumpmachine`: a native AArch64
+Linux host, or wrappers that add the target), the AArch64
+calling-convention tests in tests/arm64/ (pairs in tests/arm64/xabi/) are
+run too, the same way.
+
 Env: CC_UNDER_TEST, CLANG (default "clang"), TIMEOUT (seconds, default 10),
 KNOWN_FAILURES (optional file of test labels, one per line, '#' comments:
 those tests may fail without failing the run; the macOS job uses
@@ -42,6 +47,8 @@ import os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "harness"))
+from target_arch import arch_of, clang_triple  # noqa: E402
 COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
 CLANG = os.environ.get("CLANG", "clang")
 TIMEOUT = float(os.environ.get("TIMEOUT", "10"))
@@ -165,6 +172,9 @@ def main():
     tests = sorted((ROOT / "tests").glob("*.c"))
     hosted = sorted((ROOT / "tests" / "hosted").glob("*.c"))
     crosses = sorted((ROOT / "tests" / "xabi").glob("*_def.c"))
+    if shutil.which(CLANG) and arch_of(clang_triple(CLANG)) == "aarch64":
+        hosted += sorted((ROOT / "tests" / "arm64").glob("*.c"))
+        crosses += sorted((ROOT / "tests" / "arm64" / "xabi").glob("*_def.c"))
     gnu = sorted((ROOT / "tests" / "gnu").glob("*.c"))
     both = sorted((ROOT / "tests" / "gnu" / "both").glob("*.c"))
     problems = []
@@ -217,10 +227,10 @@ def main():
         for t in tests:
             report(t.name, test(t, tmp))
         for t in hosted:
-            report(f"{t.parent.name}/{t.name}", test(t, tmp))
+            report(f"{t.parent.relative_to(ROOT / 'tests').as_posix()}/{t.name}", test(t, tmp))
         for t in crosses:
             use = t.with_name(t.name[: -len("_def.c")] + "_use.c")
-            label = f"{t.parent.name}/{t.name[: -len('_def.c')]}"
+            label = f"{t.parent.relative_to(ROOT / 'tests').as_posix()}/{t.name[: -len('_def.c')]}"
             report(label, f"missing {use.name}" if not use.is_file() else test_cross(t, use, tmp))
         for t in gnu:
             report(f"{t.parent.name}/{t.name}", test_gnu(t, tmp))
