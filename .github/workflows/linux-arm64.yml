@@ -158,6 +158,7 @@ jobs:
           key: ${{ matrix.key }}-${{ hashFiles('scripts/fetch_*.sh') }}-${{ runner.os }}-${{ runner.arch }}
 
       - name: Release build
+        id: build
         run: make
 
       - name: Run ${{ matrix.group }}
@@ -207,22 +208,35 @@ jobs:
             exit 1
           fi
 
-      - name: AWK Builder suites
-        if: contains(matrix.suites, 'onetrueawk')
-        timeout-minutes: 20
+      # The AWK Builder suites run even when an earlier suite failed (that
+      # failure still fails the job). The read token is visible only to the
+      # step that clones the two private suites, not to the builds or to the
+      # harness.
+      - name: Fetch the AWK Builder suites
+        id: awk-fetch
+        if: contains(matrix.suites, 'onetrueawk') && !cancelled() && steps.build.outcome == 'success'
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ secrets.AWK_SUITE_READ_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN}" ]; then
             echo "SKIP: AWK Builder suites need the AWK_SUITE_READ_TOKEN secret."
+            echo "fetched=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
-          scripts/build_onetrueawk.sh clang build/otawk-clang
-          scripts/build_onetrueawk.sh ccomp build/otawk-ccomp
           scripts/fetch_awk_posix_challenge.sh
           scripts/fetch_awk_volume.sh
+          echo "fetched=true" >> "${GITHUB_OUTPUT}"
+
+      - name: AWK Builder suites
+        if: contains(matrix.suites, 'onetrueawk') && !cancelled() && steps.awk-fetch.outputs.fetched == 'true'
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          scripts/fetch_onetrueawk.sh
+          scripts/build_onetrueawk.sh clang build/otawk-clang
+          scripts/build_onetrueawk.sh ccomp build/otawk-ccomp
           AWK_CLANG="$PWD/build/otawk-clang/awk" \
             AWK_CCOMP="$PWD/build/otawk-ccomp/awk" \
             python3 harness/run_awk_extra.py
