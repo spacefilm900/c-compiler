@@ -729,7 +729,8 @@ Baseline on `f11131e` (non-test code in `src/`, 22,466 instrumented lines):
   - `va_arg` of a 16-byte-aligned one-SSE-eightbyte record on SysV
   - checked bit-field offsets in record layout
 - **Output changes.** Old and new compilers have the same exit status and IR on all 13,148 compilations. Messages differ in 4 of them, all from the `void *` / function pointer rule: two torture files fail earlier in strict mode and get one more warning in GNU mode. SQLite, Lua and DOOM give identical IR. `sqlite3.c` and two DOOM files get new GNU-mode warnings.
-- **Unit tests:** 198 → 208. **Harness:** 185/185.
+- **Review of the follow-up** found and fixed five more: a `signed char` bit-field read as unsigned on AArch64 Linux (already on `main`), a saturating static bit position past 512 MiB, `(_Bool)&g` in a static initializer, `?:` with `(void *)0` not taking the other pointer's type (already on `main`), and the parser's `?:` typing of `void` and record operands.
+- **Unit tests:** 198 → 209. **Harness:** 187/187.
 - **Seen, not fixed** (none is wrong code):
   - a pointer is rejected for a `_Bool` bit-field
   - `# ##` in a function-like macro is accepted

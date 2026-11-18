@@ -8,7 +8,8 @@ Every fix was written from C11 (N1570), the LLVM LangRef and the SysV AMD64 ABI.
 
 - **The three wrong-code bugs from phase C's review are fixed, and each has a regression test.**
 - **All 17 "Minor" CodeRabbit findings on pull request 45 were real, and all 17 are fixed.** Phase C's report said 15. CodeRabbit marked 18 findings Minor. One of them, about `rust_scan`, was already fixed in pull request 45, which leaves 17.
-- **No change in IR for any program the old compiler accepted.** We compared old and new compiler output on 13,148 compilations. Exit status and IR were the same for all of them. Messages changed in 4 cases, all from the `void *` / function pointer fix (section 4).
+- **No change in exit status or IR across the 13,148 tested compilations** (the test suites, so none of them hit the fixed bugs). Messages changed in 4, all from the `void *` / function pointer fix (section 4). The fixed programs themselves of course get different IR.
+- **Review of this pull request found five more defects, all fixed** (section 6), including one wrong-code bug on AArch64 Linux that CI caught.
 
 ## 1. The three review bugs
 
@@ -22,7 +23,7 @@ Details:
 
 - **a.** C11 6.6p10 lets an implementation accept other forms of constant expression. An address converted to a pointer-sized integer (64 bits on every supported target) is still accepted, as before. A wider (or narrower) integer is now rejected in `sema/init.rs`. `irgen/consts.rs` `render_const` reports an internal compiler error if a `PtrToInt` constant that is not 64 bits ever reaches it.
 - **b.** `gen_compound_assign` computed the result correctly, but on the floating path it then did an ordinary store of the whole storage unit. Both the floating and the integer path now convert the result to the bit-field's declared type and go through `store_bitfield` (6.5.16.2p3, 6.3.1.2, 6.3.1.4). Converting to the declared type, not the promoted `int`, also fixes two more cases. One was `_Bool` bit-fields: `b += 0.25` gave 0 and now gives 1. The other was a `long long` right operand on `char` and `long long` bit-fields. The test covers `unsigned`, signed, `_Bool` and `long long` bit-fields with `float`, `double` and `long long` operands, and checks that neighbouring bit-fields keep their values.
-- **c.** C11 6.7.9p19: a brace-enclosed list for a subobject initializes that whole subobject, and members it does not name are zero. So a later `.a = {3}` replaces everything an earlier initializer stored inside `a`. Shaping now records how far each subobject's stores reach (`init::Reach`). When a designator or a positional item opens a brace list for a whole aggregate, `Sema::replace_subobject` drops the earlier stores inside it, and they go to `overridden`, so their side effects still happen. Element designators (`.a[1] = 5`) and brace elision still keep earlier values, as 6.7.9p19 requires. The test checks 15 values, and Clang and GCC agree on all of them.
+- **c.** C11 6.7.9p19: a brace-enclosed list for a subobject initializes that whole subobject, and members it does not name are zero. So a later `.a = {3}` replaces everything an earlier initializer stored inside `a`. Shaping now records how far each subobject's stores reach (`init::Reach`). When a designator or a positional item opens a brace list for a whole aggregate, `Sema::replace_subobject` drops the earlier stores inside it and moves them to `overridden`. Their expressions are still type-checked (and constant-folded for static storage), but they are not evaluated at run time, which 6.7.9p19 footnote 151 allows ("might not be evaluated at all"). Element designators (`.a[1] = 5`) and brace elision still keep earlier values, as 6.7.9p19 requires. The test checks 15 values, and Clang and GCC agree on all of them.
 
 ## 2. Triage of the 17 Minor findings
 
@@ -48,12 +49,11 @@ Details:
 
 ## 3. Seen while fixing, not fixed
 
-These are recorded here and in `STATUS.md`. None is a wrong-code bug.
+These are recorded here and in `STATUS.md`. None is a wrong-code bug. (A fifth item, a saturating `u32` bit position for static arrays of bit-field structs past 512 MiB, was wrong code and is fixed; see section 6.)
 
 - **A pointer assigned to, or initializing, a `_Bool` bit-field is rejected.** Clang accepts it. Plain `_Bool` objects are fine.
 - **`# ##` in a function-like macro is accepted.** It should be a diagnostic, because `#` must be followed by a parameter (6.10.3.2p1).
 - **`int *p = (int *)(__int128)&g;` is accepted** at file scope. GCC accepts it and Clang rejects it. 6.6p10 leaves this to the implementation.
-- **Very large arrays of bit-field structs.** In a static initializer, a bit-field store's absolute bit position is a `u32` built with `saturating_mul`. So an array of bit-field structs larger than 512 MiB is not checked for overflow.
 - **Bit-field position limit.** A bit-field at or past byte 512 MiB of its record (bit 2^32) is now an error ("too large"). Clang accepts it. This is an implementation limit, and before this fix such a record was laid out wrong.
 
 ## 4. Output differences, old vs new compiler
@@ -69,6 +69,8 @@ These are recorded here and in `STATUS.md`. None is a wrong-code bug.
 
 Both torture files were already rejected in strict mode and accepted in GNU mode, so their status in the torture list does not change.
 
+The same comparison with `-target aarch64-linux-gnu` gives these 4 plus 2 more: torture `pr78436.c` in both modes, where a `signed char` bit-field is now read with `sext` instead of `zext` (section 6). The program's result does not change because it only compares the field with 0.
+
 Real programs, built with `-std=gnu11`, old vs new compiler:
 
 - **SQLite** `sqlite3.c` and `shell.c`: identical IR. `sqlite3.c` gets 24 new warnings. They come from the math-function table, which stores function pointers in a `void *` field.
@@ -81,7 +83,21 @@ Real programs, built with `-std=gnu11`, old vs new compiler:
 
 - `cargo fmt --all -- --check` clean
 - `cargo clippy --all-targets -- -D warnings` clean
-- `cargo test --lib`: 208 passed (198 on `0cab101`)
-- `make` and `python3 harness/run_tests.py`: 185/185, including the new tests 147–149, `gnu/15` and `xabi/05`
+- `cargo test --lib`: 209 passed (198 on `0cab101`)
+- `make` and `python3 harness/run_tests.py`: 187/187, including the new tests 147–151, `gnu/15` and `xabi/05`
 
 CI runs WACC, torture, Csmith, DOOM, Lua, SQLite and One True AWK.
+
+## 6. Fixes from the review of this pull request
+
+CodeRabbit and CI on this pull request found these. Each is fixed with a test.
+
+| Finding | Fix | Test |
+|---|---|---|
+| CI (arm64 under qemu): `tests/147` printed 254 for a `signed char` bit-field holding -2 | `irgen/access.rs` `container_type` used plain `char` for a signed 8-bit storage unit, and plain `char` is unsigned on AArch64 Linux, so every read of a `signed char` bit-field zero-extended. This was already on `main`; the new compound-assignment path made it visible. The unit is now `signed char` | `tests/150_signed_char_bitfield.c` |
+| A static array of bit-field structs past 512 MiB: the bit position saturated at `u32::MAX` and the bit landed in an earlier element | `BitStore::abs_bit` is now `u64`, built with checked arithmetic ("object is too large to initialize" on overflow), and `ByteImage::pack_bits` works in `u64` | sema unit test `bit_positions_past_two_to_the_32_stay_in_place` |
+| `_Bool b = (_Bool)&g;` was rejected as "truncates an address" | An explicit `(_Bool)` cast of an address is its truth value (6.3.1.2), as the implicit conversion already was; a weak symbol still is not folded | sema unit tests, `tests/151` |
+| `1 ? (int *)p : (void *)0` had type `void *` | 6.5.15p6: a null pointer constant takes the other operand's type, checked before `void *` merging, in sema (already wrong on `main`) and in the parser's typing for `_Generic` / `_Static_assert` / `typeof` | parser unit test, `tests/151` |
+| The parser's typing of `?:` accepted `void` with a non-`void` operand, and two different record types | 6.5.15p3: void only with void, and a record only with a compatible record, as sema already required | parser unit test |
+
+Also from the review: `tests/xabi/05_va_aligned_fp_def.c` no longer includes `<stdarg.h>`; it uses `__builtin_va_list` and the `__builtin_va_*` builtins. The README wording about overridden initializers and the IR comparison was corrected.
