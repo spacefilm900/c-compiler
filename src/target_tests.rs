@@ -541,3 +541,37 @@ fn intel_mac_passes_flexible_array_records_in_memory() {
     let linux = ir(Target::X86_64Linux, source);
     assert!(linux.contains("define i32 @id(i32 %p0)"), "{linux}");
 }
+
+#[test]
+fn intel_mac_passes_unions_holding_flexible_array_records_in_memory() {
+    // As for the struct itself (observed with Clang as a black box).
+    let source = "struct V { int n; int a[]; };\nunion F { struct V v; long l; };\n\
+                  long take(union F f) { return f.l; }\n";
+    let mac = ir(INTEL_MAC, source);
+    assert!(
+        mac.contains("define i64 @take(ptr byval(%union.F) align 8 %p0)"),
+        "{mac}"
+    );
+    let linux = ir(Target::X86_64Linux, source);
+    assert!(linux.contains("define i64 @take(i64 %p0)"), "{linux}");
+}
+
+#[test]
+fn intel_mac_passes_a_lone_x87up_eightbyte_as_sse() {
+    // `union { long double d; void *p; }`: the second eightbyte is X87UP
+    // without X87 before it. The psABI passes the union in memory; Intel
+    // macOS (Clang, observed as a black box) passes and returns it in a
+    // general register and an SSE register.
+    let source = "union A { long double d; void *p; };\n\
+                  union A id(union A a) { return a; }\n";
+    let mac = ir(INTEL_MAC, source);
+    assert!(
+        mac.contains("define { i64, double } @id(i64 %p0, double %p0.1)"),
+        "{mac}"
+    );
+    let linux = ir(Target::X86_64Linux, source);
+    assert!(
+        linux.contains("define void @id(ptr sret(%union.A) align 16 %agg.result, ptr byval(%union.A) align 16 %p0)"),
+        "{linux}"
+    );
+}

@@ -360,12 +360,10 @@ pub fn classify_for(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
     // Intel macOS, whose only C compiler is Clang: a struct with a flexible
     // array member is passed and returned in memory (observed with Clang as
     // a black box). On Linux this compiler keeps GCC's choice, registers.
-    if let (Target::X86_64Apple { .. }, CType::Struct(handle)) =
-        (crate::target::current(), bare.peel())
-    {
-        if handle.has_flexible_member() {
-            return Ok(AggAbi::Memory);
-        }
+    // The same holds for a union that contains such a struct at any depth.
+    let apple = matches!(crate::target::current(), Target::X86_64Apple { .. });
+    if apple && bare.flexible_carrier() {
+        return Ok(AggAbi::Memory);
     }
     let mut leaves = Vec::new();
     collect_leaves(&bare, 0, false, &mut leaves);
@@ -381,10 +379,22 @@ pub fn classify_for(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
         apply_leaf(leaf, &mut classes);
     }
     // X87UP belongs with a preceding X87 eightbyte. Anywhere else the
-    // aggregate is passed in memory.
-    let x87up_orphan = classes.iter().enumerate().any(|(index, class)| {
-        *class == Class::X87Up && (index == 0 || classes[index - 1] != Class::X87)
-    });
+    // psABI passes the aggregate in memory. Intel macOS instead treats such
+    // an eightbyte as SSE, a `double` (Apple's x86-64 conventions; observed
+    // with Clang as a black box): `union { long double d; void *p; }` is
+    // passed in `%rdi` and `%xmm0` and returned in `%rax` and `%xmm0`.
+    let orphan = |classes: &[Class], index: usize| {
+        classes[index] == Class::X87Up && (index == 0 || classes[index - 1] != Class::X87)
+    };
+    let apple_sse: Vec<bool> = (0..eightbytes)
+        .map(|index| apple && orphan(&classes, index))
+        .collect();
+    for (class, sse) in classes.iter_mut().zip(&apple_sse) {
+        if *sse {
+            *class = Class::Sse;
+        }
+    }
+    let x87up_orphan = (0..eightbytes).any(|index| orphan(&classes, index));
     if classes.iter().any(|class| *class == Class::Memory) || x87up_orphan {
         return Ok(AggAbi::Memory);
     }
@@ -410,6 +420,10 @@ pub fn classify_for(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
     for (index, class) in classes.iter().enumerate() {
         let piece = match class {
             Class::Integer => integer_piece(index, eightbytes, &leaves, size),
+            Class::Sse if apple_sse[index] => Some(RegPiece::Sse {
+                kind: SsePiece::Double,
+                offset: index as u64 * 8,
+            }),
             Class::Sse => Some(sse_piece(index, &leaves)),
             _ => None,
         };
