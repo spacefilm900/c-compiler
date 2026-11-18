@@ -77,6 +77,12 @@ jobs:
       - name: Csmith campaign script tests
         run: python3 -m unittest tools/test_csmith_campaign.py tools/test_run_doom.py tools/test_run_lua.py tools/test_run_sqlite.py tools/test_perf_tools.py
 
+      - name: Stage dump golden tests and reducer unit tests
+        run: |
+          set -euo pipefail
+          python3 harness/run_dump_tests.py
+          python3 -m unittest tools/reduce/test_reduce.py
+
       # The arm64 targets, checked on this Linux runner (no macOS runner):
       # IR signatures against Clang and llc acceptance (Mach-O objects for
       # arm64-apple-macos), then the differential harness under qemu-aarch64
