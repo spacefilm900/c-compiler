@@ -1510,7 +1510,11 @@ fn gnu_enum_list_rules() {
             .contains("incomplete")
     );
     assert!(parse_err("enum E { A = sizeof(enum E) };").contains("incomplete"));
-    parse_gnu("enum E : long { A = sizeof(enum E) };").unwrap();
+    parse_gnu("enum E : long { A = sizeof(enum E) }; _Static_assert(A == 8, \"size\");").unwrap();
+    assert!(
+        parse_gnu("enum E : long { A = sizeof(enum E) }; _Static_assert(A == 4, \"size\");")
+            .is_err()
+    );
     assert!(parse_gnu("enum E { X }; enum F : enum E { B };").is_err());
     assert!(parse_gnu("enum F : enum E { X } { B };")
         .unwrap_err()

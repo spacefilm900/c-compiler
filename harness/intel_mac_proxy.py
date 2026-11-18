@@ -105,17 +105,32 @@ def llvm_major(tool):
     return int(m.group(1)) if m else None
 
 
-def find_tool(name):
-    """`llc` or `opt` of LLVM 18 or later: $LLC / $OPT, else the first of
-    name, name-21 .. name-18 on PATH that is new enough. None when there is
-    none (an older $LLC / $OPT included)."""
+def candidates(name):
+    """(tool, LLVM major) for `name`: $LLC / $OPT alone when set, else name,
+    name-21 .. name-18 on PATH, those of LLVM 18 or later only."""
     if os.environ.get(name.upper()):
-        tool = os.environ[name.upper()]
-        return tool if (llvm_major(tool) or 0) >= MIN_LLVM else None
-    for candidate in [name] + [f"{name}-{v}" for v in (21, 20, 19, 18)]:
-        if shutil.which(candidate) and (llvm_major(candidate) or 0) >= MIN_LLVM:
-            return candidate
-    return None
+        names = [os.environ[name.upper()]]
+    else:
+        names = [c for c in [name] + [f"{name}-{v}" for v in (21, 20, 19, 18)]
+                 if shutil.which(c)]
+    found = []
+    for tool in names:
+        major = llvm_major(tool)
+        if major is not None and major >= MIN_LLVM:
+            found.append((tool, major))
+    return found
+
+
+def find_tools():
+    """(llc, opt) of the same LLVM major version, 18 or later, in the order
+    of `candidates("llc")`; (None, None) when there is no such pair. The
+    bitcode `opt` writes is read by `llc`, so the two must match."""
+    opts = candidates("opt")
+    for llc, major in candidates("llc"):
+        for opt, opt_major in opts:
+            if opt_major == major:
+                return llc, opt
+    return None, None
 
 
 def object_commands(llc, opt, proxy_ll, obj):

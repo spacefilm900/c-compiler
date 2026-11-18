@@ -334,9 +334,9 @@ class IntelMac:
 
     def __init__(self, tmp: Path):
         self.sysroot = intel.make_sysroot(tmp)
-        self.llc, self.opt = intel.find_tool("llc"), intel.find_tool("opt")
+        self.llc, self.opt = intel.find_tools()
         if self.sysroot is None or self.llc is None or self.opt is None:
-            sys.exit("the Intel macOS stand-in needs the x86_64 glibc headers, and llc and opt of LLVM 18 or later")
+            sys.exit("the Intel macOS stand-in needs the x86_64 glibc headers, and llc and opt of the same LLVM version, 18 or later")
 
     def obj(self, src: Path, obj: Path, ours: bool):
         """(status, stderr) of building src into an ELF object."""

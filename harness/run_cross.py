@@ -111,9 +111,9 @@ class Toolchain:
             self.sysroot = intel.make_sysroot(self.tmp)
             if self.sysroot is None:
                 return "the x86_64 glibc headers are missing"
-            self.llc, self.opt = intel.find_tool("llc"), intel.find_tool("opt")
+            self.llc, self.opt = intel.find_tools()
             if self.llc is None or self.opt is None:
-                return "llc or opt of LLVM 18 or later not found (set LLC and OPT)"
+                return "llc and opt of the same LLVM version, 18 or later, not found (set LLC and OPT)"
             return None
         if not self.apple:
             return None
