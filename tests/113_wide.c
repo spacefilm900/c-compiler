@@ -10,8 +10,8 @@ int main(void) {
     wchar_t one = L'\0';
     wchar_t left[] = L"A" "b";
     wchar_t right[] = "A" L"b";
-    printf("%d %d %d %d %d %d %zu %d\n", zero, letter, nl, high, text[0], text[1], sizeof text,
-           one);
+    printf("%d %d %d %d %d %d %zu %d\n", (int)zero, (int)letter, (int)nl, (int)high, (int)text[0],
+           (int)text[1], sizeof text, (int)one);
     if (zero != 0 || letter != 'A' || text[2] != 0) {
         return 1;
     }

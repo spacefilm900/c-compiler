@@ -22,7 +22,7 @@ int main(void) {
   puts("");
   for (size_t i = 0; i < sizeof sw / 4; i++) printf("%x ", (unsigned)sw[i]);
   puts("");
-  printf("%d %u %u %d %d\n", L'é', (unsigned)u'€', (unsigned)U'😀', L'\U0010FFFF', '\377');
+  printf("%d %u %u %d %d\n", (int)L'é', (unsigned)u'€', (unsigned)U'😀', (int)L'\U0010FFFF', '\377');
   printf("%d %d\n", (int)sizeof(L'a'), (int)sizeof(u'a'));
   printf("%zu\n", strlen("ñandú"));
   return 0;
