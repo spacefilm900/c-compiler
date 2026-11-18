@@ -748,9 +748,48 @@ Baseline on `f11131e` (non-test code in `src/`, 22,466 instrumented lines):
 
 **Step 8 is complete.** Before and after, over parts A to D: unclear crash points 40 → 0 (333 → 285 sites), functions over 200 lines 2 → 0 and over 120 lines 14 → 0 (one, `fold_one`, is at 123 after pull request 46), largest file 8,766 → 1,535 lines, planted bugs caught in the 17 targeted functions 46% → 72%, unit tests 167 → 213, and stage dumps and a reducer for diagnosis; output byte for byte unchanged except the deliberate fixes of the follow-up.
 
+## Linux on AArch64 (step 9, branch `linux-arm64`)
+
+Target `aarch64-linux-gnu` (AAPCS64, binary128 `long double`, unsigned
+`char`). It is the default target on an AArch64 Linux host. Every suite
+that runs on x86-64 now runs for AArch64 against Clang for the same target.
+Details, known-failure reasons and the CI cost estimate are in
+`reports/platforms/linux-arm64/README.md`.
+
+| Suite | AArch64 Linux |
+| --- | --- |
+| Unit tests | run natively in CI (`linux-arm64` workflow) |
+| Differential harness (with `tests/arm64/`) | 189/189 |
+| `run_cross.py --target aarch64-linux-gnu` (qemu, x86-64 runner) | 190/190, 0 known failures |
+| Random calling-convention pairs (`tools/abi_fuzz.py`) | 1,000/1,000 seeds |
+| Writing a C Compiler | 1,376 passed, 0 failures (Clang oracle; 8 x86-64 assembly tests skipped) |
+| Csmith, 40 fixed seeds | 34 pass, 6 known (same as x86-64), 0 unexpected |
+| GCC torture execute | 1,335 passed, 411 known, 0 unexpected |
+| One True AWK | agrees with the Clang build; bugs-fixed 31/31 |
+| AWK Builder suites | 515/528 for both builds (same 13); volume test PASS |
+| Lua 5.4.7 | matches Clang at `-O0` and `-O2` |
+| SQLite 3.54.1 | 10/10 workloads match at `-O0` and `-O2` |
+| DOOM | 39,209/39,209 frames match at `-O0` and `-O2` |
+| Performance numbers | `harness/perf.py` on the arm64 runner |
+
+Bugs fixed: exact binary128 constant folding (`src/fp128.rs`, `src/bigint.rs`;
+`0.1L` was folded as `double`), 16-byte alignment of large arrays applied
+on AArch64 (an x86-64-only rule), and, on x86-64, a struct with a bit-field
+in a nested struct that starts mid-eightbyte was passed in memory (found by
+the new `tools/abi_fuzz.py`). The x86-64 output is otherwise unchanged: on
+13,342 compilations (tests, WACC, torture, One True AWK, Csmith runtime and
+the 2,000-seed campaign, the v0.6 challenge, Lua, SQLite, DOOM; C11 and
+GNU modes) the only IR difference is that fix, in one Csmith program
+(`O0-part1/90` and `O2-part1/90`, the same source).
+
+CI: `.github/workflows/linux-arm64.yml` on GitHub's `ubuntu-24.04-arm`
+runner ($0.005 a minute for private repositories, against $0.006 for x64).
+A quick job (unit tests, harness, dumps, reducer tests, 100 ABI pairs) runs
+on pull requests; the suites run in two jobs on pushes to `main` and by hand.
+
 ## Next actions
 
-The testing stage is in place, and unmodified One True AWK builds with this compiler. The two awk binaries agree on `bugs-fixed` and on the upstream `testdir`, including the golden-file lines the Clang build also fails. The small C11 gaps in step 1 of `PLAN.md` are implemented: flexible array members, `u`/`U`/`u8` literals, `long double` aggregate returns, and file-scope initializers of a nested bit-field struct. Eight more gaps followed: `sizeof` in integer constant expressions, compound literals, non-prototype `int f();`, `_Static_assert` / `_Generic` / `_Alignof`, one `declare` per asm label, brace elision after a designator, UTF-8 and UCNs in literals, and prefixed character constants in `#if`. Variable-length arrays, old-style K&R definitions, and `_Alignas` remain. No new platform is started. The adversarial C11 challenge phase is closed: v0.6 was accepted as the final planned adversarial release, with 724/724 at both `-O0` and `-O2`, and pull request 27 merged (`d728a94`). The Csmith coverage step is done: a 2,000-seed campaign produced 1,492 valid differential comparisons at `-O0` and 1,490 at `-O2`, and `tools/csmith_campaign.py` always links with `-lm`. Its two defects are fixed (a struct-return overrun at `-O0`, and GNU-mode pointer comparisons and assignments), and the rerun has 1,821 and 1,822 valid comparisons, all in agreement, with no rejects. The GNU-compatibility cheap tier is implemented (see above; torture known failures 827 → 432). DOOM (doomgeneric) builds with this compiler alone and matches Clang frame for frame at `-O0` and `-O2` over all eight Freedoom demos, 78,418 frames (see above). Lua 5.4.7 builds with this compiler alone (`-std=gnu11`) and matches Clang at `-O0` and `-O2`: the official test suite in three modes, nine workloads byte for byte, and `luac` bytecode (see above). It needed labels as values and computed `goto`, the first middle-tier GNU feature, which are now implemented. SQLite 3.54.1 builds with this compiler alone (`-std=gnu11 -D_DEFAULT_SOURCE`, with FTS5, RTree, and the math functions) and matches Clang at `-O0` and `-O2` on ten deterministic SQL workloads, including the database files (see above). It needed empty file-scope declarations and 128-bit integers, both now accepted in either language mode. The official TCL suite is not used. The compile-time performance phase is done: `sqlite3.c`'s frontend went from 111 s to 1.3 s with identical output (see above). macOS on Apple Silicon (step 7): round 1 (pull request 36) is merged, and a native macOS CI job (main and manual runs only) passes on a real Apple Silicon runner (see above); DOOM on the Mac is done, and on 2026-11-16 the owner built and played it by hand on his MacBook Air, which accepts the port. The quality and maintainability phase (step 8) is under way: part A measured a baseline, and part B replaced the unclear crash points with internal compiler errors and tightened the unit tests (see "Quality phase" above). Part C split the largest files and functions with no change in output (pull request 45, merged). The follow-up fixed the three wrong-code bugs and 17 smaller findings that review found (pull request 46, merged). Part D added stage dumps, a test-case reducer and `docs/DEBUGGING.md`, which completes step 8. Next is step 9, Linux on ARM. The remaining middle-tier GNU features (inline assembly, vectors) stay on demand and nested functions out of scope.
+The testing stage is in place, and unmodified One True AWK builds with this compiler. The two awk binaries agree on `bugs-fixed` and on the upstream `testdir`, including the golden-file lines the Clang build also fails. The small C11 gaps in step 1 of `PLAN.md` are implemented: flexible array members, `u`/`U`/`u8` literals, `long double` aggregate returns, and file-scope initializers of a nested bit-field struct. Eight more gaps followed: `sizeof` in integer constant expressions, compound literals, non-prototype `int f();`, `_Static_assert` / `_Generic` / `_Alignof`, one `declare` per asm label, brace elision after a designator, UTF-8 and UCNs in literals, and prefixed character constants in `#if`. Variable-length arrays, old-style K&R definitions, and `_Alignas` remain. No new platform is started. The adversarial C11 challenge phase is closed: v0.6 was accepted as the final planned adversarial release, with 724/724 at both `-O0` and `-O2`, and pull request 27 merged (`d728a94`). The Csmith coverage step is done: a 2,000-seed campaign produced 1,492 valid differential comparisons at `-O0` and 1,490 at `-O2`, and `tools/csmith_campaign.py` always links with `-lm`. Its two defects are fixed (a struct-return overrun at `-O0`, and GNU-mode pointer comparisons and assignments), and the rerun has 1,821 and 1,822 valid comparisons, all in agreement, with no rejects. The GNU-compatibility cheap tier is implemented (see above; torture known failures 827 → 432). DOOM (doomgeneric) builds with this compiler alone and matches Clang frame for frame at `-O0` and `-O2` over all eight Freedoom demos, 78,418 frames (see above). Lua 5.4.7 builds with this compiler alone (`-std=gnu11`) and matches Clang at `-O0` and `-O2`: the official test suite in three modes, nine workloads byte for byte, and `luac` bytecode (see above). It needed labels as values and computed `goto`, the first middle-tier GNU feature, which are now implemented. SQLite 3.54.1 builds with this compiler alone (`-std=gnu11 -D_DEFAULT_SOURCE`, with FTS5, RTree, and the math functions) and matches Clang at `-O0` and `-O2` on ten deterministic SQL workloads, including the database files (see above). It needed empty file-scope declarations and 128-bit integers, both now accepted in either language mode. The official TCL suite is not used. The compile-time performance phase is done: `sqlite3.c`'s frontend went from 111 s to 1.3 s with identical output (see above). macOS on Apple Silicon (step 7): round 1 (pull request 36) is merged, and a native macOS CI job (main and manual runs only) passes on a real Apple Silicon runner (see above); DOOM on the Mac is done, and on 2026-11-16 the owner built and played it by hand on his MacBook Air, which accepts the port. The quality and maintainability phase (step 8) is under way: part A measured a baseline, and part B replaced the unclear crash points with internal compiler errors and tightened the unit tests (see "Quality phase" above). Part C split the largest files and functions with no change in output (pull request 45, merged). The follow-up fixed the three wrong-code bugs and 17 smaller findings that review found (pull request 46, merged). Part D added stage dumps, a test-case reducer and `docs/DEBUGGING.md`, which completes step 8. Step 9, Linux on ARM, runs every suite for `aarch64-linux-gnu` (see "Linux on AArch64" above). The remaining middle-tier GNU features (inline assembly, vectors) stay on demand and nested functions out of scope.
 
 ## Eight C11 gaps record
 
