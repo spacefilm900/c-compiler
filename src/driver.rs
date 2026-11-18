@@ -670,6 +670,33 @@ mod tests {
                 "{target}: {text}"
             );
         }
+        // An SDK without <limits.h>: the compiler's own definitions stand
+        // alone, with its MB_LEN_MAX.
+        std::fs::remove_file(sdk.join("usr/include/limits.h")).unwrap();
+        std::fs::write(
+            &src,
+            "#include <limits.h>\nint w[] = { CHAR_MAX, MB_LEN_MAX, INT_MAX };\n",
+        )
+        .unwrap();
+        for target in ["x86_64-apple-macos", "arm64-apple-macos"] {
+            assert_eq!(
+                run(&[
+                    "compiler".into(),
+                    "-target".into(),
+                    target.into(),
+                    "-isysroot".into(),
+                    sdk.display().to_string(),
+                    "-E".into(),
+                    src.display().to_string(),
+                    "-o".into(),
+                    pre.display().to_string(),
+                ]),
+                0,
+                "{target}"
+            );
+            let text = std::fs::read_to_string(&pre).unwrap();
+            assert!(text.contains("{ 127, 16, 2147483647 }"), "{target}: {text}");
+        }
         let _ = std::fs::remove_dir_all(&sdk);
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&pre);

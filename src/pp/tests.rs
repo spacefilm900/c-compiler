@@ -412,3 +412,23 @@ fn hashhash_from_an_argument_is_not_the_paste_operator() {
                #define join(c, d) in_between(c hash_hash d)\njoin(x, y)\n";
     assert_eq!(squash(&pp(src)), "xyz xy \"x ## y\"");
 }
+
+#[test]
+fn only_one_compiler_header_tree_is_searched() {
+    // Two copies of the compiler's headers at different paths: only the
+    // first is used, so `#include_next` in one of them reaches the C
+    // library rather than its twin.
+    let base = std::env::temp_dir().join(format!("cc-two-trees-{}", std::process::id()));
+    let (first, second) = (base.join("a/include"), base.join("b/include"));
+    for dir in [&first, &second] {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("stddef.h"), "").unwrap();
+    }
+    let mut dirs = Vec::new();
+    predefined::push_compiler(&mut dirs, base.join("missing"));
+    predefined::push_compiler(&mut dirs, first.clone());
+    predefined::push_compiler(&mut dirs, second);
+    predefined::push_compiler(&mut dirs, first.clone());
+    assert_eq!(dirs, vec![first]);
+    let _ = std::fs::remove_dir_all(&base);
+}

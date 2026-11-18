@@ -29,8 +29,8 @@ void vshow(int n, ...) {
     U u = __builtin_va_arg(ap, U);
     long l = __builtin_va_arg(ap, long);
     Q r = __builtin_va_arg(ap, Q);
-    printf("vshow %d %lx %lx %lx %ld %lx %lx\n", n, hi(q.q), lo(q.q), lo(u.q), l, hi(r.q),
-           lo(r.q));
+    printf("vshow %d %lx %lx %lx %lx %ld %lx %lx\n", n, hi(q.q), lo(q.q), hi(u.q), lo(u.q), l,
+           hi(r.q), lo(r.q));
     __builtin_va_end(ap);
 }
 
