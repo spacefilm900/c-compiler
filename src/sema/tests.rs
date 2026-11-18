@@ -880,6 +880,22 @@ int main(void) {
     assert!(sema_err("int g; int x = (int)&g;").contains("truncates an address"));
     assert!(sema_err("int g; long x = (int)&g;").contains("truncates an address"));
     sema_ok("int g; long x = (long)&g;");
+    sema_ok("int g; unsigned long x = (unsigned long)&g;");
+    // Wider than a pointer: no `ptrtoint` of matching width can be emitted,
+    // and Clang rejects each of these.
+    for src in [
+        "int g; __int128 x = (__int128)&g;",
+        "int g; __int128 x = (long)&g;",
+        "int g; unsigned __int128 x = (unsigned long)&g;",
+        "int g; long x = (__int128)&g;",
+        "int g; struct T { __int128 m; } t = { (long)&g };",
+        "int g; union U { __int128 m; } u = { (long)&g };",
+    ] {
+        assert!(
+            sema_err(src).contains("integer wider than a pointer"),
+            "{src}"
+        );
+    }
     assert!(sema_err("int main(void) { int (*p)[]; return p[0][0]; }").contains("incomplete type"));
 }
 

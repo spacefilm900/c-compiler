@@ -1081,17 +1081,33 @@ impl Sema<'_> {
                 if let Some(cast_int) = ty_name.as_integer() {
                     if let Ok(ptr) = eval_ptr(inner) {
                         // A file-scope address is not a number until link time.
-                        // Truncating it, in the cast or in the destination,
-                        // cannot be folded. A 64-bit cast into a 64-bit
-                        // object keeps every bit (`ptrtoint` to i64).
-                        if matches!(ptr, PtrConst::Addr { .. } | PtrConst::Label { .. })
-                            && (cast_int.width() < 64 || dest_int.width() < 64)
-                        {
-                            return self.err(
-                                expr.line(),
-                                expr.column(),
-                                format!("initializer of '{name}' truncates an address"),
-                            );
+                        // C11 6.6p7 has no integer form of an address constant;
+                        // 6.6p10 lets an implementation accept one, and only
+                        // the pointer-sized form is accepted here: a 64-bit
+                        // cast into a 64-bit object keeps every bit
+                        // (`ptrtoint` to i64). Truncating the address, or
+                        // widening it to `__int128`, cannot be folded.
+                        if matches!(ptr, PtrConst::Addr { .. } | PtrConst::Label { .. }) {
+                            let narrowest = cast_int.width().min(dest_int.width());
+                            let widest = cast_int.width().max(dest_int.width());
+                            if narrowest < 64 {
+                                return self.err(
+                                    expr.line(),
+                                    expr.column(),
+                                    format!("initializer of '{name}' truncates an address"),
+                                );
+                            }
+                            if widest > 64 {
+                                return self.err(
+                                    expr.line(),
+                                    expr.column(),
+                                    format!(
+                                        "initializer of '{name}' converts an address to an \
+                                         integer wider than a pointer, which is not a \
+                                         constant expression"
+                                    ),
+                                );
+                            }
                         }
                         return Ok(match ptr_as_int(ptr, cast_int) {
                             ConstInit::Int(bits) => {

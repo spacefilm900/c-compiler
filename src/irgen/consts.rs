@@ -317,13 +317,14 @@ pub(super) fn render_const(
         }
         ConstInit::Ptr(ptr) => render_ptr(ptr, renames),
         ConstInit::PtrToInt { ptr, width } => {
-            let ir = match width {
-                8 => "i8",
-                16 => "i16",
-                32 => "i32",
-                _ => "i64",
-            };
-            format!("ptrtoint ({} to {ir})", render_ptr_operand(ptr, renames))
+            // Semantic analysis folds an address into an integer only at
+            // pointer width, so the object is i64 as well.
+            if *width != 64 || ty.as_integer().map(|int| int.width()) != Some(64) {
+                return Err(Ice::global(
+                    "an address folded into an integer that is not pointer-sized",
+                ));
+            }
+            format!("ptrtoint ({} to i64)", render_ptr_operand(ptr, renames))
         }
         ConstInit::Bytes(raw) => render_byte_blob(ty, raw),
         ConstInit::RelocBytes { .. } => {
