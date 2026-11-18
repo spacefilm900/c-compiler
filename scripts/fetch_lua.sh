@@ -33,8 +33,13 @@ if [ -f "$DEST/.pin" ] && [ "$(cat "$DEST/.pin")" = "$PIN" ] \
     exit 0
 fi
 
+# Linux has sha256sum; macOS has shasum.
 sha256_of() {
-    sha256sum "$1" | cut -d ' ' -f 1
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d ' ' -f 1
+    else
+        shasum -a 256 "$1" | cut -d ' ' -f 1
+    fi
 }
 
 download() { # path-on-lua.org output

@@ -11,7 +11,10 @@ SHA-256. Neither is patched. Two configurations are built:
 
 - release: the interpreter `lua` and the compiler `luac`, as the upstream
   Makefile's `linux` target builds them (LUA_COMPAT_5_3, LUA_USE_LINUX,
-  linked with -lm -ldl -Wl,-E; no readline).
+  linked with -lm -ldl -Wl,-E; no readline). On macOS it is the
+  `macosx` target's configuration instead: LUA_USE_MACOSX, linked with -lm
+  (the dynamic loader is in the C library, and Apple's linker exports a
+  program's symbols without -E); no readline.
 - ltests: the same interpreter with the test suite's internal checks built
   in (LUA_USER_H="ltests.h" plus ltests.c), which turns on Lua's own
   assertions and adds the `T` library the suite uses for white-box tests.
@@ -74,9 +77,10 @@ LUA_ROOT = Path(os.environ.get("LUA_ROOT", ROOT / "tests" / "external" / "lua"))
 SRC = LUA_ROOT / f"lua-{VERSION}" / "src"
 TESTS = LUA_ROOT / f"lua-{VERSION}-tests"
 WORKLOADS = ROOT / "harness" / "lua"
-DEFINES = ["-DLUA_COMPAT_5_3", "-DLUA_USE_LINUX"]
+MACOS = sys.platform == "darwin"
+DEFINES = ["-DLUA_COMPAT_5_3", "-DLUA_USE_MACOSX" if MACOS else "-DLUA_USE_LINUX"]
 LTESTS_DEFINES = ['-DLUA_USER_H="ltests.h"']
-LIBS = ["-lm", "-ldl", "-Wl,-E"]
+LIBS = ["-lm"] if MACOS else ["-lm", "-ldl", "-Wl,-E"]
 SUITES = (
     ("user", "release", "_U=true"),
     ("portable", "release", "_port=true"),
@@ -485,7 +489,7 @@ def render_scorecard(payload: dict, title: str, notes: str = "") -> str:
         f" SHA-256 `{meta.get('lua_sha256', '')}`)",
         f"- Test suite: `lua-{meta.get('lua_version', '')}-tests.tar.gz` (SHA-256 `{meta.get('tests_sha256', '')}`)",
         f"- Language mode: `-std={meta.get('std', '')}` for this compiler and for the reference;"
-        " `-DLUA_COMPAT_5_3 -DLUA_USE_LINUX`, linked with `-lm -ldl -Wl,-E`, no readline",
+        f" `{' '.join(DEFINES)}`, linked with `{' '.join(LIBS)}`, no readline",
         f"- Reference: {meta.get('clang', 'clang')}, same flags and optimisation level",
         f"- Compile jobs: {payload.get('jobs', '')}; test-suite runs at once: {payload.get('run_jobs', 1)}",
         "",
