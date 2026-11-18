@@ -93,7 +93,14 @@ def incomplete(result):
     """A reason when a program did not run to completion, else None."""
     if not isinstance(result[0], int):
         return f"{result[0]}: {result[2].decode(errors='replace')[:200]}".rstrip(": ")
+    if result[0] < 0:
+        return f"killed by signal {-result[0]}"
     return None
+
+
+# Prefix of a result where the Clang oracle's own program did not finish.
+# A known-failure entry does not cover it: there is no reference result.
+ORACLE_INCOMPLETE = "oracle program did not complete"
 
 
 def test(src, tmp, std="c11"):
@@ -110,10 +117,12 @@ def test(src, tmp, std="c11"):
     if rc != 0:
         return f"oracle compile failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
     got, exp = run([str(a)]), run([str(b)])
-    for side, result in (("this compiler's program", got), ("oracle program", exp)):
-        reason = incomplete(result)
-        if reason:
-            return f"{side} did not complete ({reason})"
+    reason = incomplete(exp)
+    if reason:
+        return f"{ORACLE_INCOMPLETE} ({reason})"
+    reason = incomplete(got)
+    if reason:
+        return f"this compiler's program did not complete ({reason})"
     if got != exp:
         return f"mismatch: got exit={got[0]} out={got[1][:100]!r}, expected exit={exp[0]} out={exp[1][:100]!r}"
     return None
@@ -156,7 +165,7 @@ def test_cross(def_src, use_src, tmp):
     expected = run([str(ref)])
     reason = incomplete(expected)
     if reason:
-        return f"oracle program did not complete ({reason})"
+        return f"{ORACLE_INCOMPLETE} ({reason})"
 
     def mixed(our_src, clang_src, label):
         ll = tmp / f"{name}.{label}.ll"
@@ -239,7 +248,7 @@ def main():
             if label in known:
                 now_passing.append(label)
             print(f"PASS {label}")
-        elif label in known:
+        elif label in known and ORACLE_INCOMPLETE not in r:
             expected_failures.append(label)
             print(f"KNOWN {label}: {r}")
         else:
