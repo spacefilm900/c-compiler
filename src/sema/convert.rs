@@ -96,6 +96,20 @@ impl Sema<'_> {
         {
             return Ok(());
         }
+        if dest.is_pointer() && self.dialect.gnu() && void_function_ptr_mix(dest, &src_ty) {
+            self.warn(
+                src.line(),
+                src.column(),
+                format!(
+                    "assigning '{}' to '{}' converts between a void pointer and a \
+                     function pointer; C11 6.5.16.1p1 does not allow this; accepted \
+                     as a GNU extension (-std=gnu11)",
+                    src_ty.display(),
+                    dest.display()
+                ),
+            );
+            return Ok(());
+        }
         if self.dialect.gnu() && gnu_pointer_sign_or_qual_mix(dest, &src_ty) {
             self.warn(
                 src.line(),
@@ -192,6 +206,32 @@ impl Sema<'_> {
                 return Ok(merged);
             }
         }
+        // C11 6.5.15p3 pairs `void *` only with an object pointer (or a
+        // null pointer constant, below). GNU C also pairs it with a function
+        // pointer, giving `void *`.
+        if self.dialect.gnu()
+            && void_function_ptr_mix(&left, &right)
+            && !is_null_pointer_constant(then_expr)
+            && !is_null_pointer_constant(else_expr)
+        {
+            self.warn(
+                line,
+                column,
+                format!(
+                    "conditional operands '{}' and '{}' mix a void pointer and a function \
+                     pointer; C11 6.5.15p3 does not allow this; accepted as a GNU \
+                     extension (-std=gnu11)",
+                    left.display(),
+                    right.display()
+                ),
+            );
+            let void = if left.is_void_pointer() {
+                &left
+            } else {
+                &right
+            };
+            return Ok(void.clone());
+        }
         if left.is_pointer() && is_null_pointer_constant(else_expr) {
             return Ok(left);
         }
@@ -208,7 +248,8 @@ impl Sema<'_> {
 
 /// Assignment between pointers (C11 6.5.16.1). The destination pointee must
 /// have every qualifier of the source pointee. `char *` converts to
-/// `const char *`. `char **` does not convert to `const char **`.
+/// `const char *`. `char **` does not convert to `const char **`. A `void *`
+/// pairs only with a pointer to an object type, not a function pointer.
 pub(super) fn pointer_assignable(dest: &CType, src: &CType) -> bool {
     let (Some(dp), Some(sp)) = (dest.pointee(), src.pointee()) else {
         return false;
@@ -217,17 +258,21 @@ pub(super) fn pointer_assignable(dest: &CType, src: &CType) -> bool {
         return false;
     }
     compatible(&dp.unqualified(), &sp.unqualified())
-        || dp.unqualified().is_void()
-        || sp.unqualified().is_void()
+        || (dp.unqualified().is_void() && !sp.is_func())
+        || (sp.unqualified().is_void() && !dp.is_func())
 }
 
 /// `?:` on two pointers. The result pointee carries every qualifier from
-/// either side. A `void *` arm produces `void *` with those qualifiers.
+/// either side. A `void *` arm with an object pointer produces `void *` with
+/// those qualifiers (C11 6.5.15p3, p6); with a function pointer it is not
+/// allowed.
 pub(super) fn merge_pointers(left: &CType, right: &CType) -> Option<CType> {
     let lp = left.pointee()?;
     let rp = right.pointee()?;
     let quals = lp.quals().merge(rp.quals());
-    if lp.unqualified().is_void() || rp.unqualified().is_void() {
+    if (lp.unqualified().is_void() && !rp.is_func())
+        || (rp.unqualified().is_void() && !lp.is_func())
+    {
         return Some(CType::pointer(CType::Void.with_quals(quals)));
     }
     if compatible(&lp.unqualified(), &rp.unqualified()) {

@@ -1735,3 +1735,42 @@ fn null_pointer_constant_needs_integer_operand_in_void_cast() {
     sema_ok("int f(void); int g(void) { return f == _Generic(0, int: (void *)0); }");
     sema_ok("int g(int *p) { return p == (void *)(void *)0; }");
 }
+
+#[test]
+fn void_pointer_and_function_pointer_assignment_and_conditional() {
+    // C11 6.5.16.1p1 and 6.5.15p3 pair `void *` only with object pointers.
+    // -std=gnu11 accepts a function pointer with a warning, as GCC 14 and
+    // Clang 19 do outside their pedantic modes (black-box); -std=c11 keeps
+    // the error, as `-pedantic-errors` does there.
+    use crate::Dialect;
+    for source in [
+        "int f(void); void *p = f;",
+        "int f(void); void g(void) { void *p; p = &f; }",
+        "void *v; void g(void) { int (*fp)(void); fp = v; }",
+        "int f(void); void take(void *); void g(void) { take(f); }",
+        "int f(void); const void *g(void) { return f; }",
+        "int f(void); void *v; void g(void) { (void)(1 ? f : v); }",
+        "int f(void); void *v; void g(void) { (void)(1 ? v : &f); }",
+    ] {
+        let err = sema_dialect(source, Dialect::C11).unwrap_err();
+        assert!(err.contains("incompatible"), "{source}: {err}");
+        let warnings = sema_dialect(source, Dialect::Gnu11).unwrap();
+        assert_eq!(warnings.len(), 1, "{source}: {warnings:?}");
+        assert!(
+            warnings[0].contains("GNU extension"),
+            "{source}: {warnings:?}"
+        );
+    }
+    // Valid in both dialects with no warning: null pointer constants, and
+    // `void *` with object pointers, including incomplete ones.
+    for source in [
+        "int f(void); int (*fp)(void) = (void *)0; int (*fq)(void) = 0;",
+        "int f(void); void g(void) { int (*fp)(void) = 1 ? f : (void *)0; fp = fp; }",
+        "struct I; struct I *ip; void *v; void g(void) { v = ip; ip = v; (void)(1 ? ip : v); }",
+        "int a[3]; void *v = a; const void *c = &a; void g(void) { (void)(1 ? c : v); }",
+    ] {
+        for dialect in [Dialect::C11, Dialect::Gnu11] {
+            assert_eq!(sema_dialect(source, dialect), Ok(Vec::new()), "{source}");
+        }
+    }
+}
