@@ -122,6 +122,9 @@ impl Target {
     /// - `x86_64-apple-macos`, `x86_64-apple-macosx`, `x86_64-apple-darwin`,
     ///   with an optional version of 10.0 or later, such as
     ///   `x86_64-apple-macos13` or `x86_64-apple-macosx10.15.0`
+    ///
+    /// A `darwinN` version is a Darwin kernel version and is translated to
+    /// its macOS version (`darwin20` is macOS 11, `darwin19` is 10.15).
     pub fn parse(triple: &str) -> Option<Target> {
         let parts: Vec<&str> = triple.split('-').collect();
         let arch = *parts.first()?;
@@ -315,10 +318,25 @@ fn parse_apple_os(os: &str, min_major: u32) -> Option<(u32, u32)> {
         rest
     } else if let Some(rest) = os.strip_prefix("macos") {
         rest
-    } else if os.strip_prefix("darwin").is_some() {
-        // A Darwin kernel version is not a macOS version (Darwin 19 is
-        // macOS 10.15, Darwin 20 is macOS 11); the default is used.
-        return Some((0, 0));
+    } else if let Some(rest) = os.strip_prefix("darwin") {
+        // A Darwin kernel version names a macOS version: Darwin 20 and
+        // later are macOS N-9 (Darwin 20 is macOS 11), earlier ones are
+        // 10.(N-4) (Darwin 19 is 10.15). Only the major number counts, as
+        // with Clang (observed as a black box). Bare `darwin` is the default.
+        if rest.is_empty() {
+            return Some((0, 0));
+        }
+        let mut numbers = rest.split('.');
+        let kernel: u32 = numbers.next()?.parse().ok()?;
+        if numbers.any(|part| part.parse::<u32>().is_err()) || !(4..=108).contains(&kernel) {
+            return None;
+        }
+        let (major, minor) = if kernel >= 20 {
+            (kernel - 9, 0)
+        } else {
+            (10, kernel - 4)
+        };
+        return (major >= min_major).then_some((major, minor));
     } else {
         return None;
     };
@@ -339,7 +357,8 @@ fn parse_apple_os(os: &str, min_major: u32) -> Option<(u32, u32)> {
             return None;
         }
     }
-    if numbers.next().is_some() || major < min_major || minor > 99 {
+    // Two digits each, as the deployment-target macros encode them.
+    if numbers.next().is_some() || major < min_major || major > 99 || minor > 99 {
         return None;
     }
     Some((major, minor))
@@ -395,6 +414,39 @@ mod tests {
             Target::parse("aarch64-unknown-linux-gnu"),
             Some(Target::Aarch64Linux)
         );
+        // A Darwin kernel version maps to its macOS version (Clang as a
+        // black box); junk and out-of-range versions are rejected.
+        for (triple, major, minor) in [
+            ("x86_64-apple-darwin19", 10, 15),
+            ("x86_64-apple-darwin15", 10, 11),
+            ("x86_64-apple-darwin20", 11, 0),
+            ("x86_64-apple-darwin21.6.0", 12, 0),
+        ] {
+            assert_eq!(
+                Target::parse(triple),
+                Some(Target::X86_64Apple {
+                    macos_major: major,
+                    macos_minor: minor
+                }),
+                "{triple}"
+            );
+        }
+        assert_eq!(
+            Target::parse("arm64-apple-darwin23"),
+            Some(Target::Arm64Apple {
+                macos_major: 14,
+                macos_minor: 0
+            })
+        );
+        for triple in [
+            "x86_64-apple-darwinjunk",
+            "x86_64-apple-darwin20.x",
+            "arm64-apple-darwin19",
+            "x86_64-apple-macos429497",
+            "x86_64-apple-macos100",
+        ] {
+            assert_eq!(Target::parse(triple), None, "{triple}");
+        }
         assert_eq!(Target::parse("arm64-apple-macos10.15"), None);
         assert_eq!(Target::parse("arm64-apple-macos13.2.1"), None);
         assert_eq!(Target::parse("arm64-apple-ios"), None);
