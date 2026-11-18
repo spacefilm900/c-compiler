@@ -2,11 +2,11 @@
 """Golden tests for the stage dumps (`-E`, `--dump-tokens`, `--dump-ast`,
 `--dump-sema`, `--dump-ir`).
 
-For each tests/dumps/NAME.c, the compiler runs once per stage from inside
-tests/dumps (so file names in the dumps are relative), always with
+For each harness/dumps/NAME.c, the compiler runs once per stage from inside
+harness/dumps (so file names in the dumps are relative), always with
 `-target x86_64-linux-gnu` so the output does not depend on the host, plus
 any flags on a first line of the form `// dump-flags: FLAGS`. Each dump
-must match tests/dumps/NAME.STAGE byte for byte, where STAGE is `i`,
+must match harness/dumps/NAME.STAGE byte for byte, where STAGE is `i`,
 `tokens`, `ast`, `sema` or `ll`.
 
 It also checks that the dumps do not change normal compilation:
@@ -29,7 +29,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DUMPS = ROOT / "tests" / "dumps"
+DUMPS = ROOT / "harness" / "dumps"
 COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler")).resolve()
 TIMEOUT = float(os.environ.get("TIMEOUT", "10"))
 TARGET = ["-target", "x86_64-linux-gnu"]
@@ -94,8 +94,8 @@ def check_file(source, update, tmp):
             failures.append(label)
             continue
         again = run([*flags, flag, name])
-        if again[1] != out:
-            print(f"FAIL {label}: a second run printed different output")
+        if again[0] != 0 or again[1] != out:
+            print(f"FAIL {label}: a second run gave exit {again[0]} or different output\n{again[2]}")
             failures.append(label)
             continue
         written = Path(tmp) / f"{label}.out"
@@ -108,10 +108,10 @@ def check_file(source, update, tmp):
     # --dump-ir must not change the IR a normal compilation writes.
     normal = Path(tmp) / f"{source.stem}.normal.ll"
     status, _, err = run([*flags, name, "-o", str(normal)])
-    dumped = run([*flags, "--dump-ir", name])[1]
+    dump_status, dumped, dump_err = run([*flags, "--dump-ir", name])
     label = f"{source.stem}: --dump-ir vs -o"
-    if status != 0 or normal.read_bytes() != dumped:
-        print(f"FAIL {label}\n{err}")
+    if status != 0 or dump_status != 0 or normal.read_bytes() != dumped:
+        print(f"FAIL {label}: exit {status} and {dump_status}\n{err}{dump_err}")
         failures.append(label)
     else:
         print(f"ok   {label}")

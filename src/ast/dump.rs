@@ -532,8 +532,9 @@ impl Dumper {
                 self.expr_line(indent, expr, &format!("{kind} {field}"), conv);
                 self.expr(base, indent + 1, None);
             }
-            Expr::VaArg { ap, .. } => {
-                self.expr_line(indent, expr, "va_arg", conv);
+            Expr::VaArg { ap, type_arg, .. } => {
+                let label = format!("va_arg {}", type_arg.display());
+                self.expr_line(indent, expr, &label, conv);
                 self.expr(ap, indent + 1, None);
             }
             Expr::Generic {
@@ -679,10 +680,17 @@ impl Dumper {
                     .iter()
                     .map(|designator| match designator {
                         Designator::Field { name, .. } => format!(".{name}"),
-                        Designator::Index { .. } => "[index]".to_string(),
+                        Designator::Index { .. } => "[]".to_string(),
                     })
                     .collect::<String>();
                 self.put_at(indent, &format!("designated {text}"), (*line, *column));
+                // Each `[]` above, in order: its index expression.
+                for designator in designators {
+                    if let Designator::Index { expr, .. } = designator {
+                        self.put(indent + 1, "index");
+                        self.expr(expr, indent + 2, None);
+                    }
+                }
                 self.init(init, indent + 1, None);
             }
         }

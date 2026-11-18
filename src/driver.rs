@@ -168,9 +168,17 @@ fn write_text(options: &Options, text: &str) -> i32 {
             }
         }
     } else {
-        print!("{text}");
-        let _ = io::stdout().flush();
-        0
+        let mut stdout = io::stdout().lock();
+        match stdout
+            .write_all(text.as_bytes())
+            .and_then(|()| stdout.flush())
+        {
+            Ok(()) => 0,
+            Err(err) => {
+                let _ = writeln!(io::stderr(), "<stdout>: error: {err}");
+                1
+            }
+        }
     }
 }
 

@@ -10,7 +10,9 @@ global int [4] table = @22:5
   list @22:16
     int 1 @22:18
     int 2 @22:21
-    designated [index] @22:24
+    designated [] @22:24
+      index
+        int 3 @22:25
       int 4 @22:30
 global int * third = @23:6
   addr @23:14

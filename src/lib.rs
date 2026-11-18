@@ -109,7 +109,7 @@ pub fn dump_stage(
     dialect: Dialect,
     stage: Stage,
 ) -> Result<Output, Diagnostic> {
-    compile_impl(source, filename, options, dialect, true, Some(stage))
+    compile_impl(source, filename, options, dialect, false, Some(stage))
 }
 
 fn compile_impl(
@@ -239,6 +239,28 @@ mod tests {
         assert_eq!(ir, normal);
         // The dumps are deterministic.
         assert_eq!(dump(Stage::Sema), sema);
+    }
+
+    /// Index designators show their expressions and `va_arg` its type.
+    #[test]
+    fn dumps_show_designator_indexes_and_va_arg_types() {
+        let source = "int a[4] = { [1 + 1] = 5 };\n\
+                      int f(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n);\n\
+                      long v = __builtin_va_arg(ap, long); return (int)v; }\n";
+        let ast = dump_stage(
+            source,
+            "t.c",
+            &PpOptions::default(),
+            Dialect::C11,
+            Stage::Ast,
+        )
+        .expect("dumped")
+        .ir;
+        assert!(
+            ast.contains("designated [] @1:14\n      index\n        + @1:17\n"),
+            "{ast}"
+        );
+        assert!(ast.contains("va_arg long @3:10\n"), "{ast}");
     }
 
     #[test]
