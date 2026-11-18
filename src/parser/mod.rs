@@ -30,8 +30,11 @@ pub fn parse(tokens: &[Token], filename: &str) -> Result<TranslationUnit, Diagno
     parse_dialect(tokens, filename, Dialect::C11)
 }
 
-/// Like [`parse`], in the given dialect. The dialect affects only the
-/// constraints checked in folded integer constant expressions.
+/// Like [`parse`], in the given dialect. The dialect selects the GNU
+/// syntax extensions the parser accepts (statement expressions, case
+/// ranges, computed `goto` and `&&label`, `?:` with an omitted operand,
+/// empty `{}` initializers, zero-length arrays) as well as the constraints
+/// checked in folded integer constant expressions.
 pub fn parse_dialect(
     tokens: &[Token],
     filename: &str,
@@ -418,6 +421,8 @@ impl LitPrefix {
     }
 }
 
+/// Re-encode `bytes` from `from` into `dest`. A narrower literal is
+/// zero-extended one source byte at a time. Same-width pieces are copied.
 fn retarget(from: LitPrefix, bytes: &[u8], dest: LitPrefix) -> Vec<u8> {
     if from.unit() == dest.unit() {
         return bytes.to_vec();

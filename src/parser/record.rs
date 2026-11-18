@@ -753,8 +753,6 @@ impl Parser<'_> {
     }
 }
 
-/// Re-encode `bytes` from `from` into `dest`. A narrower literal is
-/// zero-extended one source byte at a time. Same-width pieces are copied.
 /// Named members other than a flexible array, including names promoted
 /// from an anonymous struct or union (C11 6.7.2.1).
 pub(super) fn named_members_besides_flexible(fields: &[StructField]) -> usize {

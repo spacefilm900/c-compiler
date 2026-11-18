@@ -165,3 +165,31 @@ Part C was not meant to add tests for these, so the remaining misses are as part
 `/workspace/scratch/phasec/irdiff.py` (not committed; the same script as part B) ran the `6a8776c` compiler and this branch's compiler on every `.c` file under `tests/`, WACC, GCC torture, Csmith, One True AWK and the C11 challenge, with no flag and with `-std=gnu11`. That is 6,574 files and 13,148 compilations (9,536 accepted, 3,612 rejected). IR, messages and exit status were identical for every one, both after the file moves and at the final commit.
 
 Local checks: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib` (198 passed), `make` and `harness/run_tests.py` (180/180), and `python3 -m unittest tools/quality/test_quality_tools.py`. CI runs WACC, torture, Csmith, DOOM, Lua, SQLite and One True AWK.
+
+## 7. Review findings left open
+
+CodeRabbit read the moved files as new code and reported defects that were already on `main`. Every flagged line was moved unchanged, or into a helper with the same logic, and the old compiler behaves the same. Fixing them would change compiler behaviour, which this part rules out, so they are left for a follow-up. The three marked "Major" were checked as a black box against the `6a8776c` compiler and Clang 19:
+
+| Finding | Reproducer | `6a8776c` and this branch | Clang 19 |
+|---|---|---|---|
+| A pointer-to-integer static initializer wider than 64 bits is emitted as `ptrtoint ... to i64` (`irgen/consts.rs` `render_const`) | `int g; __int128 a = (__int128)&g;` | IR that LLVM rejects (`constant expression type mismatch`) | error: not a compile-time constant |
+| Floating compound assignment to a bit-field does an ordinary store and overwrites its neighbours (`irgen/expr.rs`) | `struct S { unsigned a:4, b:4; } s = {1,7}; s.a += 1.0;` | `b` becomes 0 | `b` stays 7 |
+| A designator that initializes a whole subobject again does not zero the elements its new list omits (`sema/init.rs`) | `struct S { int a[2]; } s = { .a = {1,2}, .a = {3} };` | `s.a[1]` is 2 | `s.a[1]` is 0 |
+
+The 15 "Minor" findings were not checked one by one. They cover:
+
+- `#line` digit sequences, unsigned character constants in `#if`, and a `##` that comes from a macro argument (`pp/`).
+- Folding `&a[i]` with the subscript operands swapped, and pointer-valued static initializers for `_Bool` (`sema/image.rs`, `sema/init.rs`).
+- Function pointers in the `void *` assignment and conditional rules (`sema/convert.rs`).
+- The composite type after a block-scope function redeclaration (`sema/decl.rs`).
+- Enum specifiers and `_Noreturn` on objects (`parser/specs.rs`).
+- Three type rules for operands that are not evaluated (`parser/uneval.rs`).
+- `?:` with an omitted middle operand in floating constant expressions (`sema/consteval.rs`).
+- A record's stack alignment in the AAPCS64 `Fp` class (`irgen/vaarg.rs`).
+- Checked bit arithmetic for records near 2^32 bits or larger (`ast/record.rs`).
+
+Three findings were fixed on this branch because they change no compiler output:
+
+- `rust_scan.source_files` now raises an error for a missing or unreadable source directory. A unit test covers this.
+- The `parse_dialect` doc comment now lists the GNU syntax the dialect controls.
+- `retarget`'s doc comment, which already sat on the wrong function on `main`, is back on `retarget`.

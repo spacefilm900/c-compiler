@@ -81,6 +81,10 @@ class QualityTools(unittest.TestCase):
         funcs, _ = complexity.scan(self.src)
         self.assertIn(("src/nest/inner.rs", "c"), {(f["file"], f["name"]) for f in funcs})
 
+    def test_source_files_reports_a_missing_directory(self):
+        with self.assertRaises(FileNotFoundError):
+            rust_scan.source_files(os.path.join(self.src, "missing"))
+
     def test_complexity(self):
         funcs, files = complexity.scan(self.src)
         by = {f["name"]: f for f in funcs}

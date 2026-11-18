@@ -141,8 +141,11 @@ def source_files(src_dir, include_tests=False):
                 return True
         return bool(dirs) and is_test("/".join(dirs) + ".rs")
 
+    def fail(err):
+        raise err
+
     out = []
-    for root, _, names in os.walk(src_dir):
+    for root, _, names in os.walk(src_dir, onerror=fail):
         for n in names:
             if n.endswith(".rs"):
                 rel = os.path.relpath(os.path.join(root, n), src_dir).replace(os.sep, "/")
