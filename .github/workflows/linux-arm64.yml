@@ -111,7 +111,7 @@ jobs:
               tests/external/csmith
               tests/external/gcc-torture
               tests/external/onetrueawk
-            key: wacc-ae12014d2dec14488f3f80d14df4b6d8e4634d7d-csmith-30dccd73b78652c4719f36572994778a5b233a4e-gcc-torture-5115c7e447fc07457443df874bf57840e8316d5f-onetrueawk-5739fd79bcfc75ba7526773d0cf634521f8aca3c
+            key: arm64-suites-a
           - group: lua, sqlite, doom, perf
             suites: lua sqlite doom perf
             apt: clang llvm make python3 unzip bison
@@ -121,7 +121,7 @@ jobs:
               tests/external/doomgeneric
               tests/external/freedoom
               tests/external/onetrueawk
-            key: lua-5.4.7-9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30-8a4898ffe4c7613c8009327a0722db7a41ef861d526c77c5b46114e59ebf811e-sqlite-3.54.1-0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9-92281c86e2957f9b9305890f9ac04204caa7b677cc868dc326d942689df28e30-doomgeneric-e257a09527062bfb986b6e5e0780839b6cbd5b71-freedoom-0.13.0-7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d-a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b-onetrueawk-5739fd79bcfc75ba7526773d0cf634521f8aca3c
+            key: arm64-suites-b
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -149,12 +149,14 @@ jobs:
             exit 1
           fi
 
-      # Keyed by architecture as well: the Csmith cache holds a built binary.
+      # The fetch scripts hold every pin and checksum, so their hash names
+      # the cached trees (a key may not exceed 512 characters). Keyed by
+      # architecture as well: the Csmith cache holds a built binary.
       - name: Cache the pinned sources
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ${{ matrix.cache }}
-          key: ${{ matrix.key }}-${{ runner.os }}-${{ runner.arch }}
+          key: ${{ matrix.key }}-${{ hashFiles('scripts/fetch_*.sh') }}-${{ runner.os }}-${{ runner.arch }}
 
       - name: Release build
         run: make
