@@ -48,15 +48,18 @@ impl Gen {
                     stack_size,
                 },
             ),
-            VaClass::Fp => self.va_reg_or_stack(
+            VaClass::Fp {
+                stack_align,
+                stack_size,
+            } => self.va_reg_or_stack(
                 ap,
                 &RegFetch {
                     field: 4,
                     slots: 1,
                     stride: 16,
                     limit: 176,
-                    stack_align: 8,
-                    stack_size: 8,
+                    stack_align,
+                    stack_size,
                 },
             ),
             VaClass::Mem { align, size } => self.va_overflow(ap, align, size),
@@ -433,7 +436,12 @@ pub(super) enum VaClass {
         stack_align: u64,
         stack_size: u64,
     },
-    Fp,
+    /// One XMM slot. In the overflow area a scalar takes 8 bytes; a record
+    /// keeps its own alignment and rounded size, as for `Gp`.
+    Fp {
+        stack_align: u64,
+        stack_size: u64,
+    },
     Mem {
         align: u64,
         size: u64,
@@ -538,7 +546,12 @@ pub(super) fn va_class(ty: &CType) -> VaClass {
                     }
                 } else if sse == pieces.len() && pieces.len() == 1 {
                     // One XMM slot holds the whole object in its low bytes.
-                    VaClass::Fp
+                    // On the stack it is the whole record, which an
+                    // `aligned(16)` member makes 16 bytes, 16-aligned.
+                    VaClass::Fp {
+                        stack_align: u64::from(bare.align()).max(8),
+                        stack_size: stack.max(8),
+                    }
                 } else {
                     VaClass::Pieces(pieces)
                 }
@@ -559,7 +572,10 @@ pub(super) fn va_class(ty: &CType) -> VaClass {
         };
     }
     if bare.as_float().is_some() {
-        return VaClass::Fp;
+        return VaClass::Fp {
+            stack_align: 8,
+            stack_size: 8,
+        };
     }
     let size = bare.size().unwrap_or(8);
     // A 128-bit integer uses two general-purpose slots and 16-byte
