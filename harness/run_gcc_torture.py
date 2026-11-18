@@ -95,8 +95,11 @@ def apply_target_overlay(known: dict[str, str], arch: str) -> None:
             continue
         sign, body = text[0], text[1:]
         rel, _, reason = body.partition(" ")
-        if sign not in "+-" or not reason.strip():
-            sys.exit(f"{path}:{lineno}: expected '+TEST category reason' or '-TEST reason'")
+        usage = "expected '+TEST category reason' or '-TEST reason'"
+        if sign not in "+-" or not rel or not reason.strip():
+            sys.exit(f"{path}:{lineno}: {usage}")
+        if sign == "+" and len(reason.split(None, 1)) < 2:
+            sys.exit(f"{path}:{lineno}: {usage} (a new entry needs a category and a reason)")
         if sign == "-":
             if rel not in known:
                 sys.exit(f"{path}:{lineno}: {rel} is not in the x86_64 list")
@@ -245,11 +248,13 @@ def main() -> int:
     sources = tests()
     known = {} if args.record else load_known(KNOWN_PATH)
     triple = clang_triple(CLANG)
+    if not triple:
+        sys.exit(f"cannot read the target from `{CLANG} -dumpmachine`")
     arch = arch_of(triple)
     if not args.record:
         apply_target_overlay(known, arch)
     if arch != "x86_64":
-        print(f"target {triple or 'unknown'}")
+        print(f"target {triple}")
     results: list[tuple[str, str, str]] = []
     jobs = max(1, args.jobs)
     with ProcessPoolExecutor(max_workers=jobs) as pool:

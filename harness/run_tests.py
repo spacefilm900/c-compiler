@@ -89,6 +89,13 @@ def run(cmd):
     except OSError as e:
         return "oserror", b"", str(e).encode()
 
+def incomplete(result):
+    """A reason when a program did not run to completion, else None."""
+    if not isinstance(result[0], int):
+        return f"{result[0]}: {result[2].decode(errors='replace')[:200]}".rstrip(": ")
+    return None
+
+
 def test(src, tmp, std="c11"):
     name = src.stem
     ll, a, b = tmp / f"{name}.ll", tmp / f"{name}.mine", tmp / f"{name}.ref"
@@ -103,6 +110,10 @@ def test(src, tmp, std="c11"):
     if rc != 0:
         return f"oracle compile failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
     got, exp = run([str(a)]), run([str(b)])
+    for side, result in (("this compiler's program", got), ("oracle program", exp)):
+        reason = incomplete(result)
+        if reason:
+            return f"{side} did not complete ({reason})"
     if got != exp:
         return f"mismatch: got exit={got[0]} out={got[1][:100]!r}, expected exit={exp[0]} out={exp[1][:100]!r}"
     return None
@@ -143,6 +154,9 @@ def test_cross(def_src, use_src, tmp):
     if rc != 0:
         return f"oracle compile failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
     expected = run([str(ref)])
+    reason = incomplete(expected)
+    if reason:
+        return f"oracle program did not complete ({reason})"
 
     def mixed(our_src, clang_src, label):
         ll = tmp / f"{name}.{label}.ll"
@@ -158,6 +172,9 @@ def test_cross(def_src, use_src, tmp):
         if rc != 0:
             return f"{label}: link failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
         got = run([str(binary)])
+        reason = incomplete(got)
+        if reason:
+            return f"{label}: program did not complete ({reason})"
         if got != expected:
             return (
                 f"{label}: mismatch got exit={got[0]} out={got[1][:80]!r}, "
@@ -172,12 +189,18 @@ def main():
     tests = sorted((ROOT / "tests").glob("*.c"))
     hosted = sorted((ROOT / "tests" / "hosted").glob("*.c"))
     crosses = sorted((ROOT / "tests" / "xabi").glob("*_def.c"))
-    if shutil.which(CLANG) and arch_of(clang_triple(CLANG)) == "aarch64":
-        hosted += sorted((ROOT / "tests" / "arm64").glob("*.c"))
-        crosses += sorted((ROOT / "tests" / "arm64" / "xabi").glob("*_def.c"))
     gnu = sorted((ROOT / "tests" / "gnu").glob("*.c"))
     both = sorted((ROOT / "tests" / "gnu" / "both").glob("*.c"))
     problems = []
+    if shutil.which(CLANG):
+        # The target decides whether tests/arm64 runs; a run that cannot
+        # read it must not pass with that coverage silently missing.
+        triple = clang_triple(CLANG)
+        if not triple:
+            problems.append(f"cannot read the target from `{CLANG} -dumpmachine`")
+        elif arch_of(triple) == "aarch64":
+            hosted += sorted((ROOT / "tests" / "arm64").glob("*.c"))
+            crosses += sorted((ROOT / "tests" / "arm64" / "xabi").glob("*_def.c"))
     if not (COMPILER.is_file() and os.access(COMPILER, os.X_OK)):
         problems.append(f"compiler not found/executable: {COMPILER}")
     if shutil.which(CLANG) is None:

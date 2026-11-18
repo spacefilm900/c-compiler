@@ -454,13 +454,15 @@ def main() -> int:
     known = load_known(KNOWN_PATH)
     cases = discover(SUITE, tag_map)
     triple = clang_triple(CLANG)
+    if not triple:
+        sys.exit(f"cannot read the target from `{CLANG} -dumpmachine`; refusing to pick an oracle")
     arch = arch_of(triple)
     if arch != "x86_64":
-        print(f"target {triple or 'unknown'}: clang is the oracle for every program")
+        print(f"target {triple}: clang is the oracle for every program")
         expected = {}
         for case in cases:
             if not case["skip"] and case["kind"] == "valid" and asm_libs.get(props_key(case["rel"])):
-                case["skip"] = f"links the book's x86-64 assembly helper (target is {arch or 'unknown'})"
+                case["skip"] = f"links the book's x86-64 assembly helper (target is {arch})"
 
     if args.chapters or args.only:
         wanted = set(args.chapters or [])
