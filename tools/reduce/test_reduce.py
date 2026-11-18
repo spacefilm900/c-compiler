@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -262,6 +263,67 @@ class CommandLineTests(unittest.TestCase):
         # An ordinary error (exit 1) is not a crash.
         quiet = write_script(self.dir, "quietcc", "import sys\nsys.exit(1)\n")
         self.assertEqual(self.main("--mode", "crash", "--compiler", str(quiet)), 2)
+
+    def test_output_limit_makes_a_candidate_uninteresting(self):
+        # The command succeeds, but floods stdout; past the limit it is not
+        # interesting, so the input cannot be reduced.
+        flood = "head -c 100000 /dev/zero; grep -q helper {}"
+        self.assertEqual(self.main("--mode", "cmd", "--cmd", flood, "--output-limit", "1000"), 2)
+        self.assertEqual(self.main("--mode", "cmd", "--cmd", flood), 0)
+
+    def test_timeout_kills_the_whole_process_group(self):
+        marker = Path(self.dir) / "survivor"
+        # The shell starts a child that would write the marker after the
+        # timeout; killing the group must stop it.
+        command = f"(sleep 1; touch {marker}) & wait"
+        self.assertEqual(self.main("--mode", "cmd", "--cmd", command, "--timeout", "0.2"), 2)
+        time.sleep(1.5)
+        self.assertFalse(marker.exists())
+
+    def test_missing_compiler_is_reported_before_reducing(self):
+        missing = str(Path(self.dir) / "no-such-compiler")
+        self.assertEqual(self.main("--mode", "ice", "--compiler", missing), 2)
+        self.assertEqual(self.main("--mode", "accept", "--compiler", sys.executable,
+                                   "--clang", missing), 2)
+
+    @unittest.skipUnless(shutil.which(os.environ.get("CLANG", "clang")), "needs clang")
+    def test_a_sanitizer_report_rejects_the_candidate(self):
+        clang = os.environ.get("CLANG", "clang")
+        fake = write_script(self.dir, "fakecc", f'''\
+            import subprocess, sys
+            args = sys.argv[1:]
+            out = args[args.index("-o") + 1]
+            src = [a for a in args if a.endswith(".c")][0]
+            sys.exit(subprocess.run([{clang!r}, "-w", "-S", "-emit-llvm", "-DOURS=1", src,
+                                     "-o", out]).returncode)
+            ''')
+        # Stand-in sanitizer compilers: the "sanitized" program is the real
+        # program, run through a wrapper that may add a sanitizer report.
+        def ub_cc(name, report):
+            return write_script(self.dir, name, f'''\
+                import os, subprocess, sys
+                args = sys.argv[1:]
+                out = args[args.index("-o") + 1]
+                src = [a for a in args if a.endswith(".c")][0]
+                real = out + ".real"
+                plain = [a for a in args if not a.startswith("-fsanitize") and a != "-g"]
+                plain[plain.index("-o") + 1] = real
+                status = subprocess.run([{clang!r}, "-w", *plain]).returncode
+                with open(out, "w") as f:
+                    f.write("#!/bin/sh\\n")
+                    f.write({report!r})
+                    f.write("exec " + real + "\\n")
+                os.chmod(out, 0o755)
+                sys.exit(status)
+                ''')
+        self.input.write_text("int putchar(int);\nint main(void) {\n#ifdef OURS\n"
+                              "    putchar('x');\n#endif\n    return 0;\n}\n")
+        noisy = ub_cc("noisycc", "echo 'x.c:1:1: runtime error: overflow' >&2\n")
+        self.assertEqual(self.main("--mode", "miscompile", "--compiler", str(fake),
+                                   "--ub-cc", str(noisy), "--passes", "lines"), 2)
+        quiet = ub_cc("quietcc", "")
+        self.assertEqual(self.main("--mode", "miscompile", "--compiler", str(fake),
+                                   "--ub-cc", str(quiet), "--passes", "lines"), 0)
 
     @unittest.skipUnless(shutil.which(os.environ.get("CLANG", "clang")), "needs clang")
     def test_miscompile_mode_with_a_stand_in_compiler(self):

@@ -48,22 +48,27 @@ A candidate is interesting when a predicate holds. Built-in predicates
 --clang-valid adds a condition to ice, crash and cmd: Clang must accept the
 candidate as well, so the result stays a valid C program.
 
-Every command has a time limit (--timeout); a candidate that times out is
-not interesting. Results are cached by the SHA-256 of the candidate text,
+Every command has a time limit (--timeout), runs in its own process group
+(killed with all its descendants when the time is up), and may write at
+most --output-limit bytes to stdout or stderr and files of at most
+--file-limit bytes; a candidate that exceeds any of these is not
+interesting. Results are cached by the SHA-256 of the candidate text,
 so no candidate is tested twice. The input file is never modified; the
 result goes to -o (default INPUT.reduced.c).
 
 Usage:
   python3 tools/reduce/reduce.py INPUT.c --mode ice --message "in irgen"
   python3 tools/reduce/reduce.py INPUT.c --mode miscompile -o small.c
-  python3 tools/reduce/reduce.py INPUT.c --mode cmd --cmd './check.sh {}'
+  python3 tools/reduce/reduce.py INPUT.c --mode cmd --cmd "$PWD/check.sh {}"
 Exit status: 0 when a result was written, 2 when the input itself is not
 interesting (or on a usage error).
 """
 import argparse
 import hashlib
 import os
+import resource
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -467,6 +472,28 @@ UB_WARNINGS = [
 ]
 
 
+def kill_group(proc):
+    """Kill the process group `proc` leads (any descendants still running)
+    and reap `proc`."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    proc.wait()
+
+
+# A sanitizer that finds an error exits with this status (set through the
+# documented ASAN_OPTIONS and UBSAN_OPTIONS `exitcode` option), and prints
+# one of these markers on stderr.
+SANITIZER_EXIT = 86
+SANITIZER_ENV = {
+    "ASAN_OPTIONS": f"exitcode={SANITIZER_EXIT}:detect_leaks=0",
+    "UBSAN_OPTIONS": f"exitcode={SANITIZER_EXIT}:halt_on_error=1:print_stacktrace=0",
+}
+SANITIZER_MARKERS = (b"runtime error:", b"ERROR: AddressSanitizer", b"ERROR: LeakSanitizer",
+                     b"SUMMARY: UndefinedBehaviorSanitizer")
+
+
 class Runner:
     """Runs this compiler and Clang on candidates in a scratch directory."""
 
@@ -477,6 +504,8 @@ class Runner:
         self.flags = shlex.split(args.flags or "")
         self.clang_flags = shlex.split(args.clang_flags or "")
         self.timeout = args.timeout
+        self.output_limit = args.output_limit
+        self.file_limit = max(args.file_limit, args.output_limit + 1)
         self.message = args.message
         self.ub_check = args.ub_check
         self.ub_cc = args.ub_cc
@@ -511,16 +540,39 @@ class Runner:
     def close(self):
         shutil.rmtree(self.scratch, ignore_errors=True)
 
-    def run(self, argv, **kwargs):
-        """(exit status, stdout, stderr); status None on a timeout."""
-        try:
-            proc = subprocess.run(argv, capture_output=True, timeout=self.timeout,
-                                  cwd=self.scratch, **kwargs)
-        except subprocess.TimeoutExpired:
+    def run(self, argv, env=None, shell=False):
+        """(exit status, stdout, stderr). The status is None when the
+        command could not run, timed out, or wrote more than
+        --output-limit bytes to either stream; no predicate counts that as
+        interesting. Output goes to files, not pipes, so memory stays
+        bounded, and the command gets its own process group, which is
+        killed on a timeout so no descendant outlives it."""
+        out_path = Path(self.scratch) / "stdout.txt"
+        err_path = Path(self.scratch) / "stderr.txt"
+        limit = self.output_limit
+        with open(out_path, "wb") as out_file, open(err_path, "wb") as err_file:
+            try:
+                proc = subprocess.Popen(argv, stdout=out_file, stderr=err_file,
+                                        stdin=subprocess.DEVNULL, cwd=self.scratch, env=env,
+                                        shell=shell, start_new_session=True,
+                                        preexec_fn=self.limit_files)
+            except OSError:
+                return None, b"", b""
+            try:
+                status = proc.wait(timeout=self.timeout)
+            except subprocess.TimeoutExpired:
+                status = None
+            finally:
+                kill_group(proc)
+        sizes = (out_path.stat().st_size, err_path.stat().st_size)
+        if status is None or max(sizes) > limit:
             return None, b"", b""
-        except OSError as err:
-            return 127, b"", str(err).encode()
-        return proc.returncode, proc.stdout, proc.stderr
+        return status, out_path.read_bytes(), err_path.read_bytes()
+
+    def limit_files(self):
+        """In the child: no file (stdout and stderr included) may grow past
+        --file-limit, so a runaway program cannot fill the disk."""
+        resource.setrlimit(resource.RLIMIT_FSIZE, (self.file_limit, self.file_limit))
 
     def write(self, text):
         self.count += 1
@@ -559,7 +611,9 @@ class Runner:
 
     def mode_crash(self, path):
         status, _, err = self.ours(path, "-o", str(path.with_suffix(".ll")))
-        crashed = status is not None and (status < 0 or status == 101)
+        # A signal or a Rust panic (101); SIGXFSZ is --file-limit, not a crash.
+        crashed = status is not None and status != -signal.SIGXFSZ and (
+            status < 0 or status == 101)
         return crashed and self.message_in(err) and self.valid_for_clang(path)
 
     def mode_reject(self, path):
@@ -603,7 +657,13 @@ class Runner:
                                      "-fsanitize=address,undefined",
                                      "-fno-sanitize-recover=all", *self.include,
                                      *self.clang_flags, str(path), "-o", str(checked)])
-            if status != 0 or self.program_result(checked) != expected:
+            if status != 0:
+                return False
+            status, out, err = self.run([str(checked)], env=dict(os.environ, **SANITIZER_ENV))
+            if status is None or status == SANITIZER_EXIT or any(
+                    marker in err for marker in SANITIZER_MARKERS):
+                return False
+            if (status, out) != expected:
                 return False
         ll = path.with_suffix(".ll")
         status, _, _ = self.ours(path, "-o", str(ll))
@@ -620,7 +680,7 @@ class Runner:
         quoted = shlex.quote(str(path))
         command = self.cmd.replace("{}", quoted) if "{}" in self.cmd else f"{self.cmd} {quoted}"
         env = dict(os.environ, REDUCE_FILE=str(path))
-        status, _, _ = self.run(command, shell=True, env=env)
+        status, _, _ = self.run(command, env=env, shell=True)
         return status == 0 and self.valid_for_clang(path)
 
 
@@ -642,6 +702,11 @@ def parse_args(argv):
     parser.add_argument("--clang-flags", help="extra flags for Clang")
     parser.add_argument("--timeout", type=float, default=10.0,
                         help="seconds per command (default 10)")
+    parser.add_argument("--output-limit", type=int, default=16 << 20,
+                        help="bytes a command may write to stdout or stderr before the "
+                        "candidate counts as uninteresting (default 16 MiB)")
+    parser.add_argument("--file-limit", type=int, default=1 << 30,
+                        help="largest file a command may write (default 1 GiB)")
     parser.add_argument("--no-ub-check", dest="ub_check", action="store_false",
                         help="miscompile: skip the sanitizer build of the reference")
     parser.add_argument("--ub-cc", default="auto",
@@ -665,6 +730,17 @@ def parse_args(argv):
     return args
 
 
+def missing_tools(args):
+    """The compilers this mode needs that cannot be found."""
+    needed = []
+    if args.mode != "cmd":
+        needed.append(args.compiler)
+    if args.mode in ("miscompile", "reject", "accept", "bad-ir") or args.clang_valid:
+        needed.append(args.clang)
+    return [tool for tool in needed if not (shutil.which(tool) or (
+        Path(tool).is_file() and os.access(tool, os.X_OK)))]
+
+
 def main(argv=None):
     args = parse_args(argv)
     source = Path(args.input)
@@ -672,6 +748,10 @@ def main(argv=None):
     output = Path(args.output) if args.output else source.with_suffix(".reduced.c")
     log = (lambda message: None) if args.quiet else (
         lambda message: print(message, file=sys.stderr, flush=True))
+    missing = missing_tools(args)
+    if missing:
+        print(f"not found: {', '.join(missing)}", file=sys.stderr)
+        return 2
     runner = Runner(args)
     runner.pick_ub_cc(log)
     reducer = Reducer(runner, log=log, max_tests=args.max_tests)

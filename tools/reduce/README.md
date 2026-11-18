@@ -17,11 +17,13 @@ python3 tools/reduce/reduce.py INPUT.c --mode MODE [options] [-o OUT.c]
 |---|---|
 | `ice` | this compiler exits with status 3 (internal compiler error); `--message` must appear in its stderr |
 | `crash` | this compiler panics (exit 101) or dies from a signal; `--message` filters stderr |
-| `miscompile` | Clang builds and runs the program, this compiler's build (IR linked by Clang) gives a different exit status or stdout. The reference must have none of the warnings in `UB_WARNINGS` and must give the same result under `-fsanitize=address,undefined` (Clang, or GCC if Clang has no sanitizer runtime; `--ub-cc`, `--no-ub-check`) |
+| `miscompile` | Clang builds and runs the program, this compiler's build (IR linked by Clang) gives a different exit status or stdout. The reference must have none of the warnings in `UB_WARNINGS` and must give the same result under `-fsanitize=address,undefined` (Clang, or GCC if Clang has no sanitizer runtime; `--ub-cc`, `--no-ub-check`). The sanitized run is rejected when a sanitizer reports anything: its exit status is set to 86 through `ASAN_OPTIONS` / `UBSAN_OPTIONS`, and its stderr is searched for sanitizer reports |
 | `reject` | this compiler reports an error (exit 1) and Clang accepts the file (`-fsyntax-only`, plus `-pedantic-errors` for `-std=c11`); `--message` filters our stderr |
 | `accept` | this compiler accepts the file and Clang rejects it; `--message` filters Clang's stderr |
 | `bad-ir` | this compiler accepts the file and Clang cannot compile the IR it wrote; `--message` filters Clang's stderr |
 | `cmd` | `--cmd COMMAND` exits 0. `{}` is replaced by the candidate path (or the path is appended); `$REDUCE_FILE` holds it too. Runs in a scratch directory |
+
+Commands in `cmd` mode run in a scratch directory, so give a script by absolute path (`--cmd "$PWD/check.sh {}"`).
 
 `--clang-valid` additionally requires Clang to accept every candidate in
 the `ice`, `crash` and `cmd` modes, so the result stays valid C.
@@ -42,7 +44,12 @@ Repeated until a whole round removes nothing (at most `--max-rounds`):
 4. `tokens`: ddmin over single tokens.
 
 `--passes lines,decls` picks a subset. Each command has a `--timeout`
-(default 10 s); a candidate that times out is not interesting. Every
+(default 10 s) and runs in its own process group, which is killed with
+all its descendants when the time is up. Its stdout and stderr go to files
+and may hold at most `--output-limit` bytes (default 16 MiB), and no file
+it writes may pass `--file-limit` (default 1 GiB). A candidate that times
+out or passes a limit is not interesting, and so is one whose command
+cannot be started; a missing compiler is reported before reducing. Every
 candidate's result is cached by its SHA-256, so nothing is tested twice.
 `--max-tests` caps the work.
 
