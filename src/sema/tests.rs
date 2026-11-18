@@ -1774,3 +1774,28 @@ fn void_pointer_and_function_pointer_assignment_and_conditional() {
         }
     }
 }
+
+#[test]
+fn block_function_redeclaration_keeps_the_composite_type() {
+    // C11 6.2.7p4, 6.7p4: after `int f(); int f(int);` in one block, `f`
+    // has the prototype, so `int f(double)` there conflicts with it (Clang
+    // 19 and GCC 14 reject it), and a call is checked against it.
+    assert!(
+        sema_err("void g(void) { int f(); int f(int); int f(double); }")
+            .contains("conflicting types for 'f'")
+    );
+    assert!(
+        sema_err("void g(void) { extern int f(); extern int f(int); f(1, 2); }")
+            .contains("expects 1 argument")
+    );
+    // The function's type is shared with other blocks, as for a first
+    // block-scope declaration (GCC 14 rejects this too).
+    assert!(
+        sema_err("void g(void) { int f(); int f(int); } void h(void) { int f(double); }")
+            .contains("conflicting types for 'f'")
+    );
+    sema_ok("void g(void) { int f(); int f(int); int f(int); int f(); f(1); }");
+    sema_ok(
+        "static int f(); void g(void) { int f(int); int f(); } static int f(int x) { return x; }",
+    );
+}
