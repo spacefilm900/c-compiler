@@ -132,7 +132,9 @@ def _wait4_main() -> int:
             "rc": rc,
             "seconds": time.perf_counter() - start,
             "timed_out": timed_out,
-            "max_rss_kb": int(ru.ru_maxrss) if ru is not None else 0,
+            # ru_maxrss is in kilobytes on Linux and in bytes on macOS.
+            "max_rss_kb": (int(ru.ru_maxrss) // (1024 if sys.platform == "darwin" else 1)
+                           if ru is not None else 0),
         },
         sys.stdout,
     )

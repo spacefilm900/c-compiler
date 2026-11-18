@@ -302,7 +302,7 @@ impl Parser<'_> {
                 scope.insert(name.to_string(), NameBinding::Ordinary(ty));
                 Ok(())
             }
-            Some(NameBinding::Typedef(_) | NameBinding::EnumConst(_)) => {
+            Some(NameBinding::Typedef(_) | NameBinding::EnumConst(..)) => {
                 Err(self.error_at(line, column, format!("redefinition of '{name}'")))
             }
         }
@@ -330,7 +330,8 @@ impl Parser<'_> {
     pub(super) fn bind_enum(
         &mut self,
         name: &str,
-        value: i32,
+        value: i128,
+        ty: TypeName,
         line: usize,
         column: usize,
     ) -> Result<(), Diagnostic> {
@@ -338,7 +339,7 @@ impl Parser<'_> {
         if scope.contains_key(name) {
             return Err(self.error_at(line, column, format!("redefinition of '{name}'")));
         }
-        scope.insert(name.to_string(), NameBinding::EnumConst(value));
+        scope.insert(name.to_string(), NameBinding::EnumConst(value, ty));
         Ok(())
     }
 

@@ -32,7 +32,9 @@ The list is for x86_64 Linux. On another target (read from `clang
 wrappers that add the target), harness/gcc_torture_known_failures_<arch>.txt
 adjusts it: `-TEST reason` drops an x86_64 entry that passes there, and
 `+TEST category reason` adds a failure only that target has. Every line
-gives its reason.
+gives its reason. On macOS (an `-apple-` triple),
+harness/gcc_torture_known_failures_macos_<arch>.txt then adjusts the
+result the same way, for what the macOS SDK and C library change.
 
 Env: CC_UNDER_TEST, CLANG, TORTURE_ROOT, TORTURE_JOBS, TORTURE_RUN_TIMEOUT.
 """
@@ -85,7 +87,9 @@ def load_known(path: Path) -> dict[str, str]:
 
 
 def apply_target_overlay(known: dict[str, str], arch: str) -> None:
-    """Adjust the x86_64 list for `arch` from its overlay file, if any."""
+    """Adjust the x86_64 list for `arch` from its overlay file, if any. On
+    macOS, `arch` is `macos_<arch>` (gcc_torture_known_failures_macos_x86_64.txt);
+    see target_overlays."""
     path = ROOT / "harness" / f"gcc_torture_known_failures_{arch}.txt"
     if arch == "x86_64" or not path.is_file():
         return
@@ -113,6 +117,16 @@ def apply_target_overlay(known: dict[str, str], arch: str) -> None:
             if rel in baseline:
                 sys.exit(f"{path}:{lineno}: {rel} is already in the x86_64 list")
             known[rel] = reason.strip().split()[0]
+
+
+def target_overlays(triple: str, arch: str) -> list[str]:
+    """The overlay names for a target, applied in order: the processor's
+    (`aarch64`), then, on macOS, `macos_<arch>` for what the macOS SDK
+    and C library change."""
+    names = [arch]
+    if "-apple-" in triple:
+        names.append(f"macos_{arch}")
+    return names
 
 
 def category(detail: str) -> str:
@@ -156,7 +170,14 @@ def category(detail: str) -> str:
 def limit_program() -> None:
     cpu = max(1, int(RUN_TIMEOUT))
     resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
-    resource.setrlimit(resource.RLIMIT_AS, (1 << 30, 1 << 30))
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (1 << 30, 1 << 30))
+    except (ValueError, OSError):
+        # macOS does not let a process lower its address-space limit; the
+        # CPU limit and the wall-clock timeout still stop a runaway test.
+        # Elsewhere the failure is an error.
+        if sys.platform != "darwin":
+            raise
 
 
 def run(
@@ -257,7 +278,8 @@ def main() -> int:
         sys.exit(f"cannot read the target from `{CLANG} -dumpmachine`")
     arch = arch_of(triple)
     if not args.record:
-        apply_target_overlay(known, arch)
+        for overlay in target_overlays(triple, arch):
+            apply_target_overlay(known, overlay)
     if arch != "x86_64":
         print(f"target {triple}")
     results: list[tuple[str, str, str]] = []

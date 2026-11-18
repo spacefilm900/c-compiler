@@ -164,16 +164,22 @@ struct MemberAttrs {
 #[derive(Clone)]
 enum TagEntry {
     Record(StructRef),
-    /// A completed enumeration. Its type is `int`.
-    Enum,
+    /// A completed enumeration and its type: `int`, or, for the GNU
+    /// extension that allows enumerators outside `int`, the wider type
+    /// chosen in [`Parser::parse_enumerators`].
+    Enum(TypeName),
+    /// An enumeration without a fixed underlying type whose list is being
+    /// read: incomplete until its `}` (C11 6.7.2.2p4).
+    EnumOpen,
 }
 
 /// A name the parser has to know before semantic analysis.
 #[derive(Clone)]
 enum NameBinding {
     Typedef(CType),
-    /// Value of an enumeration constant, representable as `int`.
-    EnumConst(i32),
+    /// Value and type of an enumeration constant. The type is `int` unless
+    /// the GNU extension for enumerators outside `int` applies.
+    EnumConst(i128, TypeName),
     /// An ordinary identifier in this scope. It hides an outer typedef or
     /// enumeration constant. The declared type is kept so `sizeof` of an
     /// object can be folded where an integer constant expression is needed
@@ -513,6 +519,8 @@ struct SpecFlags {
     /// An enum specifier was read; it is the type specifier (C11 6.7.2p2),
     /// and the enumerated type is compatible with `int` here.
     enum_ty: bool,
+    /// The enumerated type when it is not `int` (GNU extension).
+    enum_base: Option<TypeName>,
     line: usize,
     column: usize,
 }

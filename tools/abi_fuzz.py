@@ -19,10 +19,20 @@ compiler for one file and Clang for the other (both ways), and this
 compiler for both. All four must print the same text.
 
 Usage: tools/abi_fuzz.py [--seed-start N] [--count N] [--out DIR]
+                         [--int128] [--target x86_64-apple-macos]
 (--out DIR keeps each failing pair in DIR/seedN.)
-Env: CC_UNDER_TEST (default build/compiler), CLANG (default clang). The
-target is whatever both produce by default; for AArch64 under qemu, use
-wrappers that add --target and -target.
+--int128 adds `__int128` and `unsigned __int128` to the scalar types (in a
+variadic function only as the last argument, see only_last_int128; an
+x86-64 or AArch64 target; the programs for a seed differ from those
+without it). --target x86_64-apple-macos builds both compilers' code for
+Intel macOS and runs it through the Linux stand-in in
+harness/intel_mac_proxy.py.
+Env: CC_UNDER_TEST (default build/compiler), CLANG (default clang). Without
+--target, the target is whatever both produce by default; for AArch64 under
+qemu, use wrappers that add --target and -target.
+Exit status: 0 when every compared seed agrees, 1 when a seed fails (an
+oracle failure included), 2 when seeds were asked for but none could be
+compared (every one skipped).
 """
 
 from __future__ import annotations
@@ -38,6 +48,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "harness"))
+import intel_mac_proxy as intel  # noqa: E402
 COMPILER = os.environ.get("CC_UNDER_TEST", str(ROOT / "build" / "compiler"))
 CLANG = os.environ.get("CLANG", "clang")
 
@@ -59,7 +71,21 @@ FLOATS = [
     ("long double", "%La", "", "float"),
 ]
 # Types va_arg may name directly (no default argument promotion).
-PROMOTED = {"int", "unsigned", "long", "unsigned long long", "double", "long double"}
+PROMOTED = {"int", "unsigned", "long", "unsigned long long", "double", "long double",
+            "__int128", "unsigned __int128"}
+# With --int128. I128 (defined in each file) prints the two halves.
+INT128 = [
+    ("__int128", "%llx:%llx", "I128", "int"),
+    ("unsigned __int128", "%llx:%llx", "I128", "int"),
+]
+I128_MACRO = ("#define I128(x) (unsigned long long)((unsigned __int128)(x) >> 64), "
+              "(unsigned long long)(x)")
+# Set by --int128.
+OPTIONS = {"int128": False}
+
+
+def int_pool():
+    return INTS + (INT128 if OPTIONS["int128"] else [])
 
 
 class Gen:
@@ -69,7 +95,7 @@ class Gen:
         self.n = 0
 
     def scalar(self, allow_float=True):
-        pool = INTS + (FLOATS if allow_float else [])
+        pool = int_pool() + (FLOATS if allow_float else [])
         return ("scalar",) + self.rng.choice(pool)
 
     def hfa(self):
@@ -174,6 +200,9 @@ def value_leaf(t, rng):
         return f"{rng.randint(0, 2**32 - 1)}u"
     if spelling == "long":
         return f"{rng.randint(-2**62, 2**62)}L"
+    if spelling in ("__int128", "unsigned __int128"):
+        high, low = rng.randint(0, 2**64 - 1), rng.randint(0, 2**64 - 1)
+        return f"({spelling})(((unsigned __int128){high}ull << 64) | {low}ull)"
     return f"{rng.randint(0, 2**64 - 1)}ull"
 
 
@@ -191,6 +220,24 @@ def print_stmt(label, t, expr):
     return f'  printf("{label} {fmt}\\n", {args});'
 
 
+def only_last_int128(params, variadic):
+    """In a variadic function, a scalar __int128 only as the last argument.
+
+    When a scalar __int128 goes on the stack because only one general
+    register is left, Clang's caller (LLVM) leaves that register unused
+    while Clang's va_arg for a later variadic argument reads it, so Clang's
+    own two-unit build reads memory nobody wrote and is no reference. GCC
+    uses the register on both sides (System V AMD64 3.2.3). This compiler
+    emits what Clang does, with the same disagreement (STATUS.md). Earlier
+    ones become unsigned long long; no random numbers are drawn, so the
+    rest of the seed is unchanged."""
+    u64 = ("scalar",) + next(t for t in INTS if t[0] == "unsigned long long")
+    every = params + variadic
+    fixed = [u64 if t[0] == "scalar" and t[1] in ("__int128", "unsigned __int128")
+             and i != len(every) - 1 else t for i, t in enumerate(every)]
+    return fixed[:len(params)], fixed[len(params):]
+
+
 def make_pair(seed: int) -> tuple[str, str]:
     rng = random.Random(seed)
     g = Gen(rng)
@@ -204,15 +251,20 @@ def make_pair(seed: int) -> tuple[str, str]:
                 t = g.any_type()
                 if t[0] == "scalar" and t[1] not in PROMOTED:
                     t = ("scalar",) + rng.choice(
-                        [x for x in INTS + FLOATS if x[0] in PROMOTED])
+                        [x for x in int_pool() + FLOATS if x[0] in PROMOTED])
                 variadic.append(t)
         if variadic and params[-1][0] == "scalar" and params[-1][1] not in PROMOTED:
             # va_start's parameter must not change under the default
             # argument promotions (C11 7.16.1.4p4).
             params.append(("scalar",) + INTS[5])
+        if variadic:
+            params, variadic = only_last_int128(params, variadic)
         funcs.append((fi, ret, params, variadic))
 
-    head = ["#include <stdio.h>", "#include <stdarg.h>"] + g.decls
+    head = ["#include <stdio.h>", "#include <stdarg.h>"]
+    if OPTIONS["int128"]:
+        head.append(I128_MACRO)
+    head += g.decls
     protos = []
     for fi, ret, params, variadic in funcs:
         plist = ", ".join(f"{t[1]} p{i}" for i, t in enumerate(params))
@@ -277,10 +329,55 @@ def run(cmd, timeout=60):
         return proc.returncode, out, err
 
 
+class IntelMac:
+    """Builds for x86_64-apple-macos through the Linux stand-in."""
+
+    def __init__(self, tmp: Path):
+        self.sysroot = intel.make_sysroot(tmp)
+        self.llc, self.opt = intel.find_tools()
+        if self.sysroot is None or self.llc is None or self.opt is None:
+            sys.exit("the Intel macOS stand-in needs the x86_64 glibc headers, and llc and opt of the same LLVM version, 18 or later")
+
+    def obj(self, src: Path, obj: Path, ours: bool):
+        """(status, stderr) of building src into an ELF object."""
+        ll = obj.with_suffix(".ll")
+        if ours:
+            cmd = [COMPILER, "-target", intel.TARGET, "-isysroot", str(self.sysroot),
+                   *intel.OURS_FLAGS, str(src), "-o", str(ll)]
+        else:
+            cmd = [CLANG, "-target", intel.CLANG_TRIPLE, "-isysroot", str(self.sysroot),
+                   *intel.CLANG_FLAGS, "-w", "-std=c11", "-S", "-emit-llvm", str(src), "-o", str(ll)]
+        rc, _, err = run(cmd)
+        if rc != 0:
+            return rc, err
+        try:
+            text = ll.read_text(errors="replace")
+        except OSError as exc:
+            return 1, f"no IR written: {exc}".encode()
+        proxy = obj.with_suffix(".proxy.ll")
+        proxy.write_text(intel.proxy_ir(text))
+        for step in intel.object_commands(self.llc, self.opt, proxy, obj):
+            rc, _, err = run(step)
+            if rc != 0:
+                return rc, err
+        return 0, b""
+
+
+# Set by --target x86_64-apple-macos.
+CROSS: list = [None]
+
+
 def build_and_run(work: Path, d: Path, u: Path, ours: set[str], tag: str):
     objs = []
     for src in (d, u):
-        if src.name in ours:
+        if CROSS[0] is not None:
+            obj = work / f"{src.stem}.{tag}.o"
+            rc, err = CROSS[0].obj(src, obj, src.name in ours)
+            who = "compiler" if src.name in ours else "clang"
+            if rc != 0:
+                return f"{who} failed on {src.name} ({rc}): {err.decode(errors='replace')[:300]}"
+            objs.append(str(obj))
+        elif src.name in ours:
             ll = work / f"{src.stem}.{tag}.ll"
             rc, _, err = run([COMPILER, str(src), "-o", str(ll)])
             if rc != 0:
@@ -299,15 +396,40 @@ def build_and_run(work: Path, d: Path, u: Path, ours: set[str], tag: str):
     return run([str(exe)])
 
 
+def rerun_reference(work: Path, ref) -> str:
+    """Run Clang's own build three more times: "same" when every run matches
+    `ref`, "differs" when a clean run prints something else, else the
+    failure (a nonzero exit or a timeout), which is an oracle failure."""
+    verdict = "same"
+    for _ in range(3):
+        again = run([str(work / "abi.clang")])
+        if again[0] == "timeout":
+            return "timeout"
+        if again[0] != 0:
+            return f"exit {again[0]}: {again[2][:200]!r}"
+        if again != ref:
+            verdict = "differs"
+    return verdict
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--seed-start", type=int, default=1)
     ap.add_argument("--count", type=int, default=100)
     ap.add_argument("--out", type=Path, help="keep failing pairs here")
+    ap.add_argument("--int128", action="store_true", help="also use __int128 scalars")
+    ap.add_argument("--target", choices=[intel.TARGET],
+                    help="build for Intel macOS through the Linux stand-in")
     args = ap.parse_args()
+    OPTIONS["int128"] = args.int128
+    cross_tmp = None
+    if args.target == intel.TARGET:
+        cross_tmp = tempfile.TemporaryDirectory(prefix="abi-sysroot-")
+        CROSS[0] = IntelMac(Path(cross_tmp.name))
     if shutil.which(CLANG) is None:
         sys.exit(f"clang not found: {CLANG}")
     failures = 0
+    skipped = 0
     for seed in range(args.seed_start, args.seed_start + args.count):
         with tempfile.TemporaryDirectory(prefix="abi-") as tmp:
             work = Path(tmp)
@@ -320,6 +442,17 @@ def main() -> int:
             if isinstance(ref, str) or ref[0] != 0:
                 detail = ref if isinstance(ref, str) else f"exit {ref[0]}: {ref[2][:200]!r}"
                 bad.append(f"oracle failed: {detail}")
+            elif (reruns := rerun_reference(work, ref)) != "same":
+                if reruns != "differs":
+                    bad.append(f"oracle failed on a rerun: {reruns}")
+                else:
+                    # Clang's own two-unit build prints something different
+                    # on another run: it reads memory nobody wrote, so there
+                    # is no reference to compare with. A backstop: the one
+                    # known cause is avoided by only_last_int128.
+                    skipped += 1
+                    print(f"seed {seed}: SKIP (Clang's own build is not repeatable)")
+                    continue
             else:
                 for tag, ours in (("def", {d.name}), ("use", {u.name}), ("both", {d.name, u.name})):
                     got = build_and_run(work, d, u, ours, tag)
@@ -339,8 +472,15 @@ def main() -> int:
                     shutil.copy(u, dest)
             else:
                 print(f"seed {seed}: ok")
-    print(f"{args.count - failures}/{args.count} seeds agree")
-    return 1 if failures else 0
+    agreed = args.count - failures - skipped
+    note = f", {skipped} skipped (no repeatable Clang reference)" if skipped else ""
+    print(f"{agreed}/{args.count - skipped} seeds agree{note}")
+    if failures:
+        return 1
+    if args.count > 0 and agreed == 0:
+        print("inconclusive: no seed was compared")
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

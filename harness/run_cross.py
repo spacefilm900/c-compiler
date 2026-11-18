@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Run the differential harness for an AArch64 target under qemu-aarch64.
+"""Run the differential harness for a non-default target: an AArch64 one
+under qemu-aarch64, or Intel macOS through its x86_64 Linux stand-in.
 
     python3 harness/run_cross.py --target aarch64-linux-gnu
     python3 harness/run_cross.py --target arm64-apple-macos
+    python3 harness/run_cross.py --target x86_64-apple-macos
 
 The test set is the one harness/run_tests.py uses on x86_64: tests/*.c,
 tests/hosted/*.c, the tests/xabi/ pairs (this compiler's object linked with
@@ -33,6 +35,13 @@ not match; harness/cross_known_failures.txt lists what that excludes. What
 this proxy cannot show — Mach-O linking, the macOS SDK headers, and the
 macOS C library — needs a real Mac.
 
+x86_64-apple-macos is also a proxy, described in harness/intel_mac_proxy.py:
+both compilers emit IR for x86_64-apple-macosx10.15.0 over the x86_64 glibc
+headers, llc builds ELF objects for the triple x86_64-apple-darwin-elf, and
+the programs run natively, linked with glibc. System V variadic calls are
+the same on both systems, so no stdio shim is needed. The AArch64 tests in
+tests/arm64/ are not run for it.
+
 harness/cross_known_failures.txt lists expected failures as
 "TARGET LABEL  # reason". A listed test that passes is reported so the
 line can be removed. An unlisted failure fails the run.
@@ -41,12 +50,17 @@ Env: CC_UNDER_TEST, CLANG (default clang), QEMU_AARCH64 (default
 qemu-aarch64), AARCH64_LINK (default "clang --target=aarch64-linux-gnu
 -static"), AARCH64_INCLUDE (default /usr/aarch64-linux-gnu/include),
 TIMEOUT (seconds, default 20), JOBS (default: CPU count), TORTURE_ROOT
-(for --torture).
+(for --torture), LLC and OPT (x86_64-apple-macos; default llc and opt, or
+a versioned llc-21 .. llc-18).
 """
 import argparse, concurrent.futures, os, re, shlex, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "harness"))
+import intel_mac_proxy as intel  # noqa: E402
+from run_gcc_torture import dg_flags  # noqa: E402
+import run_gcc_torture  # noqa: E402
 COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
 CLANG = os.environ.get("CLANG", "clang")
 QEMU = os.environ.get("QEMU_AARCH64", "qemu-aarch64")
@@ -80,8 +94,10 @@ class Toolchain:
     def __init__(self, target, tmp):
         self.target = target
         self.apple = target == "arm64-apple-macos"
+        self.intel = target == intel.TARGET
         self.tmp = tmp
         self.shims = []
+        self.llc = self.opt = None
         if self.apple:
             sysroot = tmp / "sysroot"
             (sysroot / "usr").mkdir(parents=True)
@@ -89,7 +105,16 @@ class Toolchain:
             self.sysroot = sysroot
 
     def setup(self):
-        """Build the Apple stdio shim. Returns an error string or None."""
+        """Build the Apple stdio shim, or the Intel macOS stand-in's
+        sysroot. Returns an error string or None."""
+        if self.intel:
+            self.sysroot = intel.make_sysroot(self.tmp)
+            if self.sysroot is None:
+                return "the x86_64 glibc headers are missing"
+            self.llc, self.opt = intel.find_tools()
+            if self.llc is None or self.opt is None:
+                return "llc and opt of the same LLVM version, 18 or later, not found (set LLC and OPT)"
+            return None
         if not self.apple:
             return None
         shim_a = self.tmp / "apple_stdio_shim.o"
@@ -105,16 +130,29 @@ class Toolchain:
         self.shims = [str(shim_a), str(shim_l)]
         return None
 
-    def ours(self, src, ll, std):
-        cmd = [str(COMPILER), "-target", self.target]
-        if self.apple:
+    def ours(self, src, ll, std, extra=()):
+        cmd = [str(COMPILER), "-target", self.target, *extra]
+        if self.apple or self.intel:
             cmd += ["-isysroot", str(self.sysroot)]
+        if self.intel:
+            cmd += intel.OURS_FLAGS
+        if self.apple:
+            # The glibc stand-in sysroot: see intel_mac_proxy.OURS_FLAGS.
+            cmd.append("-D_GCC_LIMITS_H_")
         if std != "c11":
             cmd.append(f"-std={std}")
         return run(cmd + [str(src), "-o", str(ll)])
 
     def oracle_obj(self, src, obj, std):
         """Clang's object for one translation unit."""
+        if self.intel:
+            ll = obj.with_suffix(".clang.ll")
+            rc, out, err = run([CLANG, "-target", intel.CLANG_TRIPLE, "-isysroot", str(self.sysroot),
+                                *intel.CLANG_FLAGS, "-w", f"-std={std}", "-S", "-emit-llvm",
+                                str(src), "-o", str(ll)])
+            if rc != 0:
+                return rc, out, err
+            return self.ll_obj(ll, obj)
         if self.apple:
             ll = obj.with_suffix(".clang.ll")
             rc, out, err = run([CLANG, "-target", APPLE_TRIPLE, "-isysroot", str(self.sysroot),
@@ -127,6 +165,14 @@ class Toolchain:
 
     def ll_obj(self, ll, obj):
         """Object file for an IR file from either compiler."""
+        if self.intel:
+            proxy = ll.with_suffix(".proxy.ll")
+            proxy.write_text(intel.proxy_ir(ll.read_text(errors="replace")))
+            for cmd in intel.object_commands(self.llc, self.opt, proxy, obj):
+                result = run(cmd)
+                if result[0] != 0:
+                    return result
+            return result
         if self.apple:
             text = ll.read_text(errors="replace")
             renamed = ll.with_suffix(".proxy.ll")
@@ -135,15 +181,19 @@ class Toolchain:
         return run(LINK + ["-w", "-c", str(ll), "-o", str(obj)])
 
     def link(self, objs, out):
+        if self.intel:
+            return run([CLANG, *[str(o) for o in objs], "-lm", "-o", str(out)])
         return run(LINK + [str(o) for o in objs] + self.shims + ["-lm", "-o", str(out)])
 
     def execute(self, binary):
+        if self.intel:
+            return run([str(binary)])
         return run([QEMU, str(binary)])
 
 
-def build_ours(tc, src, base, std):
+def build_ours(tc, src, base, std, extra=()):
     ll, obj = base.with_suffix(".ll"), base.with_suffix(".o")
-    rc, _, err = tc.ours(src, ll, std)
+    rc, _, err = tc.ours(src, ll, std, extra)
     if rc != 0:
         return None, f"compiler failed ({rc}): {short(err)}"
     rc, _, err = tc.ll_obj(ll, obj)
@@ -267,13 +317,20 @@ def known_failures(target):
 
 
 def torture(target, label_filter):
-    """Run gcc.c-torture/execute for an arm64 target, built by this compiler
-    alone (`-std=gnu11`), each program's own self-test deciding. This is a
+    """Run gcc.c-torture/execute for a cross target, built by this compiler
+    alone (`-std=gnu11`, and `-fgnu89-inline` where the test's dg-options
+    ask for it), each program's own self-test deciding. This is a
     report, not a gate: it lists failures that are not already in the
     x86_64 list harness/gcc_torture_known_failures.txt, and exits 0. Under
     the Apple proxy, programs that call glibc's `long double` functions or
     its asm-label redirects (`__isoc99_fscanf`, `__sysv_signal`) cannot
-    work, because those are glibc's, not Apple's."""
+    work, because those are glibc's, not Apple's.
+
+    For x86_64-apple-macos the x86_64 list applies (same processor, same
+    `long double`) with the macOS overlay, so there it is a gate: a failure
+    not in the list, a compiler panic even on a listed test, or a filter
+    that selects nothing fails the run. Listed tests that pass are
+    reported."""
     root = Path(os.environ.get("TORTURE_ROOT", ROOT / "tests" / "external" / "gcc-torture")) \
         / "gcc" / "testsuite" / "gcc.c-torture" / "execute"
     if not root.is_dir():
@@ -281,11 +338,20 @@ def torture(target, label_filter):
         return 1
     files = sorted(p for p in root.rglob("*.c") if "builtins" not in p.parts)
     files = [p for p in files if label_filter in str(p.relative_to(root))]
+    if target == intel.TARGET and not files:
+        print(f"FAIL: no torture test matches the filter {label_filter!r}")
+        return 1
     known = set()
     for line in (ROOT / "harness" / "gcc_torture_known_failures.txt").read_text().splitlines():
         line = line.split("#")[0].strip()
         if line:
             known.add(line.split()[0])
+    if target == intel.TARGET:
+        # The x86_64 list with the macOS overlay, as on the Intel Mac job.
+        table = run_gcc_torture.load_known(run_gcc_torture.KNOWN_PATH)
+        for overlay in run_gcc_torture.target_overlays(intel.IR_TRIPLE, "x86_64"):
+            run_gcc_torture.apply_target_overlay(table, overlay)
+        known = set(table)
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
         tc = Toolchain(target, tmp)
@@ -298,7 +364,7 @@ def torture(target, label_filter):
             label = str(src.relative_to(root))
             work = tmp / label.replace("/", "_")
             work.mkdir()
-            obj, err = build_ours(tc, src, work / "t", "gnu11")
+            obj, err = build_ours(tc, src, work / "t", "gnu11", dg_flags(src))
             if err:
                 return label, err
             rc, _, e = tc.link([obj], work / "t.bin")
@@ -314,17 +380,28 @@ def torture(target, label_filter):
     new = [(label, err) for label, err in failed if label not in known]
     for label, err in new:
         print(f"NOT_IN_X86_LIST {label}: {err.splitlines()[0][:200]}")
+    # A panic is a compiler bug whatever the list says about the test.
+    panics = [(label, err) for label, err in failed if label in known and "panicked" in err]
+    for label, err in panics:
+        print(f"PANIC_IN_LISTED {label}: {err.splitlines()[0][:200]}")
+    if target == intel.TARGET:
+        for label, err in results:
+            if err is None and label in known:
+                print(f"PASSES_BUT_IN_X86_LIST {label}")
     print(f"\n{target} torture: {len(results)} files, {len(results) - len(failed)} passed, "
-          f"{len(failed)} failed, {len(new)} of them not in the x86_64 known-failure list")
-    return 0
+          f"{len(failed)} failed, {len(new)} of them not in the x86_64 known-failure list, "
+          f"{len(panics)} listed ones panicked")
+    return 1 if target == intel.TARGET and (new or panics) else 0
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target", required=True, choices=["aarch64-linux-gnu", "arm64-apple-macos"])
+    parser.add_argument("--target", required=True,
+                        choices=["aarch64-linux-gnu", "arm64-apple-macos", intel.TARGET])
     parser.add_argument("--filter", default="", help="only labels containing this text")
     parser.add_argument("--torture", action="store_true",
-                        help="instead, run gcc.c-torture/execute (report only; see torture())")
+                        help="instead, run gcc.c-torture/execute (a gate for x86_64-apple-macos, "
+                             "a report for the AArch64 targets; see torture())")
     args = parser.parse_args()
     if args.torture:
         return torture(args.target, args.filter)
@@ -341,9 +418,11 @@ def main():
         jobs.append((f"gnu/{t.name}", test_gnu, (t,)))
     for t in sorted((ROOT / "tests" / "gnu" / "both").glob("*.c")):
         jobs.append((f"gnu/both/{t.name}", test_both, (t,)))
-    for t in sorted((ROOT / "tests" / "arm64").glob("*.c")):
+    arm64 = [] if args.target == intel.TARGET else sorted((ROOT / "tests" / "arm64").glob("*.c"))
+    for t in arm64:
         jobs.append((f"arm64/{t.name}", test, (t,)))
-    for t in sorted((ROOT / "tests" / "arm64" / "xabi").glob("*_def.c")):
+    arm64 = [] if args.target == intel.TARGET else sorted((ROOT / "tests" / "arm64" / "xabi").glob("*_def.c"))
+    for t in arm64:
         use = t.with_name(t.name[: -len("_def.c")] + "_use.c")
         jobs.append((f"arm64/xabi/{t.name[: -len('_def.c')]}", test_cross, (t, use)))
     jobs = [j for j in jobs if args.filter in j[0]]

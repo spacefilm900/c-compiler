@@ -425,9 +425,10 @@ impl Parser<'_> {
         {
             return Err(self.error("invalid combination of type specifiers"));
         }
-        let (line, column) = self.parse_enum_specifier()?;
+        let (line, column, base) = self.parse_enum_specifier()?;
         flags.any = true;
         flags.enum_ty = true;
+        flags.enum_base = (base != TypeName::Int).then_some(base);
         flags.introduced_tag = true;
         flags.line = line;
         flags.column = column;
@@ -621,6 +622,9 @@ impl Parser<'_> {
                 return Err(bad());
             }
             return Ok(ty.clone());
+        }
+        if let Some(base) = flags.enum_base {
+            return Ok(CType::from_name(base));
         }
         if flags.bool_ty {
             if flags.has_scalar() || flags.float_ty.is_some() {

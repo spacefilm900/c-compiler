@@ -6,6 +6,15 @@
 #
 # The DOOM job runs only when started by hand with the "doom" box ticked
 # (`gh workflow run macos.yml -f doom=true`), so merges to main stay cheap.
+#
+# The Intel job (PLAN.md step 10) runs only by hand, on GitHub's Intel
+# runner, when the "intel" input is not "off":
+#   gh workflow run macos.yml --ref BRANCH -f intel=all -f arm64=false
+# It never runs on a push, a pull request or a schedule. "all" took 10 to
+# 15 minutes of Intel macOS time (11 billed minutes, about $0.70, on the
+# last step 10 run); "torture" builds and runs only GCC
+# torture. Day-to-day Intel macOS coverage is the Linux stand-in in ci.yml
+# (harness/intel_mac_proxy.py).
 
 name: macos
 
@@ -23,17 +32,31 @@ on:
         description: "Also build DOOM natively: frame hashes against Apple clang at -O0 and -O2, and the SDL2 window build (docs/DOOM_ON_MAC.md)"
         type: boolean
         default: false
+      arm64:
+        description: "Run the Apple Silicon native job"
+        type: boolean
+        default: true
+      intel:
+        description: "Intel macOS job (macos-26-intel): off, all (build, unit tests, harness, Lua, SQLite, DOOM, GCC torture), or torture (GCC torture only)"
+        type: choice
+        options: ["off", "all", "torture"]
+        default: "off"
 
 permissions:
   contents: read
 
+# A manual dispatch and an automatic run of the same ref are in different
+# groups, and so are manual dispatches with different job selections (an
+# Intel-only run and an arm64-only run), so none cancels another; only a
+# repeat of the same selection replaces the older run.
 concurrency:
-  group: macos-${{ github.ref }}
+  group: macos-${{ github.event_name }}-${{ github.ref }}-${{ inputs.arm64 }}-${{ inputs.intel }}-${{ inputs.doom }}
   cancel-in-progress: true
 
 jobs:
   native:
     name: macOS arm64 native (build, unit tests, run_tests, hello)
+    if: github.event_name != 'workflow_dispatch' || inputs.arm64
     runs-on: macos-26
     timeout-minutes: 15
     steps:
@@ -182,4 +205,111 @@ jobs:
             build/doom-mac.md
             build/doom-*.log
             build/doom-*.png
+          if-no-files-found: warn
+
+  intel:
+    name: macOS x86_64 (Intel) native (build, unit tests, run_tests, Lua, SQLite, DOOM, torture)
+    if: github.event_name == 'workflow_dispatch' && inputs.intel != 'off'
+    runs-on: macos-26-intel
+    timeout-minutes: 45
+    env:
+      ALL: ${{ inputs.intel == 'all' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+
+      - name: Tools
+        run: |
+          set -euo pipefail
+          sw_vers
+          uname -m
+          test "$(uname -m)" = x86_64
+          sysctl -n machdep.cpu.brand_string hw.ncpu
+          rustc --version
+          sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          echo "SDKROOT=${sdk}" >> "$GITHUB_ENV"
+          echo "CLANG=/usr/bin/clang" >> "$GITHUB_ENV"
+          echo "JOBS=$(sysctl -n hw.ncpu)" >> "$GITHUB_ENV"
+          echo "${sdk}"
+          /usr/bin/clang --version
+          python3 --version
+          mkdir -p build
+
+      - name: Build
+        run: make
+
+      - name: Unit tests
+        if: env.ALL == 'true'
+        run: cargo test --offline --lib
+
+      - name: Hello, world
+        if: env.ALL == 'true'
+        run: |
+          set -euo pipefail
+          build/compiler harness/macos/hello.c -o hello.ll
+          grep -q 'target triple = "x86_64-apple-macosx' hello.ll
+          "${CLANG}" hello.ll -o hello
+          file hello
+          out="$(./hello)"
+          echo "${out}"
+          test "${out}" = "Hello from the clean-room compiler on macOS"
+
+      - name: Differential harness with Apple Clang as the oracle
+        if: env.ALL == 'true' && (success() || failure())
+        env:
+          KNOWN_FAILURES: harness/macos_x86_64_known_failures.txt
+        run: python3 harness/run_tests.py
+
+      - name: SDK header report (does not fail the job)
+        if: env.ALL == 'true' && always()
+        run: sh harness/macos/sdk_headers.sh
+
+      - name: Lua 5.4.7 both ways at -O0 and -O2 (test suite, workloads, bytecode)
+        if: env.ALL == 'true' && (success() || failure())
+        run: |
+          set -euo pipefail
+          scripts/fetch_lua.sh
+          python3 harness/run_lua.py --opt O0 --opt O2 --run-jobs "${JOBS}" \
+            --json build/lua-mac-x86_64.json --scorecard build/lua-mac-x86_64.md --title "Lua on macOS x86_64"
+
+      - name: SQLite 3.54.1 both ways at -O0 and -O2 (shell workloads)
+        if: env.ALL == 'true' && (success() || failure())
+        run: |
+          set -euo pipefail
+          scripts/fetch_sqlite.sh
+          python3 harness/run_sqlite.py --opt O0 --opt O2 \
+            --json build/sqlite-mac-x86_64.json --scorecard build/sqlite-mac-x86_64.md --title "SQLite on macOS x86_64"
+
+      - name: DOOM frame hashes against Apple Clang at -O0 and -O2, every demo to its end
+        if: env.ALL == 'true' && (success() || failure())
+        run: |
+          set -euo pipefail
+          scripts/fetch_doomgeneric.sh
+          scripts/fetch_freedoom.sh
+          python3 harness/run_doom.py --opt O0 --opt O2 --play-jobs "${JOBS}" \
+            --json build/doom-mac-x86_64.json --scorecard build/doom-mac-x86_64.md --title "DOOM on macOS x86_64"
+
+      - name: GCC torture execute (x86_64 list with the macOS overlay)
+        if: success() || failure()
+        run: |
+          set -euo pipefail
+          scripts/fetch_gcc_torture.sh
+          python3 harness/run_gcc_torture.py --jobs "${JOBS}" 2>&1 | tee build/torture-mac-x86_64.log
+
+      - name: Upload the reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-x86_64
+          path: |
+            build/*-mac-x86_64.json
+            build/*-mac-x86_64.md
+            build/torture-mac-x86_64.log
           if-no-files-found: warn

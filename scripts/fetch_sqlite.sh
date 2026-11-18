@@ -38,13 +38,23 @@ if [ -f "$DEST/.pin" ] && [ "$(cat "$DEST/.pin")" = "$PIN" ] \
     exit 0
 fi
 
+# Linux has sha256sum; macOS has shasum.
 sha256_of() {
-    sha256sum "$1" | cut -d ' ' -f 1
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d ' ' -f 1
+    else
+        shasum -a 256 "$1" | cut -d ' ' -f 1
+    fi
 }
 
 sha3_256_of() {
-    # openssl dgst -sha3-256 prints "SHA3-256(file)= <hex>"
-    openssl dgst -sha3-256 "$1" | awk '{print $NF}'
+    # openssl dgst -sha3-256 prints "SHA3-256(file)= <hex>". macOS ships
+    # LibreSSL, which may lack SHA3; Python's hashlib always has it.
+    digest="$(openssl dgst -sha3-256 "$1" 2>/dev/null | awk '{print $NF}')" || digest=
+    case "$digest" in
+        [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) printf '%s\n' "$digest" ;;
+        *) python3 -c 'import hashlib, sys; print(hashlib.sha3_256(open(sys.argv[1], "rb").read()).hexdigest())' "$1" ;;
+    esac
 }
 
 download() { # path-on-sqlite.org output

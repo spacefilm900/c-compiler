@@ -1461,3 +1461,63 @@ fn oversized_records_are_too_large() {
     }
     parsed("struct S { char pad[536870911]; unsigned int x : 1; };");
 }
+
+#[test]
+fn gnu_enum_values_stay_within_64_bits() {
+    // Underlying types wider than 64 bits are outside the subset, and a
+    // value above 64 bits is rejected however it is spelled.
+    for source in [
+        "enum E : unsigned __int128 { A };",
+        "enum E : __int128 { A = 1 };",
+    ] {
+        assert!(
+            parse_gnu(source)
+                .unwrap_err()
+                .contains("wider than 64 bits"),
+            "{source}"
+        );
+    }
+    for source in [
+        "enum E { A = ~(unsigned __int128)0 };",
+        "enum E { A = (unsigned __int128)1 << 64 };",
+        "enum E { A = 0xffffffffffffffffUL, B };",
+        "enum E : unsigned long { A = 0xffffffffffffffffUL, B };",
+    ] {
+        assert!(parse_gnu(source).is_err(), "{source}");
+    }
+    parse_gnu("enum E { A = (unsigned __int128)0xffffffffffffffffUL };").unwrap();
+}
+
+#[test]
+fn gnu_enum_colon_needs_a_type_after_it() {
+    // `enum E : 3` is an unnamed bit-field, and `enum E: 1` a _Generic
+    // association; only a type after the colon makes it an underlying type.
+    parse_gnu(
+        "enum E { A }; struct S { enum E : 3; int x; }; \
+         int f(enum E e) { return _Generic(e, enum E: 1, default: 2); }",
+    )
+    .unwrap();
+    parse_gnu("enum E : long { A = sizeof(enum E) }; _Static_assert(A == 8, \"base\");").unwrap();
+}
+
+#[test]
+fn gnu_enum_list_rules() {
+    // An enum without a fixed type is incomplete inside its own list; with
+    // one it is complete. An enumeration is not an underlying type.
+    assert!(
+        parse_gnu("enum E { A = sizeof(enum E), B = 0x100000000L };")
+            .unwrap_err()
+            .contains("incomplete")
+    );
+    assert!(parse_err("enum E { A = sizeof(enum E) };").contains("incomplete"));
+    parse_gnu("enum E : long { A = sizeof(enum E) }; _Static_assert(A == 8, \"size\");").unwrap();
+    assert!(
+        parse_gnu("enum E : long { A = sizeof(enum E) }; _Static_assert(A == 4, \"size\");")
+            .is_err()
+    );
+    assert!(parse_gnu("enum E { X }; enum F : enum E { B };").is_err());
+    assert!(parse_gnu("enum F : enum E { X } { B };")
+        .unwrap_err()
+        .contains("must be an integer type"));
+    parse_gnu("enum F : int { B }; enum F f; int g(void) { return sizeof(enum F); }").unwrap();
+}

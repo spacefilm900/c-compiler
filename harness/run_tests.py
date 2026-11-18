@@ -55,8 +55,12 @@ TIMEOUT = float(os.environ.get("TIMEOUT", "10"))
 MIN_CLANG_MAJOR = 18
 # Apple numbers its Clang separately from LLVM. Apple Clang 16 (Xcode 16)
 # reads the IR this compiler writes; the LLVM 15-17 problem behind
-# MIN_CLANG_MAJOR is in the x86_64 backend, which a Mac does not use here.
+# MIN_CLANG_MAJOR is in the x86_64 backend, which an Apple Silicon Mac does
+# not use.
 MIN_APPLE_CLANG_MAJOR = 16
+# On an Intel Mac the x86_64 backend is used, so Apple's Clang must have
+# LLVM's fix too: Apple Clang 17 (Xcode 26) is built on LLVM 19.
+MIN_APPLE_CLANG_MAJOR_X86_64 = 17
 
 def clang_major():
     """(major version, is Apple Clang) from `clang --version`; major is None
@@ -201,6 +205,7 @@ def main():
     gnu = sorted((ROOT / "tests" / "gnu").glob("*.c"))
     both = sorted((ROOT / "tests" / "gnu" / "both").glob("*.c"))
     problems = []
+    triple = ""
     if shutil.which(CLANG):
         # The target decides whether tests/arm64 runs; a run that cannot
         # read it must not pass with that coverage silently missing.
@@ -217,8 +222,11 @@ def main():
     else:
         major, apple = clang_major()
         if apple:
-            if major is None or major < MIN_APPLE_CLANG_MAJOR:
-                problems.append(f"Apple Clang >= {MIN_APPLE_CLANG_MAJOR} is required; got: {major}")
+            need = MIN_APPLE_CLANG_MAJOR
+            if arch_of(triple) == "x86_64":
+                need = MIN_APPLE_CLANG_MAJOR_X86_64
+            if major is None or major < need:
+                problems.append(f"Apple Clang >= {need} is required here; got: {major}")
         elif major is None or major < MIN_CLANG_MAJOR:
             problems.append(
                 f"Clang/LLVM >= {MIN_CLANG_MAJOR} is required (LLVM 15-17 split an "

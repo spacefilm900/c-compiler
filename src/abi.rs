@@ -15,7 +15,7 @@
 //! `sret` return slot.
 
 use crate::ast::{align_up, CType, FloatKind};
-use crate::target::Abi;
+use crate::target::{Abi, Target};
 
 /// Why an aggregate cannot be lowered yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,7 +253,14 @@ pub fn assign_regs(
         if ty.is_sse_float() {
             *free_sse = free_sse.saturating_sub(1);
         } else if !ty.is_long_double() {
-            *free_int = free_int.saturating_sub(1);
+            // A 128-bit integer is two INTEGER eightbytes. If both registers
+            // are not free it goes on the stack whole and leaves the
+            // remaining register to later arguments (System V AMD64 3.2.3),
+            // which is what LLVM does with an `i128` parameter.
+            let slots = if ty.size() == Some(16) { 2 } else { 1 };
+            if *free_int >= slots {
+                *free_int -= slots;
+            }
         }
     }
     parts
@@ -350,6 +357,14 @@ pub fn classify_for(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
     if size > 16 {
         return Ok(AggAbi::Memory);
     }
+    // Intel macOS, whose only C compiler is Clang: a struct with a flexible
+    // array member is passed and returned in memory (observed with Clang as
+    // a black box). On Linux this compiler keeps GCC's choice, registers.
+    // The same holds for a union that contains such a struct at any depth.
+    let apple = matches!(crate::target::current(), Target::X86_64Apple { .. });
+    if apple && bare.flexible_carrier() {
+        return Ok(AggAbi::Memory);
+    }
     let mut leaves = Vec::new();
     collect_leaves(&bare, 0, false, &mut leaves);
     let unaligned = leaves
@@ -364,10 +379,22 @@ pub fn classify_for(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
         apply_leaf(leaf, &mut classes);
     }
     // X87UP belongs with a preceding X87 eightbyte. Anywhere else the
-    // aggregate is passed in memory.
-    let x87up_orphan = classes.iter().enumerate().any(|(index, class)| {
-        *class == Class::X87Up && (index == 0 || classes[index - 1] != Class::X87)
-    });
+    // psABI passes the aggregate in memory. Intel macOS instead treats such
+    // an eightbyte as SSE, a `double` (Apple's x86-64 conventions; observed
+    // with Clang as a black box): `union { long double d; void *p; }` is
+    // passed in `%rdi` and `%xmm0` and returned in `%rax` and `%xmm0`.
+    let orphan = |classes: &[Class], index: usize| {
+        classes[index] == Class::X87Up && (index == 0 || classes[index - 1] != Class::X87)
+    };
+    let apple_sse: Vec<bool> = (0..eightbytes)
+        .map(|index| apple && orphan(&classes, index))
+        .collect();
+    for (class, sse) in classes.iter_mut().zip(&apple_sse) {
+        if *sse {
+            *class = Class::Sse;
+        }
+    }
+    let x87up_orphan = (0..eightbytes).any(|index| orphan(&classes, index));
     if classes.iter().any(|class| *class == Class::Memory) || x87up_orphan {
         return Ok(AggAbi::Memory);
     }
@@ -393,6 +420,10 @@ pub fn classify_for(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
     for (index, class) in classes.iter().enumerate() {
         let piece = match class {
             Class::Integer => integer_piece(index, eightbytes, &leaves, size),
+            Class::Sse if apple_sse[index] => Some(RegPiece::Sse {
+                kind: SsePiece::Double,
+                offset: index as u64 * 8,
+            }),
             Class::Sse => Some(sse_piece(index, &leaves)),
             _ => None,
         };
@@ -433,6 +464,23 @@ fn crosses(offset: u64, size: u64) -> bool {
 
 fn collect_leaves(ty: &CType, base: u64, inherited: bool, out: &mut Vec<Leaf>) {
     match ty.peel() {
+        CType::Int(name) if name.size() == 16 => {
+            // `__int128` is two INTEGER eightbytes (System V AMD64 3.2.3),
+            // not one leaf that crosses an eightbyte boundary, so a record
+            // holding it goes in two registers. Its 16-byte alignment
+            // applies at `base`; the high half is part of the same field.
+            let spans = inherited || crosses(base, 16);
+            for (offset, align) in [(base, 16), (base + 8, 1)] {
+                out.push(Leaf {
+                    offset,
+                    size: 8,
+                    align,
+                    class: Class::Integer,
+                    is_ptr: false,
+                    spans,
+                });
+            }
+        }
         CType::Int(name) => {
             let size = name.size().max(1);
             out.push(Leaf {
@@ -769,6 +817,75 @@ mod tests {
             AggAbi::Direct(pieces) => pieces.into_iter().map(|piece| piece.ir_type()).collect(),
             _ => panic!("expected registers"),
         }
+    }
+
+    #[test]
+    fn int128_record_is_two_integer_eightbytes() {
+        // System V AMD64 3.2.3: `__int128` is two INTEGER eightbytes, so
+        // a record holding one goes in registers (Clang and GCC agree).
+        let q = record(
+            400,
+            vec![field("q", ints(TypeName::Int128), 0)],
+            16,
+            16,
+            false,
+        );
+        assert_eq!(direct(&q), ["i64", "i64"]);
+        let u = record(
+            401,
+            vec![
+                field("q", ints(TypeName::Int128), 0),
+                field("l", ints(TypeName::Long), 0),
+            ],
+            16,
+            16,
+            true,
+        );
+        assert_eq!(direct(&u), ["i64", "i64"]);
+        // More than two eightbytes is still memory.
+        let wide = record(
+            402,
+            vec![
+                field("a", ints(TypeName::Long), 0),
+                field("q", ints(TypeName::Int128), 16),
+            ],
+            32,
+            16,
+            false,
+        );
+        assert!(matches!(classify_aggregate(&wide).unwrap(), AggAbi::Memory));
+    }
+
+    #[test]
+    fn scalar_int128_takes_two_general_registers() {
+        // f(__int128, long, long, long, struct { __int128 q; }, long): the
+        // scalar uses two registers, so the record no longer fits in the
+        // last one and goes on the stack whole, leaving %r9 to the long.
+        let q = record(
+            403,
+            vec![field("q", ints(TypeName::Int128), 0)],
+            16,
+            16,
+            false,
+        );
+        let long = ints(TypeName::Long);
+        let params = vec![
+            ints(TypeName::Int128),
+            long.clone(),
+            long.clone(),
+            long.clone(),
+            q,
+            long.clone(),
+        ];
+        let sig = function_sig(&CType::int_type(), &params).unwrap();
+        assert!(matches!(sig.params[4][0].kind, PartKind::Byval), "{sig:?}");
+        assert_eq!(sig.free_int, 0);
+        // Five ints leave one register: the scalar goes on the stack and
+        // does not take it.
+        let mut late = vec![CType::int_type(); 5];
+        late.push(ints(TypeName::Int128));
+        let sig = function_sig(&CType::int_type(), &late).unwrap();
+        assert_eq!(sig.free_int, 1);
     }
 
     #[test]

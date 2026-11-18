@@ -1,4 +1,4 @@
-//! Whole-pipeline checks for the AArch64 targets: the IR each one gets for
+//! Whole-pipeline checks for the non-default targets (AArch64 and Intel macOS): the IR each one gets for
 //! a few small programs. The expected lowering was read from Clang as a
 //! black box (`clang -target ... -S -emit-llvm`); harness/run_arm64_ir.py
 //! and harness/run_cross.py check much more of it against Clang directly.
@@ -10,6 +10,9 @@ const APPLE: Target = Target::Arm64Apple {
     macos_major: 11,
     macos_minor: 0,
 };
+
+/// Intel macOS (`x86_64-apple-macos`, minimum macOS 10.15).
+const INTEL_MAC: Target = crate::target::APPLE_X86_64_DEFAULT;
 
 fn ir(target: Target, source: &str) -> String {
     let options = PpOptions {
@@ -86,7 +89,8 @@ fn type_model_per_target() {
 fn predefined_macros_per_target() {
     let probe = "#if defined __APPLE__ && defined __MACH__ && defined __aarch64__ && \
                  defined __arm64__ && !defined __linux__ && !defined __ELF__ && \
-                 __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ == 110000 && __LDBL_MANT_DIG__ == 53\n\
+                 __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ == 110000 && __LDBL_MANT_DIG__ == 53 && \
+                 __LITTLE_ENDIAN__ == 1\n\
                  int apple;\n#endif\n\
                  #if defined __linux__ && defined __aarch64__ && defined __CHAR_UNSIGNED__ && \
                  __LDBL_MANT_DIG__ == 113 && !defined __x86_64__\nint arm_linux;\n#endif\n\
@@ -410,4 +414,164 @@ fn large_arrays_are_aligned_to_16_only_on_x86_64() {
         );
         assert!(module.contains("alloca [5 x i32], align 4"), "{module}");
     }
+}
+
+#[test]
+fn intel_mac_header_and_type_model() {
+    let module = ir(INTEL_MAC, "int x;");
+    assert!(
+        module.contains("target triple = \"x86_64-apple-macosx10.15.0\""),
+        "{module}"
+    );
+    assert!(module.contains(
+        "target datalayout = \"e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\""
+    ));
+    // The same C type model as x86_64 Linux (values read from Clang for
+    // x86_64-apple-macosx10.15 as a black box).
+    let probe = "sizeof(long double), _Alignof(long double), sizeof(__builtin_va_list), \
+                 (char)-1 < 0, sizeof(L'a'), L'\\xffffffff' < 0, '\\377'";
+    assert_eq!(values(INTEL_MAC, probe), "16, 16, 24, 1, 4, 1, -1");
+    let probe = "sizeof(struct { char a; int : 0; }), _Alignof(struct { char a : 3; int : 4; }), \
+                 _Generic(__builtin_bswap64(1), unsigned long long: 1, default: 0)";
+    assert_eq!(values(INTEL_MAC, probe), "4, 1, 1");
+}
+
+#[test]
+fn intel_mac_predefined_macros() {
+    let probe = "#if defined __APPLE__ && defined __MACH__ && defined __x86_64__ && \
+                 defined __amd64__ && !defined __aarch64__ && !defined __arm64__ && \
+                 !defined __linux__ && !defined __ELF__ && __LDBL_MANT_DIG__ == 64 && \
+                 defined __llvm__ && __LITTLE_ENDIAN__ == 1 && \
+                 __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ == 101500 && \
+                 __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ == 101500 && !defined __CHAR_UNSIGNED__\n\
+                 int intel_mac;\n#endif\n\
+                 #define STR2(x) #x\n#define STR(x) STR2(x)\n\
+                 const char prefix[] = STR(__USER_LABEL_PREFIX__);\n\
+                 const char wint[] = STR(__WINT_TYPE__);\n";
+    let module = ir(INTEL_MAC, probe);
+    assert!(module.contains("@intel_mac"), "{module}");
+    assert!(module.contains("c\"_\\00\""), "{module}");
+    assert!(module.contains("c\"int\\00\""), "{module}");
+    // Before 10.10 the version is written in the old four-digit form.
+    let old = Target::X86_64Apple {
+        macos_major: 10,
+        macos_minor: 9,
+    };
+    let module = ir(
+        old,
+        "#if __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ == 1090\nint four_digits;\n#endif\n",
+    );
+    assert!(module.contains("@four_digits"), "{module}");
+    // __llvm__ is only claimed where an SDK header needs it (Intel macOS's
+    // <libkern/i386/_OSByteOrder.h> picks __builtin_bswap over extended asm).
+    for other in [APPLE, Target::X86_64Linux, Target::Aarch64Linux] {
+        let module = ir(other, "#ifdef __llvm__\nint claims_llvm;\n#endif\nint x;\n");
+        assert!(!module.contains("@claims_llvm"), "{other:?}: {module}");
+    }
+    let module = ir(
+        Target::X86_64Apple {
+            macos_major: 13,
+            macos_minor: 4,
+        },
+        "#if __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ == 130400\nint six_digits;\n#endif\n",
+    );
+    assert!(module.contains("@six_digits"), "{module}");
+    assert!(module.contains("x86_64-apple-macosx13.4.0"), "{module}");
+}
+
+#[test]
+fn intel_mac_keeps_system_v_with_mach_o_names() {
+    let module = ir(INTEL_MAC, AGGREGATES);
+    for want in [
+        "@f4(<2 x float> %p0, <2 x float> %p0.1)",
+        "byval(%struct.L3)",
+        "define i32 @narrow(i8 signext %p0, i16 zeroext %p1, i8 zeroext %p2)",
+        "\"frame-pointer\"=\"all\"",
+    ] {
+        assert!(module.contains(want), "missing {want}:\n{module}");
+    }
+    // Calls without a prototype stay variadic-style, as on Linux.
+    let module = ir(INTEL_MAC, "int f();\nint g(void) { return f(1, 2.0f); }\n");
+    assert!(
+        module.contains("call i32 (...) @f(i32 1, double "),
+        "{module}"
+    );
+    // An asm label is the exact Mach-O symbol, so `$INODE64` variants of
+    // the SDK's stat and readdir work.
+    let module = ir(
+        INTEL_MAC,
+        "int f(void) __asm__(\"_stat$INODE64\");\nint h(void) { return f(); }\n",
+    );
+    assert!(
+        module.contains("call i32 @\"\\01_stat$INODE64\"()"),
+        "{module}"
+    );
+    assert!(err(
+        INTEL_MAC,
+        "int x __attribute__((section(\".data.x\"))) = 1;"
+    )
+    .contains("mach-o"));
+    ir(
+        INTEL_MAC,
+        "int x __attribute__((section(\"__DATA,__x\"))) = 1;",
+    );
+    // System V's 16-byte alignment of large arrays applies here too.
+    let module = ir(
+        INTEL_MAC,
+        "int g[5];\nint f(void) { int a[5] = {0}; return a[1] + g[0]; }\n",
+    );
+    assert!(
+        module.contains("@g = global [5 x i32] zeroinitializer, align 16"),
+        "{module}"
+    );
+    assert!(module.contains("alloca [5 x i32], align 16"), "{module}");
+}
+
+#[test]
+fn intel_mac_passes_flexible_array_records_in_memory() {
+    // Clang, the only C compiler on macOS, passes and returns a struct with
+    // a flexible array member in memory there (observed as a black box).
+    // On Linux this compiler keeps GCC's choice: registers.
+    let source = "struct S { int n; int a[]; };\nstruct S id(struct S s) { return s; }\n";
+    let mac = ir(INTEL_MAC, source);
+    assert!(
+        mac.contains("define void @id(ptr sret(%struct.S) align 4 %agg.result, ptr byval(%struct.S) align 8 %p0)"),
+        "{mac}"
+    );
+    let linux = ir(Target::X86_64Linux, source);
+    assert!(linux.contains("define i32 @id(i32 %p0)"), "{linux}");
+}
+
+#[test]
+fn intel_mac_passes_unions_holding_flexible_array_records_in_memory() {
+    // As for the struct itself (observed with Clang as a black box).
+    let source = "struct V { int n; int a[]; };\nunion F { struct V v; long l; };\n\
+                  long take(union F f) { return f.l; }\n";
+    let mac = ir(INTEL_MAC, source);
+    assert!(
+        mac.contains("define i64 @take(ptr byval(%union.F) align 8 %p0)"),
+        "{mac}"
+    );
+    let linux = ir(Target::X86_64Linux, source);
+    assert!(linux.contains("define i64 @take(i64 %p0)"), "{linux}");
+}
+
+#[test]
+fn intel_mac_passes_a_lone_x87up_eightbyte_as_sse() {
+    // `union { long double d; void *p; }`: the second eightbyte is X87UP
+    // without X87 before it. The psABI passes the union in memory; Intel
+    // macOS (Clang, observed as a black box) passes and returns it in a
+    // general register and an SSE register.
+    let source = "union A { long double d; void *p; };\n\
+                  union A id(union A a) { return a; }\n";
+    let mac = ir(INTEL_MAC, source);
+    assert!(
+        mac.contains("define { i64, double } @id(i64 %p0, double %p0.1)"),
+        "{mac}"
+    );
+    let linux = ir(Target::X86_64Linux, source);
+    assert!(
+        linux.contains("define void @id(ptr sret(%union.A) align 16 %agg.result, ptr byval(%union.A) align 16 %p0)"),
+        "{linux}"
+    );
 }

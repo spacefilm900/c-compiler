@@ -9,8 +9,41 @@
 #ifndef _LIMITS_H
 #define _LIMITS_H
 
+/* On Apple targets other SDK headers include <machine/limits.h> directly,
+ * which defines these macros with different spellings (CHAR_MAX as 127,
+ * MB_LEN_MAX as 6). Two different definitions of one macro are a constraint
+ * violation (C11 6.10.3p2), so pull the SDK's <limits.h> in first (it also
+ * carries the POSIX limits) and then replace its values with ours. The SDK's
+ * MB_LEN_MAX (6, the longest UTF-8 sequence its locales produce) is kept,
+ * since it describes the C library rather than the compiler. */
+#if defined(__APPLE__) && defined(__has_include_next)
+#if __has_include_next(<limits.h>)
+#include_next <limits.h>
+#endif
+#undef CHAR_BIT
+#undef SCHAR_MIN
+#undef SCHAR_MAX
+#undef UCHAR_MAX
+#undef CHAR_MIN
+#undef CHAR_MAX
+#undef SHRT_MIN
+#undef SHRT_MAX
+#undef USHRT_MAX
+#undef INT_MIN
+#undef INT_MAX
+#undef UINT_MAX
+#undef LONG_MIN
+#undef LONG_MAX
+#undef ULONG_MAX
+#undef LLONG_MIN
+#undef LLONG_MAX
+#undef ULLONG_MAX
+#endif
+
 #define CHAR_BIT 8
+#ifndef MB_LEN_MAX
 #define MB_LEN_MAX 16
+#endif
 
 #define SCHAR_MIN (-128)
 #define SCHAR_MAX 127
