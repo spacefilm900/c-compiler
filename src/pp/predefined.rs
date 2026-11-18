@@ -287,14 +287,32 @@ fn float_macros(long_double: LongDouble, out: &mut Vec<(&'static str, &'static s
     }
 }
 
-/// Adds the compiler's header directory: the first candidate that has the
-/// headers, in the order tried (relative to the working directory, from
+/// Adds the compiler's header directory: the first candidate that has all
+/// of its headers, in the order tried (relative to the working directory, from
 /// the build, beside the executable). Only one tree is used: a second
 /// copy, even at another path, would make `#include_next` in one of the
 /// compiler's headers find its twin (whose guard skips it) instead of the
 /// C library's header.
 pub(super) fn push_compiler(dirs: &mut Vec<PathBuf>, path: PathBuf) {
-    if dirs.is_empty() && path.join("stddef.h").is_file() {
+    if dirs.is_empty()
+        && COMPILER_HEADERS
+            .iter()
+            .all(|name| path.join(name).is_file())
+    {
         dirs.push(path);
     }
 }
+
+/// The headers the compiler provides (`include/`). A candidate counts as
+/// its header tree only when it has all of them, so a project's own
+/// `include/` with a `stddef.h` is not mistaken for it.
+const COMPILER_HEADERS: [&str; 8] = [
+    "float.h",
+    "iso646.h",
+    "limits.h",
+    "stdalign.h",
+    "stdarg.h",
+    "stdbool.h",
+    "stddef.h",
+    "stdnoreturn.h",
+];

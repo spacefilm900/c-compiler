@@ -420,12 +420,19 @@ fn only_one_compiler_header_tree_is_searched() {
     // library rather than its twin.
     let base = std::env::temp_dir().join(format!("cc-two-trees-{}", std::process::id()));
     let (first, second) = (base.join("a/include"), base.join("b/include"));
+    let partial = base.join("project/include");
     for dir in [&first, &second] {
         std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(dir.join("stddef.h"), "").unwrap();
+        for name in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/include")).unwrap() {
+            std::fs::write(dir.join(name.unwrap().file_name()), "").unwrap();
+        }
     }
+    // A project's include/ with only a stddef.h is not the compiler's.
+    std::fs::create_dir_all(&partial).unwrap();
+    std::fs::write(partial.join("stddef.h"), "").unwrap();
     let mut dirs = Vec::new();
     predefined::push_compiler(&mut dirs, base.join("missing"));
+    predefined::push_compiler(&mut dirs, partial);
     predefined::push_compiler(&mut dirs, first.clone());
     predefined::push_compiler(&mut dirs, second);
     predefined::push_compiler(&mut dirs, first.clone());
