@@ -226,6 +226,13 @@ def battery():
         (ROOT / "tests" / "xabi").glob("*_def.c"))
 
 
+def proxy_flags(target):
+    """Extra flags for this compiler on the glibc stand-in sysroot (see
+    intel_mac_proxy.OURS_FLAGS); the label prefix stays `_` here because
+    the IR is only compared and assembled, never linked against glibc."""
+    return ["-D_GCC_LIMITS_H_"] if target == intel.TARGET else []
+
+
 def check_signatures(target, tmp, sysroot):
     """Compare lowered signatures for the battery (which must compile) and,
     as a wider sample, for every test program both compilers accept."""
@@ -244,7 +251,7 @@ def check_signatures(target, tmp, sysroot):
         oracle = [CLANG, "-target", clang_triple, f"-std={std}", "-O0", "-S", "-emit-llvm", "-w",
                   "-I", str(src.parent), str(src), "-o", str(ref)]
         if sysroot is not None:
-            cmd[1:1] = ["-isysroot", str(sysroot)]
+            cmd[1:1] = ["-isysroot", str(sysroot), *proxy_flags(target)]
             oracle[1:1] = ["-isysroot", str(sysroot), "-U__nonnull", "-U__nullable",
                            "-U__null_unspecified"]
         rc, _, err = run(cmd)
@@ -307,7 +314,7 @@ def check_llc(target, tmp, llc, sysroot):
         ll = tmp / f"{target}-{src.parent.name}-{src.stem}.ll"
         cmd = [str(COMPILER), f"-std={std}", "-target", target, "-I", str(src.parent), str(src), "-o", str(ll)]
         if sysroot is not None:
-            cmd[1:1] = ["-isysroot", str(sysroot)]
+            cmd[1:1] = ["-isysroot", str(sysroot), *proxy_flags(target)]
         rc, _, err = run(cmd)
         if crashed(rc, err):
             return "fail", f"{src.relative_to(ROOT)}: compile crashed ({rc}): {err.strip()[:300]}"

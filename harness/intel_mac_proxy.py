@@ -44,7 +44,11 @@ HOST_INCLUDES = [Path("/usr/include/x86_64-linux-gnu"), Path("/usr/include")]
 # without it.
 CLANG_FLAGS = ["-U__nonnull", "-U__nullable", "-U__null_unspecified", "-D__USER_LABEL_PREFIX__=",
                "-fno-stack-protector"]
-OURS_FLAGS = ["-D__USER_LABEL_PREFIX__="]
+# On __APPLE__ this compiler's <limits.h> reads the C library's first with
+# #include_next. glibc's <limits.h> then tries to #include_next GCC's
+# unless _GCC_LIMITS_H_ is defined, and there is no further limits.h in the
+# stand-in's search path; the macOS SDK's <limits.h> has no such step.
+OURS_FLAGS = ["-D__USER_LABEL_PREFIX__=", "-D_GCC_LIMITS_H_"]
 
 
 def _merge(sources, dest):
