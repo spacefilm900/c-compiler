@@ -520,9 +520,10 @@ fn collect_leaves(ty: &CType, base: u64, inherited: bool, out: &mut Vec<Leaf>) {
                             is_ptr: false,
                             spans: inherited || crosses(offset, 1),
                         });
-                    } else if ty_size > 1 {
-                        let eight = (byte / 8) * 8;
-                        let offset = base + eight;
+                    } else if ty_size > 1 && field.bit_width != Some(0) {
+                        // The eightbyte of the whole argument, not of this
+                        // struct: a nested struct can start mid-eightbyte.
+                        let offset = ((base + byte) / 8) * 8;
                         out.push(Leaf {
                             offset,
                             size: 8,
@@ -844,6 +845,62 @@ mod tests {
             false,
         );
         assert_eq!(direct(&bits), vec!["i64".to_string(), "i32".to_string()]);
+    }
+
+    #[test]
+    fn nested_bit_field_uses_the_outer_eightbyte() {
+        // struct { char a[2]; struct { int b : 4; } s; long m; } is 16
+        // bytes: i64, i64. The inner struct starts at byte 4, so its
+        // bit-field covers eightbyte 0 of the argument, not bytes 4..12
+        // (which would cross into eightbyte 1 and force memory).
+        let mut b = field("b", ints(TypeName::Int), 0);
+        b.bit_width = Some(4);
+        b.bit_offset = 0;
+        let inner = record(130, vec![b], 4, 4, false);
+        let outer = record(
+            131,
+            vec![
+                field("a", CType::array(ints(TypeName::Char), Some(2)), 0),
+                field("s", inner, 4),
+                field("m", ints(TypeName::Long), 8),
+            ],
+            16,
+            8,
+            false,
+        );
+        assert_eq!(direct(&outer), vec!["i64".to_string(), "i64".to_string()]);
+    }
+
+    #[test]
+    fn zero_width_bit_field_occupies_no_eightbyte() {
+        // struct { float x; struct { int : 0; float f; } s; double y; } is
+        // <2 x float>, double. The `int : 0` has no storage, so it must not
+        // make eightbyte 0 INTEGER.
+        let mut pad = field("", ints(TypeName::Int), 0);
+        pad.bit_width = Some(0);
+        pad.bit_offset = 0;
+        let inner = record(
+            132,
+            vec![pad, field("f", CType::Float(FloatKind::Float), 0)],
+            4,
+            4,
+            false,
+        );
+        let outer = record(
+            133,
+            vec![
+                field("x", CType::Float(FloatKind::Float), 0),
+                field("s", inner, 4),
+                field("y", CType::Float(FloatKind::Double), 8),
+            ],
+            16,
+            8,
+            false,
+        );
+        assert_eq!(
+            direct(&outer),
+            vec!["<2 x float>".to_string(), "double".to_string()]
+        );
     }
 
     #[test]

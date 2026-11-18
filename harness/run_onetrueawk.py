@@ -7,7 +7,8 @@ The test is the upstream testdir plus bugs-fixed. testdir compares two
 awk binaries. bugs-fixed compares each program's output. CI fails when
 the two builds disagree, or when this compiler cannot build awk.
 
-Env: CC_UNDER_TEST, CLANG, OTAWK_ROOT.
+Env: CC_UNDER_TEST, CLANG, OTAWK_ROOT, OTAWK_REGRESS_TIMEOUT (seconds for
+one testdir run, default 180; raise it under an emulator such as qemu).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SRC = Path(os.environ.get("OTAWK_ROOT", ROOT / "tests" / "external" / "onetrueawk"))
 BUILD = ROOT / "scripts" / "build_onetrueawk.sh"
+REGRESS_TIMEOUT = float(os.environ.get("OTAWK_REGRESS_TIMEOUT", "180"))
 
 
 def build(mode: str, dest: Path) -> subprocess.CompletedProcess[str]:
@@ -97,7 +99,7 @@ def testdir_compare(clang_awk: Path, our_awk: Path) -> tuple[int, str]:
         capture_output=True,
         stdin=subprocess.DEVNULL,
         env=env,
-        timeout=180,
+        timeout=REGRESS_TIMEOUT,
         check=False,
     )
     text = proc.stdout + proc.stderr

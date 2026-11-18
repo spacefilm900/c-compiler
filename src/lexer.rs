@@ -8,7 +8,7 @@
 
 use crate::ast::{FloatKind, TypeName};
 use crate::diag::Diagnostic;
-use crate::float::{inf_bits, parse_decimal, parse_exponent, parse_hex};
+use crate::float::{parse_decimal, parse_exponent, parse_hex};
 use crate::token::{keyword, Token, TokenKind};
 use std::rc::Rc;
 
@@ -430,13 +430,7 @@ impl Lexer<'_> {
             match parse_exponent(&exp_digits, neg) {
                 Ok(exp) => parse_hex(&int_digits, &frac_digits, exp, kind).unwrap_or(0),
                 Err(true) => 0,
-                Err(false) => {
-                    if kind == FloatKind::LongDouble {
-                        0x7FFF_8000_0000_0000_0000
-                    } else {
-                        u128::from(inf_bits(kind == FloatKind::Float))
-                    }
-                }
+                Err(false) => crate::float::plus_inf(kind),
             }
         };
         self.push_float(&spelling, bits, kind, line, column);
@@ -486,7 +480,7 @@ impl Lexer<'_> {
             column,
             filename: Rc::clone(self.filename),
             value: Some(bits as u64),
-            float_hi: (bits >> 64) as u16,
+            float_hi: (bits >> 64) as u64,
             int_ty: None,
             float_kind: Some(kind),
             bytes: None,

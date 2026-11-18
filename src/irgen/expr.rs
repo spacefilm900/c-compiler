@@ -648,12 +648,7 @@ impl Gen {
             self.load(&dest, &addr)
         };
         if let Some(kind) = dest.float_kind() {
-            let one_bits: u128 = match crate::float::fold(kind) {
-                FloatKind::Float => 0x3f80_0000,
-                FloatKind::Double => 0x3ff0_0000_0000_0000,
-                FloatKind::LongDouble => 0x3FFF_8000_0000_0000_0000,
-            };
-            let one = crate::float::llvm_const(kind, one_bits);
+            let one = crate::float::llvm_const(kind, crate::float::one_bits(kind));
             let updated = self.fresh();
             let inst = if op.is_increment() { "fadd" } else { "fsub" };
             self.emit(&format!(

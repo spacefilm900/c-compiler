@@ -1,0 +1,284 @@
+# Linux on AArch64 (PLAN.md step 9), on GitHub's native arm64 runner
+# (ubuntu-24.04-arm). There the compiler's default target is
+# aarch64-linux-gnu and the native Clang is the oracle, so every harness
+# runs unchanged, as it does on x86-64.
+#
+# Cost (private repo, Nov 2026 prices): ubuntu-24.04-arm 2-core is
+# $0.005/min, x64 2-core $0.006/min, macOS $0.062/min. Native arm64 is
+# cheaper per minute than the x64 runner and several times faster than
+# the same suites under qemu, so qemu stays only for the quick cross
+# checks in ci.yml (no extra runner there).
+#
+# - Pull requests: the "arm64 quick" job only (unit tests, the
+#   differential harness with tests/arm64, stage dumps, random
+#   calling-convention pairs). About 2-3 billed
+#   minutes per run.
+# - Pushes to main (merges): the quick job only, as on pull requests.
+# - Nightly at 02:30 UTC, and manual dispatch: also every suite, in two
+#   jobs (about 14 billed minutes). The nightly run is skipped when main
+#   has had no commit in the last 25 hours. The owner chose nightly over
+#   every merge on 2026-11-18 to keep within the CI budget.
+# See reports/platforms/linux-arm64/README.md for the monthly estimate.
+# Documentation-only changes skip this workflow, as they skip ci.yml.
+
+name: linux-arm64
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+  schedule:
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick:
+    name: arm64 quick (unit tests, harness, dumps, ABI pairs)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+
+      - name: Install Clang, LLVM, make, and Python
+        run: |
+          set -euo pipefail
+          scripts/ci-apt-install.sh clang llvm make python3
+          uname -m
+          clang --version
+          clang -dumpmachine
+          major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
+            exit 1
+          fi
+
+      - name: Unit tests
+        run: cargo test --offline --lib
+
+      - name: Release build and differential harness
+        run: |
+          set -euo pipefail
+          make
+          python3 harness/run_tests.py
+
+      - name: Stage dump golden tests and reducer unit tests
+        run: |
+          set -euo pipefail
+          python3 harness/run_dump_tests.py
+          python3 -m unittest tools/reduce/test_reduce.py
+
+      # AAPCS64 argument passing: HFAs, long double (binary128), bit-fields,
+      # structs, and va_arg, crossed between this compiler and Clang.
+      - name: Random calling-convention pairs
+        run: python3 tools/abi_fuzz.py --count 100
+
+  # Nightly runs go ahead only when main changed since the last night.
+  changed:
+    name: main changed in the last 25 hours
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    outputs:
+      recent: ${{ steps.check.outputs.recent }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Check the last commit time
+        id: check
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          last="$(git log -1 --format=%ct)"
+          now="$(date +%s)"
+          if [ "${EVENT}" = "workflow_dispatch" ] || [ $((now - last)) -le 90000 ]; then
+            echo "recent=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No commit on main in the last 25 hours; skipping the nightly suites."
+            echo "recent=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  suites:
+    name: arm64 ${{ matrix.group }}
+    needs: changed
+    if: needs.changed.outputs.recent == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # Two jobs, not one per suite: each job pays about two minutes of
+        # setup (toolchain, apt, release build), and billing rounds every
+        # job up to a whole minute.
+        include:
+          - group: wacc, csmith, torture, awk
+            suites: wacc csmith gcc-torture onetrueawk
+            apt: clang llvm make python3 g++ bison
+            cache: |
+              tests/external/wacc
+              tests/external/csmith
+              tests/external/gcc-torture
+              tests/external/onetrueawk
+            key: arm64-suites-a
+          - group: lua, sqlite, doom, perf
+            suites: lua sqlite doom perf
+            apt: clang llvm make python3 unzip bison
+            cache: |
+              tests/external/lua
+              tests/external/sqlite
+              tests/external/doomgeneric
+              tests/external/freedoom
+              tests/external/onetrueawk
+            key: arm64-suites-b
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+
+      - name: Install ${{ matrix.apt }}
+        env:
+          PACKAGES: ${{ matrix.apt }}
+        run: |
+          set -euo pipefail
+          # PACKAGES is a fixed list from the matrix; split on spaces.
+          # shellcheck disable=SC2086
+          scripts/ci-apt-install.sh ${PACKAGES}
+          clang --version
+          clang -dumpmachine
+          major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
+            exit 1
+          fi
+
+      # The fetch scripts hold every pin and checksum, so their hash names
+      # the cached trees (a key may not exceed 512 characters). Keyed by
+      # architecture as well: the Csmith cache holds a built binary.
+      - name: Cache the pinned sources
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ matrix.cache }}
+          key: ${{ matrix.key }}-${{ hashFiles('scripts/fetch_*.sh') }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Release build
+        id: build
+        run: make
+
+      - name: Run ${{ matrix.group }}
+        env:
+          SUITES: ${{ matrix.suites }}
+        run: |
+          set -euo pipefail
+          # Every suite runs even if an earlier one fails; the step fails
+          # at the end and names the failures.
+          failed=""
+          for suite in ${SUITES}; do
+            echo "::group::${suite}"
+            if case "${suite}" in
+              wacc)
+                scripts/fetch_wacc_tests.sh && python3 harness/run_wacc.py ;;
+              csmith)
+                scripts/fetch_csmith.sh && python3 harness/run_csmith.py ;;
+              gcc-torture)
+                scripts/fetch_gcc_torture.sh && python3 harness/run_gcc_torture.py ;;
+              onetrueawk)
+                scripts/fetch_onetrueawk.sh && python3 harness/run_onetrueawk.py ;;
+              lua)
+                scripts/fetch_lua.sh &&
+                  python3 harness/run_lua.py --opt O0 --opt O2 --run-jobs "$(nproc)" ;;
+              sqlite)
+                scripts/fetch_sqlite.sh &&
+                  python3 harness/run_sqlite.py --opt O0 --opt O2 &&
+                  python3 tools/perf_guard.py ;;
+              doom)
+                scripts/fetch_doomgeneric.sh && scripts/fetch_freedoom.sh &&
+                  python3 harness/run_doom.py --opt O0 --opt O2 --play-jobs "$(nproc)" ;;
+              perf)
+                scripts/fetch_onetrueawk.sh && python3 harness/perf.py ;;
+              *)
+                echo "unknown suite ${suite}" >&2; false ;;
+            esac; then
+              echo "::endgroup::"
+              echo "${suite}: PASS"
+            else
+              echo "::endgroup::"
+              echo "::error::${suite} failed"
+              failed="${failed} ${suite}"
+            fi
+          done
+          if [ -n "${failed}" ]; then
+            echo "failed:${failed}" >&2
+            exit 1
+          fi
+
+      # The AWK Builder suites run even when an earlier suite failed (that
+      # failure still fails the job). The read token is visible only to the
+      # step that clones the two private suites, not to the builds or to the
+      # harness.
+      - name: Fetch the AWK Builder suites
+        id: awk-fetch
+        if: contains(matrix.suites, 'onetrueawk') && !cancelled() && steps.build.outcome == 'success'
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ secrets.AWK_SUITE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "SKIP: AWK Builder suites need the AWK_SUITE_READ_TOKEN secret."
+            echo "fetched=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          scripts/fetch_awk_posix_challenge.sh
+          scripts/fetch_awk_volume.sh
+          echo "fetched=true" >> "${GITHUB_OUTPUT}"
+
+      - name: AWK Builder suites
+        if: contains(matrix.suites, 'onetrueawk') && !cancelled() && steps.awk-fetch.outputs.fetched == 'true'
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          scripts/fetch_onetrueawk.sh
+          scripts/build_onetrueawk.sh clang build/otawk-clang
+          scripts/build_onetrueawk.sh ccomp build/otawk-ccomp
+          AWK_CLANG="$PWD/build/otawk-clang/awk" \
+            AWK_CCOMP="$PWD/build/otawk-ccomp/awk" \
+            python3 harness/run_awk_extra.py
+
+      - name: Upload raw performance numbers
+        if: contains(matrix.suites, 'perf')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: perf-numbers-linux-arm64
+          path: reports/perf.json
+          if-no-files-found: error

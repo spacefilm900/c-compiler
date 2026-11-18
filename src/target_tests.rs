@@ -345,3 +345,69 @@ fn macos_sdk_header_constructs() {
         );
     }
 }
+
+#[test]
+fn binary128_constants_are_folded_exactly() {
+    // AArch64 Linux `long double` constants are folded in binary128, not in
+    // `double` and widened (step 9). The expected bits are Clang's, read as
+    // a black box, and IEEE 754's nearest values.
+    let module = ir(
+        Target::Aarch64Linux,
+        "long double a[] = { 0.1L, 0.1L + 0.2L, 1.0L / 3.0L, 0x1p-16494L,\n\
+         1.18973149535723176508575932662800702e+4932L, -0x1p99999L,\n\
+         (long double)0.1, 2.5L * 4.0L - 0.5L };\n\
+         int big = (long double)9007199254740993.0L > 9007199254740992.0L;\n\
+         int fits = (int)1.9L;\n",
+    );
+    // The `fp128` operands of `@a`, in initializer order.
+    let line = module
+        .lines()
+        .find(|line| line.starts_with("@a = "))
+        .unwrap_or_else(|| panic!("no @a: {module}"));
+    let got: Vec<&str> = line
+        .split("fp128 ")
+        .skip(1)
+        .map(|rest| rest.split([',', ']']).next().unwrap_or("").trim())
+        .collect();
+    let expected = [
+        "0xL999999999999999A3FFB999999999999",
+        "0xL33333333333333343FFD333333333333",
+        "0xL55555555555555553FFD555555555555",
+        "0xL00000000000000010000000000000000",
+        "0xLFFFFFFFFFFFFFFFF7FFEFFFFFFFFFFFF",
+        "0xL0000000000000000FFFF000000000000",
+        "0xLA0000000000000003FFB999999999999",
+        "0xL00000000000000004002300000000000",
+    ];
+    assert_eq!(got, expected, "{module}");
+    for name in ["@big", "@fits"] {
+        let prefix = format!("{name} = global i32 ");
+        let value = module
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix.as_str()))
+            .and_then(|rest| rest.split(',').next())
+            .map(str::trim);
+        assert_eq!(value, Some("1"), "{name}: {module}");
+    }
+}
+
+#[test]
+fn large_arrays_are_aligned_to_16_only_on_x86_64() {
+    // System V AMD64 aligns an array object of 16 bytes or more to 16;
+    // AAPCS64 and Apple arm64 align it as its element (as Clang does).
+    let source = "int g[5];\nint f(void) { int a[5] = {0}; return a[1] + g[0]; }\n";
+    let x86 = ir(Target::X86_64Linux, source);
+    assert!(
+        x86.contains("@g = global [5 x i32] zeroinitializer, align 16"),
+        "{x86}"
+    );
+    assert!(x86.contains("alloca [5 x i32], align 16"), "{x86}");
+    for target in [Target::Aarch64Linux, APPLE] {
+        let module = ir(target, source);
+        assert!(
+            module.contains("[5 x i32] zeroinitializer, align 4"),
+            "{module}"
+        );
+        assert!(module.contains("alloca [5 x i32], align 4"), "{module}");
+    }
+}

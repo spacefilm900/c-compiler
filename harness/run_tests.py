@@ -32,6 +32,11 @@ tests/gnu/both/*.c use GNU spellings that strict C11 also accepts
 identifiers, not constraint violations. Each is compared with Clang in
 both modes, -std=c11 and -std=gnu11.
 
+On an AArch64 target (read from `clang -dumpmachine`: a native AArch64
+Linux host, or wrappers that add the target), the AArch64
+calling-convention tests in tests/arm64/ (pairs in tests/arm64/xabi/) are
+run too, the same way.
+
 Env: CC_UNDER_TEST, CLANG (default "clang"), TIMEOUT (seconds, default 10),
 KNOWN_FAILURES (optional file of test labels, one per line, '#' comments:
 those tests may fail without failing the run; the macOS job uses
@@ -42,6 +47,8 @@ import os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "harness"))
+from target_arch import arch_of, clang_triple  # noqa: E402
 COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
 CLANG = os.environ.get("CLANG", "clang")
 TIMEOUT = float(os.environ.get("TIMEOUT", "10"))
@@ -82,6 +89,20 @@ def run(cmd):
     except OSError as e:
         return "oserror", b"", str(e).encode()
 
+def incomplete(result):
+    """A reason when a program did not run to completion, else None."""
+    if not isinstance(result[0], int):
+        return f"{result[0]}: {result[2].decode(errors='replace')[:200]}".rstrip(": ")
+    if result[0] < 0:
+        return f"killed by signal {-result[0]}"
+    return None
+
+
+# Prefix of a result where the Clang oracle's own program did not finish.
+# A known-failure entry does not cover it: there is no reference result.
+ORACLE_INCOMPLETE = "oracle program did not complete"
+
+
 def test(src, tmp, std="c11"):
     name = src.stem
     ll, a, b = tmp / f"{name}.ll", tmp / f"{name}.mine", tmp / f"{name}.ref"
@@ -96,6 +117,12 @@ def test(src, tmp, std="c11"):
     if rc != 0:
         return f"oracle compile failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
     got, exp = run([str(a)]), run([str(b)])
+    reason = incomplete(exp)
+    if reason:
+        return f"{ORACLE_INCOMPLETE} ({reason})"
+    reason = incomplete(got)
+    if reason:
+        return f"this compiler's program did not complete ({reason})"
     if got != exp:
         return f"mismatch: got exit={got[0]} out={got[1][:100]!r}, expected exit={exp[0]} out={exp[1][:100]!r}"
     return None
@@ -136,6 +163,9 @@ def test_cross(def_src, use_src, tmp):
     if rc != 0:
         return f"oracle compile failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
     expected = run([str(ref)])
+    reason = incomplete(expected)
+    if reason:
+        return f"{ORACLE_INCOMPLETE} ({reason})"
 
     def mixed(our_src, clang_src, label):
         ll = tmp / f"{name}.{label}.ll"
@@ -151,6 +181,9 @@ def test_cross(def_src, use_src, tmp):
         if rc != 0:
             return f"{label}: link failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
         got = run([str(binary)])
+        reason = incomplete(got)
+        if reason:
+            return f"{label}: program did not complete ({reason})"
         if got != expected:
             return (
                 f"{label}: mismatch got exit={got[0]} out={got[1][:80]!r}, "
@@ -168,6 +201,15 @@ def main():
     gnu = sorted((ROOT / "tests" / "gnu").glob("*.c"))
     both = sorted((ROOT / "tests" / "gnu" / "both").glob("*.c"))
     problems = []
+    if shutil.which(CLANG):
+        # The target decides whether tests/arm64 runs; a run that cannot
+        # read it must not pass with that coverage silently missing.
+        triple = clang_triple(CLANG)
+        if not triple:
+            problems.append(f"cannot read the target from `{CLANG} -dumpmachine`")
+        elif arch_of(triple) == "aarch64":
+            hosted += sorted((ROOT / "tests" / "arm64").glob("*.c"))
+            crosses += sorted((ROOT / "tests" / "arm64" / "xabi").glob("*_def.c"))
     if not (COMPILER.is_file() and os.access(COMPILER, os.X_OK)):
         problems.append(f"compiler not found/executable: {COMPILER}")
     if shutil.which(CLANG) is None:
@@ -206,7 +248,7 @@ def main():
             if label in known:
                 now_passing.append(label)
             print(f"PASS {label}")
-        elif label in known:
+        elif label in known and not r.startswith(ORACLE_INCOMPLETE):
             expected_failures.append(label)
             print(f"KNOWN {label}: {r}")
         else:
@@ -217,10 +259,10 @@ def main():
         for t in tests:
             report(t.name, test(t, tmp))
         for t in hosted:
-            report(f"{t.parent.name}/{t.name}", test(t, tmp))
+            report(f"{t.parent.relative_to(ROOT / 'tests').as_posix()}/{t.name}", test(t, tmp))
         for t in crosses:
             use = t.with_name(t.name[: -len("_def.c")] + "_use.c")
-            label = f"{t.parent.name}/{t.name[: -len('_def.c')]}"
+            label = f"{t.parent.relative_to(ROOT / 'tests').as_posix()}/{t.name[: -len('_def.c')]}"
             report(label, f"missing {use.name}" if not use.is_file() else test_cross(t, use, tmp))
         for t in gnu:
             report(f"{t.parent.name}/{t.name}", test_gnu(t, tmp))

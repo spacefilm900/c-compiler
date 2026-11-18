@@ -724,8 +724,10 @@ impl CType {
     /// Alignment in bytes.
     ///
     /// The System V AMD64 ABI gives an array of 16 bytes or more an alignment
-    /// of at least 16. Smaller arrays use the element alignment. Pointers are
-    /// 8-byte aligned. Qualifiers do not change the alignment.
+    /// of at least 16. Smaller arrays use the element alignment. AAPCS64 and
+    /// Apple's arm64 rules have no such boost: an array is aligned as its
+    /// element. Pointers are 8-byte aligned. Qualifiers do not change the
+    /// alignment.
     pub fn align(&self) -> u32 {
         match self.peel() {
             CType::Void | CType::Func(_) => 1,
@@ -735,7 +737,9 @@ impl CType {
             CType::Array(elem, _) => {
                 let elem_align = elem.align();
                 match self.size() {
-                    Some(size) if size >= 16 => elem_align.max(16),
+                    Some(size) if size >= 16 && crate::target::current().boosts_large_arrays() => {
+                        elem_align.max(16)
+                    }
                     _ => elem_align,
                 }
             }

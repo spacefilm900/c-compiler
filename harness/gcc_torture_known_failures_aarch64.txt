@@ -1,0 +1,6 @@
+# AArch64 Linux adjustments to harness/gcc_torture_known_failures.txt
+# (see harness/run_gcc_torture.py). "-TEST reason" drops an x86_64 entry
+# that passes on AArch64; "+TEST category reason" adds an AArch64-only
+# failure. Every line gives its reason.
+-20031003-1.c (int)2147483648.0f is undefined (C11 6.3.1.4p1); the test expects saturation, which AArch64's fcvtzs gives and x86-64's cvttss2si does not
+-pr28982b.c the x86_64 entry is LLVM 19's x86 instruction selector crashing on the IR; the AArch64 backend builds it and the program passes

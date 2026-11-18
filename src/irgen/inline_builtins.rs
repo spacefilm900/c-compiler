@@ -390,12 +390,7 @@ impl Gen {
             self.emit(&format!(
                 "  {abs} = call {ir} @llvm.fabs.{suffix}({ir} {value})"
             ));
-            let (inf, min_normal): (u128, u128) = match crate::float::fold(kind) {
-                FloatKind::Float => (0x7f80_0000, 0x0080_0000),
-                FloatKind::Double => (0x7ff0_0000_0000_0000, 0x0010_0000_0000_0000),
-                FloatKind::LongDouble => (0x7fff_8000_0000_0000_0000, 0x0001_8000_0000_0000_0000),
-            };
-            let inf = crate::float::llvm_const(kind, inf);
+            let inf = crate::float::llvm_const(kind, crate::float::plus_inf(kind));
             match inline {
                 Inline::IsInf => {
                     self.emit(&format!("  {cmp} = fcmp oeq {ir} {abs}, {inf}"));
@@ -404,14 +399,7 @@ impl Gen {
                     self.emit(&format!("  {cmp} = fcmp olt {ir} {abs}, {inf}"));
                 }
                 _ => {
-                    // The threshold is the run-time format's, not
-                    // the folding precision's: binary128 `long
-                    // double` is normal down to 2^-16382.
-                    let min = if ir == "fp128" {
-                        "0xL00000000000000000001000000000000".to_string()
-                    } else {
-                        crate::float::llvm_const(kind, min_normal)
-                    };
+                    let min = crate::float::llvm_const(kind, crate::float::min_normal_bits(kind));
                     let below = self.fresh();
                     self.emit(&format!("  {below} = fcmp olt {ir} {abs}, {inf}"));
                     let above = self.fresh();
