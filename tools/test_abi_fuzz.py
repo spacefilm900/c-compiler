@@ -1,6 +1,8 @@
 """Tests for tools/abi_fuzz.py that need no compiler."""
 
 import os
+import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -12,11 +14,24 @@ import abi_fuzz  # noqa: E402
 
 
 def alive(pid: int) -> bool:
+    """True while pid runs. A zombie (exited, not yet reaped by whoever
+    adopted it) counts as exited."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    return True
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return True
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+def kill_quietly(pid: int) -> None:
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 class RunTimeout(unittest.TestCase):
@@ -25,9 +40,9 @@ class RunTimeout(unittest.TestCase):
             pidfile = Path(tmp) / "pid"
             # The wrapper starts a long-lived descendant in its own process
             # group that keeps stdout and stderr open, then waits for it.
-            script = f"sleep 30 & echo $! > {pidfile}; wait"
+            script = 'sleep 30 & echo $! > "$1"; wait'
             started = time.monotonic()
-            status, out, err = abi_fuzz.run(["sh", "-c", script], timeout=0.5)
+            status, out, err = abi_fuzz.run(["sh", "-c", script, "sh", str(pidfile)], timeout=0.5)
             self.assertEqual(status, "timeout")
             self.assertIn(b"timed out", err)
             self.assertLess(time.monotonic() - started, 10)
@@ -37,6 +52,22 @@ class RunTimeout(unittest.TestCase):
                     break
                 time.sleep(0.1)
             self.assertFalse(alive(pid), "the descendant outlived the timeout")
+
+    @unittest.skipUnless(shutil.which("setsid"), "needs setsid")
+    def test_timeout_does_not_wait_for_a_descendant_outside_the_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = Path(tmp) / "pid"
+            # The descendant moves to its own session, so the group kill
+            # misses it, and it keeps the captured pipes open for 20 s.
+            script = 'setsid sleep 20 & echo $! > "$1"; wait'
+            started = time.monotonic()
+            try:
+                status, _, _ = abi_fuzz.run(["sh", "-c", script, "sh", str(pidfile)], timeout=0.5)
+                self.assertEqual(status, "timeout")
+                self.assertLess(time.monotonic() - started, 10)
+            finally:
+                if pidfile.exists():
+                    kill_quietly(int(pidfile.read_text()))
 
     def test_normal_exit_keeps_status_and_output(self):
         status, out, err = abi_fuzz.run(["sh", "-c", "echo out; echo err >&2; exit 3"])
