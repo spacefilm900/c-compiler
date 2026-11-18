@@ -1,7 +1,9 @@
 //! Command-line driver.
 //!
 //! `compiler INPUT.c -o OUTPUT.ll` writes textual LLVM IR.
-//! `-E` writes the preprocessed text instead. `-I`, `-D`, and `-U` are
+//! `-E` writes the preprocessed text instead. `--dump-tokens`, `--dump-ast`,
+//! `--dump-sema` and `--dump-ir` stop after that stage and write its dump
+//! (to `-o FILE`, or standard output); see `docs/DEBUGGING.md`. `-I`, `-D`, and `-U` are
 //! passed to the preprocessor. A bare `-D NAME` defines `NAME` as `1`.
 //! `-std=c11` (the default) is strict ISO C11; `-std=gnu11` enables the GNU
 //! extensions listed in [`crate::dialect`]. The last `-std` wins.
@@ -20,11 +22,17 @@ use crate::pp::{preprocess, CliMacro, PpOptions};
 const USAGE: &str = "\
 usage: compiler [options] INPUT.c -o OUTPUT.ll
        compiler -E [options] INPUT.c [-o OUTPUT.i]
+       compiler --dump-STAGE [options] INPUT.c [-o OUTPUT]
 options:
   -I DIR          add DIR to the include search path
   -D NAME[=text]  define NAME as text, or as 1 if text is omitted
   -U NAME         undefine NAME
-  -E              preprocess only
+  -E              preprocess only (also --dump-pp)
+  --dump-tokens   stop after preprocessing and print the token stream
+  --dump-ast      stop after parsing and print the syntax tree
+  --dump-sema     stop after semantic analysis and print the checked tree
+                  (types, conversions, constants, record layouts)
+  --dump-ir       print the LLVM IR (to standard output unless -o is given)
   -std=c11        strict ISO C11 (the default)
   -std=gnu11      C11 plus the GNU extensions this compiler supports
   -fgnu89-inline  GNU89 inline semantics: plain `inline` definitions are
@@ -41,6 +49,8 @@ struct Options {
     input: String,
     output: Option<String>,
     preprocess_only: bool,
+    /// `--dump-tokens`, `--dump-ast`, `--dump-sema` or `--dump-ir`.
+    dump: Option<crate::Stage>,
     time_phases: bool,
     pp: PpOptions,
     dialect: Dialect,
@@ -77,6 +87,9 @@ pub fn run(args: &[String]) -> i32 {
     };
     if options.preprocess_only {
         return emit_preprocessed(&options, &source);
+    }
+    if let Some(stage) = options.dump {
+        return emit_dump(&options, &source, stage);
     }
     let Some(output) = options.output.as_deref() else {
         let _ = writeln!(io::stderr(), "{USAGE}");
@@ -119,21 +132,7 @@ fn error_status(diag: &crate::Diagnostic) -> i32 {
 
 fn emit_preprocessed(options: &Options, source: &str) -> i32 {
     match preprocess(source, &options.input, &options.pp) {
-        Ok(text) => {
-            if let Some(output) = &options.output {
-                match fs::write(output, text) {
-                    Ok(()) => 0,
-                    Err(err) => {
-                        let _ = writeln!(io::stderr(), "{output}: error: {err}");
-                        1
-                    }
-                }
-            } else {
-                print!("{text}");
-                let _ = io::stdout().flush();
-                0
-            }
-        }
+        Ok(text) => write_text(options, &text),
         Err(diag) => {
             let _ = writeln!(io::stderr(), "{diag}");
             1
@@ -141,10 +140,45 @@ fn emit_preprocessed(options: &Options, source: &str) -> i32 {
     }
 }
 
+/// `--dump-STAGE`: run the frontend up to the stage and write its dump.
+/// Warnings and errors are reported as in a normal compilation.
+fn emit_dump(options: &Options, source: &str, stage: crate::Stage) -> i32 {
+    match crate::dump_stage(source, &options.input, &options.pp, options.dialect, stage) {
+        Ok(dumped) => {
+            for warning in &dumped.warnings {
+                let _ = writeln!(io::stderr(), "{warning}");
+            }
+            write_text(options, &dumped.ir)
+        }
+        Err(diag) => {
+            let _ = writeln!(io::stderr(), "{diag}");
+            error_status(&diag)
+        }
+    }
+}
+
+/// Write `text` to `-o FILE`, or to standard output.
+fn write_text(options: &Options, text: &str) -> i32 {
+    if let Some(output) = &options.output {
+        match fs::write(output, text) {
+            Ok(()) => 0,
+            Err(err) => {
+                let _ = writeln!(io::stderr(), "{output}: error: {err}");
+                1
+            }
+        }
+    } else {
+        print!("{text}");
+        let _ = io::stdout().flush();
+        0
+    }
+}
+
 fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut input = None;
     let mut output = None;
     let mut preprocess_only = false;
+    let mut dump = None;
     let mut time_phases = false;
     let mut pp = PpOptions::default();
     let mut dialect = Dialect::default();
@@ -153,8 +187,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut index = 1;
     while index < args.len() {
         let arg = &args[index];
-        if arg == "-E" {
-            preprocess_only = true;
+        if output_kind(arg, &mut preprocess_only, &mut dump)? {
             index += 1;
             continue;
         }
@@ -237,7 +270,10 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let Some(input) = input else {
         return Err(USAGE.to_string());
     };
-    if !preprocess_only && output.is_none() {
+    if preprocess_only && dump.is_some() {
+        return Err("-E and --dump-STAGE cannot be combined".to_string());
+    }
+    if !preprocess_only && dump.is_none() && output.is_none() {
         return Err(USAGE.to_string());
     }
     pp.target = target;
@@ -246,9 +282,41 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         input,
         output,
         preprocess_only,
+        dump,
         time_phases,
         pp,
         dialect,
+    })
+}
+
+/// `-E`, `--dump-pp` and `--dump-STAGE`: what to write instead of IR.
+/// `Ok(false)` when `arg` is none of them.
+fn output_kind(
+    arg: &str,
+    preprocess_only: &mut bool,
+    dump: &mut Option<crate::Stage>,
+) -> Result<bool, String> {
+    if arg == "-E" || arg == "--dump-pp" {
+        *preprocess_only = true;
+        return Ok(true);
+    }
+    let Some(stage) = dump_flag(arg) else {
+        return Ok(false);
+    };
+    if dump.is_some_and(|seen| seen != stage) {
+        return Err("only one --dump-STAGE option may be given".to_string());
+    }
+    *dump = Some(stage);
+    Ok(true)
+}
+
+fn dump_flag(arg: &str) -> Option<crate::Stage> {
+    Some(match arg {
+        "--dump-tokens" => crate::Stage::Tokens,
+        "--dump-ast" => crate::Stage::Ast,
+        "--dump-sema" => crate::Stage::Sema,
+        "--dump-ir" => crate::Stage::Ir,
+        _ => return None,
     })
 }
 
@@ -369,6 +437,73 @@ mod tests {
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&out);
         let _ = std::fs::remove_file(&bad);
+    }
+
+    #[test]
+    fn dump_options_parse_and_conflict() {
+        let args = |list: &[&str]| -> Vec<String> {
+            std::iter::once("compiler")
+                .chain(list.iter().copied())
+                .map(String::from)
+                .collect()
+        };
+        for (flag, stage) in [
+            ("--dump-tokens", crate::Stage::Tokens),
+            ("--dump-ast", crate::Stage::Ast),
+            ("--dump-sema", crate::Stage::Sema),
+            ("--dump-ir", crate::Stage::Ir),
+        ] {
+            // A dump needs no -o: it goes to standard output by default.
+            let options = parse_args(&args(&[flag, "a.c"])).expect("parsed");
+            assert_eq!(options.dump, Some(stage));
+            assert!(options.output.is_none() && !options.preprocess_only);
+            // The same flag twice is fine.
+            assert!(parse_args(&args(&[flag, flag, "a.c"])).is_ok());
+        }
+        assert!(
+            parse_args(&args(&["--dump-pp", "a.c"]))
+                .expect("parsed")
+                .preprocess_only
+        );
+        let err = parse_args(&args(&["--dump-ast", "--dump-sema", "a.c"]))
+            .err()
+            .expect("two stages");
+        assert!(err.contains("only one"), "{err}");
+        let err = parse_args(&args(&["-E", "--dump-ir", "a.c"]))
+            .err()
+            .expect("-E and a dump");
+        assert!(err.contains("cannot be combined"), "{err}");
+        assert!(parse_args(&args(&["--dump-everything", "a.c"])).is_err());
+    }
+
+    #[test]
+    fn dumps_stop_after_their_stage() {
+        let (src, out) = temp_paths();
+        // Parses, but semantic analysis rejects the undeclared name.
+        std::fs::write(&src, "int main(void) { return missing; }\n").unwrap();
+        let path = src.display().to_string();
+        let dumped = out.with_extension("dump");
+        let dump = |flag: &str| {
+            let _ = std::fs::remove_file(&dumped);
+            let status = run(&[
+                "compiler".into(),
+                flag.into(),
+                path.clone(),
+                "-o".into(),
+                dumped.display().to_string(),
+            ]);
+            (status, std::fs::read_to_string(&dumped).unwrap_or_default())
+        };
+        let (status, tokens) = dump("--dump-tokens");
+        assert_eq!(status, 0);
+        assert!(tokens.contains(":1:25 Ident 'missing'"), "{tokens}");
+        let (status, ast) = dump("--dump-ast");
+        assert_eq!(status, 0);
+        assert!(ast.contains("var missing @1:25"), "{ast}");
+        assert_eq!(dump("--dump-sema").0, 1);
+        assert_eq!(dump("--dump-ir").0, 1);
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&dumped);
     }
 
     #[test]
