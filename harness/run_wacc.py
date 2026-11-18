@@ -6,7 +6,10 @@ The suite is fetched by scripts/fetch_wacc_tests.sh into tests/external/wacc
 
 A valid program is compiled with this compiler, linked with clang, and
 compared to expected_results.json (return code and stdout). If that file has
-no entry, clang -std=c11 is the oracle. A library test compiles one
+no entry, clang -std=c11 is the oracle. The book's expected results are for
+x86_64 (a signed `char`, x86-64 assembly helpers), so for any other target
+(read from `clang -dumpmachine`) Clang is the oracle for every program and
+the tests that link the book's x86-64 assembly are skipped. A library test compiles one
 translation unit here and the other files with clang. An invalid program
 must be rejected with a non-zero exit and must not crash or panic.
 
@@ -35,6 +38,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "harness"))
+from target_arch import arch_of, clang_triple  # noqa: E402
 COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
 CLANG = os.environ.get("CLANG", "clang")
 TIMEOUT = float(os.environ.get("TIMEOUT", "10"))
@@ -448,6 +453,14 @@ def main() -> int:
     expected, tag_map, c_libs, asm_libs, mathlibs = load_suite(SUITE)
     known = load_known(KNOWN_PATH)
     cases = discover(SUITE, tag_map)
+    triple = clang_triple(CLANG)
+    arch = arch_of(triple)
+    if arch != "x86_64":
+        print(f"target {triple or 'unknown'}: clang is the oracle for every program")
+        expected = {}
+        for case in cases:
+            if not case["skip"] and case["kind"] == "valid" and asm_libs.get(props_key(case["rel"])):
+                case["skip"] = f"links the book's x86-64 assembly helper (target is {arch or 'unknown'})"
 
     if args.chapters or args.only:
         wanted = set(args.chapters or [])
