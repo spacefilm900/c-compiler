@@ -17,7 +17,9 @@ Clang on an AArch64 host), used as a black box only.
 
 ## Suites and results
 
-Commit: branch `linux-arm64`. Local runs used `qemu-aarch64` (user mode,
+Results were taken twice. Natively, on GitHub's `ubuntu-24.04-arm` runner
+with its Clang 18 (pull request 49, run 44283979580, 2026-11-18); every
+row below matched there. Locally, runs used `qemu-aarch64` (user mode,
 glibc from Debian's `libc6-dev-arm64-cross`) with wrappers that add
 `-target aarch64-linux-gnu` to this compiler and
 `--target=aarch64-linux-gnu` to Clang 19, so each harness runs exactly as it
@@ -25,16 +27,16 @@ would on an AArch64 host. CI runs the same harnesses natively (below).
 
 | Suite | Before step 9 | AArch64 result |
 | --- | --- | --- |
-| Unit tests (`cargo test --lib`) | x86-64 host only | CI on the arm64 runner (host-dependent tests already skip on a non-x86-64 host) |
-| Differential harness (`run_tests.py`, now with `tests/arm64/`) | under qemu via `run_cross.py` | 189/189 |
+| Unit tests (`cargo test --lib`) | x86-64 host only | 200 passed, 23 ignored (tests that need an x86-64 host Clang) on the arm64 runner |
+| Differential harness (`run_tests.py`, now with `tests/arm64/`) | under qemu via `run_cross.py` | 190/190 |
 | `run_cross.py --target aarch64-linux-gnu` | 189/189 | 190/190 (new cross-ABI pair) |
-| Stage dumps, reducer tests | x86-64 only | target-independent (dumps pin `-target x86_64-linux-gnu`); run on the arm64 runner |
-| Random calling-convention pairs (`tools/abi_fuzz.py`, new) | none | 1,000/1,000 seeds (x86-64: 1,800/1,800 after the fix below) |
+| Stage dumps, reducer tests | x86-64 only | 24/24 dump checks (they pin `-target x86_64-linux-gnu`), reducer tests OK |
+| Random calling-convention pairs (`tools/abi_fuzz.py`, new) | none | 1,000/1,000 seeds locally, 100/100 per CI run (x86-64: 1,800/1,800 after the fix below) |
 | Writing a C Compiler | not run | 1,376 passed, 0 failures; 241 skipped (the 233 skipped on x86-64, where 1,384 pass, plus 8 tests that link the book's x86-64 assembly helper) |
 | Csmith, 40 fixed seeds | not run | 34 pass, 6 known (the same 6 inconclusive seeds as x86-64), 0 unexpected |
 | GCC torture execute | report only, under qemu | 1,335 passed, 411 known, 0 unexpected (x86-64: 1,333 / 413) |
 | One True AWK (`testdir` + `bugs-fixed`) | not run | agree with the Clang build; 31/31 bugs-fixed; the 9 golden-file mismatches are shared with the Clang build |
-| AWK Builder suites | not run | POSIX challenge v0.6: 515/528 for both builds, same 13 failures; Shakespeare volume: PASS for both |
+| AWK Builder suites | not run | POSIX challenge v0.6: all 528 cases agree between the two builds (516/528 pass natively, 515 under qemu, the same for both builds); Shakespeare volume: PASS for both |
 | Lua 5.4.7 | not run | builds alone at `-O0` and `-O2`; test suite in three modes, 9/9 workloads, `luac -s` 42/42: all match Clang |
 | SQLite 3.54.1 | not run | builds alone; 10/10 workloads and database files match at `-O0` and `-O2` |
 | DOOM (doomgeneric, Freedoom) | not run | 39,209/39,209 frame hashes match at `-O0` and `-O2` (every demo to its end) |
@@ -98,20 +100,20 @@ here). The qemu steps in `ci.yml` stay as they are.
 
 | Job | When | Estimated billed minutes per run |
 | --- | --- | --- |
-| `arm64 quick`: unit tests, harness with `tests/arm64/`, stage dumps, reducer tests, 100 random ABI pairs | every PR run, push to `main`, manual | about 4 |
-| `arm64 wacc, csmith, torture, awk` | push to `main`, manual | about 6 |
-| `arm64 lua, sqlite, doom, perf` | push to `main`, manual | about 6 |
+| `arm64 quick`: unit tests, harness with `tests/arm64/`, stage dumps, reducer tests, 100 random ABI pairs | every PR run, push to `main`, manual | 2 to 3 (1 min 57 s measured) |
+| `arm64 wacc, csmith, torture, awk` (with the AWK Builder suites) | push to `main`, manual | 7 (6 min 34 s measured) |
+| `arm64 lua, sqlite, doom, perf` | push to `main`, manual | 7 (6 min 45 s measured) |
 
 Run counts over the 30 days to 2026-11-18 (`ci.yml`): 140 pull-request
 runs and 178 push-to-`main` runs (48 merged pull requests).
 
-- Pull requests: 140 x 4 = 560 minutes, about $2.80.
-- Main: 178 x 16 = 2,850 minutes, about $14.25 at the observed rate of
-  main runs; at one run per merged pull request (48), 770 minutes, about
-  $3.85.
-- Total: about 1,330 to 3,400 minutes a month, **about $7 to $17**.
+- Pull requests: 140 x 3 = 420 minutes, about $2.10.
+- Main: 178 x 17 = 3,030 minutes, about $15.15 at the observed rate of
+  main runs; at one run per merged pull request (48), 820 minutes, about
+  $4.10.
+- Total: about 1,240 to 3,450 minutes a month, **about $6 to $17**.
 
 If that is too much of the $30 budget, the cheapest change is to move the
 two suite jobs from every push to `main` to a nightly schedule plus manual
-dispatch (`on: schedule`), about 30 x 12 = 360 minutes ($1.80) a month;
+dispatch (`on: schedule`), about 30 x 14 = 420 minutes ($2.10) a month;
 the quick job keeps gating pull requests.

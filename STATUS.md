@@ -753,20 +753,22 @@ Baseline on `f11131e` (non-test code in `src/`, 22,466 instrumented lines):
 Target `aarch64-linux-gnu` (AAPCS64, binary128 `long double`, unsigned
 `char`). It is the default target on an AArch64 Linux host. Every suite
 that runs on x86-64 now runs for AArch64 against Clang for the same target.
-Details, known-failure reasons and the CI cost estimate are in
+Every row was checked natively on GitHub's arm64 runner (pull request 49)
+and locally under qemu. Details, known-failure reasons and the CI cost
+estimate are in
 `reports/platforms/linux-arm64/README.md`.
 
 | Suite | AArch64 Linux |
 | --- | --- |
-| Unit tests | run natively in CI (`linux-arm64` workflow) |
-| Differential harness (with `tests/arm64/`) | 189/189 |
+| Unit tests | 200 passed, 23 ignored (x86-64-host only), on the arm64 runner |
+| Differential harness (with `tests/arm64/`) | 190/190 |
 | `run_cross.py --target aarch64-linux-gnu` (qemu, x86-64 runner) | 190/190, 0 known failures |
 | Random calling-convention pairs (`tools/abi_fuzz.py`) | 1,000/1,000 seeds |
 | Writing a C Compiler | 1,376 passed, 0 failures (Clang oracle; 8 x86-64 assembly tests skipped) |
 | Csmith, 40 fixed seeds | 34 pass, 6 known (same as x86-64), 0 unexpected |
 | GCC torture execute | 1,335 passed, 411 known, 0 unexpected |
 | One True AWK | agrees with the Clang build; bugs-fixed 31/31 |
-| AWK Builder suites | 515/528 for both builds (same 13); volume test PASS |
+| AWK Builder suites | all 528 cases agree between the builds (516/528 pass natively); volume test PASS |
 | Lua 5.4.7 | matches Clang at `-O0` and `-O2` |
 | SQLite 3.54.1 | 10/10 workloads match at `-O0` and `-O2` |
 | DOOM | 39,209/39,209 frames match at `-O0` and `-O2` |
