@@ -42,31 +42,42 @@ class RunTimeout(unittest.TestCase):
             # group that keeps stdout and stderr open, then waits for it.
             script = 'sleep 30 & echo $! > "$1"; wait'
             started = time.monotonic()
-            status, out, err = abi_fuzz.run(["sh", "-c", script, "sh", str(pidfile)], timeout=0.5)
-            self.assertEqual(status, "timeout")
-            self.assertIn(b"timed out", err)
-            self.assertLess(time.monotonic() - started, 10)
-            pid = int(pidfile.read_text())
-            for _ in range(50):
-                if not alive(pid):
-                    break
-                time.sleep(0.1)
-            self.assertFalse(alive(pid), "the descendant outlived the timeout")
+            try:
+                status, out, err = abi_fuzz.run(["sh", "-c", script, "sh", str(pidfile)], timeout=0.5)
+                self.assertEqual(status, "timeout")
+                self.assertIn(b"timed out", err)
+                self.assertLess(time.monotonic() - started, 10)
+                pid = int(pidfile.read_text())
+                for _ in range(50):
+                    if not alive(pid):
+                        break
+                    time.sleep(0.1)
+                self.assertFalse(alive(pid), "the descendant outlived the timeout")
+            finally:
+                if pidfile.exists() and pidfile.read_text().strip():
+                    kill_quietly(int(pidfile.read_text()))
 
     @unittest.skipUnless(shutil.which("setsid"), "needs setsid")
     def test_timeout_does_not_wait_for_a_descendant_outside_the_group(self):
         with tempfile.TemporaryDirectory() as tmp:
             pidfile = Path(tmp) / "pid"
-            # The descendant moves to its own session, so the group kill
-            # misses it, and it keeps the captured pipes open for 20 s.
-            script = 'setsid sleep 20 & echo $! > "$1"; wait'
+            # The descendant moves to its own session and records its PID
+            # from there, so the group kill misses it; it keeps the captured
+            # pipes open for 20 s. The wrapper waits until it has moved.
+            script = (
+                'setsid sh -c \'echo $$ > "$1"; exec sleep 20\' sh "$1" & '
+                'while [ ! -s "$1" ]; do sleep 0.01; done; wait'
+            )
             started = time.monotonic()
             try:
-                status, _, _ = abi_fuzz.run(["sh", "-c", script, "sh", str(pidfile)], timeout=0.5)
+                status, _, _ = abi_fuzz.run(["sh", "-c", script, "sh", str(pidfile)], timeout=2)
                 self.assertEqual(status, "timeout")
                 self.assertLess(time.monotonic() - started, 10)
+                pid = int(pidfile.read_text())
+                self.assertEqual(os.getsid(pid), pid, "descendant did not start its own session")
+                self.assertTrue(alive(pid), "the descendant should have escaped the group kill")
             finally:
-                if pidfile.exists():
+                if pidfile.exists() and pidfile.read_text().strip():
                     kill_quietly(int(pidfile.read_text()))
 
     def test_normal_exit_keeps_status_and_output(self):
