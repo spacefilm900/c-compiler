@@ -258,6 +258,22 @@ impl Big {
         out
     }
 
+    /// Hexadecimal digit values, most significant first, packed eight to a
+    /// limb (linear in the number of digits).
+    pub(crate) fn from_hex_digits(nibbles: &[u8]) -> Self {
+        let mut d = Vec::with_capacity(nibbles.len() / 8 + 1);
+        for chunk in nibbles.rchunks(8) {
+            let limb = chunk
+                .iter()
+                .fold(0u32, |acc, &nibble| (acc << 4) | u32::from(nibble & 0xF));
+            d.push(limb);
+        }
+        while d.last() == Some(&0) {
+            d.pop();
+        }
+        Big { d }
+    }
+
     pub(crate) fn from_u128(mut value: u128) -> Self {
         let mut d = Vec::new();
         while value != 0 {

@@ -234,16 +234,17 @@ fn decimal_to_bits(digits: &[u8], exp10: i64) -> u128 {
 /// A hexadecimal floating constant: the hex digits around the point and the
 /// binary exponent after `p` (C11 6.4.4.2).
 pub fn parse_hex(int_digits: &str, frac_digits: &str, bin_exp: i32) -> u128 {
-    let mut mag = Big::from_u128(0);
-    for byte in int_digits.bytes().chain(frac_digits.bytes()) {
-        let digit = match byte {
+    let nibbles: Vec<u8> = int_digits
+        .bytes()
+        .chain(frac_digits.bytes())
+        .map(|byte| match byte {
             b'0'..=b'9' => byte - b'0',
             b'a'..=b'f' => byte - b'a' + 10,
             b'A'..=b'F' => byte - b'A' + 10,
             _ => 0,
-        };
-        mag = mag.mul_small(16).add_small(u32::from(digit));
-    }
+        })
+        .collect();
+    let mag = Big::from_hex_digits(&nibbles);
     let exp2 = i64::from(bin_exp) - 4 * frac_digits.len() as i64;
     round(QUAD, false, &mag, exp2, false)
 }
@@ -632,9 +633,22 @@ mod tests {
         assert_eq!(to_ieee(dec("1e400"), false), f64::INFINITY.to_bits());
         assert_eq!(to_ieee(dec("1e-400"), false), 0);
         assert_eq!(from_ieee(u64::from(1.5f32.to_bits()), true), wide(1.5));
-        let nan = from_ieee(f64::NAN.to_bits(), false);
-        assert_eq!(nan, QNAN);
-        assert_eq!(to_ieee(QNAN, false), f64::NAN.to_bits());
+        // Explicit NaN encodings: the default quiet NaN, and a negative
+        // quiet NaN with a payload, which widening shifts into the top of
+        // the 112-bit fraction and narrowing shifts back.
+        assert_eq!(from_ieee(0x7FF8_0000_0000_0000, false), QNAN);
+        assert_eq!(to_ieee(QNAN, false), 0x7FF8_0000_0000_0000);
+        let wide_nan = SIGN | INF | (0x8_0000_0000_1234u128 << 60);
+        assert_eq!(from_ieee(0xFFF8_0000_0000_1234, false), wide_nan);
+        assert_eq!(to_ieee(wide_nan, false), 0xFFF8_0000_0000_1234);
+        assert_eq!(
+            from_ieee(u64::from(0xFFC0_0005u32), true),
+            SIGN | INF | (0x40_0005u128 << 89)
+        );
+        assert_eq!(
+            to_ieee(SIGN | INF | (0x40_0005u128 << 89), true),
+            0xFFC0_0005
+        );
         assert_eq!(from_int(1, TypeName::Int), ONE);
         assert_eq!(from_int(u128::MAX, TypeName::Int128), negate(ONE));
         assert_eq!(
