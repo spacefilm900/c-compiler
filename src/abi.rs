@@ -520,7 +520,7 @@ fn collect_leaves(ty: &CType, base: u64, inherited: bool, out: &mut Vec<Leaf>) {
                             is_ptr: false,
                             spans: inherited || crosses(offset, 1),
                         });
-                    } else if ty_size > 1 {
+                    } else if ty_size > 1 && field.bit_width != Some(0) {
                         // The eightbyte of the whole argument, not of this
                         // struct: a nested struct can start mid-eightbyte.
                         let offset = ((base + byte) / 8) * 8;
@@ -869,6 +869,38 @@ mod tests {
             false,
         );
         assert_eq!(direct(&outer), vec!["i64".to_string(), "i64".to_string()]);
+    }
+
+    #[test]
+    fn zero_width_bit_field_occupies_no_eightbyte() {
+        // struct { float x; struct { int : 0; float f; } s; double y; } is
+        // <2 x float>, double. The `int : 0` has no storage, so it must not
+        // make eightbyte 0 INTEGER.
+        let mut pad = field("", ints(TypeName::Int), 0);
+        pad.bit_width = Some(0);
+        pad.bit_offset = 0;
+        let inner = record(
+            132,
+            vec![pad, field("f", CType::Float(FloatKind::Float), 0)],
+            4,
+            4,
+            false,
+        );
+        let outer = record(
+            133,
+            vec![
+                field("x", CType::Float(FloatKind::Float), 0),
+                field("s", inner, 4),
+                field("y", CType::Float(FloatKind::Double), 8),
+            ],
+            16,
+            8,
+            false,
+        );
+        assert_eq!(
+            direct(&outer),
+            vec!["<2 x float>".to_string(), "double".to_string()]
+        );
     }
 
     #[test]
