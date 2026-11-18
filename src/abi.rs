@@ -253,7 +253,14 @@ pub fn assign_regs(
         if ty.is_sse_float() {
             *free_sse = free_sse.saturating_sub(1);
         } else if !ty.is_long_double() {
-            *free_int = free_int.saturating_sub(1);
+            // A 128-bit integer is two INTEGER eightbytes. If both registers
+            // are not free it goes on the stack whole and leaves the
+            // remaining register to later arguments (System V AMD64 3.2.3),
+            // which is what LLVM does with an `i128` parameter.
+            let slots = if ty.size() == Some(16) { 2 } else { 1 };
+            if *free_int >= slots {
+                *free_int -= slots;
+            }
         }
     }
     parts
@@ -833,6 +840,38 @@ mod tests {
             false,
         );
         assert!(matches!(classify_aggregate(&wide).unwrap(), AggAbi::Memory));
+    }
+
+    #[test]
+    fn scalar_int128_takes_two_general_registers() {
+        // f(__int128, long, long, long, struct { __int128 q; }, long): the
+        // scalar uses two registers, so the record no longer fits in the
+        // last one and goes on the stack whole, leaving %r9 to the long.
+        let q = record(
+            403,
+            vec![field("q", ints(TypeName::Int128), 0)],
+            16,
+            16,
+            false,
+        );
+        let long = ints(TypeName::Long);
+        let params = vec![
+            ints(TypeName::Int128),
+            long.clone(),
+            long.clone(),
+            long.clone(),
+            q,
+            long.clone(),
+        ];
+        let sig = function_sig(&CType::int_type(), &params).unwrap();
+        assert!(matches!(sig.params[4][0].kind, PartKind::Byval), "{sig:?}");
+        assert_eq!(sig.free_int, 0);
+        // Five ints leave one register: the scalar goes on the stack and
+        // does not take it.
+        let mut late = vec![CType::int_type(); 5];
+        late.push(ints(TypeName::Int128));
+        let sig = function_sig(&CType::int_type(), &late).unwrap();
+        assert_eq!(sig.free_int, 1);
     }
 
     #[test]
