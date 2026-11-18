@@ -13,8 +13,8 @@
 #   differential harness with tests/arm64, stage dumps, random
 #   calling-convention pairs). About 3-4 billed
 #   minutes per run.
-# - Pushes to main (merges) and manual dispatch: also every suite, one
-#   job each. About 20-25 billed minutes per run.
+# - Pushes to main (merges) and manual dispatch: also every suite, in two
+#   jobs. About 15 billed minutes per run with the quick job.
 # See reports/platforms/linux-arm64/README.md for the monthly estimate.
 # Documentation-only changes skip this workflow, as they skip ci.yml.
 
@@ -91,48 +91,36 @@ jobs:
         run: python3 tools/abi_fuzz.py --count 100
 
   suites:
-    name: arm64 ${{ matrix.suite }}
+    name: arm64 ${{ matrix.group }}
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
+        # Two jobs, not one per suite: each job pays about two minutes of
+        # setup (toolchain, apt, release build), and billing rounds every
+        # job up to a whole minute.
         include:
-          - suite: wacc
-            apt: clang llvm make python3
-            cache: tests/external/wacc
-            key: wacc-ae12014d2dec14488f3f80d14df4b6d8e4634d7d
-          - suite: csmith
-            apt: clang llvm make python3 g++
-            cache: tests/external/csmith
-            key: csmith-30dccd73b78652c4719f36572994778a5b233a4e
-          - suite: onetrueawk
-            apt: clang llvm make python3 bison
-            cache: tests/external/onetrueawk
-            key: onetrueawk-5739fd79bcfc75ba7526773d0cf634521f8aca3c
-          - suite: gcc-torture
-            apt: clang llvm make python3
-            cache: tests/external/gcc-torture
-            key: gcc-torture-5115c7e447fc07457443df874bf57840e8316d5f
-          - suite: lua
-            apt: clang llvm make python3
-            cache: tests/external/lua
-            key: lua-5.4.7-9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30-8a4898ffe4c7613c8009327a0722db7a41ef861d526c77c5b46114e59ebf811e
-          - suite: sqlite
-            apt: clang llvm make python3 unzip
-            cache: tests/external/sqlite
-            key: sqlite-3.54.1-0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9-92281c86e2957f9b9305890f9ac04204caa7b677cc868dc326d942689df28e30
-          - suite: doom
-            apt: clang llvm make python3 unzip
+          - group: wacc, csmith, torture, awk
+            suites: wacc csmith gcc-torture onetrueawk
+            apt: clang llvm make python3 g++ bison
             cache: |
+              tests/external/wacc
+              tests/external/csmith
+              tests/external/gcc-torture
+              tests/external/onetrueawk
+            key: wacc-ae12014d2dec14488f3f80d14df4b6d8e4634d7d-csmith-30dccd73b78652c4719f36572994778a5b233a4e-gcc-torture-5115c7e447fc07457443df874bf57840e8316d5f-onetrueawk-5739fd79bcfc75ba7526773d0cf634521f8aca3c
+          - group: lua, sqlite, doom, perf
+            suites: lua sqlite doom perf
+            apt: clang llvm make python3 unzip bison
+            cache: |
+              tests/external/lua
+              tests/external/sqlite
               tests/external/doomgeneric
               tests/external/freedoom
-            key: doom-e257a09527062bfb986b6e5e0780839b6cbd5b71-freedoom-0.13.0-7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d-a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b
-          - suite: perf
-            apt: clang llvm make python3 bison
-            cache: tests/external/onetrueawk
-            key: onetrueawk-5739fd79bcfc75ba7526773d0cf634521f8aca3c
+              tests/external/onetrueawk
+            key: lua-5.4.7-9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30-8a4898ffe4c7613c8009327a0722db7a41ef861d526c77c5b46114e59ebf811e-sqlite-3.54.1-0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9-92281c86e2957f9b9305890f9ac04204caa7b677cc868dc326d942689df28e30-doomgeneric-e257a09527062bfb986b6e5e0780839b6cbd5b71-freedoom-0.13.0-7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d-a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b-onetrueawk-5739fd79bcfc75ba7526773d0cf634521f8aca3c
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -167,62 +155,58 @@ jobs:
           path: ${{ matrix.cache }}
           key: ${{ matrix.key }}-${{ runner.os }}-${{ runner.arch }}
 
-      - name: Build and run ${{ matrix.suite }}
+      - name: Release build
+        run: make
+
+      - name: Run ${{ matrix.group }}
         env:
-          SUITE: ${{ matrix.suite }}
+          SUITES: ${{ matrix.suites }}
         run: |
           set -euo pipefail
-          case "${SUITE}" in
-            wacc)
-              scripts/fetch_wacc_tests.sh
-              make
-              python3 harness/run_wacc.py
-              ;;
-            csmith)
-              scripts/fetch_csmith.sh
-              make
-              python3 harness/run_csmith.py
-              ;;
-            onetrueawk)
-              scripts/fetch_onetrueawk.sh
-              make
-              python3 harness/run_onetrueawk.py
-              ;;
-            gcc-torture)
-              scripts/fetch_gcc_torture.sh
-              make
-              python3 harness/run_gcc_torture.py
-              ;;
-            lua)
-              scripts/fetch_lua.sh
-              make
-              python3 harness/run_lua.py --opt O0 --opt O2 --run-jobs "$(nproc)"
-              ;;
-            sqlite)
-              scripts/fetch_sqlite.sh
-              make
-              python3 harness/run_sqlite.py --opt O0 --opt O2
-              python3 tools/perf_guard.py
-              ;;
-            doom)
-              scripts/fetch_doomgeneric.sh
-              scripts/fetch_freedoom.sh
-              make
-              python3 harness/run_doom.py --opt O0 --opt O2 --play-jobs "$(nproc)"
-              ;;
-            perf)
-              scripts/fetch_onetrueawk.sh
-              make
-              python3 harness/perf.py
-              ;;
-            *)
-              echo "unknown suite ${SUITE}" >&2
-              exit 1
-              ;;
-          esac
+          # Every suite runs even if an earlier one fails; the step fails
+          # at the end and names the failures.
+          failed=""
+          for suite in ${SUITES}; do
+            echo "::group::${suite}"
+            if case "${suite}" in
+              wacc)
+                scripts/fetch_wacc_tests.sh && python3 harness/run_wacc.py ;;
+              csmith)
+                scripts/fetch_csmith.sh && python3 harness/run_csmith.py ;;
+              gcc-torture)
+                scripts/fetch_gcc_torture.sh && python3 harness/run_gcc_torture.py ;;
+              onetrueawk)
+                scripts/fetch_onetrueawk.sh && python3 harness/run_onetrueawk.py ;;
+              lua)
+                scripts/fetch_lua.sh &&
+                  python3 harness/run_lua.py --opt O0 --opt O2 --run-jobs "$(nproc)" ;;
+              sqlite)
+                scripts/fetch_sqlite.sh &&
+                  python3 harness/run_sqlite.py --opt O0 --opt O2 &&
+                  python3 tools/perf_guard.py ;;
+              doom)
+                scripts/fetch_doomgeneric.sh && scripts/fetch_freedoom.sh &&
+                  python3 harness/run_doom.py --opt O0 --opt O2 --play-jobs "$(nproc)" ;;
+              perf)
+                scripts/fetch_onetrueawk.sh && python3 harness/perf.py ;;
+              *)
+                echo "unknown suite ${suite}" >&2; false ;;
+            esac; then
+              echo "::endgroup::"
+              echo "${suite}: PASS"
+            else
+              echo "::endgroup::"
+              echo "::error::${suite} failed"
+              failed="${failed} ${suite}"
+            fi
+          done
+          if [ -n "${failed}" ]; then
+            echo "failed:${failed}" >&2
+            exit 1
+          fi
 
       - name: AWK Builder suites
-        if: matrix.suite == 'onetrueawk'
+        if: contains(matrix.suites, 'onetrueawk')
         timeout-minutes: 20
         env:
           GH_TOKEN: ${{ secrets.AWK_SUITE_READ_TOKEN }}
@@ -242,7 +226,7 @@ jobs:
             python3 harness/run_awk_extra.py
 
       - name: Upload raw performance numbers
-        if: matrix.suite == 'perf'
+        if: contains(matrix.suites, 'perf')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: perf-numbers-linux-arm64
