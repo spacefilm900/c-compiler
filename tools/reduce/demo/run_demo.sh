@@ -53,11 +53,18 @@ done
 clang -w "$OUT/bitfield_mix.reduced.c" -o "$OUT/bitfield.ref"
 "$NEW_COMPILER" "$OUT/bitfield_mix.reduced.c" -o "$OUT/bitfield.ll"
 clang -w "$OUT/bitfield.ll" -o "$OUT/bitfield.new"
-# The reduced program may exit nonzero; compare the statuses as well.
+# The reduced program may exit nonzero; compare the statuses as well. A
+# status of 126 or more is a launch failure (126, 127) or a signal (128+N),
+# not a normal exit, and fails the demo.
 ref_status=0
 "$OUT/bitfield.ref" > "$OUT/bitfield.ref.out" || ref_status=$?
 new_status=0
 "$OUT/bitfield.new" > "$OUT/bitfield.new.out" || new_status=$?
+if [ "$ref_status" -ge 126 ] || [ "$new_status" -ge 126 ]; then
+    echo "FAIL: a bit-field program did not run normally" \
+         "(Clang's build exit $ref_status, ours exit $new_status)" >&2
+    exit 1
+fi
 if [ "$ref_status" != "$new_status" ] || ! cmp -s "$OUT/bitfield.ref.out" "$OUT/bitfield.new.out"; then
     echo "FAIL: the current compiler still miscompiles bitfield_mix.reduced.c" \
          "(exit $new_status, Clang's build exit $ref_status)" >&2

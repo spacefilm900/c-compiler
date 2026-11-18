@@ -292,12 +292,20 @@ class CommandLineTests(unittest.TestCase):
             with open({str(big)!r}, "wb") as f:
                 f.write(b"x" * 100000)
             ''')
-        command = f"{writer}; status=$?; [ $status -ne 0 ]; : {{}}"
+        # `exec`, so the reducer sees the writer's own termination.
+        command = f"exec {writer} {{}}"
         self.assertEqual(self.main("--mode", "cmd", "--cmd", command, "--output-limit", "100",
-                                   "--file-limit", "1000"), 0,
-                         "the shell sees the writer killed by SIGXFSZ")
+                                   "--file-limit", "1000"), 2)
+        self.assertFalse(self.output.exists())
+        self.assertEqual(big.stat().st_size, 1000, "the writer was stopped at the limit")
         self.assertEqual(self.main("--mode", "crash", "--compiler", str(writer),
                                    "--output-limit", "100", "--file-limit", "1000"), 2)
+
+    def test_file_limit_applies_to_commands_not_to_the_reducer(self):
+        # Candidates larger than --file-limit are still written.
+        self.assertGreater(len(SAMPLE), 100)
+        self.assertEqual(self.main("--mode", "cmd", "--cmd", "grep -q helper {}",
+                                   "--file-limit", "100", "--output-limit", "10"), 0)
 
     def test_an_inherited_hard_file_limit_is_respected(self):
         args = reduce.parse_args([str(self.input), "--mode", "cmd", "--cmd", "true",

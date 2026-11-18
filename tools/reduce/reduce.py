@@ -526,8 +526,10 @@ class ExitWaiter:
 
     def __call__(self, timeout):
         if self.pidfd is not None:
-            ready, _, _ = select.select([self.pidfd], [], [], timeout)
-            return self.proc.wait() if ready else None
+            # poll(), unlike select(), takes descriptors past FD_SETSIZE.
+            poller = select.poll()
+            poller.register(self.pidfd, select.POLLIN)
+            return self.proc.wait() if poller.poll(timeout * 1000) else None
         try:
             return self.proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -555,11 +557,9 @@ class Runner:
         self.output_limit = args.output_limit
         # No file a command writes (stdout and stderr included) may grow
         # past --file-limit, so a runaway program cannot fill the disk. The
-        # soft limit is set here, in the reducer, and inherited by every
-        # command (a preexec_fn would make each process start slower);
-        # close() restores it.
-        self.saved_file_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
-        resource.setrlimit(resource.RLIMIT_FSIZE, file_size_limit(args))
+        # limit is set in each command's process (limit_files), not in the
+        # reducer, whose own writes stay unlimited.
+        self.file_limits = file_size_limit(args)
         self.message = args.message
         self.ub_check = args.ub_check
         self.ub_cc = args.ub_cc
@@ -592,7 +592,6 @@ class Runner:
         self.ub_check = False
 
     def close(self):
-        resource.setrlimit(resource.RLIMIT_FSIZE, self.saved_file_limit)
         shutil.rmtree(self.scratch, ignore_errors=True)
 
     def run(self, argv, env=None, shell=False):
@@ -610,7 +609,8 @@ class Runner:
             try:
                 proc = subprocess.Popen(argv, stdout=out_file, stderr=err_file,
                                         stdin=subprocess.DEVNULL, cwd=self.scratch, env=env,
-                                        shell=shell, start_new_session=True)
+                                        shell=shell, start_new_session=True,
+                                        preexec_fn=self.limit_files)
             except OSError:
                 return None, b"", b""
             try:
@@ -621,6 +621,11 @@ class Runner:
         if status is None or status == -signal.SIGXFSZ or max(sizes) > self.output_limit:
             return None, b"", b""
         return status, out_path.read_bytes(), err_path.read_bytes()
+
+    def limit_files(self):
+        """Runs in the command's process before exec: the soft
+        RLIMIT_FSIZE from file_size_limit (the hard limit is unchanged)."""
+        resource.setrlimit(resource.RLIMIT_FSIZE, self.file_limits)
 
     def wait_within_limits(self, proc, files):
         """The exit status of `proc`, or None once it passes --timeout or
