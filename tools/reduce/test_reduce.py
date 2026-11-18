@@ -4,6 +4,7 @@ compilers. Run: python3 -m unittest tools/reduce/test_reduce.py"""
 import contextlib
 import io
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -293,7 +294,7 @@ class CommandLineTests(unittest.TestCase):
                 f.write(b"x" * 100000)
             ''')
         # `exec`, so the reducer sees the writer's own termination.
-        command = f"exec {writer} {{}}"
+        command = f"exec {shlex.quote(str(writer))} {{}}"
         self.assertEqual(self.main("--mode", "cmd", "--cmd", command, "--output-limit", "100",
                                    "--file-limit", "1000"), 2)
         self.assertFalse(self.output.exists())
@@ -306,6 +307,12 @@ class CommandLineTests(unittest.TestCase):
         self.assertGreater(len(SAMPLE), 100)
         self.assertEqual(self.main("--mode", "cmd", "--cmd", "grep -q helper {}",
                                    "--file-limit", "100", "--output-limit", "10"), 0)
+
+    def test_limits_out_of_range_are_usage_errors(self):
+        for option in ("--file-limit", "--output-limit"):
+            for value in ("0", str(1 << 63)):
+                with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                    reduce.parse_args([str(self.input), "--mode", "ice", option, value])
 
     def test_an_inherited_hard_file_limit_is_respected(self):
         args = reduce.parse_args([str(self.input), "--mode", "cmd", "--cmd", "true",

@@ -19,7 +19,7 @@ need() {
         command -v "$tool" > /dev/null || { echo "FAIL: $tool is not installed" >&2; exit 1; }
     done
 }
-need clang python3 cmp grep
+need clang python3 grep
 if [ -z "${OLD_COMPILER:-}" ]; then
     need git cargo
     tree="$OUT/src-0cab101"
@@ -53,23 +53,24 @@ done
 clang -w "$OUT/bitfield_mix.reduced.c" -o "$OUT/bitfield.ref"
 "$NEW_COMPILER" "$OUT/bitfield_mix.reduced.c" -o "$OUT/bitfield.ll"
 clang -w "$OUT/bitfield.ll" -o "$OUT/bitfield.new"
-# The reduced program may exit nonzero; compare the statuses as well. A
-# status of 126 or more is a launch failure (126, 127) or a signal (128+N),
-# not a normal exit, and fails the demo.
-ref_status=0
-"$OUT/bitfield.ref" > "$OUT/bitfield.ref.out" || ref_status=$?
-new_status=0
-"$OUT/bitfield.new" > "$OUT/bitfield.new.out" || new_status=$?
-if [ "$ref_status" -ge 126 ] || [ "$new_status" -ge 126 ]; then
-    echo "FAIL: a bit-field program did not run normally" \
-         "(Clang's build exit $ref_status, ours exit $new_status)" >&2
-    exit 1
-fi
-if [ "$ref_status" != "$new_status" ] || ! cmp -s "$OUT/bitfield.ref.out" "$OUT/bitfield.new.out"; then
-    echo "FAIL: the current compiler still miscompiles bitfield_mix.reduced.c" \
-         "(exit $new_status, Clang's build exit $ref_status)" >&2
-    exit 1
-fi
+# Run both builds directly (not through the shell, whose status cannot
+# tell a signal from a large normal exit): each must start and exit
+# normally, with any status, and both must give the same status and stdout.
+python3 - "$OUT/bitfield.ref" "$OUT/bitfield.new" <<'PY'
+import subprocess, sys
+results = []
+for exe in sys.argv[1:]:
+    try:
+        run = subprocess.run([exe], stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as err:
+        sys.exit(f"FAIL: {exe} did not run: {err}")
+    if run.returncode < 0:
+        sys.exit(f"FAIL: {exe} was killed by signal {-run.returncode}")
+    results.append((run.returncode, run.stdout))
+if results[0] != results[1]:
+    sys.exit("FAIL: the current compiler still miscompiles bitfield_mix.reduced.c "
+             f"(exit {results[1][0]}, Clang's build exit {results[0][0]})")
+PY
 status=0
 "$NEW_COMPILER" "$OUT/wide_address.reduced.c" -o "$OUT/check.ll" 2> "$OUT/wide.err" || status=$?
 if [ "$status" != 1 ] || ! grep -q "wider than a pointer" "$OUT/wide.err"; then

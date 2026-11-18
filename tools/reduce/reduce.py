@@ -540,6 +540,9 @@ class ExitWaiter:
             os.close(self.pidfd)
 
 
+MAX_LIMIT = 1 << 62
+
+
 class LimitError(Exception):
     """The environment's limits do not allow the requested ones."""
 
@@ -611,7 +614,8 @@ class Runner:
                                         stdin=subprocess.DEVNULL, cwd=self.scratch, env=env,
                                         shell=shell, start_new_session=True,
                                         preexec_fn=self.limit_files)
-            except OSError:
+            except (OSError, subprocess.SubprocessError):
+                # Could not start, including a failure in limit_files.
                 return None, b"", b""
             try:
                 status = self.wait_within_limits(proc, (out_file, err_file))
@@ -800,6 +804,10 @@ def parse_args(argv):
     if unknown:
         parser.error(f"unknown pass: {', '.join(unknown)}")
     args.passes = passes
+    for name in ("output_limit", "file_limit"):
+        # RLIMIT_FSIZE must fit in a signed 64-bit rlim_t.
+        if not 1 <= getattr(args, name) <= MAX_LIMIT:
+            parser.error(f"--{name.replace('_', '-')} must be between 1 and {MAX_LIMIT}")
     return args
 
 
@@ -830,10 +838,10 @@ def main(argv=None):
     except LimitError as err:
         print(f"error: {err}", file=sys.stderr)
         return 2
-    runner.pick_ub_cc(log)
     reducer = Reducer(runner, log=log, max_tests=args.max_tests)
     started = time.monotonic()
     try:
+        runner.pick_ub_cc(log)
         result = reducer.reduce(text, passes=args.passes, max_rounds=args.max_rounds)
     except ValueError as err:
         print(f"{source}: {err} for --mode {args.mode}; nothing to reduce", file=sys.stderr)
