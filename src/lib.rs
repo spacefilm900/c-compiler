@@ -7,11 +7,13 @@
 pub mod aapcs64;
 pub mod abi;
 pub mod ast;
+mod bigint;
 pub mod builtins;
 pub mod diag;
 pub mod dialect;
 pub mod driver;
 pub mod float;
+mod fp128;
 mod fp80;
 pub(crate) mod fxhash;
 pub mod irgen;

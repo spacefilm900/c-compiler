@@ -207,6 +207,13 @@ impl Target {
         }
     }
 
+    /// An array object of 16 bytes or more is aligned to at least 16 bytes
+    /// (System V AMD64 psABI 3.1.2). AAPCS64 and Apple's arm64 ABI align an
+    /// array as its element type.
+    pub fn boosts_large_arrays(self) -> bool {
+        matches!(self, Target::X86_64Linux)
+    }
+
     /// The caller extends an integer argument or return value narrower
     /// than 32 bits (`signext` / `zeroext` in LLVM). System V AMD64 and
     /// Apple arm64 require it; AAPCS64 leaves the upper bits unspecified.
