@@ -518,3 +518,18 @@ fn intel_mac_keeps_system_v_with_mach_o_names() {
     );
     assert!(module.contains("alloca [5 x i32], align 16"), "{module}");
 }
+
+#[test]
+fn intel_mac_passes_flexible_array_records_in_memory() {
+    // Clang, the only C compiler on macOS, passes and returns a struct with
+    // a flexible array member in memory there (observed as a black box).
+    // On Linux this compiler keeps GCC's choice: registers.
+    let source = "struct S { int n; int a[]; };\nstruct S id(struct S s) { return s; }\n";
+    let mac = ir(INTEL_MAC, source);
+    assert!(
+        mac.contains("define void @id(ptr sret(%struct.S) align 4 %agg.result, ptr byval(%struct.S) align 8 %p0)"),
+        "{mac}"
+    );
+    let linux = ir(Target::X86_64Linux, source);
+    assert!(linux.contains("define i32 @id(i32 %p0)"), "{linux}");
+}

@@ -15,7 +15,7 @@
 //! `sret` return slot.
 
 use crate::ast::{align_up, CType, FloatKind};
-use crate::target::Abi;
+use crate::target::{Abi, Target};
 
 /// Why an aggregate cannot be lowered yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -350,6 +350,16 @@ pub fn classify_for(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
     if size > 16 {
         return Ok(AggAbi::Memory);
     }
+    // Intel macOS, whose only C compiler is Clang: a struct with a flexible
+    // array member is passed and returned in memory (observed with Clang as
+    // a black box). On Linux this compiler keeps GCC's choice, registers.
+    if let (Target::X86_64Apple { .. }, CType::Struct(handle)) =
+        (crate::target::current(), bare.peel())
+    {
+        if handle.has_flexible_member() {
+            return Ok(AggAbi::Memory);
+        }
+    }
     let mut leaves = Vec::new();
     collect_leaves(&bare, 0, false, &mut leaves);
     let unaligned = leaves
@@ -433,6 +443,23 @@ fn crosses(offset: u64, size: u64) -> bool {
 
 fn collect_leaves(ty: &CType, base: u64, inherited: bool, out: &mut Vec<Leaf>) {
     match ty.peel() {
+        CType::Int(name) if name.size() == 16 => {
+            // `__int128` is two INTEGER eightbytes (System V AMD64 3.2.3),
+            // not one leaf that crosses an eightbyte boundary, so a record
+            // holding it goes in two registers. Its 16-byte alignment
+            // applies at `base`; the high half is part of the same field.
+            let spans = inherited || crosses(base, 16);
+            for (offset, align) in [(base, 16), (base + 8, 1)] {
+                out.push(Leaf {
+                    offset,
+                    size: 8,
+                    align,
+                    class: Class::Integer,
+                    is_ptr: false,
+                    spans,
+                });
+            }
+        }
         CType::Int(name) => {
             let size = name.size().max(1);
             out.push(Leaf {
@@ -769,6 +796,43 @@ mod tests {
             AggAbi::Direct(pieces) => pieces.into_iter().map(|piece| piece.ir_type()).collect(),
             _ => panic!("expected registers"),
         }
+    }
+
+    #[test]
+    fn int128_record_is_two_integer_eightbytes() {
+        // System V AMD64 3.2.3: `__int128` is two INTEGER eightbytes, so
+        // a record holding one goes in registers (Clang and GCC agree).
+        let q = record(
+            400,
+            vec![field("q", ints(TypeName::Int128), 0)],
+            16,
+            16,
+            false,
+        );
+        assert_eq!(direct(&q), ["i64", "i64"]);
+        let u = record(
+            401,
+            vec![
+                field("q", ints(TypeName::Int128), 0),
+                field("l", ints(TypeName::Long), 0),
+            ],
+            16,
+            16,
+            true,
+        );
+        assert_eq!(direct(&u), ["i64", "i64"]);
+        // More than two eightbytes is still memory.
+        let wide = record(
+            402,
+            vec![
+                field("a", ints(TypeName::Long), 0),
+                field("q", ints(TypeName::Int128), 16),
+            ],
+            32,
+            16,
+            false,
+        );
+        assert!(matches!(classify_aggregate(&wide).unwrap(), AggAbi::Memory));
     }
 
     #[test]
