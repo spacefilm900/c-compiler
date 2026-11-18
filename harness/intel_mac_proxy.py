@@ -126,6 +126,8 @@ def find_tools():
         return majors[tool]
 
     opts = candidates("opt")
+    if not opts:
+        return None, None
     for llc in candidates("llc"):
         want = major(llc)
         if want is None or want < MIN_LLVM:
