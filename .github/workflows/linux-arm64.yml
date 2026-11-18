@@ -13,8 +13,11 @@
 #   differential harness with tests/arm64, stage dumps, random
 #   calling-convention pairs). About 2-3 billed
 #   minutes per run.
-# - Pushes to main (merges) and manual dispatch: also every suite, in two
-#   jobs. About 17 billed minutes per run with the quick job.
+# - Pushes to main (merges): the quick job only, as on pull requests.
+# - Nightly at 02:30 UTC, and manual dispatch: also every suite, in two
+#   jobs (about 14 billed minutes). The nightly run is skipped when main
+#   has had no commit in the last 25 hours. The owner chose nightly over
+#   every merge on 2026-11-18 to keep within the CI budget.
 # See reports/platforms/linux-arm64/README.md for the monthly estimate.
 # Documentation-only changes skip this workflow, as they skip ci.yml.
 
@@ -32,6 +35,8 @@ on:
       - '**/*.md'
       - 'docs/**'
       - 'LICENSE'
+  schedule:
+    - cron: '30 2 * * *'
   workflow_dispatch:
 
 permissions:
@@ -90,9 +95,38 @@ jobs:
       - name: Random calling-convention pairs
         run: python3 tools/abi_fuzz.py --count 100
 
+  # Nightly runs go ahead only when main changed since the last night.
+  changed:
+    name: main changed in the last 25 hours
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    outputs:
+      recent: ${{ steps.check.outputs.recent }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Check the last commit time
+        id: check
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          last="$(git log -1 --format=%ct)"
+          now="$(date +%s)"
+          if [ "${EVENT}" = "workflow_dispatch" ] || [ $((now - last)) -le 90000 ]; then
+            echo "recent=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No commit on main in the last 25 hours; skipping the nightly suites."
+            echo "recent=false" >> "$GITHUB_OUTPUT"
+          fi
+
   suites:
     name: arm64 ${{ matrix.group }}
-    if: github.event_name != 'pull_request'
+    needs: changed
+    if: needs.changed.outputs.recent == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     strategy:

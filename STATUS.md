@@ -788,7 +788,7 @@ GNU modes) the only IR difference is that fix, in one Csmith program
 CI: `.github/workflows/linux-arm64.yml` on GitHub's `ubuntu-24.04-arm`
 runner ($0.005 a minute for private repositories, against $0.006 for x64).
 A quick job (unit tests, harness, dumps, reducer tests, 100 ABI pairs) runs
-on pull requests; the suites run in two jobs on pushes to `main` and by hand.
+on pull requests and pushes to `main`; the suites run in two jobs nightly (02:30 UTC, only when `main` changed in the last 25 hours) and by hand.
 
 ## Next actions
 

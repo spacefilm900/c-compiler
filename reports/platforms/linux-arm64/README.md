@@ -105,20 +105,18 @@ here). The qemu steps in `ci.yml` stay as they are.
 
 | Job | When | Estimated billed minutes per run |
 | --- | --- | --- |
-| `arm64 quick`: unit tests, harness with `tests/arm64/`, stage dumps, reducer tests, 100 random ABI pairs | every PR run, push to `main`, manual | 2 to 3 (1 min 57 s measured) |
-| `arm64 wacc, csmith, torture, awk` (with the AWK Builder suites) | push to `main`, manual | 7 (6 min 34 s measured) |
-| `arm64 lua, sqlite, doom, perf` | push to `main`, manual | 7 (6 min 45 s measured) |
+| `arm64 quick`: unit tests, harness with `tests/arm64/`, stage dumps, reducer tests, 100 random ABI pairs | every PR run, push to `main`, nightly, manual | 2 to 3 (1 min 57 s measured) |
+| `arm64 wacc, csmith, torture, awk` (with the AWK Builder suites) | nightly (02:30 UTC) when `main` changed in the last 25 hours, manual | 7 (6 min 34 s measured) |
+| `arm64 lua, sqlite, doom, perf` | nightly (02:30 UTC) when `main` changed in the last 25 hours, manual | 7 (6 min 45 s measured) |
+
+On 2026-11-18 the owner chose a nightly schedule for the two suite jobs
+instead of every push to `main`, to keep within the $30 monthly budget.
 
 Run counts over the 30 days to 2026-11-18 (`ci.yml`): 140 pull-request
 runs and 178 push-to-`main` runs (48 merged pull requests).
 
-- Pull requests: 140 x 3 = 420 minutes, about $2.10.
-- Main: 178 x 17 = 3,030 minutes, about $15.15 at the observed rate of
-  main runs; at one run per merged pull request (48), 820 minutes, about
-  $4.10.
-- Total: about 1,240 to 3,450 minutes a month, **about $6 to $17**.
-
-If that is too much of the $30 budget, the cheapest change is to move the
-two suite jobs from every push to `main` to a nightly schedule plus manual
-dispatch (`on: schedule`), about 30 x 14 = 420 minutes ($2.10) a month;
-the quick job keeps gating pull requests.
+- Pull requests and pushes to `main` (quick job only): (140 + 178) x 3 =
+  954 minutes, about $4.77.
+- Nightly suites: at most 30 x 15 = 450 minutes, about $2.25, and less on
+  days with no commit.
+- Total: at most about 1,400 minutes a month, **about $7**.
