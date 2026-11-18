@@ -12,7 +12,7 @@ Clang on an AArch64 host), used as a black box only.
 | `long double` | IEEE binary128 (`fp128`), 16 bytes, align 16 | x87 80-bit, 16 bytes |
 | plain `char`, `wchar_t` | unsigned | signed |
 | `va_list` | AAPCS64 32-byte struct (`__stack`, `__gr_top`, `__vr_top`, offsets) | SysV 24-byte array |
-| arrays of 16+ bytes | natural alignment | aligned to 16 (SysV) |
+| array variables (globals, locals) of 16+ bytes | the element's alignment | aligned to 16 (SysV); an array member of a struct keeps its element's alignment on both |
 | aggregates | HFA/HVA in vector registers, other composites over 16 bytes by reference | SysV eightbyte classes |
 
 ## Suites and results
@@ -78,8 +78,13 @@ would on an AArch64 host. CI runs the same harnesses natively (below).
 3. **x86-64: a struct whose bit-field sits in a nested struct starting
    mid-eightbyte was passed in memory** instead of INTEGER eightbytes
    (`struct { char a[2]; struct { int b:4; } s; long m; }`). Found by
-   `tools/abi_fuzz.py` seed 71 on x86-64. Regression tests: unit test
-   `nested_bit_field_uses_the_outer_eightbyte` and `tests/xabi/06_nested_bitfield`.
+   `tools/abi_fuzz.py` seed 71 on x86-64. Review then found that a
+   zero-width bit-field (`int : 0`) in a nested struct still claimed an
+   INTEGER eightbyte (`struct { float x; struct { int : 0; float f; } s;
+   double y; }` is `<2 x float>, double`). Regression tests: unit tests
+   `nested_bit_field_uses_the_outer_eightbyte` and
+   `zero_width_bit_field_occupies_no_eightbyte`, and
+   `tests/xabi/06_nested_bitfield` (both shapes, fixed and variadic).
 
 `tests/113_wide.c` and `tests/122_utf8_ucn.c` declared `wchar_t` as `int`;
 they now use `__WCHAR_TYPE__` (unsigned on AArch64 Linux).
