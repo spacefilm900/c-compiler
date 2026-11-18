@@ -887,6 +887,13 @@ int main(void) {
         sema_err("extern int w __attribute__((weak)); _Bool b = &w;")
             .contains("not a constant expression")
     );
+    // An explicit `(_Bool)` cast is the same truth value, not a truncation.
+    sema_ok("int g; _Bool b = (_Bool)&g; int i = (_Bool)&g; _Bool n = (_Bool)(void *)0;");
+    assert!(
+        sema_err("extern int w __attribute__((weak)); _Bool b = (_Bool)&w;")
+            .contains("not a constant expression")
+    );
+    assert!(sema_err("int g; char c = (char)&g;").contains("truncates an address"));
     sema_ok("int g; unsigned long x = (unsigned long)&g;");
     // Wider than a pointer: no `ptrtoint` of matching width can be emitted,
     // and Clang rejects each of these.
@@ -1798,4 +1805,17 @@ fn block_function_redeclaration_keeps_the_composite_type() {
     sema_ok(
         "static int f(); void g(void) { int f(int); int f(); } static int f(int x) { return x; }",
     );
+}
+
+#[test]
+fn bit_positions_past_two_to_the_32_stay_in_place() {
+    // A bit-field store's position from the start of a static object is a
+    // u64: a position at or past bit 2^32 must not wrap or saturate onto an
+    // earlier byte. Here it is past the end of the image, so nothing moves.
+    let mut bytes = [0u8; 16];
+    super::image::pack_bits(&mut bytes, (1u64 << 32) + 3, 1, 1);
+    super::image::pack_bits(&mut bytes, u64::from(u32::MAX), 9, 0x1ff);
+    assert_eq!(bytes, [0u8; 16]);
+    super::image::pack_bits(&mut bytes, 9, 3, 0b101);
+    assert_eq!(bytes[1], 0b1010);
 }

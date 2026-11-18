@@ -179,7 +179,7 @@ impl Gen {
         let container = container_type(info.container_bits, info.signed_field, value_ty.quals());
         let raw = self.load(&container, addr);
         let narrow = self.convert(value, value_ty, &container);
-        let shift = info.abs_bit % info.container_bits;
+        let shift = (info.abs_bit % u64::from(info.container_bits)) as u32;
         let mask = width_mask(info.width);
         let masked = self.fresh();
         self.emit(&format!(

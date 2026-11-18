@@ -201,6 +201,14 @@ impl Sema<'_> {
                     .usual(right.as_integer().unwrap()),
             ));
         }
+        // C11 6.5.15p6: a null pointer constant takes the other operand's
+        // type, so `p ? (int *)q : (void *)0` is `int *`, not `void *`.
+        if left.is_pointer() && is_null_pointer_constant(else_expr) {
+            return Ok(left);
+        }
+        if right.is_pointer() && is_null_pointer_constant(then_expr) {
+            return Ok(right);
+        }
         if left.is_pointer() && right.is_pointer() {
             if let Some(merged) = merge_pointers(&left, &right) {
                 return Ok(merged);
@@ -231,12 +239,6 @@ impl Sema<'_> {
                 &right
             };
             return Ok(void.clone());
-        }
-        if left.is_pointer() && is_null_pointer_constant(else_expr) {
-            return Ok(left);
-        }
-        if right.is_pointer() && is_null_pointer_constant(then_expr) {
-            return Ok(right);
         }
         self.err(
             line,

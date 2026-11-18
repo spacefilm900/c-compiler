@@ -1421,6 +1421,24 @@ fn unevaluated_operand_types_follow_c11() {
     );
     assert!(parse_err("int a[sizeof(1 ? (int *)1 : (long *)1)];").contains("invalid operand"));
     assert!(parse_err("int a[sizeof(1 ? (int *)1 : 5)];").contains("invalid operand"));
+    // A null pointer constant `(void *)0` takes the other operand's type
+    // before `void *` merging.
+    parsed(
+        "_Static_assert(_Generic(1 ? (int *)1 : (void *)0, int *: 1, default: 0), \"n\"); \
+         _Static_assert(_Generic(1 ? (void *)0 : (const int *)1, const int *: 1, default: 0), \"m\");",
+    );
+    // C11 6.5.15p3: void only with void, and a record only with the same
+    // record type.
+    assert!(
+        parse_err("int a[_Generic(1 ? (void)0 : 1, int: 1, default: 2)];")
+            .contains("invalid operand")
+    );
+    assert!(parse_gnu(
+        "struct A { int x; }; struct B { int y; }; \
+         __typeof__(1 ? (struct A){0} : (struct B){0}) x;"
+    )
+    .is_err());
+    parse_gnu("struct A { int x; }; __typeof__(1 ? (struct A){0} : (struct A){1}) x;").unwrap();
     // typeof in GNU mode takes the same type.
     parse_gnu("__typeof__(1 ? (int *)0 : (void *)1) p; double *d; void h(void) { p = d; }")
         .unwrap();

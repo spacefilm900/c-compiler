@@ -621,22 +621,29 @@ fn cond_type_only(left: &Expr, right: &Expr, env: Env) -> Result<CType, BoundErr
     if left_ty.is_arithmetic() && right_ty.is_arithmetic() {
         return arith_common(&left_ty, &right_ty);
     }
-    if left_ty.is_void() || right_ty.is_void() {
+    // C11 6.5.15p3: both void, or the same structure or union type.
+    if left_ty.is_void() && right_ty.is_void() {
         return Ok(CType::Void);
     }
-    if !left_ty.is_pointer() && !right_ty.is_pointer() {
-        return Ok(left_ty);
+    if left_ty.unqualified().is_record() {
+        return if compatible(&left_ty.unqualified(), &right_ty.unqualified()) {
+            Ok(left_ty)
+        } else {
+            Err(BoundErr::InvalidOperand)
+        };
     }
-    if left_ty.is_pointer() && right_ty.is_pointer() {
-        if let Some(merged) = merge_pointers(&left_ty, &right_ty) {
-            return Ok(merged);
-        }
-    }
+    // p6: a null pointer constant takes the other operand's type, before
+    // `void *` merging, so `(int *)p : (void *)0` stays `int *`.
     if left_ty.is_pointer() && uneval_null_constant(right, &right_ty, env) {
         return Ok(left_ty);
     }
     if right_ty.is_pointer() && uneval_null_constant(left, &left_ty, env) {
         return Ok(right_ty);
+    }
+    if left_ty.is_pointer() && right_ty.is_pointer() {
+        if let Some(merged) = merge_pointers(&left_ty, &right_ty) {
+            return Ok(merged);
+        }
     }
     // GNU C pairs `void *` with a function pointer, giving `void *`, as
     // semantic analysis does with a warning.

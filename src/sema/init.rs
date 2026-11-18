@@ -524,14 +524,19 @@ impl Sema<'_> {
         if let Some(width) = field.bit_width.filter(|width| *width > 0) {
             let expr = self.scalar_expr(init)?;
             let declared = field.ty.as_integer().expect("bit-field type is an integer");
+            let Some(abs_bit) = base
+                .checked_mul(8)
+                .and_then(|bits| bits.checked_add(u64::from(field.bit_offset)))
+            else {
+                let (line, column) = init_pos(init);
+                return self.err(line, column, "object is too large to initialize");
+            };
             stores.push(ElemStore {
                 offset: base + field.offset,
                 ty: CType::from_name(bitfield_value_type(declared, width)),
                 expr,
                 bits: Some(BitStore {
-                    abs_bit: (base as u32)
-                        .saturating_mul(8)
-                        .saturating_add(field.bit_offset),
+                    abs_bit,
                     width,
                     container_bits: (field.ty.size().unwrap_or(1) * 8) as u32,
                     signed_field: declared.is_signed(),
@@ -1142,6 +1147,18 @@ impl Sema<'_> {
             {
                 if let Some(cast_int) = ty_name.as_integer() {
                     if let Ok(ptr) = eval_ptr(inner) {
+                        // Conversion to `_Bool` compares with 0 (C11
+                        // 6.3.1.2); it does not truncate the address.
+                        if cast_int == TypeName::Bool {
+                            return match self.address_truth(inner) {
+                                Some(truth) => Ok(ConstInit::Int(convert_bits(
+                                    u128::from(truth),
+                                    TypeName::Bool,
+                                    dest_int,
+                                ))),
+                                None => self.const_diag(name, expr),
+                            };
+                        }
                         // A file-scope address is not a number until link time.
                         // C11 6.6p7 has no integer form of an address constant;
                         // 6.6p10 lets an implementation accept one, and only
@@ -1311,7 +1328,7 @@ impl Reach {
 /// byte of its first bit, as [`store_within`] does.
 fn store_reach(store: &ElemStore) -> u64 {
     if let Some(bits) = &store.bits {
-        let first = u64::from(bits.abs_bit / 8);
+        let first = bits.abs_bit / 8;
         let bytes = u64::from(bits.width.div_ceil(8)) + 1;
         return first.saturating_add(bytes);
     }
@@ -1333,7 +1350,7 @@ pub(super) struct InitFrame {
 /// Whether a store lies inside the bytes `base..end`.
 pub(super) fn store_within(store: &ElemStore, base: u64, end: u64) -> bool {
     if let Some(bits) = &store.bits {
-        let first = u64::from(bits.abs_bit / 8);
+        let first = bits.abs_bit / 8;
         return first >= base && first < end;
     }
     let size = store.ty.size().unwrap_or(0);
