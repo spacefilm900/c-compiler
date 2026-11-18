@@ -440,6 +440,7 @@ fn intel_mac_predefined_macros() {
     let probe = "#if defined __APPLE__ && defined __MACH__ && defined __x86_64__ && \
                  defined __amd64__ && !defined __aarch64__ && !defined __arm64__ && \
                  !defined __linux__ && !defined __ELF__ && __LDBL_MANT_DIG__ == 64 && \
+                 defined __llvm__ && \
                  __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ == 101500 && \
                  __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ == 101500 && !defined __CHAR_UNSIGNED__\n\
                  int intel_mac;\n#endif\n\
@@ -460,6 +461,12 @@ fn intel_mac_predefined_macros() {
         "#if __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ == 1090\nint four_digits;\n#endif\n",
     );
     assert!(module.contains("@four_digits"), "{module}");
+    // __llvm__ is only claimed where an SDK header needs it (Intel macOS's
+    // <libkern/i386/_OSByteOrder.h> picks __builtin_bswap over extended asm).
+    for other in [APPLE, Target::X86_64Linux, Target::Aarch64Linux] {
+        let module = ir(other, "#ifdef __llvm__\nint claims_llvm;\n#endif\nint x;\n");
+        assert!(!module.contains("@claims_llvm"), "{other:?}: {module}");
+    }
     let module = ir(
         Target::X86_64Apple {
             macos_major: 13,

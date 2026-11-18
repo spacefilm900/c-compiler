@@ -137,6 +137,14 @@ pub(super) fn target_macros(target: Target) -> Vec<(&'static str, &'static str)>
     if let Target::Arm64Apple { .. } = target {
         out.extend([("__arm64__", "1"), ("__arm64", "1")]);
     }
+    // The macOS SDK's <libkern/i386/_OSByteOrder.h> uses __builtin_bswap32
+    // and __builtin_bswap64 only when __llvm__ is defined and falls back to
+    // GNU extended asm otherwise, which this compiler does not accept. The
+    // compiler emits LLVM IR and provides both builtins, so it says so on
+    // Intel macOS. Other targets are left as they were.
+    if let Target::X86_64Apple { .. } = target {
+        out.push(("__llvm__", "1"));
+    }
     if let Some((major, minor)) = target.macos_version() {
         let version: &'static str = Box::leak(macos_version_macro(major, minor).into_boxed_str());
         out.push(("__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__", version));
