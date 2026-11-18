@@ -45,14 +45,17 @@ pub(super) fn val_from_compiler(tok: &Token) -> Val {
     // when the phase-7 type is a narrower unsigned type (`0xFFFFFFFF` is
     // `unsigned int` and still fits). A `u`/`U` suffix, or a value that does
     // not fit in signed `intmax_t`, stays unsigned. A character constant is
-    // not scanned for a suffix.
+    // not scanned for a suffix. Its type is fixed, not chosen by value, so an
+    // unsigned one (`u'a'` is `char16_t`, `U'a'` is `char32_t`) acts as
+    // `uintmax_t` (C11 6.10.1p4): `#if u'a' - 98 < 0` is false.
     let spelling = tok.spelling.as_str();
     let number = spelling.as_bytes().first().is_some_and(u8::is_ascii_digit);
     let u_suffix = number && spelling.bytes().any(|byte| byte == b'u' || byte == b'U');
     let too_big = !ty.is_signed() && ty.width() == 64 && bits > i64::MAX as u64;
+    let unsigned_char_const = !number && !ty.is_signed();
     Val {
         bits,
-        unsigned: u_suffix || too_big,
+        unsigned: u_suffix || too_big || unsigned_char_const,
     }
 }
 

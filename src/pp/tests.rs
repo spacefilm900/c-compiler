@@ -362,3 +362,16 @@ fn line_directive_takes_a_decimal_digit_sequence() {
     // A macro may expand to the digit sequence (6.10.4p5).
     assert_eq!(squash(&pp("#define N 42\n#line N\n__LINE__\n")), "42");
 }
+
+#[test]
+fn unsigned_character_constants_are_uintmax_in_if() {
+    // C11 6.10.1p4: `char16_t` and `char32_t` are unsigned, so they act as
+    // `uintmax_t`; `L'a'` (`wchar_t` is `int`) and `'a'` stay signed.
+    assert_eq!(squash(&pp("#if u'a' - 98 < 0\nbad\n#else\ngood\n#endif\n")), "good");
+    assert_eq!(squash(&pp("#if U'a' - 98 < 0\nbad\n#else\ngood\n#endif\n")), "good");
+    assert_eq!(squash(&pp("#if U'\\xffffffff' > -1\nbad\n#else\ngood\n#endif\n")), "good");
+    assert_eq!(squash(&pp("#if L'a' - 98 < 0\ngood\n#else\nbad\n#endif\n")), "good");
+    assert_eq!(squash(&pp("#if 'a' - 98 < 0\ngood\n#else\nbad\n#endif\n")), "good");
+    // An integer constant still picks its type by value: 0xFFFFFFFF fits.
+    assert_eq!(squash(&pp("#if 0xFFFFFFFF - 0x100000000 < 0\ngood\n#else\nbad\n#endif\n")), "good");
+}
