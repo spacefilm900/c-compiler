@@ -51,12 +51,16 @@ done
 # The current compiler must not reproduce either bug. Each step must
 # succeed for the expected reason; a missing tool or a crash fails the demo.
 clang -w "$OUT/bitfield_mix.reduced.c" -o "$OUT/bitfield.ref"
-"$OUT/bitfield.ref" > "$OUT/bitfield.ref.out"
 "$NEW_COMPILER" "$OUT/bitfield_mix.reduced.c" -o "$OUT/bitfield.ll"
 clang -w "$OUT/bitfield.ll" -o "$OUT/bitfield.new"
-"$OUT/bitfield.new" > "$OUT/bitfield.new.out"
-if ! cmp -s "$OUT/bitfield.ref.out" "$OUT/bitfield.new.out"; then
-    echo "FAIL: the current compiler still miscompiles bitfield_mix.reduced.c" >&2
+# The reduced program may exit nonzero; compare the statuses as well.
+ref_status=0
+"$OUT/bitfield.ref" > "$OUT/bitfield.ref.out" || ref_status=$?
+new_status=0
+"$OUT/bitfield.new" > "$OUT/bitfield.new.out" || new_status=$?
+if [ "$ref_status" != "$new_status" ] || ! cmp -s "$OUT/bitfield.ref.out" "$OUT/bitfield.new.out"; then
+    echo "FAIL: the current compiler still miscompiles bitfield_mix.reduced.c" \
+         "(exit $new_status, Clang's build exit $ref_status)" >&2
     exit 1
 fi
 status=0

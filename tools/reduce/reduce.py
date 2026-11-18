@@ -51,22 +51,25 @@ candidate as well, so the result stays a valid C program.
 Every command has a time limit (--timeout), runs in its own process group
 (killed with all its descendants when the time is up), and may write at
 most --output-limit bytes to stdout or stderr and files of at most
---file-limit bytes; a candidate that exceeds any of these is not
-interesting. Results are cached by the SHA-256 of the candidate text,
+--file-limit bytes (lowered to the inherited hard `ulimit -f` if that is
+smaller); a candidate that exceeds any of these is not interesting. Results are cached by the SHA-256 of the candidate text,
 so no candidate is tested twice. The input file is never modified; the
 result goes to -o (default INPUT.reduced.c).
 
 Usage:
   python3 tools/reduce/reduce.py INPUT.c --mode ice --message "in irgen"
   python3 tools/reduce/reduce.py INPUT.c --mode miscompile -o small.c
-  python3 tools/reduce/reduce.py INPUT.c --mode cmd --cmd "$PWD/check.sh {}"
+  export CHECK="$PWD/check.sh"
+  python3 tools/reduce/reduce.py INPUT.c --mode cmd --cmd '"$CHECK" {}'
 Exit status: 0 when a result was written, 2 when the input itself is not
-interesting (or on a usage error).
+interesting, on a usage error, when a needed compiler is missing, or when
+the inherited file-size limit is below --output-limit.
 """
 import argparse
 import hashlib
 import os
 import resource
+import select
 import shlex
 import signal
 import shutil
@@ -494,6 +497,51 @@ SANITIZER_MARKERS = (b"runtime error:", b"ERROR: AddressSanitizer", b"ERROR: Lea
                      b"SUMMARY: UndefinedBehaviorSanitizer")
 
 
+def file_size_limit(args):
+    """(soft, hard) RLIMIT_FSIZE for commands: --file-limit, but at least
+    --output-limit + 1 so an over-long output is seen rather than cut, and
+    never above the inherited hard limit, which an unprivileged process
+    cannot raise. Raises LimitError when the hard limit leaves no room
+    for --output-limit."""
+    _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+    soft = max(args.file_limit, args.output_limit + 1)
+    if hard != resource.RLIM_INFINITY and hard < soft:
+        if hard < args.output_limit + 1:
+            raise LimitError(f"the inherited file-size limit ({hard} bytes, ulimit -f) is "
+                             f"below --output-limit + 1; lower --output-limit")
+        soft = hard
+    return soft, hard
+
+
+class ExitWaiter:
+    """Called with a timeout, returns `proc`'s exit status, or None if it
+    is still running after that long."""
+
+    def __init__(self, proc):
+        self.proc = proc
+        try:
+            self.pidfd = os.pidfd_open(proc.pid)
+        except (AttributeError, OSError):
+            self.pidfd = None
+
+    def __call__(self, timeout):
+        if self.pidfd is not None:
+            ready, _, _ = select.select([self.pidfd], [], [], timeout)
+            return self.proc.wait() if ready else None
+        try:
+            return self.proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return None
+
+    def close(self):
+        if self.pidfd is not None:
+            os.close(self.pidfd)
+
+
+class LimitError(Exception):
+    """The environment's limits do not allow the requested ones."""
+
+
 class Runner:
     """Runs this compiler and Clang on candidates in a scratch directory."""
 
@@ -505,7 +553,13 @@ class Runner:
         self.clang_flags = shlex.split(args.clang_flags or "")
         self.timeout = args.timeout
         self.output_limit = args.output_limit
-        self.file_limit = max(args.file_limit, args.output_limit + 1)
+        # No file a command writes (stdout and stderr included) may grow
+        # past --file-limit, so a runaway program cannot fill the disk. The
+        # soft limit is set here, in the reducer, and inherited by every
+        # command (a preexec_fn would make each process start slower);
+        # close() restores it.
+        self.saved_file_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+        resource.setrlimit(resource.RLIMIT_FSIZE, file_size_limit(args))
         self.message = args.message
         self.ub_check = args.ub_check
         self.ub_cc = args.ub_cc
@@ -538,41 +592,55 @@ class Runner:
         self.ub_check = False
 
     def close(self):
+        resource.setrlimit(resource.RLIMIT_FSIZE, self.saved_file_limit)
         shutil.rmtree(self.scratch, ignore_errors=True)
 
     def run(self, argv, env=None, shell=False):
         """(exit status, stdout, stderr). The status is None when the
-        command could not run, timed out, or wrote more than
-        --output-limit bytes to either stream; no predicate counts that as
-        interesting. Output goes to files, not pipes, so memory stays
-        bounded, and the command gets its own process group, which is
-        killed on a timeout so no descendant outlives it."""
+        command could not run, timed out, wrote more than --output-limit
+        bytes to either stream, or was stopped by --file-limit (SIGXFSZ);
+        no predicate counts that as interesting. Output goes to files, not
+        pipes, so memory stays bounded, and their sizes are checked while
+        the command runs. The command gets its own process group, which is
+        killed when it stops for any of these reasons, so no descendant
+        outlives it."""
         out_path = Path(self.scratch) / "stdout.txt"
         err_path = Path(self.scratch) / "stderr.txt"
-        limit = self.output_limit
         with open(out_path, "wb") as out_file, open(err_path, "wb") as err_file:
             try:
                 proc = subprocess.Popen(argv, stdout=out_file, stderr=err_file,
                                         stdin=subprocess.DEVNULL, cwd=self.scratch, env=env,
-                                        shell=shell, start_new_session=True,
-                                        preexec_fn=self.limit_files)
+                                        shell=shell, start_new_session=True)
             except OSError:
                 return None, b"", b""
             try:
-                status = proc.wait(timeout=self.timeout)
-            except subprocess.TimeoutExpired:
-                status = None
+                status = self.wait_within_limits(proc, (out_file, err_file))
             finally:
                 kill_group(proc)
         sizes = (out_path.stat().st_size, err_path.stat().st_size)
-        if status is None or max(sizes) > limit:
+        if status is None or status == -signal.SIGXFSZ or max(sizes) > self.output_limit:
             return None, b"", b""
         return status, out_path.read_bytes(), err_path.read_bytes()
 
-    def limit_files(self):
-        """In the child: no file (stdout and stderr included) may grow past
-        --file-limit, so a runaway program cannot fill the disk."""
-        resource.setrlimit(resource.RLIMIT_FSIZE, (self.file_limit, self.file_limit))
+    def wait_within_limits(self, proc, files):
+        """The exit status of `proc`, or None once it passes --timeout or
+        writes more than --output-limit bytes to one of `files`. Output
+        sizes are checked every 50 ms. On Linux a pidfd wakes the wait as
+        soon as the command exits; elsewhere Popen.wait polls."""
+        deadline = time.monotonic() + self.timeout
+        exited = ExitWaiter(proc)
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                status = exited(min(remaining, 0.05))
+                if status is not None:
+                    return status
+                if any(os.fstat(f.fileno()).st_size > self.output_limit for f in files):
+                    return None
+        finally:
+            exited.close()
 
     def write(self, text):
         self.count += 1
@@ -611,9 +679,9 @@ class Runner:
 
     def mode_crash(self, path):
         status, _, err = self.ours(path, "-o", str(path.with_suffix(".ll")))
-        # A signal or a Rust panic (101); SIGXFSZ is --file-limit, not a crash.
-        crashed = status is not None and status != -signal.SIGXFSZ and (
-            status < 0 or status == 101)
+        # A signal or a Rust panic (101). (SIGXFSZ, from --file-limit, is
+        # already None.)
+        crashed = status is not None and (status < 0 or status == 101)
         return crashed and self.message_in(err) and self.valid_for_clang(path)
 
     def mode_reject(self, path):
@@ -752,7 +820,11 @@ def main(argv=None):
     if missing:
         print(f"not found: {', '.join(missing)}", file=sys.stderr)
         return 2
-    runner = Runner(args)
+    try:
+        runner = Runner(args)
+    except LimitError as err:
+        print(f"error: {err}", file=sys.stderr)
+        return 2
     runner.pick_ub_cc(log)
     reducer = Reducer(runner, log=log, max_tests=args.max_tests)
     started = time.monotonic()

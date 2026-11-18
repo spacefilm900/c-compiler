@@ -11,6 +11,7 @@ import sys
 import tempfile
 import textwrap
 import time
+from unittest import mock
 import unittest
 from pathlib import Path
 
@@ -228,8 +229,11 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("TWICE", result)
 
     def test_timeout_is_not_interesting(self):
-        status = self.main("--mode", "cmd", "--cmd", "sleep 5", "--timeout", "0.2")
+        started = time.monotonic()
+        status = self.main("--mode", "cmd", "--cmd", "sleep 5; : {}", "--timeout", "0.2")
         self.assertEqual(status, 2)
+        # Each test ran until the timeout, not into an early shell error.
+        self.assertGreaterEqual(time.monotonic() - started, 0.2)
         self.assertFalse(self.output.exists())
 
     def test_ice_mode_with_a_stand_in_compiler(self):
@@ -271,12 +275,48 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(self.main("--mode", "cmd", "--cmd", flood, "--output-limit", "1000"), 2)
         self.assertEqual(self.main("--mode", "cmd", "--cmd", flood), 0)
 
+    def test_output_limit_stops_a_command_that_keeps_running(self):
+        started = time.monotonic()
+        flood = "head -c 100000 /dev/zero; sleep 5; : {}"
+        self.assertEqual(self.main("--mode", "cmd", "--cmd", flood, "--output-limit", "1000",
+                                   "--timeout", "4"), 2)
+        self.assertLess(time.monotonic() - started, 3)
+
+    def test_file_limit_signal_is_not_a_result(self):
+        # A command stopped by SIGXFSZ while writing a separate file is
+        # neither interesting in `cmd` mode nor a crash.
+        big = Path(self.dir) / "big"
+        writer = write_script(self.dir, "writer", f'''\
+            import signal, sys
+            signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
+            with open({str(big)!r}, "wb") as f:
+                f.write(b"x" * 100000)
+            ''')
+        command = f"{writer}; status=$?; [ $status -ne 0 ]; : {{}}"
+        self.assertEqual(self.main("--mode", "cmd", "--cmd", command, "--output-limit", "100",
+                                   "--file-limit", "1000"), 0,
+                         "the shell sees the writer killed by SIGXFSZ")
+        self.assertEqual(self.main("--mode", "crash", "--compiler", str(writer),
+                                   "--output-limit", "100", "--file-limit", "1000"), 2)
+
+    def test_an_inherited_hard_file_limit_is_respected(self):
+        args = reduce.parse_args([str(self.input), "--mode", "cmd", "--cmd", "true",
+                                  "--output-limit", "1000", "--file-limit", "5000"])
+        with mock.patch.object(reduce.resource, "getrlimit", return_value=(3000, 3000)):
+            self.assertEqual(reduce.file_size_limit(args), (3000, 3000))
+        with mock.patch.object(reduce.resource, "getrlimit", return_value=(500, 500)):
+            with self.assertRaises(reduce.LimitError):
+                reduce.file_size_limit(args)
+            self.assertEqual(self.main("--mode", "cmd", "--cmd", "true"), 2)
+
     def test_timeout_kills_the_whole_process_group(self):
         marker = Path(self.dir) / "survivor"
         # The shell starts a child that would write the marker after the
         # timeout; killing the group must stop it.
-        command = f"(sleep 1; touch {marker}) & wait"
+        command = f"(sleep 1; touch {marker}) & wait; : {{}}"
+        started = time.monotonic()
         self.assertEqual(self.main("--mode", "cmd", "--cmd", command, "--timeout", "0.2"), 2)
+        self.assertGreaterEqual(time.monotonic() - started, 0.2)
         time.sleep(1.5)
         self.assertFalse(marker.exists())
 
