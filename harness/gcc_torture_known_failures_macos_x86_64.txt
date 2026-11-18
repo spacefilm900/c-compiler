@@ -1,0 +1,5 @@
+# Intel macOS adjustments to harness/gcc_torture_known_failures.txt (see
+# harness/run_gcc_torture.py, target_overlays). "-TEST reason" drops an
+# x86_64 entry that passes on the Mac; "+TEST category reason" adds a
+# macOS-only failure. Every line gives its reason.
+-20050215-1.c the x86_64 failure is the typedef's __attribute__((aligned(8))), which the test only uses #ifdef __ELF__; Mach-O does not define __ELF__, so the program passes on macOS

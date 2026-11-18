@@ -60,6 +60,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "harness"))
 import intel_mac_proxy as intel  # noqa: E402
 from run_gcc_torture import dg_flags  # noqa: E402
+import run_gcc_torture  # noqa: E402
 COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
 CLANG = os.environ.get("CLANG", "clang")
 QEMU = os.environ.get("QEMU_AARCH64", "qemu-aarch64")
@@ -337,6 +338,12 @@ def torture(target, label_filter):
         line = line.split("#")[0].strip()
         if line:
             known.add(line.split()[0])
+    if target == intel.TARGET:
+        # The x86_64 list with the macOS overlay, as on the Intel Mac job.
+        table = run_gcc_torture.load_known(run_gcc_torture.KNOWN_PATH)
+        for overlay in run_gcc_torture.target_overlays(intel.IR_TRIPLE, "x86_64"):
+            run_gcc_torture.apply_target_overlay(table, overlay)
+        known = set(table)
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
         tc = Toolchain(target, tmp)
