@@ -385,6 +385,7 @@ def main() -> int:
     if shutil.which(CLANG) is None:
         sys.exit(f"clang not found: {CLANG}")
     failures = 0
+    skipped = 0
     for seed in range(args.seed_start, args.seed_start + args.count):
         with tempfile.TemporaryDirectory(prefix="abi-") as tmp:
             work = Path(tmp)
@@ -397,6 +398,17 @@ def main() -> int:
             if isinstance(ref, str) or ref[0] != 0:
                 detail = ref if isinstance(ref, str) else f"exit {ref[0]}: {ref[2][:200]!r}"
                 bad.append(f"oracle failed: {detail}")
+            elif any(run([str(work / "abi.clang")]) != ref for _ in range(3)):
+                # Clang's own two-unit build prints something different on
+                # another run (three more are tried): it reads memory nobody
+                # wrote, so there is no reference to compare with. Seen with
+                # a variadic __int128 that goes on the stack while one
+                # general register is left: Clang's caller leaves that
+                # register unused, and its va_arg for the next argument
+                # reads it.
+                skipped += 1
+                print(f"seed {seed}: SKIP (Clang's own build is not repeatable)")
+                continue
             else:
                 for tag, ours in (("def", {d.name}), ("use", {u.name}), ("both", {d.name, u.name})):
                     got = build_and_run(work, d, u, ours, tag)
@@ -416,7 +428,9 @@ def main() -> int:
                     shutil.copy(u, dest)
             else:
                 print(f"seed {seed}: ok")
-    print(f"{args.count - failures}/{args.count} seeds agree")
+    agreed = args.count - failures - skipped
+    note = f", {skipped} skipped (no repeatable Clang reference)" if skipped else ""
+    print(f"{agreed}/{args.count - skipped} seeds agree{note}")
     return 1 if failures else 0
 
 
