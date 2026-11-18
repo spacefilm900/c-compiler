@@ -198,11 +198,25 @@ impl Parser<'_> {
         };
         // GNU mode: a fixed underlying type, `enum E : uint64_t { ... }`
         // (C23 6.7.2.2; Clang accepts it in C as an extension). The macOS
-        // SDK's <malloc/malloc.h> uses one unconditionally.
-        let fixed = if self.current().kind == TokenKind::Colon && self.dialect.gnu() {
+        // SDK's <malloc/malloc.h> uses one unconditionally. The colon starts
+        // one only when a type follows: `enum E : 3;` is an unnamed
+        // bit-field and `_Generic(x, enum E: 1)` an association.
+        let type_follows = self
+            .tokens
+            .get(self.index + 1)
+            .is_some_and(|token| self.at_type_specifier(token));
+        let fixed = if self.current().kind == TokenKind::Colon && self.dialect.gnu() && type_follows
+        {
             let colon = self.advance();
             let ty = self.parse_specs(SpecPlace::TypeName)?.ty;
             match ty.peel() {
+                CType::Int(TypeName::Int128 | TypeName::UInt128) => {
+                    return Err(self.error_at(
+                        colon.line,
+                        colon.column,
+                        "an underlying type wider than 64 bits is not supported",
+                    ))
+                }
                 CType::Int(name) if *name != TypeName::Bool => Some(*name),
                 _ => {
                     return Err(self.error_at(
@@ -252,7 +266,7 @@ impl Parser<'_> {
                     self.tags
                         .last_mut()
                         .expect("tag scope")
-                        .insert(tag.clone(), TagEntry::Enum(TypeName::Int));
+                        .insert(tag.clone(), TagEntry::Enum(fixed.unwrap_or(TypeName::Int)));
                 }
             }
         }
@@ -273,7 +287,8 @@ impl Parser<'_> {
     /// C11 6.7.2.2p2 requires every value to be representable as `int`, and
     /// then the type is `int`. In GNU mode, as GCC and Clang allow, a value
     /// may be outside `int`: while the list is read such a constant has the
-    /// type of its value; afterwards the enumerated type is `unsigned int`
+    /// type of its value (an implicit one, see [`implicit_enum_type`]);
+    /// afterwards the enumerated type is `unsigned int`
     /// or `unsigned long` when no value is negative (the first that holds
     /// the largest), else `long`, and every constant of the list has that
     /// type (GCC, and Apple clang 21; Clang 19 keeps the constants that fit
@@ -297,6 +312,7 @@ impl Parser<'_> {
         let mut next: i128 = 0;
         let mut names: Vec<String> = Vec::new();
         let (mut min, mut max) = (0i128, 0i128);
+        let mut prev_ty = TypeName::Int;
         loop {
             if self.current().kind != TokenKind::Ident {
                 return Err(self.error("expected an enumerator"));
@@ -320,11 +336,12 @@ impl Parser<'_> {
             } else if (i128::from(i32::MIN)..=i128::from(i32::MAX)).contains(&next) {
                 (next, TypeName::Int)
             } else {
-                match (gnu, enum_value_type(next)) {
+                match (gnu, implicit_enum_type(next, prev_ty)) {
                     (true, Some(ty)) => (next, ty),
                     _ => return Err(self.error_at(name.line, name.column, out_of_int)),
                 }
             };
+            prev_ty = ty;
             self.bind_enum(&name.spelling, value, ty, name.line, name.column)?;
             names.push(name.spelling);
             min = min.min(value);
@@ -362,7 +379,7 @@ impl Parser<'_> {
 
     /// The enumerator list of `enum : base { ... }`.
     fn parse_fixed_enumerators(&mut self, base: TypeName) -> Result<TypeName, Diagnostic> {
-        let width = base.width().min(127);
+        let width = base.width();
         let (lo, hi) = if base.is_signed() {
             (-(1i128 << (width - 1)), (1i128 << (width - 1)) - 1)
         } else {
@@ -898,20 +915,36 @@ fn enum_wide(value: &BVal) -> Option<i128> {
     let bits = value.bits & value.ty.mask();
     let v = if value.ty.is_signed() {
         sign_extend(bits, value.ty.width())
+    } else if bits > u128::from(u64::MAX) {
+        return None;
     } else {
         bits as i128
     };
-    enum_value_type(v).map(|_| v)
+    (i128::from(i64::MIN)..=i128::from(u64::MAX))
+        .contains(&v)
+        .then_some(v)
 }
 
-/// The type of an implicit GNU enumerator value outside `int`: the first
-/// of `unsigned int`, `long`, `unsigned long` that holds it.
-fn enum_value_type(value: i128) -> Option<TypeName> {
-    if (0..=i128::from(u32::MAX)).contains(&value) {
-        Some(TypeName::UInt)
-    } else if (i128::from(i64::MIN)..=i128::from(i64::MAX)).contains(&value) {
+/// The reading-time type of an implicit GNU enumerator value outside
+/// `int` (GCC and Clang): the previous constant's type when the value fits
+/// in it, else `unsigned long` after an unsigned constant and `long` after
+/// a signed one (`unsigned long` when it does not fit in `long`).
+fn implicit_enum_type(value: i128, prev: TypeName) -> Option<TypeName> {
+    let fits = |ty: TypeName| {
+        let width = ty.width();
+        if ty.is_signed() {
+            (-(1i128 << (width - 1))..1i128 << (width - 1)).contains(&value)
+        } else {
+            (0..1i128 << width).contains(&value)
+        }
+    };
+    if prev.width() <= 64 && fits(prev) {
+        Some(prev)
+    } else if !prev.is_signed() && fits(TypeName::ULong) {
+        Some(TypeName::ULong)
+    } else if fits(TypeName::Long) {
         Some(TypeName::Long)
-    } else if (0..=i128::from(u64::MAX)).contains(&value) {
+    } else if fits(TypeName::ULong) {
         Some(TypeName::ULong)
     } else {
         None
