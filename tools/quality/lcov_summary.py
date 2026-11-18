@@ -44,12 +44,12 @@ def main():
     ap.add_argument("--files", default="sema.rs,parser.rs,irgen.rs")
     a = ap.parse_args()
     src = os.path.join(a.root, "src")
-    test_mods = rust_scan.test_only_modules(rust_scan.strip(open(os.path.join(src, "lib.rs")).read()))
+    sources = {"src/" + f for f in rust_scan.source_files(src)}
     rows, regions = [], []
     tl = th = tf = tfh = 0
     for path, r in sorted(parse(a.lcov).items()):
         rel = os.path.relpath(path, os.path.abspath(a.root))
-        if not rel.startswith("src/") or os.path.basename(rel)[:-3] in test_mods:
+        if rel not in sources:
             continue
         raw = open(os.path.join(a.root, rel)).read()
         clean = rust_scan.strip(raw)
@@ -96,7 +96,11 @@ def main():
             w = csv.DictWriter(fh, fieldnames=list(rows[0].keys())); w.writeheader(); w.writerows(rows)
             w.writerow({"file": "TOTAL", "lines": tl, "lines_hit": th, "line_pct": round(100*th/tl,1),
                         "functions": tf, "functions_hit": tfh, "function_pct": round(100*tfh/tf,1)})
-    want = {"src/" + f for f in a.files.split(",")}
+    # A name in --files also selects the files of its module directory:
+    # "sema.rs" covers src/sema.rs and src/sema/*.rs.
+    picked = a.files.split(",")
+    want = {r["file"] for r in rows
+            if any(r["file"] == "src/" + f or r["file"].startswith("src/" + f[:-3] + "/") for f in picked)}
     sel = sorted((x for x in regions if x[0] in want), key=lambda x: -x[1][2])
     if a.regions:
         with open(a.regions, "w", newline="") as fh:

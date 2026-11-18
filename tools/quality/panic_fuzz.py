@@ -55,7 +55,7 @@ def mutate(text, rng):
         return text[:s]
     return text[:s] + rng.choice(INSERTS) + " " + text[s:]
 
-PANIC = re.compile(r"panicked at (?:\S*/)?(src/\w+\.rs):(\d+):\d+")
+PANIC = re.compile(r"panicked at (?:\S*/)?(src/[\w/]+\.rs):(\d+):\d+")
 
 def run(compiler, src, timeout, extra):
     with tempfile.TemporaryDirectory() as d:

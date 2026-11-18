@@ -32,7 +32,7 @@ Integer types are LP64. `char` is signed. `char` / `signed char` / `unsigned cha
 
 Approved by the owner on 2026-11-09 (pull request 4).
 
-The module sets `target datalayout` to the System V AMD64 layout for this triple (`src/irgen.rs`), so `i64` stays 8-byte aligned. A narrow integer parameter or return keeps that width and carries an LLVM attribute. `char`, `signed char`, and `short` use `signext`. `unsigned char`, `unsigned short`, and `_Bool` use `zeroext`. `int` and wider integers have no extension attribute. The attribute is written on the `define`, the `declare`, and the `call` (`TypeName::abi_attr` in `src/ast.rs`). The `ret` instruction and the call result use the narrow type. This compiler does not emit a separate extend to 32 bits, and it does not define the excess bits of a narrow return.
+The module sets `target datalayout` to the System V AMD64 layout for this triple (`src/irgen/module.rs`), so `i64` stays 8-byte aligned. A narrow integer parameter or return keeps that width and carries an LLVM attribute. `char`, `signed char`, and `short` use `signext`. `unsigned char`, `unsigned short`, and `_Bool` use `zeroext`. `int` and wider integers have no extension attribute. The attribute is written on the `define`, the `declare`, and the `call` (`TypeName::abi_attr` in `src/ast/types.rs`). The `ret` instruction and the call result use the narrow type. This compiler does not emit a separate extend to 32 bits, and it does not define the excess bits of a narrow return.
 
 Struct and union layout follows the same ABI. Each struct member is aligned to its alignment, the struct alignment is the strictest member alignment, and the size is rounded up to that alignment. A zero-width unnamed bit-field aligns the bit cursor and does not raise that alignment. An array member uses the element alignment. A local or global array of 16 bytes or more has alignment at least 16; a member does not. Union members start at offset 0, and the size is the largest member rounded up to the strictest alignment. Whole-struct and whole-union assignment is `llvm.memmove` of the object size, so the copy includes padding.
 
@@ -54,7 +54,7 @@ The preprocessor is built in. It runs translation phases 2–4 before the parser
 
 Approved by the owner on 2026-11-09 (pull request 8). That step's `include/` was a temporary stand-in for `stdio.h`, `stdlib.h`, and `string.h`, and the search stopped before `/usr/include`.
 
-Search order in the current code (`src/pp.rs`):
+Search order in the current code (`src/pp/predefined.rs` and `src/pp/directive.rs`):
 
 - `#include "file"` searches the including file's directory, then each `-I` directory, then every compiler `include/` directory, then the host directories.
 - `#include <file>` skips the including file's directory and uses the rest of that list.

@@ -328,3 +328,35 @@ fn an_error_inside_one_arm_of_a_conditional_is_reported() {
         "t.c:2:16: internal compiler error: 'break' is not inside a loop or switch (in irgen)"
     );
 }
+
+#[test]
+fn an_expression_error_before_a_statement_error_is_the_one_reported() {
+    // Expression lowering records its error and goes on; the statement
+    // error that follows ends lowering but does not replace it.
+    let mut unit = checked("unsigned long f(void) {\n  sizeof(int);\n  return 0;\n}");
+    let Expr::Sizeof { operand, .. } = stmt_expr(&mut unit, "f", 0) else {
+        panic!("sizeof");
+    };
+    *operand = SizeofOperand::Type(CType::Void);
+    body(&mut unit, "f")[1] = Stmt::Break { line: 3, column: 3 };
+    let message = ice(&unit);
+    assert!(message.starts_with("t.c:2:"), "{message}");
+    assert!(
+        message.contains("sizeof of an incomplete type"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_statement_error_ends_lowering_of_its_function() {
+    let mut unit = checked("unsigned long f(void) {\n  1;\n  return sizeof(int);\n}");
+    body(&mut unit, "f")[0] = Stmt::Break { line: 2, column: 3 };
+    let Expr::Sizeof { operand, .. } = stmt_expr(&mut unit, "f", 1) else {
+        panic!("sizeof");
+    };
+    *operand = SizeofOperand::Type(CType::Void);
+    assert_eq!(
+        ice(&unit),
+        "t.c:2:3: internal compiler error: 'break' is not inside a loop or switch (in irgen)"
+    );
+}

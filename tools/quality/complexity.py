@@ -59,15 +59,8 @@ def functions(clean):
                "lines": end - start + 1, "nesting": deepest, "cyclomatic": cc}
 
 def scan(src, include_tests=False):
-    lib = os.path.join(src, "lib.rs")
-    test_mods = rust_scan.test_only_modules(rust_scan.strip(open(lib).read())) if os.path.exists(lib) else set()
     funcs, files = [], []
-    for fname in sorted(os.listdir(src)):
-        if not fname.endswith(".rs"):
-            continue
-        is_test_mod = fname[:-3] in test_mods
-        if is_test_mod and not include_tests:
-            continue
+    for fname in rust_scan.source_files(src, include_tests):
         raw = open(os.path.join(src, fname)).read()
         clean = rust_scan.strip(raw)
         spans = [] if include_tests else rust_scan.test_spans(clean)

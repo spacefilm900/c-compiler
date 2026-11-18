@@ -61,6 +61,30 @@ class QualityTools(unittest.TestCase):
         self.assertEqual([(s[0], s[1]) for s in rust_scan.test_spans(rust_scan.strip(cmp))], [(1, 4)])
         self.assertEqual(rust_scan.test_only_modules("#[cfg(test)]\nmod only_tests;"), {"only_tests"})
 
+    def test_source_files_follow_module_directories(self):
+        nest = os.path.join(self.src, "nest")
+        os.mkdir(nest)
+        with open(os.path.join(self.src, "lib.rs"), "a") as f:
+            f.write("pub mod nest;\n")
+        with open(os.path.join(nest, "mod.rs"), "w") as f:
+            f.write("mod inner;\n#[cfg(test)]\nmod checks;\n")
+        for name in ("inner.rs", "checks.rs"):
+            with open(os.path.join(nest, name), "w") as f:
+                f.write("fn c(x: Option<u8>) -> u8 { x.unwrap() }\n")
+        self.assertEqual(rust_scan.source_files(self.src),
+                         ["lib.rs", "nest/inner.rs", "nest/mod.rs", "sample.rs"])
+        self.assertIn("nest/checks.rs", rust_scan.source_files(self.src, include_tests=True))
+        self.assertEqual(rust_scan.top_module_file("nest/inner.rs"), "nest.rs")
+        self.assertEqual(rust_scan.top_module_file("lib.rs"), "lib.rs")
+        rows = crash_points.scan(self.src)
+        self.assertEqual(sorted(r["file"] for r in rows if r["file"].startswith("src/nest")), ["src/nest/inner.rs"])
+        funcs, _ = complexity.scan(self.src)
+        self.assertIn(("src/nest/inner.rs", "c"), {(f["file"], f["name"]) for f in funcs})
+
+    def test_source_files_reports_a_missing_directory(self):
+        with self.assertRaises(FileNotFoundError):
+            rust_scan.source_files(os.path.join(self.src, "missing"))
+
     def test_complexity(self):
         funcs, files = complexity.scan(self.src)
         by = {f["name"]: f for f in funcs}
