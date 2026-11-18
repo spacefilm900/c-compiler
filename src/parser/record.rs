@@ -208,7 +208,21 @@ impl Parser<'_> {
         let fixed = if self.current().kind == TokenKind::Colon && self.dialect.gnu() && type_follows
         {
             let colon = self.advance();
+            let start = self.index;
             let ty = self.parse_specs(SpecPlace::TypeName)?.ty;
+            // An enumeration is not an underlying type (C23 6.7.2.2p5).
+            // Spelled with `enum` it is caught here; through a typedef it
+            // is indistinguishable from its integer type in this compiler.
+            if self.tokens[start..self.index]
+                .iter()
+                .any(|token| token.kind == TokenKind::KwEnum)
+            {
+                return Err(self.error_at(
+                    colon.line,
+                    colon.column,
+                    "an enumeration's underlying type must be an integer type",
+                ));
+            }
             match ty.peel() {
                 CType::Int(TypeName::Int128 | TypeName::UInt128) => {
                     return Err(self.error_at(
@@ -238,6 +252,11 @@ impl Parser<'_> {
             };
             return match self.lookup_tag(&tag) {
                 Some(TagEntry::Enum(base)) => Ok((line, column, base)),
+                Some(TagEntry::EnumOpen) => Err(self.error_at(
+                    line,
+                    column,
+                    format!("enum '{tag}' is incomplete until its enumerator list ends"),
+                )),
                 Some(_) => Err(self.error_at(
                     line,
                     column,
@@ -248,7 +267,7 @@ impl Parser<'_> {
         }
         if let Some(tag) = &tag {
             match self.lookup_tag_current(tag) {
-                Some(TagEntry::Enum(_)) => {
+                Some(TagEntry::Enum(_) | TagEntry::EnumOpen) => {
                     return Err(self.error_at(
                         line,
                         column,
@@ -263,17 +282,17 @@ impl Parser<'_> {
                     ));
                 }
                 None => {
-                    self.tags
-                        .last_mut()
-                        .expect("tag scope")
-                        .insert(tag.clone(), TagEntry::Enum(fixed.unwrap_or(TypeName::Int)));
+                    self.tags.last_mut().expect("tag scope").insert(
+                        tag.clone(),
+                        fixed.map_or(TagEntry::EnumOpen, TagEntry::Enum),
+                    );
                 }
             }
         }
         self.bump();
         let base = self.parse_enumerators(fixed)?;
         self.expect_skip(TokenKind::RBrace, "'}'")?;
-        if let (Some(tag), true) = (&tag, base != TypeName::Int) {
+        if let Some(tag) = &tag {
             self.tags
                 .last_mut()
                 .expect("tag scope")

@@ -1499,3 +1499,21 @@ fn gnu_enum_colon_needs_a_type_after_it() {
     .unwrap();
     parse_gnu("enum E : long { A = sizeof(enum E) }; _Static_assert(A == 8, \"base\");").unwrap();
 }
+
+#[test]
+fn gnu_enum_list_rules() {
+    // An enum without a fixed type is incomplete inside its own list; with
+    // one it is complete. An enumeration is not an underlying type.
+    assert!(
+        parse_gnu("enum E { A = sizeof(enum E), B = 0x100000000L };")
+            .unwrap_err()
+            .contains("incomplete")
+    );
+    assert!(parse_err("enum E { A = sizeof(enum E) };").contains("incomplete"));
+    parse_gnu("enum E : long { A = sizeof(enum E) };").unwrap();
+    assert!(parse_gnu("enum E { X }; enum F : enum E { B };").is_err());
+    assert!(parse_gnu("enum F : enum E { X } { B };")
+        .unwrap_err()
+        .contains("must be an integer type"));
+    parse_gnu("enum F : int { B }; enum F f; int g(void) { return sizeof(enum F); }").unwrap();
+}

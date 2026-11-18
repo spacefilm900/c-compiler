@@ -168,6 +168,9 @@ enum TagEntry {
     /// extension that allows enumerators outside `int`, the wider type
     /// chosen in [`Parser::parse_enumerators`].
     Enum(TypeName),
+    /// An enumeration without a fixed underlying type whose list is being
+    /// read: incomplete until its `}` (C11 6.7.2.2p4).
+    EnumOpen,
 }
 
 /// A name the parser has to know before semantic analysis.
