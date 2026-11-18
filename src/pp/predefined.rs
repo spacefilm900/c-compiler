@@ -132,6 +132,9 @@ pub(super) fn target_macros(target: Target) -> Vec<(&'static str, &'static str)>
             ("__MACH__", "1"),
             ("__DYNAMIC__", "1"),
             ("__USER_LABEL_PREFIX__", "_"),
+            // <libkern/OSByteOrder.h> (reached from <mach/mach.h>) stops
+            // with "#error Unknown endianess" without it; Clang defines it.
+            ("__LITTLE_ENDIAN__", "1"),
         ]),
     }
     if let Target::Arm64Apple { .. } = target {

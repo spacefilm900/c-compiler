@@ -89,7 +89,8 @@ fn type_model_per_target() {
 fn predefined_macros_per_target() {
     let probe = "#if defined __APPLE__ && defined __MACH__ && defined __aarch64__ && \
                  defined __arm64__ && !defined __linux__ && !defined __ELF__ && \
-                 __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ == 110000 && __LDBL_MANT_DIG__ == 53\n\
+                 __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ == 110000 && __LDBL_MANT_DIG__ == 53 && \
+                 __LITTLE_ENDIAN__ == 1\n\
                  int apple;\n#endif\n\
                  #if defined __linux__ && defined __aarch64__ && defined __CHAR_UNSIGNED__ && \
                  __LDBL_MANT_DIG__ == 113 && !defined __x86_64__\nint arm_linux;\n#endif\n\
@@ -440,7 +441,7 @@ fn intel_mac_predefined_macros() {
     let probe = "#if defined __APPLE__ && defined __MACH__ && defined __x86_64__ && \
                  defined __amd64__ && !defined __aarch64__ && !defined __arm64__ && \
                  !defined __linux__ && !defined __ELF__ && __LDBL_MANT_DIG__ == 64 && \
-                 defined __llvm__ && \
+                 defined __llvm__ && __LITTLE_ENDIAN__ == 1 && \
                  __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ == 101500 && \
                  __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ == 101500 && !defined __CHAR_UNSIGNED__\n\
                  int intel_mac;\n#endif\n\
