@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Run the differential harness for an AArch64 target under qemu-aarch64.
+"""Run the differential harness for a non-default target: an AArch64 one
+under qemu-aarch64, or Intel macOS through its x86_64 Linux stand-in.
 
     python3 harness/run_cross.py --target aarch64-linux-gnu
     python3 harness/run_cross.py --target arm64-apple-macos
+    python3 harness/run_cross.py --target x86_64-apple-macos
 
 The test set is the one harness/run_tests.py uses on x86_64: tests/*.c,
 tests/hosted/*.c, the tests/xabi/ pairs (this compiler's object linked with
@@ -33,6 +35,13 @@ not match; harness/cross_known_failures.txt lists what that excludes. What
 this proxy cannot show — Mach-O linking, the macOS SDK headers, and the
 macOS C library — needs a real Mac.
 
+x86_64-apple-macos is also a proxy, described in harness/intel_mac_proxy.py:
+both compilers emit IR for x86_64-apple-macosx10.15.0 over the x86_64 glibc
+headers, llc builds ELF objects for the triple x86_64-apple-darwin-elf, and
+the programs run natively, linked with glibc. System V variadic calls are
+the same on both systems, so no stdio shim is needed. The AArch64 tests in
+tests/arm64/ are not run for it.
+
 harness/cross_known_failures.txt lists expected failures as
 "TARGET LABEL  # reason". A listed test that passes is reported so the
 line can be removed. An unlisted failure fails the run.
@@ -47,6 +56,8 @@ import argparse, concurrent.futures, os, re, shlex, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "harness"))
+import intel_mac_proxy as intel  # noqa: E402
 COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
 CLANG = os.environ.get("CLANG", "clang")
 QEMU = os.environ.get("QEMU_AARCH64", "qemu-aarch64")
@@ -80,8 +91,10 @@ class Toolchain:
     def __init__(self, target, tmp):
         self.target = target
         self.apple = target == "arm64-apple-macos"
+        self.intel = target == intel.TARGET
         self.tmp = tmp
         self.shims = []
+        self.llc = None
         if self.apple:
             sysroot = tmp / "sysroot"
             (sysroot / "usr").mkdir(parents=True)
@@ -89,7 +102,16 @@ class Toolchain:
             self.sysroot = sysroot
 
     def setup(self):
-        """Build the Apple stdio shim. Returns an error string or None."""
+        """Build the Apple stdio shim, or the Intel macOS stand-in's
+        sysroot. Returns an error string or None."""
+        if self.intel:
+            self.sysroot = intel.make_sysroot(self.tmp)
+            if self.sysroot is None:
+                return "the x86_64 glibc headers are missing"
+            self.llc = intel.find_llc()
+            if self.llc is None:
+                return "llc not found (set LLC)"
+            return None
         if not self.apple:
             return None
         shim_a = self.tmp / "apple_stdio_shim.o"
@@ -107,14 +129,24 @@ class Toolchain:
 
     def ours(self, src, ll, std):
         cmd = [str(COMPILER), "-target", self.target]
-        if self.apple:
+        if self.apple or self.intel:
             cmd += ["-isysroot", str(self.sysroot)]
+        if self.intel:
+            cmd += intel.OURS_FLAGS
         if std != "c11":
             cmd.append(f"-std={std}")
         return run(cmd + [str(src), "-o", str(ll)])
 
     def oracle_obj(self, src, obj, std):
         """Clang's object for one translation unit."""
+        if self.intel:
+            ll = obj.with_suffix(".clang.ll")
+            rc, out, err = run([CLANG, "-target", intel.CLANG_TRIPLE, "-isysroot", str(self.sysroot),
+                                *intel.CLANG_FLAGS, "-w", f"-std={std}", "-S", "-emit-llvm",
+                                str(src), "-o", str(ll)])
+            if rc != 0:
+                return rc, out, err
+            return self.ll_obj(ll, obj)
         if self.apple:
             ll = obj.with_suffix(".clang.ll")
             rc, out, err = run([CLANG, "-target", APPLE_TRIPLE, "-isysroot", str(self.sysroot),
@@ -127,6 +159,11 @@ class Toolchain:
 
     def ll_obj(self, ll, obj):
         """Object file for an IR file from either compiler."""
+        if self.intel:
+            proxy = ll.with_suffix(".proxy.ll")
+            proxy.write_text(intel.proxy_ir(ll.read_text(errors="replace")))
+            return run([self.llc, f"-mtriple={intel.PROXY_TRIPLE}", "-relocation-model=pic",
+                        "-filetype=obj", str(proxy), "-o", str(obj)])
         if self.apple:
             text = ll.read_text(errors="replace")
             renamed = ll.with_suffix(".proxy.ll")
@@ -135,9 +172,13 @@ class Toolchain:
         return run(LINK + ["-w", "-c", str(ll), "-o", str(obj)])
 
     def link(self, objs, out):
+        if self.intel:
+            return run([CLANG, *[str(o) for o in objs], "-lm", "-o", str(out)])
         return run(LINK + [str(o) for o in objs] + self.shims + ["-lm", "-o", str(out)])
 
     def execute(self, binary):
+        if self.intel:
+            return run([str(binary)])
         return run([QEMU, str(binary)])
 
 
@@ -321,7 +362,8 @@ def torture(target, label_filter):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target", required=True, choices=["aarch64-linux-gnu", "arm64-apple-macos"])
+    parser.add_argument("--target", required=True,
+                        choices=["aarch64-linux-gnu", "arm64-apple-macos", intel.TARGET])
     parser.add_argument("--filter", default="", help="only labels containing this text")
     parser.add_argument("--torture", action="store_true",
                         help="instead, run gcc.c-torture/execute (report only; see torture())")
@@ -341,9 +383,11 @@ def main():
         jobs.append((f"gnu/{t.name}", test_gnu, (t,)))
     for t in sorted((ROOT / "tests" / "gnu" / "both").glob("*.c")):
         jobs.append((f"gnu/both/{t.name}", test_both, (t,)))
-    for t in sorted((ROOT / "tests" / "arm64").glob("*.c")):
+    arm64 = [] if args.target == intel.TARGET else sorted((ROOT / "tests" / "arm64").glob("*.c"))
+    for t in arm64:
         jobs.append((f"arm64/{t.name}", test, (t,)))
-    for t in sorted((ROOT / "tests" / "arm64" / "xabi").glob("*_def.c")):
+    arm64 = [] if args.target == intel.TARGET else sorted((ROOT / "tests" / "arm64" / "xabi").glob("*_def.c"))
+    for t in arm64:
         use = t.with_name(t.name[: -len("_def.c")] + "_use.c")
         jobs.append((f"arm64/xabi/{t.name[: -len('_def.c')]}", test_cross, (t, use)))
     jobs = [j for j in jobs if args.filter in j[0]]

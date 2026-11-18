@@ -2,3 +2,4 @@
 # TARGET is the --target name given to harness/run_cross.py.
 arm64-apple-macos 112_longdouble.c # test dumps 10 bytes of a long double; on Apple arm64 long double is the 8-byte double, so bytes 8-9 are outside the object
 arm64-apple-macos gnu/both/01_attributes.c # test uses the ELF section name ".data.custom"; Mach-O needs "segment,section", so the Clang oracle rejects it
+x86_64-apple-macos gnu/both/01_attributes.c # test uses the ELF section name ".data.custom"; Mach-O needs "segment,section", so the Clang oracle rejects it
