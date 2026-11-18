@@ -108,5 +108,5 @@ class Int128Option(unittest.TestCase):
             d, u = abi_fuzz.make_pair(seed)
             self.assertIn(abi_fuzz.I128_MACRO, d)
             self.assertIn(abi_fuzz.I128_MACRO, u)
-            found = found or "__int128" in d
+            found = found or "__int128" in d.replace(abi_fuzz.I128_MACRO, "")
         self.assertTrue(found, "no seed used __int128")

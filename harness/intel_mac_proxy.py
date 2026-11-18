@@ -27,6 +27,7 @@ job in .github/workflows/macos.yml checks those on a real Mac.
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -86,13 +87,29 @@ def proxy_ir(text):
     return re.sub(r'^(target datalayout = "e)-m:o-', r"\1-m:e-", text, flags=re.M)
 
 
+MIN_LLVM = 18  # the oldest backend whose i128 stack arguments the checks trust
+
+
+def llvm_major(tool):
+    """The LLVM major version `tool --version` reports, or None."""
+    try:
+        out = subprocess.run([tool, "--version"], capture_output=True, text=True,
+                             timeout=30).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r"LLVM version (\d+)", out)
+    return int(m.group(1)) if m else None
+
+
 def find_tool(name):
-    """`llc` or `opt`: $LLC / $OPT, else the first of name, name-21 .. name-18
-    on PATH."""
+    """`llc` or `opt` of LLVM 18 or later: $LLC / $OPT, else the first of
+    name, name-21 .. name-18 on PATH that is new enough. None when there is
+    none (an older $LLC / $OPT included)."""
     if os.environ.get(name.upper()):
-        return os.environ[name.upper()]
+        tool = os.environ[name.upper()]
+        return tool if (llvm_major(tool) or 0) >= MIN_LLVM else None
     for candidate in [name] + [f"{name}-{v}" for v in (21, 20, 19, 18)]:
-        if shutil.which(candidate):
+        if shutil.which(candidate) and (llvm_major(candidate) or 0) >= MIN_LLVM:
             return candidate
     return None
 

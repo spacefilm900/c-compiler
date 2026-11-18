@@ -45,8 +45,10 @@ on:
 permissions:
   contents: read
 
+# A manual dispatch (an Intel run, say) and an automatic run of the same ref
+# are in different groups, so neither cancels the other.
 concurrency:
-  group: macos-${{ github.ref }}
+  group: macos-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

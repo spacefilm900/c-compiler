@@ -205,6 +205,7 @@ def main():
     gnu = sorted((ROOT / "tests" / "gnu").glob("*.c"))
     both = sorted((ROOT / "tests" / "gnu" / "both").glob("*.c"))
     problems = []
+    triple = ""
     if shutil.which(CLANG):
         # The target decides whether tests/arm64 runs; a run that cannot
         # read it must not pass with that coverage silently missing.
@@ -222,7 +223,7 @@ def main():
         major, apple = clang_major()
         if apple:
             need = MIN_APPLE_CLANG_MAJOR
-            if arch_of(clang_triple(CLANG)) == "x86_64":
+            if arch_of(triple) == "x86_64":
                 need = MIN_APPLE_CLANG_MAJOR_X86_64
             if major is None or major < need:
                 problems.append(f"Apple Clang >= {need} is required here; got: {major}")

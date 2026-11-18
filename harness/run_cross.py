@@ -113,7 +113,7 @@ class Toolchain:
                 return "the x86_64 glibc headers are missing"
             self.llc, self.opt = intel.find_tool("llc"), intel.find_tool("opt")
             if self.llc is None or self.opt is None:
-                return "llc or opt not found (set LLC and OPT)"
+                return "llc or opt of LLVM 18 or later not found (set LLC and OPT)"
             return None
         if not self.apple:
             return None
@@ -326,9 +326,11 @@ def torture(target, label_filter):
     its asm-label redirects (`__isoc99_fscanf`, `__sysv_signal`) cannot
     work, because those are glibc's, not Apple's.
 
-    For x86_64-apple-macos the x86_64 list applies as it is (same
-    processor, same `long double`), so there it is a gate: a failure not in
-    the list fails the run. Listed tests that pass are reported."""
+    For x86_64-apple-macos the x86_64 list applies (same processor, same
+    `long double`) with the macOS overlay, so there it is a gate: a failure
+    not in the list, a compiler panic even on a listed test, or a filter
+    that selects nothing fails the run. Listed tests that pass are
+    reported."""
     root = Path(os.environ.get("TORTURE_ROOT", ROOT / "tests" / "external" / "gcc-torture")) \
         / "gcc" / "testsuite" / "gcc.c-torture" / "execute"
     if not root.is_dir():
@@ -336,6 +338,9 @@ def torture(target, label_filter):
         return 1
     files = sorted(p for p in root.rglob("*.c") if "builtins" not in p.parts)
     files = [p for p in files if label_filter in str(p.relative_to(root))]
+    if target == intel.TARGET and not files:
+        print(f"FAIL: no torture test matches the filter {label_filter!r}")
+        return 1
     known = set()
     for line in (ROOT / "harness" / "gcc_torture_known_failures.txt").read_text().splitlines():
         line = line.split("#")[0].strip()
@@ -375,13 +380,18 @@ def torture(target, label_filter):
     new = [(label, err) for label, err in failed if label not in known]
     for label, err in new:
         print(f"NOT_IN_X86_LIST {label}: {err.splitlines()[0][:200]}")
+    # A panic is a compiler bug whatever the list says about the test.
+    panics = [(label, err) for label, err in failed if label in known and "panicked" in err]
+    for label, err in panics:
+        print(f"PANIC_IN_LISTED {label}: {err.splitlines()[0][:200]}")
     if target == intel.TARGET:
         for label, err in results:
             if err is None and label in known:
                 print(f"PASSES_BUT_IN_X86_LIST {label}")
     print(f"\n{target} torture: {len(results)} files, {len(results) - len(failed)} passed, "
-          f"{len(failed)} failed, {len(new)} of them not in the x86_64 known-failure list")
-    return 1 if target == intel.TARGET and new else 0
+          f"{len(failed)} failed, {len(new)} of them not in the x86_64 known-failure list, "
+          f"{len(panics)} listed ones panicked")
+    return 1 if target == intel.TARGET and (new or panics) else 0
 
 
 def main():
@@ -390,7 +400,8 @@ def main():
                         choices=["aarch64-linux-gnu", "arm64-apple-macos", intel.TARGET])
     parser.add_argument("--filter", default="", help="only labels containing this text")
     parser.add_argument("--torture", action="store_true",
-                        help="instead, run gcc.c-torture/execute (report only; see torture())")
+                        help="instead, run gcc.c-torture/execute (a gate for x86_64-apple-macos, "
+                             "a report for the AArch64 targets; see torture())")
     args = parser.parse_args()
     if args.torture:
         return torture(args.target, args.filter)

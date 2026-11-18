@@ -175,7 +175,9 @@ def limit_program() -> None:
     except (ValueError, OSError):
         # macOS does not let a process lower its address-space limit; the
         # CPU limit and the wall-clock timeout still stop a runaway test.
-        pass
+        # Elsewhere the failure is an error.
+        if sys.platform != "darwin":
+            raise
 
 
 def run(

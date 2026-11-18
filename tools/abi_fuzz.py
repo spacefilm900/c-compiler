@@ -30,6 +30,9 @@ harness/intel_mac_proxy.py.
 Env: CC_UNDER_TEST (default build/compiler), CLANG (default clang). Without
 --target, the target is whatever both produce by default; for AArch64 under
 qemu, use wrappers that add --target and -target.
+Exit status: 0 when every compared seed agrees, 1 when a seed fails (an
+oracle failure included), 2 when seeds were asked for but none could be
+compared (every one skipped).
 """
 
 from __future__ import annotations
@@ -333,7 +336,7 @@ class IntelMac:
         self.sysroot = intel.make_sysroot(tmp)
         self.llc, self.opt = intel.find_tool("llc"), intel.find_tool("opt")
         if self.sysroot is None or self.llc is None or self.opt is None:
-            sys.exit("the Intel macOS stand-in needs the x86_64 glibc headers, llc and opt")
+            sys.exit("the Intel macOS stand-in needs the x86_64 glibc headers, and llc and opt of LLVM 18 or later")
 
     def obj(self, src: Path, obj: Path, ours: bool):
         """(status, stderr) of building src into an ELF object."""
@@ -347,8 +350,12 @@ class IntelMac:
         rc, _, err = run(cmd)
         if rc != 0:
             return rc, err
+        try:
+            text = ll.read_text(errors="replace")
+        except OSError as exc:
+            return 1, f"no IR written: {exc}".encode()
         proxy = obj.with_suffix(".proxy.ll")
-        proxy.write_text(intel.proxy_ir(ll.read_text(errors="replace")))
+        proxy.write_text(intel.proxy_ir(text))
         for step in intel.object_commands(self.llc, self.opt, proxy, obj):
             rc, _, err = run(step)
             if rc != 0:
@@ -389,6 +396,22 @@ def build_and_run(work: Path, d: Path, u: Path, ours: set[str], tag: str):
     return run([str(exe)])
 
 
+def rerun_reference(work: Path, ref) -> str:
+    """Run Clang's own build three more times: "same" when every run matches
+    `ref`, "differs" when a clean run prints something else, else the
+    failure (a nonzero exit or a timeout), which is an oracle failure."""
+    verdict = "same"
+    for _ in range(3):
+        again = run([str(work / "abi.clang")])
+        if again[0] == "timeout":
+            return "timeout"
+        if again[0] != 0:
+            return f"exit {again[0]}: {again[2][:200]!r}"
+        if again != ref:
+            verdict = "differs"
+    return verdict
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--seed-start", type=int, default=1)
@@ -419,14 +442,17 @@ def main() -> int:
             if isinstance(ref, str) or ref[0] != 0:
                 detail = ref if isinstance(ref, str) else f"exit {ref[0]}: {ref[2][:200]!r}"
                 bad.append(f"oracle failed: {detail}")
-            elif any(run([str(work / "abi.clang")]) != ref for _ in range(3)):
-                # Clang's own two-unit build prints something different on
-                # another run (three more are tried): it reads memory nobody
-                # wrote, so there is no reference to compare with. A backstop:
-                # the one known cause is avoided by only_last_int128.
-                skipped += 1
-                print(f"seed {seed}: SKIP (Clang's own build is not repeatable)")
-                continue
+            elif (reruns := rerun_reference(work, ref)) != "same":
+                if reruns != "differs":
+                    bad.append(f"oracle failed on a rerun: {reruns}")
+                else:
+                    # Clang's own two-unit build prints something different
+                    # on another run: it reads memory nobody wrote, so there
+                    # is no reference to compare with. A backstop: the one
+                    # known cause is avoided by only_last_int128.
+                    skipped += 1
+                    print(f"seed {seed}: SKIP (Clang's own build is not repeatable)")
+                    continue
             else:
                 for tag, ours in (("def", {d.name}), ("use", {u.name}), ("both", {d.name, u.name})):
                     got = build_and_run(work, d, u, ours, tag)
@@ -449,7 +475,12 @@ def main() -> int:
     agreed = args.count - failures - skipped
     note = f", {skipped} skipped (no repeatable Clang reference)" if skipped else ""
     print(f"{agreed}/{args.count - skipped} seeds agree{note}")
-    return 1 if failures else 0
+    if failures:
+        return 1
+    if args.count > 0 and agreed == 0:
+        print("inconclusive: no seed was compared")
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

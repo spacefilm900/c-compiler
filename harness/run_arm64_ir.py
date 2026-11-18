@@ -158,9 +158,13 @@ def canon_param(param, types):
             if attr == "alignstack":
                 attrs.append(am.group(0))
             elif attr == "byval" and am.group(2) and X86_LAYOUT[0]:
-                # A byval copy is memory: only its size matters to the
+                # A byval copy is memory: its size and its stack alignment
+                # (the `align` attribute, else the type's) matter to the
                 # convention, not how the IR spells its type.
-                attrs.append(f"byval(size {ir_layout(am.group(2), types)[0]})")
+                size, align = ir_layout(am.group(2), types)
+                al = re.search(r"\balign\s+(\d+)", rest)
+                align = int(al.group(1)) if al else align
+                attrs.append(f"byval(size {size} align {align})")
             elif attr in ("sret", "byval") and am.group(2):
                 attrs.append(f"{attr}({canon_type(am.group(2), types)})")
             else:
@@ -358,6 +362,12 @@ def main():
             (arm_sysroot / "usr" / "include").symlink_to(INCLUDE)
         for target in args.target or sorted(TARGETS):
             sysroot = intel.make_sysroot(tmp) if target == intel.TARGET else arm_sysroot
+            if target == intel.TARGET and sysroot is None:
+                # The Intel checks need the stand-in's headers; without them
+                # they would skip every program that includes one.
+                print(f"FAIL {target}: the x86_64 glibc headers are missing")
+                bad += 1
+                continue
             compared, failures = check_signatures(target, tmp, sysroot)
             for f in failures:
                 print(f"FAIL signature {target} {f}")
