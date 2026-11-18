@@ -25,9 +25,10 @@ and `x86_64-apple-darwin…`.
   data layout is
   `e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128`,
   the same as Clang's.
-- **ABI:** System V AMD64, exactly as on Linux. That covers `long double`
-  (x87, 16 bytes), signed `char`, `int` `wchar_t`, `va_list` and the
-  classification rules.
+- **ABI:** System V AMD64, as on Linux, with the Darwin differences
+  listed below. Shared with Linux: `long double` (x87, 16 bytes), signed
+  `char`, `int` `wchar_t`, `va_list` and the classification rules, apart
+  from the two argument rules below.
 - **Darwin differences (each checked against Clang):**
   - `wint_t` is `int`, and symbol names carry the `_` prefix (written as
     `\01` asm labels for asm-label declarations).
@@ -93,11 +94,17 @@ time (GMT) on this date.
 | [44314319000](https://github.com/spacefilm900/c-compiler/actions/runs/44314319000) | `1ec15e4` | 13:30–13:41 | 11 | SQLite failed on `enum : uint64_t` in `<malloc/malloc.h>`. Apple clang 21 types enum constants as GCC does |
 | [44317168313](https://github.com/spacefilm900/c-compiler/actions/runs/44317168313) | `a1497fc` | 13:47–13:57 | 11 | **Everything passed** |
 
-**Total: 47 billed minutes, about $2.91 at $0.062 a minute.** That is under
-the approved ceiling of about 60 minutes (about $4). Commits after
-`a1497fc` change only Linux harness scripts, `tools/abi_fuzz.py`, the
-SQLite scorecard's memory units, and one Apple macro (`__LITTLE_ENDIAN__`,
-from the run 4 header report). None of them affects the suites below.
+A fifth run, [44325320398](https://github.com/spacefilm900/c-compiler/actions/runs/44325320398)
+on `044672b` (the review fixes), 14:32–14:44 UTC, was cancelled during DOOM
+to stay within the budget. Up to then it passed: unit tests (214 passed,
+23 ignored), the harness (190/193, 3 known, 0 unexpected; the new
+`xabi/09_x87up_union` passed against Apple clang), Lua and SQLite (both
+match at `-O0` and `-O2`), and the header report (100 of 108; `<mach/mach.h>`
+now compiles in `-std=gnu11`). DOOM and torture did not run on that head.
+
+**Total: 47 billed minutes for runs 1 to 4, plus about 12 for run 5: about
+59 to 60 minutes, about $3.70 at $0.062 a minute**, at the approved ceiling
+of about 60 minutes (about $4). No more Mac runs are planned for this step.
 
 **Scorecard at `a1497fc` (run 44317168313):**
 
@@ -110,7 +117,7 @@ from the run 4 header report). None of them affects the suites below.
 | SQLite 3.54.1 | Builds alone. 10/10 workloads and 10/10 database files match at `-O0` and `-O2` |
 | DOOM (doomgeneric, Freedoom) | Builds alone (82/82 files). 39,209/39,209 frame hashes match at `-O0` and `-O2`, every demo to its end |
 | GCC torture execute | 1,334 passed, 412 known, 0 unexpected |
-| SDK header report (report only) | 99 of 108 compiled. Failures: `<tgmath.h>` (complex types), `<uchar.h>` (not in the SDK), and `<mach/mach.h>`, now fixed by `__LITTLE_ENDIAN__`. In strict C11 only: `<malloc/malloc.h>` and `<mach/mach_time.h>`, which need the GNU enum extensions, and `<sys/mount.h>` |
+| SDK header report (report only) | 99 of 108 compiled. Failures: `<tgmath.h>` (complex types), `<uchar.h>` (not in the SDK), and `<mach/mach.h>` (missing `__LITTLE_ENDIAN__`; it compiled after the fix in run 5). In strict C11 only: `<malloc/malloc.h>` and `<mach/mach_time.h>`, which need the GNU enum extensions, and `<sys/mount.h>` |
 
 Run times on the Intel runner, ours against Apple clang:
 
@@ -225,10 +232,10 @@ DOOM, each compiled in strict C11 and in `-std=gnu11`:
 - **13,362 compilations, 18 different** (rerun at the review fixes; the
   same 18). No exit status changed apart from
   the two new GNU tests, which the old compiler rejects.
-- **14 of the 18 are the `__int128` ABI fixes** (bugs 1 and 2), in both
-  modes: `145_uint128_more.c`, `146_uint128_va_regs.c`,
-  `arm64/xabi/01_calls_def.c`, `arm64/xabi/01_calls_use.c`, and the
-  `xabi/07` and `xabi/08` pairs. The `arm64/xabi` files are compiled for
+- **16 of the 18 are the `__int128` ABI fixes** (bugs 1 and 2): eight
+  files, each in both modes. They are `145_uint128_more.c`,
+  `146_uint128_va_regs.c`, `arm64/xabi/01_calls_def.c`,
+  `arm64/xabi/01_calls_use.c`, and the `xabi/07` and `xabi/08` pairs. The `arm64/xabi` files are compiled for
   x86-64 in this comparison.
 - **The other 2 are the new GNU enum tests in `-std=gnu11`**, which the old
   compiler rejected.
@@ -255,6 +262,10 @@ DOOM, each compiled in strict C11 and in `-std=gnu11`:
 - **Strict C11 rejects the SDK's GNU enum forms.** As a result,
   `<malloc/malloc.h>` and `<mach/mach_time.h>` need `-std=gnu11`. Apple
   clang accepts them with `-std=c11`.
-- **The `__LITTLE_ENDIAN__` fix has not been on an Intel Mac yet.** It
-  comes from the run 4 header report, and the next manual Intel run will
-  show `<mach/mach.h>`.
+- **DOOM and GCC torture have not run natively on the review-fix head.**
+  Run 5 was cancelled before them. The fixes since run 4 that touch
+  code generation for Intel macOS are the lone-X87UP union rule and the
+  union-with-flexible-array rule. Neither shape appears in DOOM. Torture
+  programs are built by this compiler alone, so both sides of every call
+  use the same rule. The stand-in torture run on Linux at this head
+  matches the list.
