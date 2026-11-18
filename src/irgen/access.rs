@@ -179,7 +179,7 @@ impl Gen {
         let container = container_type(info.container_bits, info.signed_field, value_ty.quals());
         let raw = self.load(&container, addr);
         let narrow = self.convert(value, value_ty, &container);
-        let shift = info.abs_bit % info.container_bits;
+        let shift = (info.abs_bit % u64::from(info.container_bits)) as u32;
         let mask = width_mask(info.width);
         let masked = self.fresh();
         self.emit(&format!(
@@ -475,7 +475,7 @@ pub(super) fn bit_info(expr: &Expr) -> Option<BitInfo> {
 
 pub(super) fn container_type(bits: u32, signed_field: bool, quals: Quals) -> CType {
     let name = match (bits, signed_field) {
-        (8, true) => TypeName::Char,
+        (8, true) => TypeName::SChar,
         (8, false) => TypeName::UChar,
         (16, true) => TypeName::Short,
         (16, false) => TypeName::UShort,

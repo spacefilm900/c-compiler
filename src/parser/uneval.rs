@@ -66,6 +66,9 @@ pub(super) fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
             if op.is_cmp() {
                 check_uneval_compare(*op, left, right, env)?;
             }
+            if matches!(op, BinOp::Add | BinOp::Sub) {
+                check_uneval_pointer_arith(*op, left, right, env)?;
+            }
             Ok(())
         }
         Expr::Comma { left, right, .. } => {
@@ -579,30 +582,92 @@ fn bin_type_only(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Result<CType
     }
 }
 
-/// [`type_only`] for a conditional expression with second and third
-/// operands `left` and `right`.
-fn cond_type_only(left: &Expr, right: &Expr, env: Env) -> Result<CType, BoundErr> {
-    let left = rvalue_type(left, env)?;
-    let right = rvalue_type(right, env)?;
-    if left.is_arithmetic() && right.is_arithmetic() {
-        arith_common(&left, &right)
-    } else if left.is_void() || right.is_void() {
-        Ok(CType::Void)
-    } else if left.is_pointer() || right.is_pointer() {
-        // Every object pointer has the same size; `sizeof` is all
-        // that asks for this type here.
-        Ok(if left.is_pointer() { left } else { right })
+/// C11 6.5.6p2, p3 for operands that are not evaluated: two pointers may not
+/// be added, and two pointers may be subtracted only when they point to
+/// compatible complete object types (qualifiers aside). Operands whose type
+/// cannot be worked out here are left to semantic analysis.
+fn check_uneval_pointer_arith(
+    op: BinOp,
+    left: &Expr,
+    right: &Expr,
+    env: Env,
+) -> Result<(), BoundErr> {
+    let (Ok(left), Ok(right)) = (rvalue_type(left, env), rvalue_type(right, env)) else {
+        return Ok(());
+    };
+    let (Some(lp), Some(rp)) = (left.pointee(), right.pointee()) else {
+        return Ok(());
+    };
+    let complete_object = |ty: &CType| !ty.is_func() && !ty.is_void() && ty.size().is_some();
+    let ok = op == BinOp::Sub
+        && complete_object(lp)
+        && complete_object(rp)
+        && compatible(&lp.unqualified(), &rp.unqualified());
+    if ok {
+        Ok(())
     } else {
-        Ok(left)
+        Err(BoundErr::InvalidOperand)
     }
+}
+
+/// [`type_only`] for a conditional expression with second and third
+/// operands `left` and `right` (C11 6.5.15p3, p5, p6). Two pointers give
+/// `void *` or the composite type, with the qualifiers of both pointees; a
+/// null pointer constant takes the other operand's type. This type feeds
+/// `sizeof`, `typeof` and `_Generic` selection, so it must be exact.
+fn cond_type_only(left: &Expr, right: &Expr, env: Env) -> Result<CType, BoundErr> {
+    let left_ty = rvalue_type(left, env)?;
+    let right_ty = rvalue_type(right, env)?;
+    if left_ty.is_arithmetic() && right_ty.is_arithmetic() {
+        return arith_common(&left_ty, &right_ty);
+    }
+    // C11 6.5.15p3: both void, or the same structure or union type.
+    if left_ty.is_void() && right_ty.is_void() {
+        return Ok(CType::Void);
+    }
+    if left_ty.unqualified().is_record() {
+        return if compatible(&left_ty.unqualified(), &right_ty.unqualified()) {
+            Ok(left_ty)
+        } else {
+            Err(BoundErr::InvalidOperand)
+        };
+    }
+    // p6: a null pointer constant takes the other operand's type, before
+    // `void *` merging, so `(int *)p : (void *)0` stays `int *`.
+    if left_ty.is_pointer() && uneval_null_constant(right, &right_ty, env) {
+        return Ok(left_ty);
+    }
+    if right_ty.is_pointer() && uneval_null_constant(left, &left_ty, env) {
+        return Ok(right_ty);
+    }
+    if left_ty.is_pointer() && right_ty.is_pointer() {
+        if let Some(merged) = merge_pointers(&left_ty, &right_ty) {
+            return Ok(merged);
+        }
+    }
+    // GNU C pairs `void *` with a function pointer, giving `void *`, as
+    // semantic analysis does with a warning.
+    if env.dialect.gnu() && void_function_ptr_mix(&left_ty, &right_ty) {
+        return Ok(if left_ty.is_void_pointer() {
+            left_ty
+        } else {
+            right_ty
+        });
+    }
+    Err(BoundErr::InvalidOperand)
 }
 
 /// [`type_only`] for a call: a builtin's result type, or the return type
 /// of the function the callee points to.
 fn call_type_only(callee: &Expr, env: Env) -> Result<CType, BoundErr> {
+    // A declaration in scope hides a library forwarder of the same name, as
+    // in [`check_uneval_builtin_call`] and semantic analysis.
     if let Expr::Var { name, .. } = callee {
-        if let Some(ty) = builtin_result_type(name) {
-            return Ok(ty);
+        let shadowed = crate::builtins::library(name).is_some() && env_lookup(env, name).is_some();
+        if !shadowed {
+            if let Some(ty) = builtin_result_type(name) {
+                return Ok(ty);
+            }
         }
     }
     let callee = rvalue_type(callee, env)?;

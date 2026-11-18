@@ -62,10 +62,12 @@ impl Parser<'_> {
                 // definition's linkage.
                 self.bump();
                 flags.inline_ = true;
+                flags.note_func_spec("inline", &token);
             }
             TokenKind::KwNoreturn => {
                 // A function specifier. It does not change the type.
                 self.bump();
+                flags.note_func_spec("_Noreturn", &token);
             }
             TokenKind::KwRegister | TokenKind::KwAuto => {
                 self.note_storage(flags, Storage::None, &token, where_)?;
@@ -184,8 +186,18 @@ impl Parser<'_> {
                 ));
             }
         }
+        if let (Some((name, line, column)), false) =
+            (flags.func_spec, where_ == SpecPlace::Declaration)
+        {
+            return Err(self.error_at(
+                line,
+                column,
+                format!("'{name}' can only appear on functions"),
+            ));
+        }
         Ok(Specs {
             inline_: flags.inline_,
+            func_spec: flags.func_spec,
             storage: flags.storage,
             storage_at: flags.storage_at,
             ty,
@@ -257,7 +269,7 @@ impl Parser<'_> {
     ) -> Result<(), Diagnostic> {
         if flags.bool_ty
             || flags.float_ty.is_some()
-            || flags.struct_ty.is_some()
+            || flags.has_tagged_type()
             || flags.has_scalar()
         {
             return Err(self.error_at(
@@ -282,7 +294,7 @@ impl Parser<'_> {
         // combine with `char`, `short`, `int`, `long`, `_Bool`, or a float.
         if flags.bool_ty
             || flags.float_ty.is_some()
-            || flags.struct_ty.is_some()
+            || flags.has_tagged_type()
             || flags.int128
             || flags.void
             || flags.char_
@@ -324,7 +336,7 @@ impl Parser<'_> {
             token.column,
             "invalid combination of type specifiers",
         );
-        if flags.struct_ty.is_some() || flags.bool_ty || flags.float_ty.is_some() {
+        if flags.has_tagged_type() || flags.bool_ty || flags.float_ty.is_some() {
             return Err(bad);
         }
         flags.any = true;
@@ -361,7 +373,7 @@ impl Parser<'_> {
         flags: &mut SpecFlags,
         kind: RecordKind,
     ) -> Result<(), Diagnostic> {
-        if flags.struct_ty.is_some()
+        if flags.has_tagged_type()
             || flags.has_scalar()
             || flags.bool_ty
             || flags.float_ty.is_some()
@@ -383,7 +395,7 @@ impl Parser<'_> {
     }
 
     pub(super) fn note_typedef_name(&mut self, flags: &mut SpecFlags) -> Result<(), Diagnostic> {
-        if flags.struct_ty.is_some()
+        if flags.has_tagged_type()
             || flags.has_scalar()
             || flags.bool_ty
             || flags.float_ty.is_some()
@@ -406,7 +418,7 @@ impl Parser<'_> {
     }
 
     pub(super) fn note_enum(&mut self, flags: &mut SpecFlags) -> Result<(), Diagnostic> {
-        if flags.struct_ty.is_some()
+        if flags.has_tagged_type()
             || flags.has_scalar()
             || flags.bool_ty
             || flags.float_ty.is_some()
@@ -415,6 +427,7 @@ impl Parser<'_> {
         }
         let (line, column) = self.parse_enum_specifier()?;
         flags.any = true;
+        flags.enum_ty = true;
         flags.introduced_tag = true;
         flags.line = line;
         flags.column = column;
@@ -480,7 +493,10 @@ impl Parser<'_> {
         let token = self.current().clone();
         self.bump();
         match token.spelling.as_str() {
-            "__inline" | "__inline__" => flags.inline_ = true,
+            "__inline" | "__inline__" => {
+                flags.inline_ = true;
+                flags.note_func_spec("inline", &token);
+            }
             "__restrict" | "__restrict__" => self.note_restrict(flags, &token)?,
             "__extension__" => {}
             _ => unreachable!("ident specifier"),
@@ -520,7 +536,7 @@ impl Parser<'_> {
     }
 
     pub(super) fn note_type(&self, flags: &mut SpecFlags, token: &Token) -> Result<(), Diagnostic> {
-        if flags.struct_ty.is_some()
+        if flags.has_tagged_type()
             || flags.bool_ty
             || (flags.float_ty.is_some() && token.kind != TokenKind::KwLong)
         {

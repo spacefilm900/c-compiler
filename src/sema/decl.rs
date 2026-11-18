@@ -774,7 +774,8 @@ impl Sema<'_> {
                 format!("redefinition of '{name}' as different kind of symbol"),
             );
         };
-        if !function_types_match(&prior, &def_func_ty(func, params), false) {
+        let new_ty = def_func_ty(func, params);
+        if !function_types_match(&prior, &new_ty, false) {
             return self.err(
                 func.line,
                 func.column,
@@ -782,7 +783,14 @@ impl Sema<'_> {
             );
         }
         func.linkage = prior.linkage;
-        Ok(())
+        // C11 6.2.7p4: the identifier now has the composite type, so
+        // `int f(); int f(int); int f(double);` in one block compares the
+        // third declaration with `int f(int)`. The file-scope entry for the
+        // same function takes the composite type too.
+        if let Some(Symbol::Func(entry)) = self.scopes.last_mut().and_then(|s| s.get_mut(&name)) {
+            entry.absorb(&new_ty);
+        }
+        self.bind_file_func(func, params, prior.linkage)
     }
 
     pub(super) fn inherited_object_linkage(

@@ -79,9 +79,9 @@ impl ByteImage {
         }
     }
 
-    pub(super) fn pack_bits(&mut self, bit: u32, width: u32, value: u128) {
+    pub(super) fn pack_bits(&mut self, bit: u64, width: u32, value: u128) {
         let first = (bit / 8) as usize;
-        let last = ((bit + width).div_ceil(8)) as usize;
+        let last = (bit + u64::from(width)).div_ceil(8) as usize;
         self.clear_relocs(first, last.saturating_sub(first));
         pack_bits(&mut self.bytes, bit, width, value);
     }
@@ -135,7 +135,7 @@ pub(super) fn is_image_const(value: &ConstInit) -> bool {
     matches!(value, ConstInit::Bytes(_) | ConstInit::RelocBytes { .. })
 }
 
-pub(super) fn pack_bits(bytes: &mut [u8], bit: u32, width: u32, value: u128) {
+pub(super) fn pack_bits(bytes: &mut [u8], bit: u64, width: u32, value: u128) {
     let mask = if width >= 128 {
         u128::MAX
     } else {
@@ -143,7 +143,7 @@ pub(super) fn pack_bits(bytes: &mut [u8], bit: u32, width: u32, value: u128) {
     };
     let value = value & mask;
     for i in 0..width {
-        let pos = bit + i;
+        let pos = bit + u64::from(i);
         let index = (pos / 8) as usize;
         if index >= bytes.len() {
             break;
@@ -746,6 +746,13 @@ pub(super) fn designator(expr: &Expr) -> Result<(String, i64), ConstError> {
                 .as_ref()
                 .and_then(CType::size)
                 .ok_or(ConstError::NotConst)? as i64;
+            // `E1[E2]` is `*(E1 + E2)` (C11 6.5.2.1p2), so either operand may
+            // be the pointer: `&1[a]` is `&a[1]`.
+            let (base, index) = if base.ty().is_some_and(|ty| ty.is_integer()) {
+                (index, base)
+            } else {
+                (base, index)
+            };
             let step = const_index(index)?;
             let (name, offset) = pointer_object(base)?;
             Ok((

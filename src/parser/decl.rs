@@ -134,6 +134,7 @@ impl Parser<'_> {
                 column: declarator.column,
             }));
         }
+        self.reject_func_spec(specs)?;
         let DeclKind::Object(ty) = declarator.kind else {
             unreachable!("function handled above");
         };
@@ -195,6 +196,7 @@ impl Parser<'_> {
         specs: Specs,
         first: NamedDecl,
     ) -> Result<Vec<TopDecl>, Diagnostic> {
+        self.reject_func_spec(&specs)?;
         self.bind_typedef_decl(&specs.attrs, &first)?;
         while self.match_kind(TokenKind::Comma) {
             let next = self.parse_named_decl(specs.ty.clone())?;
@@ -208,6 +210,7 @@ impl Parser<'_> {
     }
 
     pub(super) fn parse_typedef_declarators(&mut self, specs: &Specs) -> Result<(), Diagnostic> {
+        self.reject_func_spec(specs)?;
         loop {
             let declarator = self.parse_named_decl(specs.ty.clone())?;
             if declarator.is_function() && self.current().kind == TokenKind::LBrace {
@@ -391,6 +394,20 @@ impl Parser<'_> {
     /// `inline` and `extern`, for [`Parser::mark_inline_definitions`].
     /// `name` is the C identifier, so every declaration of one function
     /// shares a record whatever its linker `symbol`.
+    /// C11 6.7.4p2: a function specifier (`inline`, `_Noreturn`) may appear
+    /// only in the declaration of a function, not of an object, a typedef
+    /// name, or a tag alone.
+    pub(super) fn reject_func_spec(&self, specs: &Specs) -> Result<(), Diagnostic> {
+        match specs.func_spec {
+            Some((name, line, column)) => Err(self.error_at(
+                line,
+                column,
+                format!("'{name}' can only appear on functions"),
+            )),
+            None => Ok(()),
+        }
+    }
+
     pub(super) fn note_inline(
         &mut self,
         name: &str,
@@ -671,6 +688,7 @@ impl Parser<'_> {
         specs: &Specs,
         declarator: NamedDecl,
     ) -> Result<VarDecl, Diagnostic> {
+        self.reject_func_spec(specs)?;
         let DeclKind::Object(ty) = declarator.kind else {
             unreachable!("object declarator");
         };

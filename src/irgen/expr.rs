@@ -597,6 +597,15 @@ impl Gen {
                 float_inst(op),
                 common.ir_type()
             ));
+            // A bit-field takes the result in its declared type (C11
+            // 6.5.16.2p3, 6.5.16.1p2), and only its own bits are written.
+            // For `_Bool f : 1`, `f += 0.25` is 1: the sum converts to
+            // `_Bool` directly, not through the promoted `int`.
+            if let Some(info) = bit_info(target) {
+                let declared = CType::from_name(info.declared);
+                let stored = self.convert(&updated, &common, &declared);
+                return self.store_bitfield(&addr, target, &stored, &declared);
+            }
             let stored = self.convert(&updated, &common, &dest);
             self.store(&dest, &stored, &addr);
             return stored;
@@ -618,13 +627,16 @@ impl Gen {
             value_inst(op, common.is_signed()),
             common.ir_type()
         ));
-        let stored = self.convert(&updated, &common_ty, &dest);
-        if bit_info(target).is_some() {
-            self.store_bitfield(&addr, target, &stored, &dest)
-        } else {
-            self.store(&dest, &stored, &addr);
-            stored
+        if let Some(info) = bit_info(target) {
+            // As above: convert straight to the declared type, so a
+            // `_Bool` bit-field sees the full-width result.
+            let declared = CType::from_name(info.declared);
+            let stored = self.convert(&updated, &common_ty, &declared);
+            return self.store_bitfield(&addr, target, &stored, &declared);
         }
+        let stored = self.convert(&updated, &common_ty, &dest);
+        self.store(&dest, &stored, &addr);
+        stored
     }
 
     pub(super) fn gen_incdec(&mut self, op: IncOp, target: &Expr) -> String {

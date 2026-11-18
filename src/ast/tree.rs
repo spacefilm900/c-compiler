@@ -199,7 +199,7 @@ pub struct ElemStore {
 /// Where a bit-field initializer is written.
 #[derive(Debug, Clone)]
 pub struct BitStore {
-    pub abs_bit: u32,
+    pub abs_bit: u64,
     pub width: u32,
     pub container_bits: u32,
     pub signed_field: bool,

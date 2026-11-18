@@ -346,3 +346,69 @@ fn conditional_feature_macros() {
     let text = pp("#if __STDC_NO_ATOMICS__ && __STDC_NO_COMPLEX__ && __STDC_NO_THREADS__ && __STDC_NO_VLA__ && __STDC_UTF_16__ && __STDC_UTF_32__\nint ok;\n#endif\n");
     assert_eq!(squash(&text), "int ok;");
 }
+
+#[test]
+fn line_directive_takes_a_decimal_digit_sequence() {
+    // C11 6.10.4p3: a digit sequence, read as decimal even with a leading 0.
+    assert_eq!(squash(&pp("#line 010\n__LINE__\n")), "10");
+    assert_eq!(squash(&pp("#line 2147483647\n__LINE__\n")), "2147483647");
+    for bad in ["0x10", "10u", "5L", "'a'", "1e3", "07.5"] {
+        let err = pp_err(&format!("#line {bad}\nint x;\n"));
+        assert!(err.contains("simple digit sequence"), "{bad}: {err}");
+    }
+    assert!(pp_err("#line 0\n").contains("out of range"));
+    assert!(pp_err("#line 2147483648\n").contains("out of range"));
+    assert!(pp_err("#line 99999999999999999999999\n").contains("out of range"));
+    // A macro may expand to the digit sequence (6.10.4p5).
+    assert_eq!(squash(&pp("#define N 42\n#line N\n__LINE__\n")), "42");
+}
+
+#[test]
+fn unsigned_character_constants_are_uintmax_in_if() {
+    // C11 6.10.1p4: `char16_t` and `char32_t` are unsigned, so they act as
+    // `uintmax_t`; `L'a'` (`wchar_t` is `int`) and `'a'` stay signed.
+    assert_eq!(
+        squash(&pp("#if u'a' - 98 < 0\nbad\n#else\ngood\n#endif\n")),
+        "good"
+    );
+    assert_eq!(
+        squash(&pp("#if U'a' - 98 < 0\nbad\n#else\ngood\n#endif\n")),
+        "good"
+    );
+    assert_eq!(
+        squash(&pp("#if U'\\xffffffff' > -1\nbad\n#else\ngood\n#endif\n")),
+        "good"
+    );
+    assert_eq!(
+        squash(&pp("#if L'a' - 98 < 0\ngood\n#else\nbad\n#endif\n")),
+        "good"
+    );
+    assert_eq!(
+        squash(&pp("#if 'a' - 98 < 0\ngood\n#else\nbad\n#endif\n")),
+        "good"
+    );
+    // An integer constant still picks its type by value: 0xFFFFFFFF fits.
+    assert_eq!(
+        squash(&pp(
+            "#if 0xFFFFFFFF - 0x100000000 < 0\ngood\n#else\nbad\n#endif\n"
+        )),
+        "good"
+    );
+}
+
+#[test]
+fn hashhash_from_an_argument_is_not_the_paste_operator() {
+    // C11 6.10.3.3p2: `##` is the operator only in the replacement list.
+    let src = "#define S(x) #x\n#define G(x) S(x)\nG(a ## b)\n\
+               #define C(p, q) p ## q\n#define X(m) S(m)\nX(C(x ## y, z))\n\
+               #define ID(x) x\nID(1 ## 2)\n";
+    assert_eq!(squash(&pp(src)), "\"a ## b\" \"x ## yz\" 1 ## 2");
+    // Pasting itself still works, including a chain, and the `##` that
+    // pasting `#` and `#` makes is an ordinary token (C11 6.10.3.3p4).
+    let src = "#define P(a, b, c) a ## b ## c\nP(x, y, z)\n\
+               #define OBJ x ## y\nOBJ\n\
+               #define hash_hash # ## #\n#define mkstr(a) # a\n\
+               #define in_between(a) mkstr(a)\n\
+               #define join(c, d) in_between(c hash_hash d)\njoin(x, y)\n";
+    assert_eq!(squash(&pp(src)), "xyz xy \"x ## y\"");
+}

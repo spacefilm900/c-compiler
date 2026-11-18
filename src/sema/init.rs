@@ -164,6 +164,7 @@ impl Sema<'_> {
                     let dcol = *dcol;
                     let first = first.as_ref().clone();
                     let mut scratch = Vec::new();
+                    let mut reach = Reach::new(0, self.store_drops);
                     let mut frames = if elided {
                         Vec::new()
                     } else {
@@ -178,7 +179,7 @@ impl Sema<'_> {
                                 base: child_base,
                                 union: union_key(&child.ty),
                             });
-                            self.positional_one(&first, &mut frames, &mut scratch, elem)?;
+                            self.positional_one(&first, &mut frames, &mut scratch, &mut reach)?;
                         } else if !advance_frames(&mut frames) {
                             frames.clear();
                         }
@@ -191,14 +192,14 @@ impl Sema<'_> {
                             base: 0,
                             union: union_key(elem),
                         });
-                        self.positional_one(&first, &mut frames, &mut scratch, elem)?;
+                        self.positional_one(&first, &mut frames, &mut scratch, &mut reach)?;
                     }
                     pos += 1;
                     while pos < items.len()
                         && !frames.is_empty()
                         && !matches!(items[pos], Init::Designated { .. })
                     {
-                        self.positional_one(&items[pos], &mut frames, &mut scratch, elem)?;
+                        self.positional_one(&items[pos], &mut frames, &mut scratch, &mut reach)?;
                         pos += 1;
                     }
                     count = count.max(at + 1);
@@ -523,14 +524,19 @@ impl Sema<'_> {
         if let Some(width) = field.bit_width.filter(|width| *width > 0) {
             let expr = self.scalar_expr(init)?;
             let declared = field.ty.as_integer().expect("bit-field type is an integer");
+            let Some(abs_bit) = base
+                .checked_mul(8)
+                .and_then(|bits| bits.checked_add(u64::from(field.bit_offset)))
+            else {
+                let (line, column) = init_pos(init);
+                return self.err(line, column, "object is too large to initialize");
+            };
             stores.push(ElemStore {
                 offset: base + field.offset,
                 ty: CType::from_name(bitfield_value_type(declared, width)),
                 expr,
                 bits: Some(BitStore {
-                    abs_bit: (base as u32)
-                        .saturating_mul(8)
-                        .saturating_add(field.bit_offset),
+                    abs_bit,
                     width,
                     container_bits: (field.ty.size().unwrap_or(1) * 8) as u32,
                     signed_field: declared.is_signed(),
@@ -561,6 +567,7 @@ impl Sema<'_> {
             base,
             union: union_key(ty),
         }];
+        let mut reach = Reach::new(stores.len(), self.store_drops);
         for item in items {
             if let Init::Designated {
                 designators,
@@ -584,9 +591,14 @@ impl Sema<'_> {
                         base: child_base,
                         union: union_key(&child.ty),
                     });
-                    self.positional_one(init, &mut frames_at, stores, ty)?;
+                    self.positional_one(init, &mut frames_at, stores, &mut reach)?;
                     frames = frames_at;
                     continue;
+                }
+                if !child.ty.is_scalar() && !child.field.as_ref().is_some_and(|f| f.is_bitfield()) {
+                    let child_base =
+                        frames_at.last().map(|frame| frame.base).unwrap_or(0) + child.offset;
+                    self.replace_subobject(&child.ty, child_base, stores, &mut reach);
                 }
                 self.init_child(&child, &frames_at, init, stores)?;
                 frames = frames_at;
@@ -597,9 +609,42 @@ impl Sema<'_> {
                 }
                 continue;
             }
-            self.positional_one(item, &mut frames, stores, ty)?;
+            self.positional_one(item, &mut frames, stores, &mut reach)?;
         }
         Ok(())
+    }
+
+    /// C11 6.7.9p19: an initializer for a whole aggregate subobject (a brace
+    /// list, a string literal for a character array, or an expression of
+    /// the subobject's struct or union type) overrides every earlier
+    /// initializer inside it, and the elements its own list leaves out are
+    /// zero, not what an earlier list gave them. So `{ .a = {1, 2}, .a = {3} }`
+    /// leaves `a[1]` zero, while `{ .a = {1, 2}, .a[0] = 3 }` keeps it 2.
+    /// Earlier stores inside the subobject are dropped; their expressions are
+    /// still checked, as for an overridden union member.
+    pub(super) fn replace_subobject(
+        &mut self,
+        ty: &CType,
+        base: u64,
+        stores: &mut Vec<ElemStore>,
+        reach: &mut Reach,
+    ) {
+        let Some(size) = ty.size().filter(|size| *size > 0) else {
+            return;
+        };
+        if !reach.may_overlap(base, stores, self.store_drops) {
+            return;
+        }
+        let end = base + size;
+        let tail = stores.split_off(reach.start);
+        let (gone, kept): (Vec<_>, Vec<_>) = tail
+            .into_iter()
+            .partition(|store| store_within(store, base, end));
+        stores.extend(kept);
+        if !gone.is_empty() {
+            self.overridden.extend(gone);
+            self.store_drops += 1;
+        }
     }
 
     /// Whether a designated subobject is an aggregate initialized without
@@ -727,7 +772,7 @@ impl Sema<'_> {
         item: &Init,
         frames: &mut Vec<InitFrame>,
         stores: &mut Vec<ElemStore>,
-        root: &CType,
+        reach: &mut Reach,
     ) -> Result<(), Diagnostic> {
         loop {
             let Some(frame) = frames.last() else {
@@ -747,6 +792,9 @@ impl Sema<'_> {
             let scalar =
                 child.ty.is_scalar() || child.field.as_ref().is_some_and(|f| f.is_bitfield());
             if scalar || self.opens_subobject(&child.ty, item) {
+                if !scalar {
+                    self.replace_subobject(&child.ty, child_base, stores, reach);
+                }
                 if let Some(field) = &child.field {
                     if field.is_bitfield() || scalar {
                         self.init_field(field, frame.base, item, stores)?;
@@ -774,7 +822,6 @@ impl Sema<'_> {
                 base: child_base,
                 union: union_key(&child.ty),
             });
-            let _ = root;
         }
     }
 
@@ -862,6 +909,9 @@ impl Sema<'_> {
             .into_iter()
             .partition(|store| store_within(store, base, end));
         *stores = kept;
+        if !gone.is_empty() {
+            self.store_drops += 1;
+        }
         self.overridden.extend(gone);
         self.union_choice[pos].2 = member;
         // A nested union is first chosen after the union around it, so the
@@ -1049,6 +1099,23 @@ impl Sema<'_> {
         Ok(value)
     }
 
+    /// A pointer converted to `_Bool` is 0 when it is null and 1 otherwise
+    /// (C11 6.3.1.2). The address of an object or function is never null
+    /// (6.3.2.3p3), so `_Bool b = &g;` is the constant 1 and
+    /// `_Bool n = (void *)0;` is 0. A weak symbol may be null, so it is
+    /// not folded.
+    fn address_truth(&self, expr: &Expr) -> Option<bool> {
+        if !expr.ty().is_some_and(|ty| ty.is_pointer()) {
+            return None;
+        }
+        match eval_ptr(expr).ok()? {
+            PtrConst::Null => Some(false),
+            PtrConst::IntToPtr(bits) => Some(bits != 0),
+            PtrConst::Label { .. } => Some(true),
+            PtrConst::Addr { name, .. } => (!self.weak_symbols.contains(&name)).then_some(true),
+        }
+    }
+
     pub(super) fn fold_one(
         &self,
         name: &str,
@@ -1080,18 +1147,46 @@ impl Sema<'_> {
             {
                 if let Some(cast_int) = ty_name.as_integer() {
                     if let Ok(ptr) = eval_ptr(inner) {
+                        // Conversion to `_Bool` compares with 0 (C11
+                        // 6.3.1.2); it does not truncate the address.
+                        if cast_int == TypeName::Bool {
+                            return match self.address_truth(inner) {
+                                Some(truth) => Ok(ConstInit::Int(convert_bits(
+                                    u128::from(truth),
+                                    TypeName::Bool,
+                                    dest_int,
+                                ))),
+                                None => self.const_diag(name, expr),
+                            };
+                        }
                         // A file-scope address is not a number until link time.
-                        // Truncating it, in the cast or in the destination,
-                        // cannot be folded. A 64-bit cast into a 64-bit
-                        // object keeps every bit (`ptrtoint` to i64).
-                        if matches!(ptr, PtrConst::Addr { .. } | PtrConst::Label { .. })
-                            && (cast_int.width() < 64 || dest_int.width() < 64)
-                        {
-                            return self.err(
-                                expr.line(),
-                                expr.column(),
-                                format!("initializer of '{name}' truncates an address"),
-                            );
+                        // C11 6.6p7 has no integer form of an address constant;
+                        // 6.6p10 lets an implementation accept one, and only
+                        // the pointer-sized form is accepted here: a 64-bit
+                        // cast into a 64-bit object keeps every bit
+                        // (`ptrtoint` to i64). Truncating the address, or
+                        // widening it to `__int128`, cannot be folded.
+                        if matches!(ptr, PtrConst::Addr { .. } | PtrConst::Label { .. }) {
+                            let narrowest = cast_int.width().min(dest_int.width());
+                            let widest = cast_int.width().max(dest_int.width());
+                            if narrowest < 64 {
+                                return self.err(
+                                    expr.line(),
+                                    expr.column(),
+                                    format!("initializer of '{name}' truncates an address"),
+                                );
+                            }
+                            if widest > 64 {
+                                return self.err(
+                                    expr.line(),
+                                    expr.column(),
+                                    format!(
+                                        "initializer of '{name}' converts an address to an \
+                                         integer wider than a pointer, which is not a \
+                                         constant expression"
+                                    ),
+                                );
+                            }
                         }
                         return Ok(match ptr_as_int(ptr, cast_int) {
                             ConstInit::Int(bits) => {
@@ -1100,6 +1195,11 @@ impl Sema<'_> {
                             other => other,
                         });
                     }
+                }
+            }
+            if dest_int == TypeName::Bool {
+                if let Some(truth) = self.address_truth(expr) {
+                    return Ok(ConstInit::Int(u128::from(truth)));
                 }
             }
             return self.const_diag(name, expr);
@@ -1182,6 +1282,61 @@ impl Clone for InitChild {
     }
 }
 
+/// How far the stores of one brace list reach, so that a whole-subobject
+/// initializer searches for earlier stores to replace only when one can lie
+/// inside it ([`Sema::replace_subobject`]). Stores are mostly made in
+/// increasing offset order, so this keeps a long designated list linear.
+pub(super) struct Reach {
+    /// The first store that belongs to this brace list.
+    start: usize,
+    /// Stores before this index are counted in `end`.
+    seen: usize,
+    /// One past the furthest byte a counted store writes.
+    end: u64,
+    /// [`Sema::store_drops`] when `seen` was last valid. Dropping stores
+    /// moves later ones down, so a change means counting again.
+    drops: usize,
+}
+
+impl Reach {
+    pub(super) fn new(start: usize, drops: usize) -> Self {
+        Reach {
+            start,
+            seen: start,
+            end: 0,
+            drops,
+        }
+    }
+
+    /// Whether a store of this list may start before `base`'s subobject
+    /// ends, that is, whether any store reaches past `base`.
+    fn may_overlap(&mut self, base: u64, stores: &[ElemStore], drops: usize) -> bool {
+        if drops != self.drops || stores.len() < self.seen {
+            self.seen = self.start.min(stores.len());
+            self.end = 0;
+            self.drops = drops;
+        }
+        for store in &stores[self.seen..] {
+            self.end = self.end.max(store_reach(store));
+        }
+        self.seen = stores.len();
+        self.end > base
+    }
+}
+
+/// One past the last byte a store writes. A bit-field store counts from the
+/// byte of its first bit, as [`store_within`] does.
+fn store_reach(store: &ElemStore) -> u64 {
+    if let Some(bits) = &store.bits {
+        let first = bits.abs_bit / 8;
+        let bytes = u64::from(bits.width.div_ceil(8)) + 1;
+        return first.saturating_add(bytes);
+    }
+    store
+        .offset
+        .saturating_add(store.ty.size().unwrap_or(0).max(1))
+}
+
 pub(super) struct InitFrame {
     pub(super) children: Vec<InitChild>,
     pub(super) index: usize,
@@ -1195,7 +1350,7 @@ pub(super) struct InitFrame {
 /// Whether a store lies inside the bytes `base..end`.
 pub(super) fn store_within(store: &ElemStore, base: u64, end: u64) -> bool {
     if let Some(bits) = &store.bits {
-        let first = u64::from(bits.abs_bit / 8);
+        let first = bits.abs_bit / 8;
         return first >= base && first < end;
     }
     let size = store.ty.size().unwrap_or(0);

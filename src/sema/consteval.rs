@@ -92,6 +92,12 @@ pub(super) fn has_real(expr: &Expr) -> bool {
                 || has_real(then_expr)
                 || has_real(else_expr)
         }
+        Expr::CondShort {
+            cond,
+            else_expr,
+            ty,
+            ..
+        } => ty.as_ref().is_some_and(|ty| ty.is_float()) || has_real(cond) || has_real(else_expr),
         Expr::Cast { ty_name, expr, .. } => ty_name.is_float() || has_real(expr),
         Expr::Call { callee, .. } => matches!(
             callee.as_ref(),
@@ -129,18 +135,23 @@ pub(super) fn eval_num(expr: &Expr) -> Result<NumConst, ConstError> {
             } else {
                 then_expr
             };
-            let value = eval_num(chosen)?;
-            let result = ty.as_ref().ok_or(ConstError::NotConst)?;
-            if let Some(kind) = result.float_kind() {
-                Ok(NumConst::Real {
-                    bits: value.to_real(kind).ok_or(ConstError::NotConst)?,
-                    kind,
-                })
-            } else if let Some(dest) = result.as_integer() {
-                Ok(NumConst::Int(value.to_int(dest)?))
+            num_as(eval_num(chosen)?, ty.as_ref())
+        }
+        // GNU `cond ?: else`: the condition is evaluated once and, when
+        // nonzero, is the result, converted to the result type.
+        Expr::CondShort {
+            cond,
+            else_expr,
+            ty,
+            ..
+        } => {
+            let first = eval_num(cond)?;
+            let value = if first.is_zero() {
+                eval_num(else_expr)?
             } else {
-                Err(ConstError::NotConst)
-            }
+                first
+            };
+            num_as(value, ty.as_ref())
         }
         Expr::Cast { ty_name, expr, .. } => {
             let value = eval_num(expr)?;
@@ -157,6 +168,21 @@ pub(super) fn eval_num(expr: &Expr) -> Result<NumConst, ConstError> {
         }
         Expr::Call { callee, args, .. } => eval_fp_format_builtin(callee, args),
         _ => Err(ConstError::NotConst),
+    }
+}
+
+/// A conditional's chosen operand converted to the conditional's type.
+fn num_as(value: NumConst, result: Option<&CType>) -> Result<NumConst, ConstError> {
+    let result = result.ok_or(ConstError::NotConst)?;
+    if let Some(kind) = result.float_kind() {
+        Ok(NumConst::Real {
+            bits: value.to_real(kind).ok_or(ConstError::NotConst)?,
+            kind,
+        })
+    } else if let Some(dest) = result.as_integer() {
+        Ok(NumConst::Int(value.to_int(dest)?))
+    } else {
+        Err(ConstError::NotConst)
     }
 }
 

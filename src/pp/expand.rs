@@ -227,7 +227,8 @@ impl Processor {
         // `__LINE__` and `__FILE__` in a replacement list use the invocation,
         // not the line where the macro was defined.
         retarget(&mut body, inv);
-        let mut repl = paste_tokens(&body, inv)?;
+        let ops: Vec<bool> = body.iter().map(|tok| tok.spelling == "##").collect();
+        let mut repl = paste_tokens(&body, &ops, inv)?;
         repl.retain(|tok| tok.kind != PpKind::Placemarker);
         paint(&mut repl, &inv.hide, &mac.name);
         if let Some(first) = repl.first_mut() {
@@ -259,8 +260,15 @@ impl Processor {
             expanded.insert(name.clone(), self.expand_list(arg)?);
         }
         let mut subst = Vec::new();
+        // C11 6.10.3.3: only a `##` written in the replacement list is the
+        // operator. One that came in with an argument is an ordinary token,
+        // so `ops[i]` records which tokens of `subst` are the operator.
+        let mut ops = Vec::new();
         let mut index = 0;
         while index < body.len() {
+            // Tokens pushed by the branches below that `continue` came from
+            // an argument, a stringification or a placemarker.
+            ops.resize(subst.len(), false);
             if mac.variadic
                 && index + 2 < body.len()
                 && body[index].is_comma()
@@ -307,10 +315,12 @@ impl Processor {
                 index += 1;
                 continue;
             }
+            ops.push(body[index].spelling == "##");
             subst.push(body[index].clone());
             index += 1;
         }
-        let mut repl = paste_tokens(&subst, inv)?;
+        ops.resize(subst.len(), false);
+        let mut repl = paste_tokens(&subst, &ops, inv)?;
         repl.retain(|tok| tok.kind != PpKind::Placemarker);
         paint(&mut repl, &inv.hide, &mac.name);
         if let Some(first) = repl.first_mut() {
@@ -583,17 +593,25 @@ pub(super) fn placemarker(at: &PpToken) -> PpToken {
     }
 }
 
-pub(super) fn paste_tokens(tokens: &[PpToken], inv: &PpToken) -> Result<Vec<PpToken>, Diagnostic> {
+/// Apply the `##` operators of a replacement list. `ops[i]` is true where
+/// `tokens[i]` is a `##` from the replacement list itself; a `##` that an
+/// argument supplied, or that pasting produced, is an ordinary token.
+pub(super) fn paste_tokens(
+    tokens: &[PpToken],
+    ops: &[bool],
+    inv: &PpToken,
+) -> Result<Vec<PpToken>, Diagnostic> {
+    let is_op = |index: usize| ops.get(index).copied().unwrap_or(false);
     let mut out = Vec::new();
     let mut index = 0;
     while index < tokens.len() {
-        if index + 1 < tokens.len() && tokens[index + 1].spelling == "##" {
+        if index + 1 < tokens.len() && is_op(index + 1) {
             if index + 2 >= tokens.len() {
                 return Err(error_at(inv, "'##' at the end of a macro replacement list"));
             }
             let mut merged = paste_one(&tokens[index], &tokens[index + 2], inv)?;
             index += 3;
-            while index < tokens.len() && tokens[index].spelling == "##" {
+            while index < tokens.len() && is_op(index) {
                 if index + 1 >= tokens.len() {
                     return Err(error_at(inv, "'##' at the end of a macro replacement list"));
                 }
@@ -603,7 +621,7 @@ pub(super) fn paste_tokens(tokens: &[PpToken], inv: &PpToken) -> Result<Vec<PpTo
             out.push(merged);
             continue;
         }
-        if tokens[index].spelling == "##" {
+        if is_op(index) {
             return Err(error_at(
                 inv,
                 "'##' at the beginning of a macro replacement list",

@@ -313,3 +313,24 @@ pub fn composite(left: &CType, right: &CType) -> CType {
     };
     base.with_quals(left.quals())
 }
+
+/// `?:` on two pointers (C11 6.5.15p3, p6), shared by semantic analysis and
+/// the parser's typing of operands that are not evaluated. The result
+/// pointee carries every qualifier from either side. A `void *` arm with an
+/// object pointer produces `void *` with those qualifiers; with a function
+/// pointer it is not allowed. Compatible pointees give their composite.
+pub fn merge_pointers(left: &CType, right: &CType) -> Option<CType> {
+    let lp = left.pointee()?;
+    let rp = right.pointee()?;
+    let quals = lp.quals().merge(rp.quals());
+    if (lp.unqualified().is_void() && !rp.is_func())
+        || (rp.unqualified().is_void() && !lp.is_func())
+    {
+        return Some(CType::pointer(CType::Void.with_quals(quals)));
+    }
+    if compatible(&lp.unqualified(), &rp.unqualified()) {
+        let merged = composite(&lp.unqualified(), &rp.unqualified()).with_quals(quals);
+        return Some(CType::pointer(merged));
+    }
+    None
+}

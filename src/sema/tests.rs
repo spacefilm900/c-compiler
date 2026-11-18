@@ -880,6 +880,36 @@ int main(void) {
     assert!(sema_err("int g; int x = (int)&g;").contains("truncates an address"));
     assert!(sema_err("int g; long x = (int)&g;").contains("truncates an address"));
     sema_ok("int g; long x = (long)&g;");
+    // `_Bool` from an address constant: 1 unless null, but a weak symbol's
+    // address may be null at run time, as Clang and GCC also reject.
+    sema_ok("int g; _Bool b = &g; _Bool n = (void *)0; int a[2]; _Bool c = &1[a];");
+    assert!(
+        sema_err("extern int w __attribute__((weak)); _Bool b = &w;")
+            .contains("not a constant expression")
+    );
+    // An explicit `(_Bool)` cast is the same truth value, not a truncation.
+    sema_ok("int g; _Bool b = (_Bool)&g; int i = (_Bool)&g; _Bool n = (_Bool)(void *)0;");
+    assert!(
+        sema_err("extern int w __attribute__((weak)); _Bool b = (_Bool)&w;")
+            .contains("not a constant expression")
+    );
+    assert!(sema_err("int g; char c = (char)&g;").contains("truncates an address"));
+    sema_ok("int g; unsigned long x = (unsigned long)&g;");
+    // Wider than a pointer: no `ptrtoint` of matching width can be emitted,
+    // and Clang rejects each of these.
+    for src in [
+        "int g; __int128 x = (__int128)&g;",
+        "int g; __int128 x = (long)&g;",
+        "int g; unsigned __int128 x = (unsigned long)&g;",
+        "int g; long x = (__int128)&g;",
+        "int g; struct T { __int128 m; } t = { (long)&g };",
+        "int g; union U { __int128 m; } u = { (long)&g };",
+    ] {
+        assert!(
+            sema_err(src).contains("integer wider than a pointer"),
+            "{src}"
+        );
+    }
     assert!(sema_err("int main(void) { int (*p)[]; return p[0][0]; }").contains("incomplete type"));
 }
 
@@ -1711,4 +1741,81 @@ fn null_pointer_constant_needs_integer_operand_in_void_cast() {
     }
     sema_ok("int f(void); int g(void) { return f == _Generic(0, int: (void *)0); }");
     sema_ok("int g(int *p) { return p == (void *)(void *)0; }");
+}
+
+#[test]
+fn void_pointer_and_function_pointer_assignment_and_conditional() {
+    // C11 6.5.16.1p1 and 6.5.15p3 pair `void *` only with object pointers.
+    // -std=gnu11 accepts a function pointer with a warning, as GCC 14 and
+    // Clang 19 do outside their pedantic modes (black-box); -std=c11 keeps
+    // the error, as `-pedantic-errors` does there.
+    use crate::Dialect;
+    for source in [
+        "int f(void); void *p = f;",
+        "int f(void); void g(void) { void *p; p = &f; }",
+        "void *v; void g(void) { int (*fp)(void); fp = v; }",
+        "int f(void); void take(void *); void g(void) { take(f); }",
+        "int f(void); const void *g(void) { return f; }",
+        "int f(void); void *v; void g(void) { (void)(1 ? f : v); }",
+        "int f(void); void *v; void g(void) { (void)(1 ? v : &f); }",
+    ] {
+        let err = sema_dialect(source, Dialect::C11).unwrap_err();
+        assert!(err.contains("incompatible"), "{source}: {err}");
+        let warnings = sema_dialect(source, Dialect::Gnu11).unwrap();
+        assert_eq!(warnings.len(), 1, "{source}: {warnings:?}");
+        assert!(
+            warnings[0].contains("GNU extension"),
+            "{source}: {warnings:?}"
+        );
+    }
+    // Valid in both dialects with no warning: null pointer constants, and
+    // `void *` with object pointers, including incomplete ones.
+    for source in [
+        "int f(void); int (*fp)(void) = (void *)0; int (*fq)(void) = 0;",
+        "int f(void); void g(void) { int (*fp)(void) = 1 ? f : (void *)0; fp = fp; }",
+        "struct I; struct I *ip; void *v; void g(void) { v = ip; ip = v; (void)(1 ? ip : v); }",
+        "int a[3]; void *v = a; const void *c = &a; void g(void) { (void)(1 ? c : v); }",
+    ] {
+        for dialect in [Dialect::C11, Dialect::Gnu11] {
+            assert_eq!(sema_dialect(source, dialect), Ok(Vec::new()), "{source}");
+        }
+    }
+}
+
+#[test]
+fn block_function_redeclaration_keeps_the_composite_type() {
+    // C11 6.2.7p4, 6.7p4: after `int f(); int f(int);` in one block, `f`
+    // has the prototype, so `int f(double)` there conflicts with it (Clang
+    // 19 and GCC 14 reject it), and a call is checked against it.
+    assert!(
+        sema_err("void g(void) { int f(); int f(int); int f(double); }")
+            .contains("conflicting types for 'f'")
+    );
+    assert!(
+        sema_err("void g(void) { extern int f(); extern int f(int); f(1, 2); }")
+            .contains("expects 1 argument")
+    );
+    // The function's type is shared with other blocks, as for a first
+    // block-scope declaration (GCC 14 rejects this too).
+    assert!(
+        sema_err("void g(void) { int f(); int f(int); } void h(void) { int f(double); }")
+            .contains("conflicting types for 'f'")
+    );
+    sema_ok("void g(void) { int f(); int f(int); int f(int); int f(); f(1); }");
+    sema_ok(
+        "static int f(); void g(void) { int f(int); int f(); } static int f(int x) { return x; }",
+    );
+}
+
+#[test]
+fn bit_positions_past_two_to_the_32_stay_in_place() {
+    // A bit-field store's position from the start of a static object is a
+    // u64: a position at or past bit 2^32 must not wrap or saturate onto an
+    // earlier byte. Here it is past the end of the image, so nothing moves.
+    let mut bytes = [0u8; 16];
+    super::image::pack_bits(&mut bytes, (1u64 << 32) + 3, 1, 1);
+    super::image::pack_bits(&mut bytes, u64::from(u32::MAX), 9, 0x1ff);
+    assert_eq!(bytes, [0u8; 16]);
+    super::image::pack_bits(&mut bytes, 9, 3, 0b101);
+    assert_eq!(bytes[1], 0b1010);
 }
