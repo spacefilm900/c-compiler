@@ -417,7 +417,7 @@ pub fn layout_members(
                 bit_pos = align_up(bit_pos, align_bits)?;
                 places.push(LayoutPlace {
                     offset: bit_pos / 8,
-                    bit_offset: bit_pos as u32,
+                    bit_offset: u32::try_from(bit_pos).ok()?,
                     bit_width: Some(0),
                 });
             } else {
@@ -427,9 +427,13 @@ pub fn layout_members(
                     bit_pos = align_up(bit_pos, align_bits)?;
                 }
                 let unit_start = bit_pos - (bit_pos % unit_bits);
+                // A bit-field's position is kept in 32 bits, so a record with
+                // a bit-field at or past 512 MiB is reported as too large
+                // (an implementation limit, C11 5.2.4.1) rather than
+                // truncated.
                 places.push(LayoutPlace {
                     offset: unit_start / 8,
-                    bit_offset: bit_pos as u32,
+                    bit_offset: u32::try_from(bit_pos).ok()?,
                     bit_width: Some(width as u32),
                 });
                 bit_pos = bit_pos.checked_add(width)?;
@@ -438,17 +442,17 @@ pub fn layout_members(
                 }
             }
         } else {
-            let byte = align_up((bit_pos + 7) / 8, u64::from(field_align))?;
+            let byte = align_up(bit_pos.checked_add(7)? / 8, u64::from(field_align))?;
             places.push(LayoutPlace {
                 offset: byte,
                 bit_offset: 0,
                 bit_width: None,
             });
-            bit_pos = byte.checked_add(member.size)?.saturating_mul(8);
+            bit_pos = byte.checked_add(member.size)?.checked_mul(8)?;
             align = align.max(field_align);
         }
     }
-    let bytes = (bit_pos + 7) / 8;
+    let bytes = bit_pos.checked_add(7)? / 8;
     let size = align_up(bytes, u64::from(align))?;
     Some((places, size, align))
 }

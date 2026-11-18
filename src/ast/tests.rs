@@ -176,3 +176,19 @@ fn signed_shl_fits_rejects_a_lost_magnitude_bit() {
     assert!(!signed_shl_fits(1, 31, 32));
     assert!(!signed_shl_fits(-1, 1, 128));
 }
+
+#[test]
+fn layout_reports_records_too_large_for_its_counters() {
+    // A bit-field position is a u32 bit count: one at bit 2^32 (512 MiB in)
+    // would wrap to bit 0, so the layout fails and the caller reports the
+    // record as too large. Just below the limit still lays out.
+    assert!(layout_members(&[plain(1 << 29, 1), bits(4, 4, 1, true)], false).is_none());
+    let (places, _, _) =
+        layout_members(&[plain((1 << 29) - 1, 1), bits(4, 4, 1, true)], false).unwrap();
+    assert_eq!(places[1].bit_offset, ((1u64 << 29) - 1) as u32 * 8);
+    assert!(layout_members(&[plain(1 << 29, 1), bits(4, 4, 0, false)], false).is_none());
+    // The byte cursor in bits must not saturate or wrap: 2^61 + 1 bytes is
+    // more than a u64 bit count holds.
+    assert!(layout_members(&[plain(1 << 60, 1), plain(1 << 60, 1), plain(1, 1)], false).is_none());
+    assert!(layout_members(&[plain(u64::MAX - 3, 1), plain(1, 1)], false).is_none());
+}

@@ -1431,3 +1431,15 @@ fn unevaluated_operand_types_follow_c11() {
          _Static_assert(sizeof(__builtin_strlen(0)) == 1, \"s\"); return 0; }",
     );
 }
+
+#[test]
+fn oversized_records_are_too_large() {
+    for source in [
+        "struct S { char pad[536870912]; unsigned int x : 1; };",
+        "struct S { char a[0x1000000000000000]; char b[0x1000000000000000]; char c; };",
+        "struct S { char a[0x0fffffffffffffff]; char b[0x0fffffffffffffff]; char c[0x0fffffffffffffff]; };",
+    ] {
+        assert!(parse_err(source).contains("struct 'S' is too large"), "{source}");
+    }
+    parsed("struct S { char pad[536870911]; unsigned int x : 1; };");
+}
