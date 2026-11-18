@@ -380,8 +380,15 @@ fn binary128_constants_are_folded_exactly() {
         "0xL00000000000000004002300000000000",
     ];
     assert_eq!(got, expected, "{module}");
-    assert!(module.contains("@big = global i32 1"), "{module}");
-    assert!(module.contains("@fits = global i32 1"), "{module}");
+    for name in ["@big", "@fits"] {
+        let prefix = format!("{name} = global i32 ");
+        let value = module
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix.as_str()))
+            .and_then(|rest| rest.split(',').next())
+            .map(str::trim);
+        assert_eq!(value, Some("1"), "{name}: {module}");
+    }
 }
 
 #[test]
