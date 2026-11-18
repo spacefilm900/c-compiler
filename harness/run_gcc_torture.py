@@ -89,6 +89,8 @@ def apply_target_overlay(known: dict[str, str], arch: str) -> None:
     path = ROOT / "harness" / f"gcc_torture_known_failures_{arch}.txt"
     if arch == "x86_64" or not path.is_file():
         return
+    baseline = set(known)
+    seen: set[str] = set()
     for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         text = line.strip()
         if not text or text.startswith("#"):
@@ -100,12 +102,15 @@ def apply_target_overlay(known: dict[str, str], arch: str) -> None:
             sys.exit(f"{path}:{lineno}: {usage}")
         if sign == "+" and len(reason.split(None, 1)) < 2:
             sys.exit(f"{path}:{lineno}: {usage} (a new entry needs a category and a reason)")
+        if rel in seen:
+            sys.exit(f"{path}:{lineno}: {rel} appears more than once")
+        seen.add(rel)
         if sign == "-":
-            if rel not in known:
+            if rel not in baseline:
                 sys.exit(f"{path}:{lineno}: {rel} is not in the x86_64 list")
             del known[rel]
         else:
-            if rel in known:
+            if rel in baseline:
                 sys.exit(f"{path}:{lineno}: {rel} is already in the x86_64 list")
             known[rel] = reason.strip().split()[0]
 
