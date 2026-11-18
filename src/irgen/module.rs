@@ -549,7 +549,7 @@ pub(super) fn render_function(
     }
 
     gen.pos = (func.line, func.column);
-    gen.gen_compound(body);
+    gen.gen_compound(body)?;
     if !gen.terminated {
         gen.emit_implicit_return();
     }

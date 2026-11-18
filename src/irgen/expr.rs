@@ -250,7 +250,12 @@ impl Gen {
             _ => (None, &body.items[..]),
         };
         for item in rest {
-            self.gen_stmt(item);
+            if let Err(ice) = self.gen_stmt(item) {
+                // Back inside an expression: keep the error, as expression
+                // lowering does, and let the caller finish with a placeholder.
+                self.ice = Some(ice);
+                break;
+            }
         }
         self.ensure_block();
         last

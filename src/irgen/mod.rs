@@ -236,6 +236,22 @@ impl Gen {
         "poison".to_string()
     }
 
+    /// An internal compiler error that ends lowering, at the current
+    /// statement. Statement lowering returns it as `Err`. If an expression
+    /// already recorded an error (see [`Gen::ice`]), that one is returned
+    /// instead, so the first error found is the one reported.
+    fn fail(&mut self, message: &str) -> Ice {
+        let (line, column) = self.pos;
+        self.fail_at(line, column, message)
+    }
+
+    /// [`Gen::fail`] at a given position.
+    fn fail_at(&mut self, line: usize, column: usize, message: &str) -> Ice {
+        self.ice
+            .take()
+            .unwrap_or_else(|| Ice::new(line, column, message))
+    }
+
     fn emit(&mut self, line: &str) {
         self.lines.push(line.to_string());
     }

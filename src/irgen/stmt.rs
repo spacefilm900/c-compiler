@@ -3,16 +3,20 @@
 use super::*;
 
 impl Gen {
-    pub(super) fn gen_compound(&mut self, compound: &Compound) {
+    pub(super) fn gen_compound(&mut self, compound: &Compound) -> Result<(), Ice> {
         for item in &compound.items {
-            self.gen_stmt(item);
+            self.gen_stmt(item)?;
         }
+        Ok(())
     }
 
-    pub(super) fn gen_stmt(&mut self, stmt: &Stmt) {
+    /// Lower one statement. An internal error ends lowering with `Err`
+    /// (see [`Gen::fail`]); one inside an expression is recorded and
+    /// lowering goes on with a placeholder value (see [`Gen::ice`]).
+    pub(super) fn gen_stmt(&mut self, stmt: &Stmt) -> Result<(), Ice> {
         self.pos = stmt.pos();
         match stmt {
-            Stmt::Compound(compound) => self.gen_compound(compound),
+            Stmt::Compound(compound) => return self.gen_compound(compound),
             Stmt::Decl(decl) => {
                 self.ensure_block();
                 self.gen_decl(decl);
@@ -40,24 +44,22 @@ impl Gen {
                 then_stmt,
                 else_stmt,
                 ..
-            } => self.gen_if(cond, then_stmt, else_stmt.as_deref()),
-            Stmt::While { cond, body, .. } => self.gen_while(cond, body),
-            Stmt::Do { body, cond, .. } => self.gen_do(body, cond),
+            } => return self.gen_if(cond, then_stmt, else_stmt.as_deref()),
+            Stmt::While { cond, body, .. } => return self.gen_while(cond, body),
+            Stmt::Do { body, cond, .. } => return self.gen_do(body, cond),
             Stmt::Switch {
                 cond,
                 body,
                 promoted,
                 ..
             } => match promoted {
-                Some(promoted) => self.gen_switch(cond, body, *promoted),
-                None => {
-                    self.ice("switch has no promoted controlling type");
-                }
+                Some(promoted) => return self.gen_switch(cond, body, *promoted),
+                None => return Err(self.fail("switch has no promoted controlling type")),
             },
             Stmt::Case { stmt, .. } | Stmt::Default { stmt, .. } => {
-                let label = self.take_switch_label();
+                let label = self.take_switch_label()?;
                 self.place_label(&label);
-                self.gen_stmt(stmt);
+                return self.gen_stmt(stmt);
             }
             Stmt::FuncDecl(_) => {}
             Stmt::For {
@@ -66,7 +68,7 @@ impl Gen {
                 step,
                 body,
                 ..
-            } => self.gen_for(init, cond.as_ref(), step.as_ref(), body),
+            } => return self.gen_for(init, cond.as_ref(), step.as_ref(), body),
             Stmt::Expr { expr, .. } => {
                 self.ensure_block();
                 if let Some(expr) = expr {
@@ -76,7 +78,7 @@ impl Gen {
             Stmt::Label { name, stmt, .. } => {
                 let block = c_label(name);
                 self.place_label(&block);
-                self.gen_stmt(stmt);
+                return self.gen_stmt(stmt);
             }
             Stmt::Goto { name, .. } => {
                 self.ensure_block();
@@ -100,23 +102,20 @@ impl Gen {
             }
             Stmt::Break { .. } => {
                 self.ensure_block();
-                let end = self
-                    .breaks
-                    .last()
-                    .cloned()
-                    .unwrap_or_else(|| self.ice("'break' is not inside a loop or switch"));
+                let Some(end) = self.breaks.last().cloned() else {
+                    return Err(self.fail("'break' is not inside a loop or switch"));
+                };
                 self.br(&end);
             }
             Stmt::Continue { .. } => {
                 self.ensure_block();
-                let cont = self
-                    .continues
-                    .last()
-                    .cloned()
-                    .unwrap_or_else(|| self.ice("'continue' is not inside a loop"));
+                let Some(cont) = self.continues.last().cloned() else {
+                    return Err(self.fail("'continue' is not inside a loop"));
+                };
                 self.br(&cont);
             }
         }
+        Ok(())
     }
 
     pub(super) fn gen_decl(&mut self, decl: &VarDecl) {
@@ -202,7 +201,12 @@ impl Gen {
         }
     }
 
-    pub(super) fn gen_if(&mut self, cond: &Expr, then_stmt: &Stmt, else_stmt: Option<&Stmt>) {
+    pub(super) fn gen_if(
+        &mut self,
+        cond: &Expr,
+        then_stmt: &Stmt,
+        else_stmt: Option<&Stmt>,
+    ) -> Result<(), Ice> {
         self.ensure_block();
         let cond = self.gen_cond(cond);
         let then_label = self.label();
@@ -214,21 +218,22 @@ impl Gen {
             self.br_cond(&cond, &then_label, &end_label);
         }
         self.start(then_label);
-        self.gen_stmt(then_stmt);
+        self.gen_stmt(then_stmt)?;
         if !self.terminated {
             self.br(&end_label);
         }
         if let Some(else_stmt) = else_stmt {
             self.start(else_label);
-            self.gen_stmt(else_stmt);
+            self.gen_stmt(else_stmt)?;
             if !self.terminated {
                 self.br(&end_label);
             }
         }
         self.start(end_label);
+        Ok(())
     }
 
-    pub(super) fn gen_while(&mut self, cond: &Expr, body: &Stmt) {
+    pub(super) fn gen_while(&mut self, cond: &Expr, body: &Stmt) -> Result<(), Ice> {
         self.ensure_block();
         let cond_label = self.label();
         let body_label = self.label();
@@ -240,18 +245,19 @@ impl Gen {
         self.start(body_label);
         self.continues.push(cond_label.clone());
         self.breaks.push(end_label.clone());
-        self.gen_stmt(body);
+        self.gen_stmt(body)?;
         self.breaks.pop();
         self.continues.pop();
         if !self.terminated {
             self.br(&cond_label);
         }
         self.start(end_label);
+        Ok(())
     }
 
     /// The body runs, then the condition. `continue` lands on the condition,
     /// so a `continue` does not skip it and a `break` does not evaluate it.
-    pub(super) fn gen_do(&mut self, body: &Stmt, cond: &Expr) {
+    pub(super) fn gen_do(&mut self, body: &Stmt, cond: &Expr) -> Result<(), Ice> {
         self.ensure_block();
         let body_label = self.label();
         let cond_label = self.label();
@@ -260,7 +266,7 @@ impl Gen {
         self.start(body_label.clone());
         self.continues.push(cond_label.clone());
         self.breaks.push(end_label.clone());
-        self.gen_stmt(body);
+        self.gen_stmt(body)?;
         self.breaks.pop();
         self.continues.pop();
         if !self.terminated {
@@ -270,6 +276,7 @@ impl Gen {
         let cond = self.gen_cond(cond);
         self.br_cond(&cond, &body_label, &end_label);
         self.start(end_label);
+        Ok(())
     }
 
     pub(super) fn gen_for(
@@ -278,7 +285,7 @@ impl Gen {
         cond: Option<&Expr>,
         step: Option<&Expr>,
         body: &Stmt,
-    ) {
+    ) -> Result<(), Ice> {
         self.ensure_block();
         match init {
             ForInit::Empty => {}
@@ -306,7 +313,7 @@ impl Gen {
         self.start(body_label);
         self.continues.push(step_label.clone());
         self.breaks.push(end_label.clone());
-        self.gen_stmt(body);
+        self.gen_stmt(body)?;
         self.breaks.pop();
         self.continues.pop();
         if !self.terminated {
@@ -318,6 +325,7 @@ impl Gen {
         }
         self.br(&cond_label);
         self.start(end_label);
+        Ok(())
     }
 
     /// `switch` lowers to the LLVM `switch` instruction.
@@ -329,7 +337,12 @@ impl Gen {
     /// is still a direct target, which is what Duff's device needs. Code
     /// before the first label is emitted and is not a switch target, so a
     /// jump into the body skips it, including an automatic initializer.
-    pub(super) fn gen_switch(&mut self, cond: &Expr, body: &Stmt, promoted: TypeName) {
+    pub(super) fn gen_switch(
+        &mut self,
+        cond: &Expr,
+        body: &Stmt,
+        promoted: TypeName,
+    ) -> Result<(), Ice> {
         self.ensure_block();
         let raw = self.gen_val(cond);
         let src = cond.ty().expect("typed switch condition");
@@ -339,7 +352,7 @@ impl Gen {
         let mut default_label = None;
         let mut labels = Vec::new();
         let saved_ranges = std::mem::take(&mut self.switch_ranges);
-        self.collect_switch_targets(body, &mut cases, &mut default_label, &mut labels);
+        self.collect_switch_targets(body, &mut cases, &mut default_label, &mut labels)?;
         let ranges = std::mem::replace(&mut self.switch_ranges, saved_ranges);
 
         let end_label = self.label();
@@ -399,9 +412,9 @@ impl Gen {
 
         let entry = self.label();
         self.start(entry);
-        self.gen_stmt(body);
+        self.gen_stmt(body)?;
         if self.switch_at != self.switch_labels.len() {
-            self.ice("a case label of this switch was not emitted");
+            return Err(self.fail("a case label of this switch was not emitted"));
         }
         self.breaks.pop();
         if !self.terminated {
@@ -410,6 +423,7 @@ impl Gen {
         self.switch_labels = saved_labels;
         self.switch_at = saved_at;
         self.start(end_label);
+        Ok(())
     }
 
     pub(super) fn emit_switch(
@@ -439,7 +453,7 @@ impl Gen {
         cases: &mut Vec<(u128, String)>,
         default_label: &mut Option<String>,
         labels: &mut Vec<String>,
-    ) {
+    ) -> Result<(), Ice> {
         match stmt {
             Stmt::Switch { .. } => {}
             Stmt::Case {
@@ -452,25 +466,24 @@ impl Gen {
             } => {
                 let label = self.label();
                 let Some(bits) = *value else {
-                    self.ice_at(*line, *column, "case label has no value");
-                    return;
+                    return Err(self.fail_at(*line, *column, "case label has no value"));
                 };
                 match high_value {
                     None => cases.push((bits, label.clone())),
                     Some(high) => self.switch_ranges.push((bits, *high, label.clone())),
                 }
                 labels.push(label);
-                self.collect_switch_targets(stmt, cases, default_label, labels);
+                self.collect_switch_targets(stmt, cases, default_label, labels)?;
             }
             Stmt::Default { stmt, .. } => {
                 let label = self.label();
                 *default_label = Some(label.clone());
                 labels.push(label);
-                self.collect_switch_targets(stmt, cases, default_label, labels);
+                self.collect_switch_targets(stmt, cases, default_label, labels)?;
             }
             Stmt::Compound(compound) => {
                 for item in &compound.items {
-                    self.collect_switch_targets(item, cases, default_label, labels);
+                    self.collect_switch_targets(item, cases, default_label, labels)?;
                 }
             }
             Stmt::If {
@@ -478,19 +491,19 @@ impl Gen {
                 else_stmt,
                 ..
             } => {
-                self.collect_switch_targets(then_stmt, cases, default_label, labels);
+                self.collect_switch_targets(then_stmt, cases, default_label, labels)?;
                 if let Some(else_stmt) = else_stmt {
-                    self.collect_switch_targets(else_stmt, cases, default_label, labels);
+                    self.collect_switch_targets(else_stmt, cases, default_label, labels)?;
                 }
             }
             Stmt::While { body, .. } | Stmt::Do { body, .. } => {
-                self.collect_switch_targets(body, cases, default_label, labels);
+                self.collect_switch_targets(body, cases, default_label, labels)?;
             }
             Stmt::For { body, .. } => {
-                self.collect_switch_targets(body, cases, default_label, labels);
+                self.collect_switch_targets(body, cases, default_label, labels)?;
             }
             Stmt::Label { stmt, .. } => {
-                self.collect_switch_targets(stmt, cases, default_label, labels);
+                self.collect_switch_targets(stmt, cases, default_label, labels)?;
             }
             Stmt::Decl(_)
             | Stmt::FuncDecl(_)
@@ -501,16 +514,15 @@ impl Gen {
             | Stmt::Goto { .. }
             | Stmt::GotoPtr { .. } => {}
         }
+        Ok(())
     }
 
-    pub(super) fn take_switch_label(&mut self) -> String {
-        let label = self
-            .switch_labels
-            .get(self.switch_at)
-            .cloned()
-            .unwrap_or_else(|| self.ice("case label was not collected for its switch"));
+    pub(super) fn take_switch_label(&mut self) -> Result<String, Ice> {
+        let Some(label) = self.switch_labels.get(self.switch_at).cloned() else {
+            return Err(self.fail("case label was not collected for its switch"));
+        };
         self.switch_at += 1;
-        label
+        Ok(label)
     }
 
     pub(super) fn place_label(&mut self, label: &str) {
