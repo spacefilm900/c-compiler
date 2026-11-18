@@ -261,23 +261,3 @@ pub(super) fn pointer_assignable(dest: &CType, src: &CType) -> bool {
         || (dp.unqualified().is_void() && !sp.is_func())
         || (sp.unqualified().is_void() && !dp.is_func())
 }
-
-/// `?:` on two pointers. The result pointee carries every qualifier from
-/// either side. A `void *` arm with an object pointer produces `void *` with
-/// those qualifiers (C11 6.5.15p3, p6); with a function pointer it is not
-/// allowed.
-pub(super) fn merge_pointers(left: &CType, right: &CType) -> Option<CType> {
-    let lp = left.pointee()?;
-    let rp = right.pointee()?;
-    let quals = lp.quals().merge(rp.quals());
-    if (lp.unqualified().is_void() && !rp.is_func())
-        || (rp.unqualified().is_void() && !lp.is_func())
-    {
-        return Some(CType::pointer(CType::Void.with_quals(quals)));
-    }
-    if compatible(&lp.unqualified(), &rp.unqualified()) {
-        let merged = composite(&lp.unqualified(), &rp.unqualified()).with_quals(quals);
-        return Some(CType::pointer(merged));
-    }
-    None
-}

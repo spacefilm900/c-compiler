@@ -1385,3 +1385,49 @@ fn function_specifiers_only_on_functions() {
          static __inline__ int sq(int x) { return x * x; } _Noreturn void stop(void) { for (;;); }",
     );
 }
+
+fn parse_gnu(source: &str) -> Result<String, String> {
+    let tokens = lex(source, "t.c").map_err(|err| err.to_string())?;
+    parse_dialect(&tokens, "t.c", crate::Dialect::Gnu11)
+        .map(|unit| dump(&unit))
+        .map_err(|err| err.to_string())
+}
+
+#[test]
+fn unevaluated_operand_types_follow_c11() {
+    // C11 6.5.6p2, p3: no pointer + pointer, and pointer - pointer only for
+    // compatible complete object types, even where the operand is only typed.
+    for source in [
+        "int a[sizeof((int *)0 + (int *)0)];",
+        "int a[sizeof((int *)0 - (long *)0)];",
+        "struct I; int a[sizeof((struct I *)0 - (struct I *)0)];",
+        "int a[sizeof((void *)0 - (void *)0)];",
+    ] {
+        assert!(parse_err(source).contains("invalid operand"), "{source}");
+    }
+    assert!(parse_gnu("__typeof__((int *)0 + (int *)0) x;")
+        .unwrap_err()
+        .contains("invalid operand"));
+    parsed("int a[sizeof((int *)0 - (const int *)0)]; int b[sizeof((int *)0 + 1)];");
+    // C11 6.5.15p6: `void *` with an object pointer gives `void *`, and the
+    // qualifiers of both pointees are kept; a null pointer constant takes
+    // the other operand's type. `_Generic` folded by the parser sees it.
+    parsed(
+        "_Static_assert(_Generic(1 ? (int *)0 : (void *)1, void *: 1, default: 0), \"v\"); \
+         _Static_assert(_Generic(1 ? (const int *)0 : (int *)1, const int *: 1, default: 0), \"q\"); \
+         _Static_assert(_Generic(1 ? (int *)1 : 0, int *: 1, default: 0), \"n\"); \
+         _Static_assert(_Generic(1 ? (volatile void *)1 : (const char *)1, \
+                                 const volatile void *: 1, default: 0), \"cv\");",
+    );
+    assert!(parse_err("int a[sizeof(1 ? (int *)1 : (long *)1)];").contains("invalid operand"));
+    assert!(parse_err("int a[sizeof(1 ? (int *)1 : 5)];").contains("invalid operand"));
+    // typeof in GNU mode takes the same type.
+    parse_gnu("__typeof__(1 ? (int *)0 : (void *)1) p; double *d; void h(void) { p = d; }")
+        .unwrap();
+    // A local declaration hides a library forwarder of the same name, as in
+    // semantic analysis (the call's type is the local function's).
+    parsed(
+        "int g(void) { char __builtin_strlen(int); \
+         _Static_assert(sizeof(__builtin_strlen(0)) == 1, \"s\"); return 0; }",
+    );
+}
