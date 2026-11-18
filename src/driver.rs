@@ -620,6 +620,62 @@ mod tests {
     }
 
     #[test]
+    fn apple_limits_h_reads_the_sdk_limits_first() {
+        // The macOS SDK's <machine/limits.h> spells CHAR_MAX as 127. Before
+        // the compiler's <limits.h> pulled the SDK's in first, a program that
+        // reached both saw two different CHAR_MAX definitions and failed
+        // (SQLite on Intel macOS).
+        let (src, out) = temp_paths();
+        let sdk = out.with_extension("sdk");
+        let _ = std::fs::remove_dir_all(&sdk);
+        let machine = sdk.join("usr/include/machine");
+        std::fs::create_dir_all(&machine).unwrap();
+        std::fs::write(
+            sdk.join("usr/include/limits.h"),
+            "#include <machine/limits.h>\n#define PATH_FROM_SDK 1\n",
+        )
+        .unwrap();
+        std::fs::write(
+            machine.join("limits.h"),
+            "#ifndef MACHINE_LIMITS\n#define MACHINE_LIMITS\n#define CHAR_MAX 127\n\
+             #define MB_LEN_MAX 6\n#define INT_MAX 0x7fffffff\n#endif\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &src,
+            "#include <limits.h>\n#include <machine/limits.h>\n\
+             int v[] = { CHAR_MAX, MB_LEN_MAX, INT_MAX, PATH_FROM_SDK };\n",
+        )
+        .unwrap();
+        let pre = out.with_extension("lim.i");
+        for target in ["x86_64-apple-macos", "arm64-apple-macos"] {
+            assert_eq!(
+                run(&[
+                    "compiler".into(),
+                    "-target".into(),
+                    target.into(),
+                    "-isysroot".into(),
+                    sdk.display().to_string(),
+                    "-E".into(),
+                    src.display().to_string(),
+                    "-o".into(),
+                    pre.display().to_string(),
+                ]),
+                0,
+                "{target}"
+            );
+            let text = std::fs::read_to_string(&pre).unwrap();
+            assert!(
+                text.contains("{ 127, 6, 2147483647, 1 }"),
+                "{target}: {text}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&sdk);
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&pre);
+    }
+
+    #[test]
     fn std_flag_selects_dialect() {
         let (src, out) = temp_paths();
         std::fs::write(

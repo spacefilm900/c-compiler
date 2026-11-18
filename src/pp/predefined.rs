@@ -276,8 +276,20 @@ fn float_macros(long_double: LongDouble, out: &mut Vec<(&'static str, &'static s
     }
 }
 
+/// Adds the compiler's header directory once. The candidates name the same
+/// directory in different spellings (relative to the working directory,
+/// from the build, beside the executable), so they are compared after
+/// canonicalisation; a second copy would make `#include_next` in one of
+/// the compiler's headers find that header again instead of the C library's.
 pub(super) fn push_compiler(dirs: &mut Vec<PathBuf>, path: PathBuf) {
-    if path.join("stddef.h").is_file() && !dirs.iter().any(|dir| dir == &path) {
+    if !path.join("stddef.h").is_file() {
+        return;
+    }
+    let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    let seen = dirs.iter().any(|dir| {
+        dir == &path || std::fs::canonicalize(dir).is_ok_and(|other| other == canonical)
+    });
+    if !seen {
         dirs.push(path);
     }
 }
