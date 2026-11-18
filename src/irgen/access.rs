@@ -475,7 +475,7 @@ pub(super) fn bit_info(expr: &Expr) -> Option<BitInfo> {
 
 pub(super) fn container_type(bits: u32, signed_field: bool, quals: Quals) -> CType {
     let name = match (bits, signed_field) {
-        (8, true) => TypeName::Char,
+        (8, true) => TypeName::SChar,
         (8, false) => TypeName::UChar,
         (16, true) => TypeName::Short,
         (16, false) => TypeName::UShort,
