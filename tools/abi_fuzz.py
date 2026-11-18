@@ -31,6 +31,7 @@ import argparse
 import os
 import random
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -253,12 +254,22 @@ def make_pair(seed: int) -> tuple[str, str]:
 
 
 def run(cmd, timeout=60):
-    """(exit status, stdout, stderr); the status is "timeout" on a timeout."""
-    try:
-        p = subprocess.run(cmd, capture_output=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return "timeout", b"", b""
-    return p.returncode, p.stdout, p.stderr
+    """(exit status, stdout, stderr); the status is "timeout" on a timeout.
+
+    Each command gets its own process group, and a timeout kills the whole
+    group, so a wrapper's children do not outlive the seed."""
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          start_new_session=True) as proc:
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.communicate()
+            return "timeout", b"", f"timed out after {timeout} s".encode()
+        return proc.returncode, out, err
 
 
 def build_and_run(work: Path, d: Path, u: Path, ours: set[str], tag: str):
@@ -268,18 +279,18 @@ def build_and_run(work: Path, d: Path, u: Path, ours: set[str], tag: str):
             ll = work / f"{src.stem}.{tag}.ll"
             rc, _, err = run([COMPILER, str(src), "-o", str(ll)])
             if rc != 0:
-                return f"compiler failed on {src.name}: {err.decode(errors='replace')[:300]}"
+                return f"compiler failed on {src.name} ({rc}): {err.decode(errors='replace')[:300]}"
             objs.append(str(ll))
         else:
             obj = work / f"{src.stem}.{tag}.o"
             rc, _, err = run([CLANG, "-w", "-std=c11", "-c", str(src), "-o", str(obj)])
             if rc != 0:
-                return f"clang failed on {src.name}: {err.decode(errors='replace')[:300]}"
+                return f"clang failed on {src.name} ({rc}): {err.decode(errors='replace')[:300]}"
             objs.append(str(obj))
     exe = work / f"abi.{tag}"
     rc, _, err = run([CLANG, "-w", *objs, "-o", str(exe)])
     if rc != 0:
-        return f"link failed: {err.decode(errors='replace')[:300]}"
+        return f"link failed ({rc}): {err.decode(errors='replace')[:300]}"
     return run([str(exe)])
 
 
