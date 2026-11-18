@@ -1,0 +1,46 @@
+functions: 1217; over 50 lines: 136; over 100: 16; over 200: 0
+cyclomatic over 10: 149; over 25: 13; over 50: 0
+
+Top 20 by length:
+    120 lines  cc   18  nest  6  src/parser/record.rs:288 parse_member_list
+    119 lines  cc   27  nest  3  src/irgen/access.rs:309 convert
+    119 lines  cc   30  nest  4  src/irgen/expr.rs:13 gen_expr
+    118 lines  cc   23  nest  5  src/sema/decl.rs:295 finish
+    117 lines  cc   24  nest  6  src/parser/ice.rs:111 eval_ice
+    114 lines  cc   26  nest  6  src/ast/dump.rs:95 dump_stmt
+    110 lines  cc   22  nest  4  src/driver.rs:144 parse_args
+    109 lines  cc   22  nest  7  src/abi.rs:434 collect_leaves
+    108 lines  cc   26  nest  4  src/sema/stmt.rs:46 check_stmt
+    107 lines  cc   29  nest  4  src/ast/dump.rs:210 dump_expr
+    105 lines  cc   21  nest  7  src/sema/init.rs:124 infer_array_len
+    104 lines  cc   20  nest  5  src/irgen/stmt.rs:16 gen_stmt
+    104 lines  cc   14  nest  3  src/irgen/vaarg.rs:180 aapcs64_va_arg_addr
+    103 lines  cc   16  nest  6  src/irgen/consts.rs:194 render_typed_const
+    103 lines  cc   33  nest  5  src/sema/expr.rs:7 check_expr
+    102 lines  cc   13  nest  5  src/sema/consteval.rs:301 eval_const_expr
+    100 lines  cc   26  nest  4  src/pp/directive.rs:916 parse_function_header
+     98 lines  cc    5  nest  3  src/parser/decl.rs:94 finish_file_decl
+     97 lines  cc   16  nest  4  src/sema/init.rs:230 fill_object
+     96 lines  cc   18  nest  5  src/sema/call.rs:248 check_inline_builtin
+
+Top 20 by cyclomatic complexity:
+  cc   49     55 lines  nest  2  src/token.rs:141 keyword
+  cc   35     83 lines  nest  5  src/builtins.rs:64 from_name
+  cc   33    103 lines  nest  5  src/sema/expr.rs:7 check_expr
+  cc   30    119 lines  nest  4  src/irgen/expr.rs:13 gen_expr
+  cc   30     69 lines  nest  3  src/parser/specs.rs:624 resolve_scalar
+  cc   29    107 lines  nest  4  src/ast/dump.rs:210 dump_expr
+  cc   29     93 lines  nest  5  src/fp80.rs:25 parse_decimal
+  cc   28     92 lines  nest  4  src/parser/uneval.rs:51 check_uneval
+  cc   27    119 lines  nest  3  src/irgen/access.rs:309 convert
+  cc   26    114 lines  nest  6  src/ast/dump.rs:95 dump_stmt
+  cc   26     66 lines  nest  3  src/parser/uneval.rs:474 type_only
+  cc   26    100 lines  nest  4  src/pp/directive.rs:916 parse_function_header
+  cc   26    108 lines  nest  4  src/sema/stmt.rs:46 check_stmt
+  cc   25     35 lines  nest  3  src/parser/ice.rs:34 bound_message
+  cc   25     54 lines  nest  3  src/parser/ice.rs:462 ice_arith
+  cc   25     77 lines  nest  5  src/pp/directive.rs:503 replace_has_queries
+  cc   25     84 lines  nest  3  src/sema/expr.rs:499 check_compare
+  cc   24     28 lines  nest  2  src/lexer.rs:1065 one_char_kind
+  cc   24    117 lines  nest  6  src/parser/ice.rs:111 eval_ice
+  cc   24     72 lines  nest  5  src/parser/specs.rs:522 note_type
