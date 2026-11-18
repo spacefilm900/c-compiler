@@ -1,0 +1,52 @@
+func int classify [external] @4:5
+  param int c [%v1] @4:18
+  block @4:21
+    switch @5:5
+      cond
+        var c [%v1] : int @5:13
+      body
+        block @5:16
+          case = 97 @6:5
+            int 97 : int @6:10
+          ... = 122
+            int 122 : int @6:18
+            return @7:9
+              int 1 : int @7:16
+          case = 48 @8:5
+            int 48 : int @8:10
+          ... = 57
+            int 57 : int @8:18
+            return @9:9
+              int 2 : int @9:16
+    return @11:5
+      int 0 : int @11:12
+func int main [external] @14:5
+  block @14:16
+    decl long wide [%v1] = @15:24
+      int 3 : int -> long @15:31
+    decl int y [%v2] = @16:9
+      ({}) : int @16:13
+        block @16:14
+          decl int t [%se1.1] = @16:20
+            cast int : int @16:24
+              var wide [%v1] : long @16:29
+          expr @16:35
+            * : int @16:37
+              var t [%se1.1] : int @16:35
+              int 2 : int @16:39
+    decl int z [%v3] = @17:9
+      ?: : int @17:13
+        int 0 : int @17:13
+        var y [%v2] : int @17:18
+    return @18:5
+      + : int @18:46
+        - : int @18:42
+          + : int @18:26
+            call classify [@classify int(int)] : int @18:12
+              int 113 : int @18:21
+            call classify [@classify int(int)] : int @18:28
+              int 53 : int @18:37
+          int 3 : int @18:44
+        - : int @18:51
+          var z [%v3] : int @18:49
+          int 6 : int @18:53

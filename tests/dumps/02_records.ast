@@ -1,0 +1,100 @@
+global struct point origin = @20:14
+  list @20:23
+    int 111 @20:25
+    int 0 @20:30
+    int 0 @20:33
+global struct point * where = @21:15
+  addr @21:23
+    var origin @21:24
+global int [4] table = @22:5
+  list @22:16
+    int 1 @22:18
+    int 2 @22:21
+    designated [index] @22:24
+      int 4 @22:30
+global int * third = @23:6
+  addr @23:14
+    index @23:20
+      var table @23:15
+      int 2 @23:21
+global const char * name = @24:13
+  string "point" @24:20
+func int area @26:5
+  param const struct point * p @26:30
+  param struct flags f @26:46
+  block @26:49
+    decl union word w @27:16
+    expr @28:5
+      assign @28:6
+        member value @28:6
+          var w @28:5
+        int 0 @28:15
+    expr @29:5
+      assign @29:12
+        index @29:12
+          member bytes @29:6
+            var w @29:5
+          int 1 @29:13
+        member extra @29:19
+          var f @29:18
+    expr @30:5
+      += @30:6
+        member mode @30:6
+          var f @30:5
+        int 2 @30:15
+    return @31:5
+      + @31:43
+        + @31:33
+          + @31:24
+            * @31:17
+              arrow x @31:13
+                var p @31:12
+              arrow y @31:20
+                var p @31:19
+            member mode @31:27
+              var f @31:26
+          member level @31:36
+            var f @31:35
+        cast int @31:45
+          member value @31:51
+            var w @31:50
+func int main @34:5
+  block @34:16
+    decl struct flags f = @35:18
+      list @35:22
+        int 1 @35:24
+        int 2 @35:27
+        neg @35:30
+          int 3 @35:31
+        int 4 @35:34
+    decl struct point p = @36:18
+      list @36:22
+        designated .x @36:24
+          int 3 @36:29
+        designated .y @36:32
+          int 5 @36:37
+    return @37:5
+      - @37:72
+        - @37:51
+          - @37:42
+            + @37:31
+              - @37:24
+                call area @37:12
+                  addr @37:17
+                    var p @37:18
+                  var f @37:21
+                int 1043 @37:26
+              index @37:38
+                var table @37:33
+                int 3 @37:39
+            deref @37:44
+              var third @37:45
+          == @37:60
+            var where @37:54
+            addr @37:63
+              var origin @37:64
+        - @37:83
+          index @37:79
+            var name @37:75
+            int 0 @37:80
+          int 112 @37:85

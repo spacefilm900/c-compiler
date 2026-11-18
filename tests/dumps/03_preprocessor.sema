@@ -1,0 +1,73 @@
+static global const char * label = @18:20
+  string "hello" @18:28
+func int pick [external] @20:5
+  param int c [%v1] @20:14
+  block @20:17
+    switch @21:5
+      cond
+        var c [%v1] : int @21:13
+      body
+        block @21:16
+          case = 0 @22:5
+            int 0 : int @22:10
+            return @23:9
+              int 114 : int @23:16
+          case = 5 @24:5
+            int 5 : int @24:10
+            case = 6 @25:5
+              int 6 : int @25:10
+              return @26:9
+                * : int @26:16
+                  var c [%v1] : int @26:23
+                  var c [%v1] : int @26:23
+          default @27:5
+            return @28:9
+              int 1 : int @28:33
+func int main [external] @32:5
+  block @32:16
+    decl unsigned long n [%v1] = @33:15
+      + : unsigned long @33:39
+        sizeof long double : unsigned long @33:19
+        sizeof : unsigned long @33:41
+          var label [@label] : const char * @33:48
+    decl long double ld [%v2] = @34:17
+      long double 0xK3FFFA000000000000000 : long double @34:22
+    decl unsigned long long big [%v3] = @35:24
+      unsigned long long 18446744073709551615 : unsigned long long @35:30
+    decl int var1 [%v4] = @36:14
+      - : int @36:35
+        + : int @36:28
+          int 1 : int @36:24
+          int 120 : int @36:30
+        int 120 : int @36:37
+    return @37:5
+      - : int @37:94
+        + : int @37:81
+          - : int @37:74
+            + : int @37:55
+              + : int @37:44
+                + : int @37:28
+                  - : int @37:23
+                    call pick [@pick int(int)] : int @37:12
+                      int 6 : int @37:17
+                    int 36 : int @37:25
+                  cast int : int @37:30
+                    - : unsigned long @37:38
+                      var n [%v1] : unsigned long @37:36
+                      int 24 : int -> unsigned long @37:40
+                < : int @37:50
+                  var ld [%v2] : long double @37:47
+                  int 1 : int -> long double @37:52
+              cast int : int @37:57
+                >> : unsigned long long @37:67
+                  var big [%v3] : unsigned long long @37:63
+                  int 63 : int @37:70
+            var var1 [%v4] : int @37:76
+          cast int : int @37:83
+            unsigned int 16 : unsigned int @37:88
+        int 16 : int @37:96
+globals
+  global const char * label [internal] =
+    &.str
+strings
+  @.str = string "hello\x00"
