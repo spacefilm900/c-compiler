@@ -11,10 +11,10 @@
 #
 # - Pull requests: the "arm64 quick" job only (unit tests, the
 #   differential harness with tests/arm64, stage dumps, random
-#   calling-convention pairs). About 3-4 billed
+#   calling-convention pairs). About 2-3 billed
 #   minutes per run.
 # - Pushes to main (merges) and manual dispatch: also every suite, in two
-#   jobs. About 15 billed minutes per run with the quick job.
+#   jobs. About 17 billed minutes per run with the quick job.
 # See reports/platforms/linux-arm64/README.md for the monthly estimate.
 # Documentation-only changes skip this workflow, as they skip ci.yml.
 
