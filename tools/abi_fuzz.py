@@ -19,10 +19,16 @@ compiler for one file and Clang for the other (both ways), and this
 compiler for both. All four must print the same text.
 
 Usage: tools/abi_fuzz.py [--seed-start N] [--count N] [--out DIR]
+                         [--int128] [--target x86_64-apple-macos]
 (--out DIR keeps each failing pair in DIR/seedN.)
-Env: CC_UNDER_TEST (default build/compiler), CLANG (default clang). The
-target is whatever both produce by default; for AArch64 under qemu, use
-wrappers that add --target and -target.
+--int128 adds `__int128` and `unsigned __int128` to the scalar types (an
+x86-64 or AArch64 target; the programs for a seed differ from those
+without it). --target x86_64-apple-macos builds both compilers' code for
+Intel macOS and runs it through the Linux stand-in in
+harness/intel_mac_proxy.py.
+Env: CC_UNDER_TEST (default build/compiler), CLANG (default clang). Without
+--target, the target is whatever both produce by default; for AArch64 under
+qemu, use wrappers that add --target and -target.
 """
 
 from __future__ import annotations
@@ -38,6 +44,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "harness"))
+import intel_mac_proxy as intel  # noqa: E402
 COMPILER = os.environ.get("CC_UNDER_TEST", str(ROOT / "build" / "compiler"))
 CLANG = os.environ.get("CLANG", "clang")
 
@@ -59,7 +67,21 @@ FLOATS = [
     ("long double", "%La", "", "float"),
 ]
 # Types va_arg may name directly (no default argument promotion).
-PROMOTED = {"int", "unsigned", "long", "unsigned long long", "double", "long double"}
+PROMOTED = {"int", "unsigned", "long", "unsigned long long", "double", "long double",
+            "__int128", "unsigned __int128"}
+# With --int128. I128 (defined in each file) prints the two halves.
+INT128 = [
+    ("__int128", "%llx:%llx", "I128", "int"),
+    ("unsigned __int128", "%llx:%llx", "I128", "int"),
+]
+I128_MACRO = ("#define I128(x) (unsigned long long)((unsigned __int128)(x) >> 64), "
+              "(unsigned long long)(x)")
+# Set by --int128.
+OPTIONS = {"int128": False}
+
+
+def int_pool():
+    return INTS + (INT128 if OPTIONS["int128"] else [])
 
 
 class Gen:
@@ -69,7 +91,7 @@ class Gen:
         self.n = 0
 
     def scalar(self, allow_float=True):
-        pool = INTS + (FLOATS if allow_float else [])
+        pool = int_pool() + (FLOATS if allow_float else [])
         return ("scalar",) + self.rng.choice(pool)
 
     def hfa(self):
@@ -174,6 +196,9 @@ def value_leaf(t, rng):
         return f"{rng.randint(0, 2**32 - 1)}u"
     if spelling == "long":
         return f"{rng.randint(-2**62, 2**62)}L"
+    if spelling in ("__int128", "unsigned __int128"):
+        high, low = rng.randint(0, 2**64 - 1), rng.randint(0, 2**64 - 1)
+        return f"({spelling})(((unsigned __int128){high}ull << 64) | {low}ull)"
     return f"{rng.randint(0, 2**64 - 1)}ull"
 
 
@@ -204,7 +229,7 @@ def make_pair(seed: int) -> tuple[str, str]:
                 t = g.any_type()
                 if t[0] == "scalar" and t[1] not in PROMOTED:
                     t = ("scalar",) + rng.choice(
-                        [x for x in INTS + FLOATS if x[0] in PROMOTED])
+                        [x for x in int_pool() + FLOATS if x[0] in PROMOTED])
                 variadic.append(t)
         if variadic and params[-1][0] == "scalar" and params[-1][1] not in PROMOTED:
             # va_start's parameter must not change under the default
@@ -212,7 +237,10 @@ def make_pair(seed: int) -> tuple[str, str]:
             params.append(("scalar",) + INTS[5])
         funcs.append((fi, ret, params, variadic))
 
-    head = ["#include <stdio.h>", "#include <stdarg.h>"] + g.decls
+    head = ["#include <stdio.h>", "#include <stdarg.h>"]
+    if OPTIONS["int128"]:
+        head.append(I128_MACRO)
+    head += g.decls
     protos = []
     for fi, ret, params, variadic in funcs:
         plist = ", ".join(f"{t[1]} p{i}" for i, t in enumerate(params))
@@ -277,10 +305,51 @@ def run(cmd, timeout=60):
         return proc.returncode, out, err
 
 
+class IntelMac:
+    """Builds for x86_64-apple-macos through the Linux stand-in."""
+
+    def __init__(self, tmp: Path):
+        self.sysroot = intel.make_sysroot(tmp)
+        self.llc, self.opt = intel.find_tool("llc"), intel.find_tool("opt")
+        if self.sysroot is None or self.llc is None or self.opt is None:
+            sys.exit("the Intel macOS stand-in needs the x86_64 glibc headers, llc and opt")
+
+    def obj(self, src: Path, obj: Path, ours: bool):
+        """(status, stderr) of building src into an ELF object."""
+        ll = obj.with_suffix(".ll")
+        if ours:
+            cmd = [COMPILER, "-target", intel.TARGET, "-isysroot", str(self.sysroot),
+                   *intel.OURS_FLAGS, str(src), "-o", str(ll)]
+        else:
+            cmd = [CLANG, "-target", intel.CLANG_TRIPLE, "-isysroot", str(self.sysroot),
+                   *intel.CLANG_FLAGS, "-w", "-std=c11", "-S", "-emit-llvm", str(src), "-o", str(ll)]
+        rc, _, err = run(cmd)
+        if rc != 0:
+            return rc, err
+        proxy = obj.with_suffix(".proxy.ll")
+        proxy.write_text(intel.proxy_ir(ll.read_text(errors="replace")))
+        for step in intel.object_commands(self.llc, self.opt, proxy, obj):
+            rc, _, err = run(step)
+            if rc != 0:
+                return rc, err
+        return 0, b""
+
+
+# Set by --target x86_64-apple-macos.
+CROSS: list = [None]
+
+
 def build_and_run(work: Path, d: Path, u: Path, ours: set[str], tag: str):
     objs = []
     for src in (d, u):
-        if src.name in ours:
+        if CROSS[0] is not None:
+            obj = work / f"{src.stem}.{tag}.o"
+            rc, err = CROSS[0].obj(src, obj, src.name in ours)
+            who = "compiler" if src.name in ours else "clang"
+            if rc != 0:
+                return f"{who} failed on {src.name} ({rc}): {err.decode(errors='replace')[:300]}"
+            objs.append(str(obj))
+        elif src.name in ours:
             ll = work / f"{src.stem}.{tag}.ll"
             rc, _, err = run([COMPILER, str(src), "-o", str(ll)])
             if rc != 0:
@@ -304,7 +373,15 @@ def main() -> int:
     ap.add_argument("--seed-start", type=int, default=1)
     ap.add_argument("--count", type=int, default=100)
     ap.add_argument("--out", type=Path, help="keep failing pairs here")
+    ap.add_argument("--int128", action="store_true", help="also use __int128 scalars")
+    ap.add_argument("--target", choices=[intel.TARGET],
+                    help="build for Intel macOS through the Linux stand-in")
     args = ap.parse_args()
+    OPTIONS["int128"] = args.int128
+    cross_tmp = None
+    if args.target == intel.TARGET:
+        cross_tmp = tempfile.TemporaryDirectory(prefix="abi-sysroot-")
+        CROSS[0] = IntelMac(Path(cross_tmp.name))
     if shutil.which(CLANG) is None:
         sys.exit(f"clang not found: {CLANG}")
     failures = 0

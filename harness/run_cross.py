@@ -50,7 +50,8 @@ Env: CC_UNDER_TEST, CLANG (default clang), QEMU_AARCH64 (default
 qemu-aarch64), AARCH64_LINK (default "clang --target=aarch64-linux-gnu
 -static"), AARCH64_INCLUDE (default /usr/aarch64-linux-gnu/include),
 TIMEOUT (seconds, default 20), JOBS (default: CPU count), TORTURE_ROOT
-(for --torture).
+(for --torture), LLC and OPT (x86_64-apple-macos; default llc and opt, or
+a versioned llc-21 .. llc-18).
 """
 import argparse, concurrent.futures, os, re, shlex, subprocess, sys, tempfile
 from pathlib import Path
@@ -319,7 +320,11 @@ def torture(target, label_filter):
     x86_64 list harness/gcc_torture_known_failures.txt, and exits 0. Under
     the Apple proxy, programs that call glibc's `long double` functions or
     its asm-label redirects (`__isoc99_fscanf`, `__sysv_signal`) cannot
-    work, because those are glibc's, not Apple's."""
+    work, because those are glibc's, not Apple's.
+
+    For x86_64-apple-macos the x86_64 list applies as it is (same
+    processor, same `long double`), so there it is a gate: a failure not in
+    the list fails the run. Listed tests that pass are reported."""
     root = Path(os.environ.get("TORTURE_ROOT", ROOT / "tests" / "external" / "gcc-torture")) \
         / "gcc" / "testsuite" / "gcc.c-torture" / "execute"
     if not root.is_dir():
@@ -360,9 +365,13 @@ def torture(target, label_filter):
     new = [(label, err) for label, err in failed if label not in known]
     for label, err in new:
         print(f"NOT_IN_X86_LIST {label}: {err.splitlines()[0][:200]}")
+    if target == intel.TARGET:
+        for label, err in results:
+            if err is None and label in known:
+                print(f"PASSES_BUT_IN_X86_LIST {label}")
     print(f"\n{target} torture: {len(results)} files, {len(results) - len(failed)} passed, "
           f"{len(failed)} failed, {len(new)} of them not in the x86_64 known-failure list")
-    return 0
+    return 1 if target == intel.TARGET and new else 0
 
 
 def main():

@@ -83,9 +83,9 @@ jobs:
           python3 harness/run_dump_tests.py
           python3 -m unittest tools/reduce/test_reduce.py
 
-      # The arm64 targets, checked on this Linux runner (no macOS runner):
-      # IR signatures against Clang and llc acceptance (Mach-O objects for
-      # arm64-apple-macos), then the differential harness under qemu-aarch64
+      # The arm64 targets and Intel macOS, checked on this Linux runner (no
+      # macOS runner): IR signatures against Clang and llc acceptance
+      # (Mach-O objects for arm64-apple-macos and x86_64-apple-macos), then the differential harness under qemu-aarch64
       # for AArch64 Linux and for the Apple calling-convention proxy. See
       # docs/USER_GUIDE_MACOS.md for what this does not cover.
       - name: Install the AArch64 cross toolchain and qemu
@@ -94,7 +94,7 @@ jobs:
           scripts/ci-apt-install.sh qemu-user libc6-dev-arm64-cross libgcc-13-dev-arm64-cross binutils-aarch64-linux-gnu
           qemu-aarch64 --version
 
-      - name: arm64 IR and llc checks
+      - name: arm64 and Intel macOS IR and llc checks
         run: python3 harness/run_arm64_ir.py
 
       - name: arm64 differential harness under qemu
@@ -102,6 +102,16 @@ jobs:
           set -euo pipefail
           python3 harness/run_cross.py --target aarch64-linux-gnu
           python3 harness/run_cross.py --target arm64-apple-macos
+
+      # Intel macOS (x86_64-apple-macos) through its x86_64 Linux stand-in
+      # (harness/intel_mac_proxy.py): the differential harness and 100
+      # random calling-convention pairs with __int128. The real Mac job is
+      # manual only (.github/workflows/macos.yml).
+      - name: Intel macOS stand-in (harness and random ABI pairs)
+        run: |
+          set -euo pipefail
+          python3 harness/run_cross.py --target x86_64-apple-macos
+          python3 tools/abi_fuzz.py --count 100 --int128 --target x86_64-apple-macos
 
   wacc:
     name: writing-a-c-compiler suite
@@ -284,6 +294,9 @@ jobs:
           scripts/fetch_gcc_torture.sh
           make
           python3 harness/run_gcc_torture.py
+
+      - name: gcc.c-torture/execute for Intel macOS through the Linux stand-in
+        run: python3 harness/run_cross.py --target x86_64-apple-macos --torture
 
   perf:
     name: performance numbers

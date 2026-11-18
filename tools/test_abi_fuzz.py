@@ -90,3 +90,23 @@ class RunTimeout(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Int128Option(unittest.TestCase):
+    def tearDown(self):
+        abi_fuzz.OPTIONS["int128"] = False
+
+    def test_default_programs_do_not_change(self):
+        plain = abi_fuzz.make_pair(7)
+        self.assertNotIn("__int128", plain[0] + plain[1])
+        self.assertNotIn("I128", plain[0])
+
+    def test_int128_adds_the_type_and_its_printer(self):
+        abi_fuzz.OPTIONS["int128"] = True
+        found = False
+        for seed in range(1, 20):
+            d, u = abi_fuzz.make_pair(seed)
+            self.assertIn(abi_fuzz.I128_MACRO, d)
+            self.assertIn(abi_fuzz.I128_MACRO, u)
+            found = found or "__int128" in d
+        self.assertTrue(found, "no seed used __int128")
