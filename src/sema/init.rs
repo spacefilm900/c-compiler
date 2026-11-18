@@ -164,6 +164,7 @@ impl Sema<'_> {
                     let dcol = *dcol;
                     let first = first.as_ref().clone();
                     let mut scratch = Vec::new();
+                    let mut reach = Reach::new(0, self.store_drops);
                     let mut frames = if elided {
                         Vec::new()
                     } else {
@@ -178,7 +179,7 @@ impl Sema<'_> {
                                 base: child_base,
                                 union: union_key(&child.ty),
                             });
-                            self.positional_one(&first, &mut frames, &mut scratch, elem)?;
+                            self.positional_one(&first, &mut frames, &mut scratch, &mut reach)?;
                         } else if !advance_frames(&mut frames) {
                             frames.clear();
                         }
@@ -191,14 +192,14 @@ impl Sema<'_> {
                             base: 0,
                             union: union_key(elem),
                         });
-                        self.positional_one(&first, &mut frames, &mut scratch, elem)?;
+                        self.positional_one(&first, &mut frames, &mut scratch, &mut reach)?;
                     }
                     pos += 1;
                     while pos < items.len()
                         && !frames.is_empty()
                         && !matches!(items[pos], Init::Designated { .. })
                     {
-                        self.positional_one(&items[pos], &mut frames, &mut scratch, elem)?;
+                        self.positional_one(&items[pos], &mut frames, &mut scratch, &mut reach)?;
                         pos += 1;
                     }
                     count = count.max(at + 1);
@@ -561,6 +562,7 @@ impl Sema<'_> {
             base,
             union: union_key(ty),
         }];
+        let mut reach = Reach::new(stores.len(), self.store_drops);
         for item in items {
             if let Init::Designated {
                 designators,
@@ -584,9 +586,14 @@ impl Sema<'_> {
                         base: child_base,
                         union: union_key(&child.ty),
                     });
-                    self.positional_one(init, &mut frames_at, stores, ty)?;
+                    self.positional_one(init, &mut frames_at, stores, &mut reach)?;
                     frames = frames_at;
                     continue;
+                }
+                if !child.ty.is_scalar() && !child.field.as_ref().is_some_and(|f| f.is_bitfield()) {
+                    let child_base =
+                        frames_at.last().map(|frame| frame.base).unwrap_or(0) + child.offset;
+                    self.replace_subobject(&child.ty, child_base, stores, &mut reach);
                 }
                 self.init_child(&child, &frames_at, init, stores)?;
                 frames = frames_at;
@@ -597,9 +604,42 @@ impl Sema<'_> {
                 }
                 continue;
             }
-            self.positional_one(item, &mut frames, stores, ty)?;
+            self.positional_one(item, &mut frames, stores, &mut reach)?;
         }
         Ok(())
+    }
+
+    /// C11 6.7.9p19: an initializer for a whole aggregate subobject (a brace
+    /// list, a string literal for a character array, or an expression of
+    /// the subobject's struct or union type) overrides every earlier
+    /// initializer inside it, and the elements its own list leaves out are
+    /// zero, not what an earlier list gave them. So `{ .a = {1, 2}, .a = {3} }`
+    /// leaves `a[1]` zero, while `{ .a = {1, 2}, .a[0] = 3 }` keeps it 2.
+    /// Earlier stores inside the subobject are dropped; their expressions are
+    /// still checked, as for an overridden union member.
+    pub(super) fn replace_subobject(
+        &mut self,
+        ty: &CType,
+        base: u64,
+        stores: &mut Vec<ElemStore>,
+        reach: &mut Reach,
+    ) {
+        let Some(size) = ty.size().filter(|size| *size > 0) else {
+            return;
+        };
+        if !reach.may_overlap(base, stores, self.store_drops) {
+            return;
+        }
+        let end = base + size;
+        let tail = stores.split_off(reach.start);
+        let (gone, kept): (Vec<_>, Vec<_>) = tail
+            .into_iter()
+            .partition(|store| store_within(store, base, end));
+        stores.extend(kept);
+        if !gone.is_empty() {
+            self.overridden.extend(gone);
+            self.store_drops += 1;
+        }
     }
 
     /// Whether a designated subobject is an aggregate initialized without
@@ -727,7 +767,7 @@ impl Sema<'_> {
         item: &Init,
         frames: &mut Vec<InitFrame>,
         stores: &mut Vec<ElemStore>,
-        root: &CType,
+        reach: &mut Reach,
     ) -> Result<(), Diagnostic> {
         loop {
             let Some(frame) = frames.last() else {
@@ -747,6 +787,9 @@ impl Sema<'_> {
             let scalar =
                 child.ty.is_scalar() || child.field.as_ref().is_some_and(|f| f.is_bitfield());
             if scalar || self.opens_subobject(&child.ty, item) {
+                if !scalar {
+                    self.replace_subobject(&child.ty, child_base, stores, reach);
+                }
                 if let Some(field) = &child.field {
                     if field.is_bitfield() || scalar {
                         self.init_field(field, frame.base, item, stores)?;
@@ -774,7 +817,6 @@ impl Sema<'_> {
                 base: child_base,
                 union: union_key(&child.ty),
             });
-            let _ = root;
         }
     }
 
@@ -862,6 +904,9 @@ impl Sema<'_> {
             .into_iter()
             .partition(|store| store_within(store, base, end));
         *stores = kept;
+        if !gone.is_empty() {
+            self.store_drops += 1;
+        }
         self.overridden.extend(gone);
         self.union_choice[pos].2 = member;
         // A nested union is first chosen after the union around it, so the
@@ -1196,6 +1241,61 @@ impl Clone for InitChild {
             field: self.field.clone(),
         }
     }
+}
+
+/// How far the stores of one brace list reach, so that a whole-subobject
+/// initializer searches for earlier stores to replace only when one can lie
+/// inside it ([`Sema::replace_subobject`]). Stores are mostly made in
+/// increasing offset order, so this keeps a long designated list linear.
+pub(super) struct Reach {
+    /// The first store that belongs to this brace list.
+    start: usize,
+    /// Stores before this index are counted in `end`.
+    seen: usize,
+    /// One past the furthest byte a counted store writes.
+    end: u64,
+    /// [`Sema::store_drops`] when `seen` was last valid. Dropping stores
+    /// moves later ones down, so a change means counting again.
+    drops: usize,
+}
+
+impl Reach {
+    pub(super) fn new(start: usize, drops: usize) -> Self {
+        Reach {
+            start,
+            seen: start,
+            end: 0,
+            drops,
+        }
+    }
+
+    /// Whether a store of this list may start before `base`'s subobject
+    /// ends, that is, whether any store reaches past `base`.
+    fn may_overlap(&mut self, base: u64, stores: &[ElemStore], drops: usize) -> bool {
+        if drops != self.drops || stores.len() < self.seen {
+            self.seen = self.start.min(stores.len());
+            self.end = 0;
+            self.drops = drops;
+        }
+        for store in &stores[self.seen..] {
+            self.end = self.end.max(store_reach(store));
+        }
+        self.seen = stores.len();
+        self.end > base
+    }
+}
+
+/// One past the last byte a store writes. A bit-field store counts from the
+/// byte of its first bit, as [`store_within`] does.
+fn store_reach(store: &ElemStore) -> u64 {
+    if let Some(bits) = &store.bits {
+        let first = u64::from(bits.abs_bit / 8);
+        let bytes = u64::from(bits.width.div_ceil(8)) + 1;
+        return first.saturating_add(bytes);
+    }
+    store
+        .offset
+        .saturating_add(store.ty.size().unwrap_or(0).max(1))
 }
 
 pub(super) struct InitFrame {

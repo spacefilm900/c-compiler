@@ -97,6 +97,7 @@ pub fn analyze_dialect(
         stmt_expr_seq: 0,
         union_choice: Vec::new(),
         overridden: Vec::new(),
+        store_drops: 0,
         library_calls: std::collections::BTreeMap::new(),
         deprecated: unit
             .fn_attrs
@@ -217,6 +218,9 @@ struct Sema<'t> {
     /// Stores of union members that a later designator replaced, in the
     /// initializer being shaped.
     overridden: Vec<ElemStore>,
+    /// How many times shaping dropped stores (an overridden union member
+    /// or subobject), so a [`init::Reach`] knows to count again.
+    store_drops: usize,
     /// C library functions that a `__builtin_` forwarder calls, by symbol.
     library_calls: std::collections::BTreeMap<String, crate::builtins::LibSig>,
     /// Functions declared `deprecated`, by symbol, with the message.
