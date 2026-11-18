@@ -34,8 +34,11 @@ and `x86_64-apple-darwin…`.
   - A Mach-O section attribute must be `segment,section`.
   - Every function has `"frame-pointer"="all"`.
   - An unnamed bit-field does not align the record.
-  - A struct with a flexible array member is passed in memory, where Linux
-    uses registers.
+  - A struct with a flexible array member, or a union holding one, is
+    passed in memory, where Linux uses registers.
+  - An eightbyte that is the upper half of a `long double` alone (X87UP
+    not after X87, as in `union { long double d; void *p; }`) is an SSE
+    `double`. The psABI, and Linux, pass that union in memory.
 - **Predefined macros:** `__APPLE__`, `__MACH__`, `__APPLE_CC__`,
   `__DYNAMIC__`, `__USER_LABEL_PREFIX__` `_`, `__LITTLE_ENDIAN__`,
   `__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__` (1090 for 10.9, 101500
@@ -46,9 +49,9 @@ and `x86_64-apple-darwin…`.
 
 | Check | What it shows | Result at the PR head |
 | --- | --- | --- |
-| `run_arm64_ir.py` signature check (`x86_64-apple-macos`) | Every function signature in `tests/` (parameter and return types and attributes, `byval`/`sret`, sign extension) matches Clang `-target x86_64-apple-macos10.15` | 457 signatures, 0 differ |
+| `run_arm64_ir.py` signature check (`x86_64-apple-macos`) | Every function signature in `tests/` (parameter and return types and attributes, `byval`/`sret`, sign extension) matches Clang `-target x86_64-apple-macos10.15` | 461 signatures, 0 differ (`byval` compared by size and alignment) |
 | `run_arm64_ir.py` llc check | `llc -mtriple=x86_64-apple-macosx -filetype=obj` (a Mach-O object) accepts our IR | 164 programs, 0 failed (1 rejected by Clang too) |
-| `run_cross.py --target x86_64-apple-macos` (stand-in) | Our code and Clang's for the Darwin target, linked together and run on Linux | 192 tests: 191 pass, 1 known (`gnu/both/01_attributes.c`, an ELF section name) |
+| `run_cross.py --target x86_64-apple-macos` (stand-in) | Our code and Clang's for the Darwin target, linked together and run on Linux | 193 tests: 192 pass, 1 known (`gnu/both/01_attributes.c`, an ELF section name) |
 | Stand-in GCC torture | The same for `gcc.c-torture/execute` | 1,746 files: 1,334 pass, 412 fail, all of them on the x86-64 known list (with the macOS overlay) |
 | `tools/abi_fuzz.py --target x86_64-apple-macos` | Random two-unit calling-convention programs, each unit built by us or by Clang, every mix | 1,000/1,000 seeds; with `--int128`, 1,000/1,000 (seeds 5001–6000) |
 
@@ -165,12 +168,53 @@ Run times on the Intel runner, ours against Apple clang:
 7. **Apple targets: `__LITTLE_ENDIAN__`**, which `<libkern/OSByteOrder.h>`
    needs. Clang defines it.
 
+Found in the CodeRabbit review of PR 50, each checked against Clang (and
+GCC for the enum rules) as a black box:
+
+8. **Intel macOS: a lone X87UP eightbyte is SSE.** `union { long double d;
+   void *p; }` is passed in `%rdi` and `%xmm0` and returned in `%rax` and
+   `%xmm0` (`{ i64, double }`), not in memory. Regression tests:
+   `tests/xabi/09_x87up_union` and the unit test
+   `intel_mac_passes_a_lone_x87up_eightbyte_as_sse`.
+9. **Intel macOS: a union holding a flexible-array struct goes in
+   memory**, as the struct itself does. Unit test
+   `intel_mac_passes_unions_holding_flexible_array_records_in_memory`.
+10. **GNU enums, follow-ups to bugs 5 and 6:**
+    - A colon after `enum E` starts an underlying type only when a type
+      follows. `struct { enum E : 3; }` (an unnamed bit-field) and
+      `_Generic(x, enum E: 1)` had stopped parsing in `-std=gnu11`.
+    - An implicit constant after one outside `int` has, while the list is
+      read, the previous constant's type if the value fits, else `long`
+      after a signed one and `unsigned long` after an unsigned one (GCC and
+      Clang agree). `enum { A = 0x7fffffff, B, C = sizeof(B) }` gives 8.
+    - The underlying type is in force inside the list (`sizeof(enum E)`).
+    - Underlying types and values wider than 64 bits are rejected instead
+      of being truncated.
+
+    Regression tests: `tests/gnu/16` and `17`, and the parser tests
+    `gnu_enum_values_stay_within_64_bits` and
+    `gnu_enum_colon_needs_a_type_after_it`.
+11. **`-target x86_64-apple-darwinN`** now maps the Darwin version to macOS
+    as Clang does (`darwin20` is macOS 11, `darwin19` is 10.15), and junk
+    (`darwinjunk`) or versions above 99 are rejected.
+12. **Only one compiler header tree is searched**, so `#include_next` in
+    the compiler's `<limits.h>` cannot land in a second copy at another
+    path.
+
 Harness fixes:
 
 - Lua and SQLite fetch and build on macOS (`shasum`, `LUA_USE_MACOSX`).
 - The SQLite scorecard's `ru_maxrss` is in bytes on macOS.
-- The torture runner skips `RLIMIT_AS`, which macOS does not support.
-- Torture overlays for macOS targets.
+- The torture runner skips `RLIMIT_AS` on macOS only, which does not
+  support it.
+- Torture overlays for macOS targets. The stand-in torture gate also fails
+  on a compiler panic in a listed test and on a filter that selects
+  nothing.
+- The stand-in insists on LLVM 18 or later for `opt` and `llc`, and
+  `run_arm64_ir.py` fails when its x86-64 headers are missing.
+- `abi_fuzz.py` reports a failing Clang rerun as an oracle failure, a
+  missing IR file as a build failure, and a sweep that compared nothing
+  as inconclusive (exit 2).
 
 ## Linux x86-64 output is unchanged except for the fixes
 
@@ -178,7 +222,8 @@ Old (`main` at `7ca7beb`) against new, on every `.c` file under `tests/`,
 the WACC, GCC torture, One True AWK and Csmith trees, Lua, SQLite and
 DOOM, each compiled in strict C11 and in `-std=gnu11`:
 
-- **13,358 compilations, 18 different.** No exit status changed apart from
+- **13,362 compilations, 18 different** (rerun at the review fixes; the
+  same 18). No exit status changed apart from
   the two new GNU tests, which the old compiler rejects.
 - **14 of the 18 are the `__int128` ABI fixes** (bugs 1 and 2), in both
   modes: `145_uint128_more.c`, `146_uint128_va_regs.c`,
@@ -198,6 +243,15 @@ DOOM, each compiled in strict C11 and in `-std=gnu11`:
   It is not changed here because Clang is the reference.
   `abi_fuzz --int128` avoids the shape: in a variadic function a scalar
   `__int128` appears only as the last argument.
+- **A named scalar `__int128` spilled to the stack with one register left
+  depends on the LLVM version.** This compiler writes a plain `i128`
+  parameter, as Clang does, so the backend decides. LLVM 19 (checked here)
+  leaves `%r9` unused and reads the next argument from the stack; GCC puts
+  it in `%r9`. The review of PR 50 reports that LLVM 20 uses `%r9` as GCC
+  does (not checked here). Code from this compiler and from a Clang of the
+  same LLVM version agree (`tests/xabi/08`, on Linux and on the Intel
+  Mac). Lowering the parameter as a `byval` copy would match GCC but
+  disagree with Clang 19, the Linux oracle.
 - **Strict C11 rejects the SDK's GNU enum forms.** As a result,
   `<malloc/malloc.h>` and `<mach/mach_time.h>` need `-std=gnu11`. Apple
   clang accepts them with `-std=c11`.
