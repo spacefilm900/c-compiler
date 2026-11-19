@@ -57,11 +57,35 @@ pub enum Inline {
         op: OverflowOp,
         fixed: Option<TypeName>,
     },
+    /// Windows `__debugbreak()`: a breakpoint trap the program can
+    /// continue from (Microsoft's compiler intrinsic of that name; LLVM's
+    /// `llvm.debugtrap`).
+    DebugBreak,
+    /// Windows `__fastfail(code)`: end the process at once through the
+    /// `int 0x29` fail-fast interrupt with `code` in ECX, as Microsoft
+    /// documents the x64 intrinsic. It does not return.
+    FastFail,
+    /// MSVC `__va_start(&ap, last)`: the x64 intrinsic that the Windows
+    /// SDK's <vadefs.h> uses for `va_start` (`va_list` is `char *`); the
+    /// same as `__builtin_va_start(ap, last)`.
+    MsVaStart,
 }
 
 impl Inline {
     /// Recognize an inline builtin by its full spelling.
     pub fn from_name(name: &str) -> Option<Inline> {
+        // MinGW-w64's <_mingw.h> defines these with GNU extended asm
+        // unless `__has_builtin` says the compiler provides them.
+        if crate::target::current().is_windows() {
+            match name {
+                "__debugbreak" => return Some(Inline::DebugBreak),
+                "__fastfail" => return Some(Inline::FastFail),
+                "__va_start" if crate::target::current().is_msvc() => {
+                    return Some(Inline::MsVaStart)
+                }
+                _ => {}
+            }
+        }
         let rest = name.strip_prefix("__builtin_")?;
         let suffixed = |base: &str| -> Option<TypeName> {
             let tail = rest.strip_prefix(base)?;
@@ -126,9 +150,9 @@ impl Inline {
             "bswap16" => Inline::Bswap(TypeName::UShort),
             "bswap32" => Inline::Bswap(TypeName::UInt),
             // The result is `uint64_t`: `unsigned long long` on Apple
-            // platforms, `unsigned long` on LP64 Linux.
+            // platforms and Windows, `unsigned long` on LP64 Linux.
             "bswap64" if crate::target::current().is_apple() => Inline::Bswap(TypeName::ULongLong),
-            "bswap64" => Inline::Bswap(TypeName::ULong),
+            "bswap64" => Inline::Bswap(TypeName::int64(false)),
             "expect" => Inline::Expect,
             "unreachable" => Inline::Unreachable,
             "trap" => Inline::Trap,
@@ -148,8 +172,8 @@ impl Inline {
     /// The number of arguments, as a range `(min, max)`.
     pub fn arity(self) -> (usize, usize) {
         match self {
-            Inline::Unreachable | Inline::Trap => (0, 0),
-            Inline::Expect => (2, 2),
+            Inline::Unreachable | Inline::Trap | Inline::DebugBreak => (0, 0),
+            Inline::Expect | Inline::MsVaStart => (2, 2),
             Inline::Prefetch => (1, 3),
             Inline::AssumeAligned => (2, 3),
             Inline::Overflow { .. } => (3, 3),
@@ -172,7 +196,12 @@ impl Inline {
             | Inline::IsNormal => CType::int_type(),
             Inline::Bswap(ty) => CType::Int(ty),
             Inline::Expect => CType::Int(TypeName::Long),
-            Inline::Unreachable | Inline::Trap | Inline::Prefetch => CType::Void,
+            Inline::Unreachable
+            | Inline::Trap
+            | Inline::Prefetch
+            | Inline::DebugBreak
+            | Inline::FastFail
+            | Inline::MsVaStart => CType::Void,
             Inline::Alloca
             | Inline::AssumeAligned
             | Inline::ReturnAddress
@@ -192,12 +221,14 @@ impl Inline {
             | Inline::Clrsb(ty)
             | Inline::Bswap(ty) => Some(CType::Int(ty)),
             Inline::Expect => Some(CType::Int(TypeName::Long)),
-            Inline::Alloca => Some(CType::Int(TypeName::ULong)),
-            Inline::ReturnAddress | Inline::FrameAddress => Some(CType::Int(TypeName::UInt)),
+            Inline::Alloca => Some(CType::Int(TypeName::size_t())),
+            Inline::ReturnAddress | Inline::FrameAddress | Inline::FastFail => {
+                Some(CType::Int(TypeName::UInt))
+            }
             Inline::AssumeAligned => Some(if index == 0 {
                 const_void_ptr()
             } else {
-                CType::Int(TypeName::ULong)
+                CType::Int(TypeName::size_t())
             }),
             Inline::Prefetch => Some(if index == 0 {
                 const_void_ptr()

@@ -41,7 +41,10 @@ const DEFAULT_INCLUDE_DEPTH: usize = 200;
 #[derive(Debug, Clone)]
 pub enum CliMacro {
     /// `-D NAME` defines `NAME` as `1`. `-D NAME=` defines it as empty.
-    /// `-D NAME=tokens` uses `tokens` as the replacement list.
+    /// `-D NAME=tokens` uses `tokens` as the replacement list. A `name`
+    /// written `NAME(PARAM, ...)` defines a function-like macro, as GCC's
+    /// `-D 'NAME(args...)=definition'` does (GCC manual, "Preprocessor
+    /// Options").
     Define {
         name: String,
         replacement: Option<String>,
@@ -136,7 +139,54 @@ fn run(source: &str, filename: &str, options: &PpOptions) -> Result<Vec<PpToken>
     let mut processor = Processor::new(options)?;
     processor.push_main(filename);
     processor.tokens = crate::timing::lexing(|| lex_source(source, filename, 0))?;
-    processor.expand_all(false)
+    let tokens = processor.expand_all(false)?;
+    remove_pragma_operators(tokens)
+}
+
+/// The `_Pragma ( string-literal )` operator (C11 6.10.9), applied after
+/// macro expansion. Its pragma behaves as a `#pragma` line would; every
+/// pragma except `once` is ignored by this implementation, and `once` in
+/// this form is ignored too (it rarely comes from a macro). The operator
+/// and its operand are removed.
+fn remove_pragma_operators(tokens: Vec<PpToken>) -> Result<Vec<PpToken>, Diagnostic> {
+    if !tokens
+        .iter()
+        .any(|tok| tok.kind == PpKind::Ident && tok.spelling == "_Pragma")
+    {
+        return Ok(tokens);
+    }
+    let skippable = |tok: &PpToken| matches!(tok.kind, PpKind::Newline | PpKind::Placemarker);
+    let mut out = Vec::with_capacity(tokens.len());
+    let mut index = 0;
+    while index < tokens.len() {
+        let tok = &tokens[index];
+        if tok.kind != PpKind::Ident || tok.spelling != "_Pragma" {
+            out.push(tok.clone());
+            index += 1;
+            continue;
+        }
+        let mut parts = Vec::new();
+        let mut next = index + 1;
+        while parts.len() < 3 && next < tokens.len() {
+            if !skippable(&tokens[next]) {
+                parts.push(&tokens[next]);
+            }
+            next += 1;
+        }
+        let well_formed = parts.len() == 3
+            && parts[0].is_lparen()
+            && parts[1].kind == PpKind::String
+            && !parts[1].spelling.starts_with(['u', 'U'])
+            && parts[2].is_rparen();
+        if !well_formed {
+            return Err(error_at(
+                tok,
+                "_Pragma requires a parenthesized string literal",
+            ));
+        }
+        index = next;
+    }
+    Ok(out)
 }
 
 fn format_tokens(tokens: &[PpToken]) -> String {
@@ -441,12 +491,9 @@ impl Processor {
             ("__STDC_NO_THREADS__", "1"),
             ("__STDC_NO_VLA__", "1"),
             ("__STRICT_ANSI__", "1"),
-            ("__LP64__", "1"),
-            ("_LP64", "1"),
             ("__CHAR_BIT__", "8"),
             ("__SIZEOF_SHORT__", "2"),
             ("__SIZEOF_INT__", "4"),
-            ("__SIZEOF_LONG__", "8"),
             ("__SIZEOF_LONG_LONG__", "8"),
             ("__SIZEOF_POINTER__", "8"),
             ("__SIZEOF_SIZE_T__", "8"),
@@ -455,25 +502,11 @@ impl Processor {
             ("__SIZEOF_DOUBLE__", "8"),
             ("__POINTER_WIDTH__", "64"),
             ("__INT_WIDTH__", "32"),
-            ("__LONG_WIDTH__", "64"),
             ("__LONG_LONG_WIDTH__", "64"),
             ("__SCHAR_MAX__", "127"),
             ("__SHRT_MAX__", "32767"),
             ("__INT_MAX__", "2147483647"),
-            ("__LONG_MAX__", "9223372036854775807L"),
             ("__LONG_LONG_MAX__", "9223372036854775807LL"),
-            ("__INTMAX_MAX__", "9223372036854775807L"),
-            ("__UINTMAX_MAX__", "18446744073709551615UL"),
-            ("__SIZE_TYPE__", "long unsigned int"),
-            ("__PTRDIFF_TYPE__", "long int"),
-            ("__INTMAX_TYPE__", "long int"),
-            ("__UINTMAX_TYPE__", "long unsigned int"),
-            ("__INTPTR_TYPE__", "long int"),
-            ("__UINTPTR_TYPE__", "long unsigned int"),
-            ("__GNUC__", "4"),
-            ("__GNUC_MINOR__", "2"),
-            ("__GNUC_PATCHLEVEL__", "1"),
-            ("__GNUC_STDC_INLINE__", "1"),
             ("__ORDER_LITTLE_ENDIAN__", "1234"),
             ("__ORDER_BIG_ENDIAN__", "4321"),
             ("__ORDER_PDP_ENDIAN__", "3412"),
@@ -481,7 +514,9 @@ impl Processor {
         ];
         let target = target_macros(crate::target::current());
         for (name, body) in BUILTINS.iter().chain(target.iter()) {
-            let mac = self.macro_from_parts(name, None, false, body_tokens(body)?, None)?;
+            // A function-like builtin is written `NAME(PARAM, ...)`.
+            let (name, params) = split_function_like(name);
+            let mac = self.macro_from_parts(name, params, false, body_tokens(body)?, None)?;
             self.macros
                 .insert(mac.name.clone(), MacroEntry::Defined(Rc::new(mac)));
         }
@@ -495,15 +530,22 @@ impl Processor {
                 self.macros.insert(name.clone(), MacroEntry::Undefined);
                 Ok(())
             }
-            CliMacro::Define { name, replacement } => {
-                if !is_ident_text(name) || *name == "defined" {
-                    return Err(error_at(&at, format!("invalid macro name '{name}'")));
+            CliMacro::Define {
+                name: spelling,
+                replacement,
+            } => {
+                let (name, params) = split_function_like(spelling);
+                let params_ok = params
+                    .as_ref()
+                    .is_none_or(|list| list.iter().all(|param| is_ident_text(param)));
+                if !is_ident_text(name) || name == "defined" || !params_ok {
+                    return Err(error_at(&at, format!("invalid macro name '{spelling}'")));
                 }
                 let body = match replacement {
                     None => body_tokens("1")?,
                     Some(text) => body_tokens(text)?,
                 };
-                let mac = self.macro_from_parts(name, None, false, body, Some(&at))?;
+                let mac = self.macro_from_parts(name, params, false, body, Some(&at))?;
                 self.macros
                     .insert(mac.name.clone(), MacroEntry::Defined(Rc::new(mac)));
                 Ok(())
@@ -522,6 +564,31 @@ impl Processor {
             system: false,
         });
     }
+}
+
+/// Split `NAME(PARAM, ...)` into the name and its parameters; a plain
+/// `NAME` has none. A malformed list (no closing parenthesis, text after
+/// it, or an empty parameter between commas) yields an empty parameter,
+/// which the caller rejects as not an identifier. `NAME()` has no
+/// parameters.
+fn split_function_like(spelling: &str) -> (&str, Option<Vec<String>>) {
+    let Some((name, rest)) = spelling.split_once('(') else {
+        return (spelling, None);
+    };
+    let Some(inner) = rest.strip_suffix(')') else {
+        return (name, Some(vec![String::new()]));
+    };
+    if inner.contains(['(', ')']) {
+        return (name, Some(vec![String::new()]));
+    }
+    if inner.trim().is_empty() {
+        return (name, Some(Vec::new()));
+    }
+    let params = inner
+        .split(',')
+        .map(|param| param.trim().to_string())
+        .collect();
+    (name, Some(params))
 }
 
 #[cfg(test)]

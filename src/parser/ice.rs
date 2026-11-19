@@ -133,7 +133,7 @@ pub(super) fn eval_ice(expr: &Expr, env: Env) -> Result<BVal, BoundErr> {
             let size = ty.size().ok_or(BoundErr::Incomplete)?;
             Ok(BVal {
                 bits: u128::from(size),
-                ty: TypeName::ULong,
+                ty: TypeName::size_t(),
             })
         }
         Expr::Unary { op, expr, .. } => eval_ice_unary(*op, expr, env),

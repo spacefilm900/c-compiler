@@ -1,10 +1,11 @@
 /* Compiler-provided <limits.h> for the LP64 targets (x86_64 Linux,
- * Apple arm64, AArch64 Linux).
+ * Apple arm64 and x86_64, AArch64 Linux) and 64-bit Windows (LLP64).
  *
  * This is the header a hosted compiler supplies. It is searched before
  * the C library, so a program's `#include <limits.h>` gets these macros.
  * `char` is signed unless the target defines __CHAR_UNSIGNED__ (AArch64
- * Linux). `long` and `long long` are both 64 bits.
+ * Linux). `long long` is 64 bits; `long` is 64 bits too, except on
+ * 64-bit Windows (_WIN64), where it is 32.
  */
 #ifndef _LIMITS_H
 #define _LIMITS_H
@@ -16,7 +17,9 @@
  * carries the POSIX limits) and then replace its values with ours. The SDK's
  * MB_LEN_MAX (6, the longest UTF-8 sequence its locales produce) is kept,
  * since it describes the C library rather than the compiler. */
-#if defined(__APPLE__) && defined(__has_include_next)
+/* MinGW-w64's <limits.h> is pulled in the same way on Windows, for the
+ * limits it adds (PATH_MAX, _I64_MAX, SSIZE_MAX and so on). */
+#if (defined(__APPLE__) || defined(_WIN32)) && defined(__has_include_next)
 #if __has_include_next(<limits.h>)
 #include_next <limits.h>
 #endif
@@ -64,9 +67,15 @@
 #define INT_MAX 2147483647
 #define UINT_MAX 4294967295U
 
+#ifdef _WIN64
+#define LONG_MIN (-2147483647L - 1L)
+#define LONG_MAX 2147483647L
+#define ULONG_MAX 4294967295UL
+#else
 #define LONG_MIN (-9223372036854775807L - 1L)
 #define LONG_MAX 9223372036854775807L
 #define ULONG_MAX 18446744073709551615UL
+#endif
 
 #define LLONG_MIN (-9223372036854775807LL - 1LL)
 #define LLONG_MAX 9223372036854775807LL

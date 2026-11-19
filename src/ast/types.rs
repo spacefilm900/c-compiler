@@ -3,11 +3,12 @@
 
 use super::*;
 
-/// Integer and `void` types on `x86_64-pc-linux-gnu` (LP64).
+/// Integer and `void` types.
 ///
-/// `char` is a distinct type from `signed char` and `unsigned char`. On this
-/// target it is signed. `long` and `long long` are both 64 bits; `long long`
-/// still has the greater conversion rank (C11 6.3.1.1).
+/// `char` is a distinct type from `signed char` and `unsigned char`; its
+/// signedness is the target's. Under LP64 (every target but Windows) `long`
+/// and `long long` are both 64 bits, and `long long` still has the greater
+/// conversion rank (C11 6.3.1.1). Under LLP64 (Windows) `long` is 32 bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeName {
     Void,
@@ -33,6 +34,28 @@ pub enum TypeName {
 }
 
 impl TypeName {
+    /// `size_t` on the current target.
+    pub fn size_t() -> TypeName {
+        crate::target::current().size_type()
+    }
+
+    /// `ptrdiff_t` (and `intptr_t`) on the current target.
+    pub fn ptrdiff_t() -> TypeName {
+        crate::target::current().ptrdiff_type()
+    }
+
+    /// The 64-bit integer type this compiler uses for 64-bit arithmetic
+    /// of its own (addresses, wide containers): `long` under LP64, `long
+    /// long` under LLP64, where `long` is 32 bits.
+    pub fn int64(signed: bool) -> TypeName {
+        match (crate::target::current().long_is_64(), signed) {
+            (true, true) => TypeName::Long,
+            (true, false) => TypeName::ULong,
+            (false, true) => TypeName::LongLong,
+            (false, false) => TypeName::ULongLong,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             TypeName::Void => "void",
@@ -85,7 +108,14 @@ impl TypeName {
             TypeName::Bool | TypeName::Char | TypeName::SChar | TypeName::UChar => 8,
             TypeName::Short | TypeName::UShort => 16,
             TypeName::Int | TypeName::UInt => 32,
-            TypeName::Long | TypeName::ULong | TypeName::LongLong | TypeName::ULongLong => 64,
+            TypeName::Long | TypeName::ULong => {
+                if crate::target::current().long_is_64() {
+                    64
+                } else {
+                    32
+                }
+            }
+            TypeName::LongLong | TypeName::ULongLong => 64,
             TypeName::Int128 | TypeName::UInt128 => 128,
         }
     }
@@ -186,6 +216,12 @@ impl TypeName {
     /// the upper bits unspecified, so nothing is added there.
     pub fn abi_attr(self) -> Option<&'static str> {
         if !crate::target::current().extends_narrow_args() {
+            // The Microsoft x64 convention leaves the upper bits of narrow
+            // integers unspecified, but a `_Bool` is still passed as a
+            // zero-extended byte (Clang does, observed as a black box).
+            if self == TypeName::Bool && crate::target::current().is_windows() {
+                return Some("zeroext");
+            }
             return None;
         }
         match self {
@@ -348,19 +384,20 @@ impl StrEnc {
         match self {
             StrEnc::Byte => 1,
             StrEnc::Utf16 => 2,
-            StrEnc::Wchar | StrEnc::Utf32 => 4,
+            StrEnc::Wchar => crate::target::current().wchar_bits() as usize / 8,
+            StrEnc::Utf32 => 4,
         }
     }
 
     /// Element type of the array. `char16_t` and `char32_t` are the target's
-    /// unsigned 16-bit and 32-bit types. `wchar_t` is `int`, or `unsigned
-    /// int` where the target makes it unsigned (AArch64 Linux).
+    /// unsigned 16-bit and 32-bit types. `wchar_t` is `int`, `unsigned
+    /// int` where the target makes it unsigned (AArch64 Linux), or `unsigned
+    /// short` on Windows.
     pub fn elem(self) -> TypeName {
         match self {
             StrEnc::Byte => TypeName::Char,
             StrEnc::Utf16 => TypeName::UShort,
-            StrEnc::Wchar if crate::target::current().wchar_is_signed() => TypeName::Int,
-            StrEnc::Wchar => TypeName::UInt,
+            StrEnc::Wchar => crate::target::current().wchar_type(),
             StrEnc::Utf32 => TypeName::UInt,
         }
     }

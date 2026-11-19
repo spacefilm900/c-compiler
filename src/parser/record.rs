@@ -381,11 +381,11 @@ impl Parser<'_> {
             if min < i128::from(i64::MIN) || max > i128::from(i64::MAX) {
                 return Err(self.error("enumerator values do not fit in one integer type"));
             }
-            TypeName::Long
+            TypeName::int64(true)
         } else if max <= i128::from(u32::MAX) {
             TypeName::UInt
         } else {
-            TypeName::ULong
+            TypeName::int64(false)
         };
         let scope = self.names.last_mut().expect("name scope");
         for name in names {
@@ -728,7 +728,7 @@ impl Parser<'_> {
     /// save descriptor. As a parameter the array decays to a pointer, which
     /// is what `vprintf` takes.
     ///
-    /// On Apple arm64 it is `char *`. On AArch64 Linux it is the AAPCS64
+    /// On Apple arm64 and on Windows it is `char *`. On AArch64 Linux it is the AAPCS64
     /// structure `struct __va_list { void *__stack; void *__gr_top;
     /// void *__vr_top; int __gr_offs; int __vr_offs; }`, passed by value.
     /// `_Float16` (ISO/IEC TS 18661-3, a reserved identifier in C11) is
@@ -750,13 +750,13 @@ impl Parser<'_> {
         if let Some(ty) = &self.va_list {
             return ty.clone();
         }
-        match crate::target::current() {
-            crate::target::Target::Arm64Apple { .. } => {
+        match crate::target::current().va_list_kind() {
+            crate::target::VaListKind::CharPtr => {
                 let ty = CType::pointer(CType::from_name(TypeName::Char));
                 self.va_list = Some(ty.clone());
                 return ty;
             }
-            crate::target::Target::Aarch64Linux => {
+            crate::target::VaListKind::Aapcs64 => {
                 let handle = self.declare_fresh_tag("__va_list", RecordKind::Struct);
                 let void_ptr = || CType::pointer(CType::Void);
                 let fields = vec![
@@ -773,7 +773,7 @@ impl Parser<'_> {
                 self.va_list = Some(ty.clone());
                 return ty;
             }
-            crate::target::Target::X86_64Linux | crate::target::Target::X86_64Apple { .. } => {}
+            crate::target::VaListKind::SysV => {}
         }
         let handle = self.declare_fresh_tag("__va_list_tag", RecordKind::Struct);
         let fields = vec![
@@ -959,12 +959,12 @@ fn implicit_enum_type(value: i128, prev: TypeName) -> Option<TypeName> {
     };
     if prev.width() <= 64 && fits(prev) {
         Some(prev)
-    } else if !prev.is_signed() && fits(TypeName::ULong) {
-        Some(TypeName::ULong)
-    } else if fits(TypeName::Long) {
-        Some(TypeName::Long)
-    } else if fits(TypeName::ULong) {
-        Some(TypeName::ULong)
+    } else if !prev.is_signed() && fits(TypeName::int64(false)) {
+        Some(TypeName::int64(false))
+    } else if fits(TypeName::int64(true)) {
+        Some(TypeName::int64(true))
+    } else if fits(TypeName::int64(false)) {
+        Some(TypeName::int64(false))
     } else {
         None
     }

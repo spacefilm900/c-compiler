@@ -652,10 +652,10 @@ impl Sema<'_> {
     }
 
     pub(super) fn check_va_list_arg(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
-        if crate::target::current().is_aarch64() {
-            // The va_list is an object (`char *` on Apple, the AAPCS64
-            // structure on Linux), not an array, so the builtins take its
-            // address explicitly.
+        if crate::target::current().va_list_kind() != crate::target::VaListKind::SysV {
+            // The va_list is an object (`char *` on Apple arm64 and
+            // Windows, the AAPCS64 structure on AArch64 Linux), not an
+            // array, so the builtins take its address explicitly.
             self.check_expr(expr)?;
             let ty = expr.ty().expect("typed");
             if !(va_list_object(&ty) && expr.is_lvalue()) {
@@ -767,11 +767,11 @@ impl Sema<'_> {
     }
 }
 
-/// A `va_list` object on AArch64: `char *` on Apple, `struct __va_list`
-/// on Linux.
+/// A `va_list` object: `char *` on Apple arm64 and Windows, `struct
+/// __va_list` on AArch64 Linux.
 pub(super) fn va_list_object(ty: &CType) -> bool {
     let bare = ty.unqualified();
-    if crate::target::current().is_apple() {
+    if crate::target::current().va_list_kind() == crate::target::VaListKind::CharPtr {
         return bare
             .pointee()
             .is_some_and(|pointee| pointee.unqualified() == CType::from_name(TypeName::Char));

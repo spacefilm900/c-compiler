@@ -195,6 +195,14 @@ impl StructRef {
         }
     }
 
+    /// Raise the alignment of a completed record whose size is already a
+    /// multiple of `align`.
+    pub fn raise_align(&self, align: u32) {
+        let mut body = self.data.borrow_mut();
+        debug_assert!(body.size % u64::from(align.max(1)) == 0);
+        body.align = body.align.max(align);
+    }
+
     pub fn set_unadjusted_align(&self, align: u32) {
         self.data.borrow_mut().unadjusted_align = align.max(1);
     }
@@ -398,6 +406,13 @@ pub fn layout_members(
     members: &[LayoutMember],
     union_layout: bool,
 ) -> Option<(Vec<LayoutPlace>, u64, u32)> {
+    if crate::target::current().ms_layout() {
+        return if union_layout {
+            ms_layout_union_members(members)
+        } else {
+            ms_layout_members(members)
+        };
+    }
     if union_layout {
         return layout_union_members(members);
     }
@@ -454,6 +469,139 @@ pub fn layout_members(
     }
     let bytes = bit_pos.checked_add(7)? / 8;
     let size = align_up(bytes, u64::from(align))?;
+    Some((places, size, align))
+}
+
+/// An open run of bit-fields in the Microsoft layout: the storage unit's
+/// first bit, its size in bytes, and the bits used so far.
+struct MsUnit {
+    start: u64,
+    size: u64,
+    used: u64,
+}
+
+/// The Microsoft record layout used on Windows, as the GCC manual
+/// describes it for `-mms-bitfields` (x86 Options), the default for both
+/// MSVC and MinGW-w64 targets:
+///
+/// - Every member, including an unnamed bit-field, has the alignment of
+///   its declared type (already reduced by any packing), and the record's
+///   alignment is the largest of them.
+/// - Adjacent bit-fields share one storage unit of their declared type
+///   only when the declared types have the same size and the next field
+///   fits in the bits the unit has left. Otherwise the next bit-field opens
+///   a new unit at that type's alignment; a field never straddles units.
+/// - A zero-width bit-field after a bit-field closes the run, and the next
+///   member is aligned to at least the zero-width field's type, which also
+///   joins the record's alignment. A zero-width bit-field after any other
+///   member is ignored.
+pub(super) fn ms_layout_members(members: &[LayoutMember]) -> Option<(Vec<LayoutPlace>, u64, u32)> {
+    let mut places = Vec::with_capacity(members.len());
+    // The first free byte after everything placed and every closed unit.
+    let mut next_byte: u64 = 0;
+    let mut align = 1u32;
+    let mut unit: Option<MsUnit> = None;
+    let mut last_was_bitfield = false;
+    // Alignment a zero-width bit-field imposes on the next member.
+    let mut pending = 1u64;
+    let close = |unit: &mut Option<MsUnit>, next_byte: &mut u64| -> Option<()> {
+        if let Some(open) = unit.take() {
+            *next_byte = (*next_byte).max(open.start / 8 + open.size);
+        }
+        Some(())
+    };
+    for member in members {
+        let field_align = member.align.max(1);
+        match member.bit_width {
+            Some(0) => {
+                if last_was_bitfield {
+                    close(&mut unit, &mut next_byte)?;
+                    pending = pending.max(u64::from(field_align));
+                    align = align.max(field_align);
+                }
+                places.push(LayoutPlace {
+                    offset: next_byte,
+                    bit_offset: u32::try_from(next_byte.checked_mul(8)?).ok()?,
+                    bit_width: Some(0),
+                });
+                // A second zero-width field is not after a bit-field.
+                last_was_bitfield = false;
+                continue;
+            }
+            Some(width) => {
+                let width = u64::from(width);
+                let size = member.size.max(1);
+                let fits = unit
+                    .as_ref()
+                    .is_some_and(|open| open.size == size && open.used + width <= size * 8);
+                if !fits {
+                    close(&mut unit, &mut next_byte)?;
+                    let at = align_up(next_byte, u64::from(field_align).max(pending))?;
+                    pending = 1;
+                    unit = Some(MsUnit {
+                        start: at.checked_mul(8)?,
+                        size,
+                        used: 0,
+                    });
+                }
+                let open = unit.as_mut()?;
+                let bit = open.start.checked_add(open.used)?;
+                places.push(LayoutPlace {
+                    offset: open.start / 8,
+                    bit_offset: u32::try_from(bit).ok()?,
+                    bit_width: Some(width as u32),
+                });
+                open.used += width;
+                align = align.max(field_align);
+                last_was_bitfield = true;
+            }
+            None => {
+                close(&mut unit, &mut next_byte)?;
+                let at = align_up(next_byte, u64::from(field_align).max(pending))?;
+                pending = 1;
+                places.push(LayoutPlace {
+                    offset: at,
+                    bit_offset: 0,
+                    bit_width: None,
+                });
+                next_byte = at.checked_add(member.size)?;
+                align = align.max(field_align);
+                last_was_bitfield = false;
+            }
+        }
+    }
+    close(&mut unit, &mut next_byte)?;
+    let size = align_up(next_byte, u64::from(align))?;
+    Some((places, size, align))
+}
+
+/// A union in the Microsoft layout: every member at offset 0, the size the
+/// largest member (a bit-field counts as its declared type, a zero-width
+/// one as nothing). Bit-fields do not raise the union's alignment; only
+/// ordinary members do (observed with Clang as a black box for both
+/// Windows targets).
+pub(super) fn ms_layout_union_members(
+    members: &[LayoutMember],
+) -> Option<(Vec<LayoutPlace>, u64, u32)> {
+    let mut places = Vec::with_capacity(members.len());
+    let mut align = 1u32;
+    let mut size = 0u64;
+    for member in members {
+        places.push(LayoutPlace {
+            offset: 0,
+            bit_offset: 0,
+            bit_width: member.bit_width,
+        });
+        match member.bit_width {
+            Some(0) => {}
+            Some(_) => size = size.max(member.size.max(1)),
+            None => {
+                size = size.max(member.size);
+                align = align.max(member.align.max(1));
+            }
+        }
+    }
+    let size = align_up(size, u64::from(align))?;
     Some((places, size, align))
 }
 

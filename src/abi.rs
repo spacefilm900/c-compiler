@@ -177,8 +177,10 @@ pub enum AggUse {
 }
 
 pub fn function_sig(ret: &CType, params: &[CType]) -> Result<FnSig, AbiFail> {
-    if let Abi::Aapcs64 { .. } = crate::target::current().abi() {
-        return crate::aapcs64::function_sig(ret, params);
+    match crate::target::current().abi() {
+        Abi::Aapcs64 { .. } => return crate::aapcs64::function_sig(ret, params),
+        Abi::Win64 => return crate::win64::function_sig(ret, params),
+        Abi::SysV => {}
     }
     let (ret_type, ret_prefix, ret_agg, sret_attrs) = lower_return(ret)?;
     // Six general registers. The hidden sret pointer takes the first.
@@ -335,8 +337,10 @@ pub fn classify_aggregate(ty: &CType) -> Result<AggAbi, AbiFail> {
 }
 
 pub fn classify_for(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
-    if let Abi::Aapcs64 { .. } = crate::target::current().abi() {
-        return crate::aapcs64::classify(ty, use_as);
+    match crate::target::current().abi() {
+        Abi::Aapcs64 { .. } => return crate::aapcs64::classify(ty, use_as),
+        Abi::Win64 => return crate::win64::classify(ty, use_as),
+        Abi::SysV => {}
     }
     let bare = ty.unqualified();
     if !bare.is_record() {

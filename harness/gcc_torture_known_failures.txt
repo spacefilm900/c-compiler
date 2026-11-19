@@ -73,7 +73,6 @@
 20041218-2.c vla
 20050121-1.c complex
 20050203-1.c asm
-20050215-1.c runtime
 20050316-1.c compile-error
 20050316-2.c compile-error
 20050316-3.c compile-error

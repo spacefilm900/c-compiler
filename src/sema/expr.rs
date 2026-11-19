@@ -620,7 +620,7 @@ impl Sema<'_> {
                 );
             }
             self.require_complete_pointee(&left_ty, line, column)?;
-            return Ok(CType::from_name(TypeName::Long));
+            return Ok(CType::from_name(TypeName::ptrdiff_t()));
         }
         self.err(
             line,
@@ -998,7 +998,7 @@ impl Sema<'_> {
                 );
             }
         }
-        expr.set_ty(CType::from_name(TypeName::ULong));
+        expr.set_ty(CType::from_name(TypeName::size_t()));
         Ok(())
     }
 

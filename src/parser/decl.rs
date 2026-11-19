@@ -197,13 +197,13 @@ impl Parser<'_> {
         first: NamedDecl,
     ) -> Result<Vec<TopDecl>, Diagnostic> {
         self.reject_func_spec(&specs)?;
-        self.bind_typedef_decl(&specs.attrs, &first)?;
+        self.bind_typedef_decl(&specs, &first, true)?;
         while self.match_kind(TokenKind::Comma) {
             let next = self.parse_named_decl(specs.ty.clone())?;
             if next.is_function() && self.current().kind == TokenKind::LBrace {
                 return Err(self.error("a function definition cannot follow another declarator"));
             }
-            self.bind_typedef_decl(&specs.attrs, &next)?;
+            self.bind_typedef_decl(&specs, &next, false)?;
         }
         self.expect_skip(TokenKind::Semi, "';'")?;
         Ok(Vec::new())
@@ -211,12 +211,14 @@ impl Parser<'_> {
 
     pub(super) fn parse_typedef_declarators(&mut self, specs: &Specs) -> Result<(), Diagnostic> {
         self.reject_func_spec(specs)?;
+        let mut first = true;
         loop {
             let declarator = self.parse_named_decl(specs.ty.clone())?;
             if declarator.is_function() && self.current().kind == TokenKind::LBrace {
                 return Err(self.error("a typedef cannot have a function body"));
             }
-            self.bind_typedef_decl(&specs.attrs, &declarator)?;
+            self.bind_typedef_decl(specs, &declarator, first)?;
+            first = false;
             if self.match_kind(TokenKind::Comma) {
                 continue;
             }
@@ -228,8 +230,9 @@ impl Parser<'_> {
 
     pub(super) fn bind_typedef_decl(
         &mut self,
-        spec_attrs: &[Attr],
+        specs: &Specs,
         declarator: &NamedDecl,
+        first: bool,
     ) -> Result<(), Diagnostic> {
         if self.current().kind == TokenKind::Assign {
             return Err(self.error("a typedef cannot have an initializer"));
@@ -238,16 +241,32 @@ impl Parser<'_> {
             DeclKind::Object(ty) => ty.clone(),
             DeclKind::Function { .. } => decl_kind_type(&declarator.kind),
         };
-        let attrs: Vec<Attr> = spec_attrs
+        let attrs: Vec<Attr> = specs
+            .attrs
             .iter()
             .chain(&declarator.attrs)
             .cloned()
             .collect();
         let ty = self.apply_mode(ty, &attrs)?;
         // A typedef with its own alignment is a distinct type in GCC. Only
-        // the type's own alignment is supported here.
+        // the type's own alignment is supported here, plus one form that
+        // MinGW-w64's <setjmp.h> uses: `typedef __attribute__((aligned(16)))
+        // struct _S { ... } T;`, where the record is defined in this very
+        // declaration and its size is already a multiple of the alignment.
+        // The record itself takes the alignment. That is exact when the
+        // record has no tag. With a tag, `_Alignof(struct _S)` would also be
+        // raised where GCC and Clang keep the record's own alignment, so the
+        // form is accepted only for a tag reserved to the implementation
+        // (C11 7.1.3: `__x` or `_X`), which a program does not name; any
+        // other tag is still diagnosed. The typedef must also be the only
+        // declarator, so no other typedef name shares the raised record.
         if let Some(align) = self.attrs_align(&attrs)? {
-            if ty.size().is_none() || ty.member_align() != align {
+            let only = first && self.current().kind == TokenKind::Semi;
+            if let Some(handle) = raisable_record(specs, &ty, align).filter(|_| only) {
+                handle.set_unadjusted_align(handle.unadjusted_align());
+                handle.raise_align(align);
+                handle.set_irregular();
+            } else if ty.size().is_none() || ty.member_align() != align {
                 return Err(self.error_at(
                     declarator.line,
                     declarator.column,
@@ -429,6 +448,7 @@ impl Parser<'_> {
         }
         if definition {
             seen.extern_inline_def = specs.inline_ && is_extern;
+            seen.def_inline = specs.inline_;
             seen.def_symbol = Some(symbol.to_string());
         }
     }
@@ -441,8 +461,26 @@ impl Parser<'_> {
     /// for inlining, and a plain `inline` one is an external definition.
     /// `-fgnu89-inline` gives every function the `gnu_inline` semantics.
     /// `static` functions have internal linkage and are not affected.
+    ///
+    /// MSVC instead puts every non-static definition written with `inline`
+    /// in a COMDAT, whatever the other declarations say: `linkonce_odr`,
+    /// or `weak_odr` for `extern inline` (observed with Clang for
+    /// x86_64-pc-windows-msvc as a black box). The UCRT headers rely on it
+    /// for `printf` and its relatives.
     pub(super) fn mark_inline_definitions(&mut self) {
+        let msvc = crate::target::current().is_msvc();
         for seen in std::mem::take(&mut self.inline_seen).into_values() {
+            if msvc {
+                if let (true, Some(symbol)) = (seen.def_inline, seen.def_symbol) {
+                    self.fn_attrs.entry(symbol).or_default().msvc_comdat =
+                        Some(if seen.extern_inline_def {
+                            "weak_odr"
+                        } else {
+                            "linkonce_odr"
+                        });
+                }
+                continue;
+            }
             let gnu = self.gnu89_inline
                 || seen.symbols.iter().any(|symbol| {
                     self.fn_attrs
@@ -739,4 +777,24 @@ impl Parser<'_> {
             align,
         })
     }
+}
+
+/// The record a typedef's `aligned(align)` can raise: one defined by this
+/// declaration's own type specifier, named by the declarator without
+/// derivation or qualifiers, whose size is a multiple of `align` and whose
+/// alignment is lower.
+fn raisable_record<'a>(specs: &'a Specs, ty: &CType, align: u32) -> Option<&'a StructRef> {
+    let handle = specs.ty.struct_ref()?;
+    let same = matches!(ty, CType::Struct(own) if own.id() == handle.id());
+    let size = handle.size()?;
+    let tag = handle.tag();
+    let reserved = tag.is_empty()
+        || tag.starts_with("__")
+        || (tag.starts_with('_') && tag[1..].starts_with(|c: char| c.is_ascii_uppercase()));
+    (specs.defined_record
+        && same
+        && reserved
+        && handle.align() < align
+        && size % u64::from(align) == 0)
+        .then_some(handle)
 }

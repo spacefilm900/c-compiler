@@ -19,7 +19,8 @@
 //! GNU mode also accepts these extensions, which strict C11 rejects with an
 //! error that names `-std=gnu11`:
 //!
-//! - `typeof`, in both spellings (`typeof` and `__typeof__`).
+//! - `typeof`. The reserved spellings `__typeof__` and `__typeof` are
+//!   accepted in both modes (GCC manual, "Alternate Keywords").
 //! - Statement expressions `({ ... })`.
 //! - Case ranges `case low ... high:`.
 //! - Zero-length arrays `T a[0]`, and empty initializers `{}`.
@@ -34,7 +35,7 @@
 //!   a comparison is compiled but its result is not promised.
 //!
 //! The reserved spellings `__attribute__`, `__extension__`, `__inline__`,
-//! `__asm__` labels and the `__builtin_*` functions are
+//! `__typeof__`, `__asm__` labels and the `__builtin_*` functions are
 //! accepted in both modes, because they are in the implementation's
 //! namespace (C11 7.1.3).
 

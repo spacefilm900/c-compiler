@@ -19,14 +19,18 @@ compiler for one file and Clang for the other (both ways), and this
 compiler for both. All four must print the same text.
 
 Usage: tools/abi_fuzz.py [--seed-start N] [--count N] [--out DIR]
-                         [--int128] [--target x86_64-apple-macos]
+                         [--int128] [--target x86_64-apple-macos|
+                                     x86_64-w64-windows-gnu|x86_64-pc-windows-msvc]
 (--out DIR keeps each failing pair in DIR/seedN.)
 --int128 adds `__int128` and `unsigned __int128` to the scalar types (in a
 variadic function only as the last argument, see only_last_int128; an
 x86-64 or AArch64 target; the programs for a seed differ from those
 without it). --target x86_64-apple-macos builds both compilers' code for
 Intel macOS and runs it through the Linux stand-in in
-harness/intel_mac_proxy.py.
+harness/intel_mac_proxy.py. --target x86_64-w64-windows-gnu or
+x86_64-pc-windows-msvc builds COFF objects for 64-bit Windows, links them
+with MinGW-w64 and runs them under Wine (harness/windows_x64.py; the MSVC
+target is a stand-in on MinGW-w64's headers and C runtime).
 Env: CC_UNDER_TEST (default build/compiler), CLANG (default clang). Without
 --target, the target is whatever both produce by default; for AArch64 under
 qemu, use wrappers that add --target and -target.
@@ -50,6 +54,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "harness"))
 import intel_mac_proxy as intel  # noqa: E402
+import windows_x64 as win  # noqa: E402
 COMPILER = os.environ.get("CC_UNDER_TEST", str(ROOT / "build" / "compiler"))
 CLANG = os.environ.get("CLANG", "clang")
 
@@ -316,8 +321,12 @@ def run(cmd, timeout=60):
             out, err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
+                if os.name == "nt":
+                    # No process groups on Windows: end the direct child.
+                    proc.kill()
+                else:
+                    os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
                 pass
             # A descendant that left the group may still hold the pipes, so
             # do not wait for EOF: close them and reap the direct child.
@@ -363,8 +372,58 @@ class IntelMac:
         return 0, b""
 
 
-# Set by --target x86_64-apple-macos.
+class Windows:
+    """Builds for 64-bit Windows: COFF objects, linked by MinGW-w64 and run
+    under Wine."""
+
+    def __init__(self, target: str):
+        problem = win.available(target)
+        if problem:
+            sys.exit(problem)
+        self.target = target
+        os.environ.update(win.wine_env())
+        win.start_server()
+
+    def obj(self, src: Path, obj: Path, ours: bool):
+        """(status, stderr) of building src into a COFF object."""
+        ll = obj.with_suffix(".ll")
+        if ours:
+            cmd = [COMPILER, "-target", self.target, *win.ours_flags(self.target), str(src),
+                   "-o", str(ll)]
+        else:
+            cmd = [CLANG, "-target", self.target, *win.clang_flags(self.target), "-w",
+                   "-std=c11", "-S", "-emit-llvm", str(src), "-o", str(ll)]
+        rc, _, err = run(cmd)
+        if rc != 0:
+            return rc, err
+        rc, _, err = run(win.object_command(CLANG, self.target, ll, obj))
+        return rc, err
+
+    def link(self, objs: list, exe: Path):
+        rc, out, err = run(win.link_command(objs, exe, self.target))
+        return rc, out, win.link_messages(out, err)
+
+    def exe(self, work: Path, tag: str) -> Path:
+        return work / f"abi.{tag}.exe"
+
+    def command(self, exe: Path):
+        return win.run_command(exe)
+
+
+# Set by --target.
 CROSS: list = [None]
+
+
+def exe_path(work: Path, tag: str) -> Path:
+    if CROSS[0] is not None and hasattr(CROSS[0], "exe"):
+        return CROSS[0].exe(work, tag)
+    return work / f"abi.{tag}"
+
+
+def run_exe(exe: Path):
+    if CROSS[0] is not None and hasattr(CROSS[0], "command"):
+        return run(CROSS[0].command(exe))
+    return run([str(exe)])
 
 
 def build_and_run(work: Path, d: Path, u: Path, ours: set[str], tag: str):
@@ -389,11 +448,14 @@ def build_and_run(work: Path, d: Path, u: Path, ours: set[str], tag: str):
             if rc != 0:
                 return f"clang failed on {src.name} ({rc}): {err.decode(errors='replace')[:300]}"
             objs.append(str(obj))
-    exe = work / f"abi.{tag}"
-    rc, _, err = run([CLANG, "-w", *objs, "-o", str(exe)])
+    exe = exe_path(work, tag)
+    if CROSS[0] is not None and hasattr(CROSS[0], "link"):
+        rc, _, err = CROSS[0].link(objs, exe)
+    else:
+        rc, _, err = run([CLANG, "-w", *objs, "-o", str(exe)])
     if rc != 0:
         return f"link failed ({rc}): {err.decode(errors='replace')[:300]}"
-    return run([str(exe)])
+    return run_exe(exe)
 
 
 def rerun_reference(work: Path, ref) -> str:
@@ -402,7 +464,7 @@ def rerun_reference(work: Path, ref) -> str:
     failure (a nonzero exit or a timeout), which is an oracle failure."""
     verdict = "same"
     for _ in range(3):
-        again = run([str(work / "abi.clang")])
+        again = run_exe(exe_path(work, "clang"))
         if again[0] == "timeout":
             return "timeout"
         if again[0] != 0:
@@ -418,14 +480,17 @@ def main() -> int:
     ap.add_argument("--count", type=int, default=100)
     ap.add_argument("--out", type=Path, help="keep failing pairs here")
     ap.add_argument("--int128", action="store_true", help="also use __int128 scalars")
-    ap.add_argument("--target", choices=[intel.TARGET],
-                    help="build for Intel macOS through the Linux stand-in")
+    ap.add_argument("--target", choices=[intel.TARGET, *win.TARGETS],
+                    help="build for Intel macOS through the Linux stand-in, or for "
+                         "64-bit Windows under Wine")
     args = ap.parse_args()
     OPTIONS["int128"] = args.int128
     cross_tmp = None
     if args.target == intel.TARGET:
         cross_tmp = tempfile.TemporaryDirectory(prefix="abi-sysroot-")
         CROSS[0] = IntelMac(Path(cross_tmp.name))
+    elif args.target in win.TARGETS:
+        CROSS[0] = Windows(args.target)
     if shutil.which(CLANG) is None:
         sys.exit(f"clang not found: {CLANG}")
     failures = 0

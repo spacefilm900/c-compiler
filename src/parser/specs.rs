@@ -204,6 +204,7 @@ impl Parser<'_> {
             forward_tag: flags.forward_tag,
             introduced_tag: flags.introduced_tag,
             anon_record: flags.anon_record,
+            defined_record: flags.defined_record,
             shadow_decl,
             line: flags.line,
             column: flags.column,
@@ -380,7 +381,9 @@ impl Parser<'_> {
         {
             return Err(self.error("invalid combination of type specifiers"));
         }
+        let defined_before = self.structs.len();
         let (ty, forward, line, column) = self.parse_record_specifier(kind)?;
+        flags.defined_record = self.structs.len() > defined_before;
         flags.any = true;
         // C11 6.7.2.1: an anonymous member's type specifier is a struct or
         // union specifier with no tag. A typedef name is not that specifier.
@@ -447,15 +450,15 @@ impl Parser<'_> {
     /// "Referring to a Type with typeof"). The type of an expression is
     /// taken before lvalue conversion, so an array stays an array and
     /// qualifiers are kept; the expression is not evaluated.
+    ///
+    /// Plain `typeof` is a keyword only in GNU mode; in strict C11 it is an
+    /// ordinary identifier. The reserved spellings `__typeof__` and
+    /// `__typeof` are accepted in both modes, as the GCC manual's
+    /// "Alternate Keywords" asks of headers that ISO C programs include
+    /// (MinGW-w64's <math.h> uses `__typeof__` in its classification
+    /// macros).
     pub(super) fn parse_typeof(&mut self) -> Result<CType, Diagnostic> {
-        let keyword = self.advance();
-        if !self.dialect.gnu() {
-            return Err(self.error_at(
-                keyword.line,
-                keyword.column,
-                format!("'{}' is a GNU extension; use -std=gnu11", keyword.spelling),
-            ));
-        }
+        let _keyword = self.advance();
         self.expect_skip(TokenKind::LParen, "'('")?;
         let ty = if self.at_type_specifier(self.current()) {
             self.parse_type_name()?

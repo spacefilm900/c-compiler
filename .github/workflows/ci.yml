@@ -113,6 +113,51 @@ jobs:
           python3 harness/run_cross.py --target x86_64-apple-macos
           python3 tools/abi_fuzz.py --count 100 --int128 --target x86_64-apple-macos
 
+  windows-standin:
+    # 64-bit Windows (PLAN.md step 11) on Linux: MinGW-w64 objects linked by
+    # x86_64-w64-mingw32-gcc and run under Wine, and the MSVC type model on
+    # MinGW-w64's headers (harness/windows_x64.py). The real MSVC headers,
+    # linker and CRT are checked by the manual job in windows.yml.
+    name: Windows x64 stand-in (MinGW-w64 and MSVC under Wine)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+
+      - name: Install Clang, LLVM, MinGW-w64 and Wine
+        run: |
+          set -euo pipefail
+          scripts/ci-apt-install.sh clang llvm make python3 gcc-mingw-w64-x86-64 wine wine64
+          clang --version
+          x86_64-w64-mingw32-gcc --version
+          wine --version
+
+      - name: Build
+        run: make
+
+      - name: Signatures against Clang and COFF objects from llc
+        run: python3 harness/run_arm64_ir.py --target x86_64-w64-windows-gnu --target x86_64-pc-windows-msvc
+
+      - name: Differential harness under Wine
+        run: |
+          set -euo pipefail
+          python3 harness/run_cross.py --target x86_64-w64-windows-gnu
+          python3 harness/run_cross.py --target x86_64-pc-windows-msvc
+
+      - name: Random calling-convention pairs under Wine
+        run: |
+          set -euo pipefail
+          python3 tools/abi_fuzz.py --count 100 --int128 --target x86_64-w64-windows-gnu
+          python3 tools/abi_fuzz.py --count 100 --int128 --target x86_64-pc-windows-msvc
+
   wacc:
     name: writing-a-c-compiler suite
     runs-on: ubuntu-24.04

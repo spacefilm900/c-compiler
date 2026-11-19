@@ -59,6 +59,30 @@ pub fn system_dirs_for(target: Target, sysroot: Option<&Path>) -> Vec<PathBuf> {
                 library.push(sdk.join("usr/include"));
             }
         }
+        Target::X86_64Windows { msvc: false } => {
+            // A MinGW-w64 sysroot keeps its headers in `include`; Debian and
+            // Ubuntu install the cross headers (mingw-w64-x86-64-dev) at
+            // /usr/x86_64-w64-mingw32.
+            let root = sysroot
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| "/usr/x86_64-w64-mingw32".into());
+            library.push(root.join("include"));
+        }
+        Target::X86_64Windows { msvc: true } => {
+            // The MSVC and Windows SDK headers, as a Visual Studio developer
+            // prompt lists them in `INCLUDE` (separated by `;`), or under
+            // `sysroot/include` when one is given.
+            if let Some(root) = sysroot {
+                library.push(root.join("include"));
+            } else if let Some(list) = std::env::var_os("INCLUDE") {
+                let list = list.to_string_lossy().into_owned();
+                library.extend(
+                    list.split(';')
+                        .filter(|dir| !dir.is_empty())
+                        .map(PathBuf::from),
+                );
+            }
+        }
     }
     for path in library {
         if path.is_dir() && !dirs.iter().any(|dir| dir == &path) {
@@ -97,13 +121,15 @@ pub(super) fn apple_sdk(sysroot: Option<&Path>) -> Option<PathBuf> {
 /// header does not take a path it cannot compile.
 pub(super) fn target_macros(target: Target) -> Vec<(&'static str, &'static str)> {
     let mut out: Vec<(&'static str, &'static str)> = Vec::new();
+    data_model_macros(target, &mut out);
     match target {
-        Target::X86_64Linux | Target::X86_64Apple { .. } => out.extend([
-            ("__x86_64__", "1"),
-            ("__x86_64", "1"),
-            ("__amd64__", "1"),
-            ("__amd64", "1"),
-        ]),
+        Target::X86_64Linux | Target::X86_64Apple { .. } | Target::X86_64Windows { .. } => out
+            .extend([
+                ("__x86_64__", "1"),
+                ("__x86_64", "1"),
+                ("__amd64__", "1"),
+                ("__amd64", "1"),
+            ]),
         Target::Arm64Apple { .. } | Target::Aarch64Linux => out.extend([
             ("__aarch64__", "1"),
             ("__AARCH64EL__", "1"),
@@ -136,6 +162,27 @@ pub(super) fn target_macros(target: Target) -> Vec<(&'static str, &'static str)>
             // with "#error Unknown endianess" without it; Clang defines it.
             ("__LITTLE_ENDIAN__", "1"),
         ]),
+        Target::X86_64Windows { msvc } => {
+            out.extend([
+                ("_WIN32", "1"),
+                ("_WIN64", "1"),
+                ("__USER_LABEL_PREFIX__", ""),
+                // MinGW-w64's <_mingw.h> otherwise declares `__int128`
+                // itself with `__mode__(TI)`.
+                ("__SIZEOF_INT128__", "16"),
+                // GCC and Clang define this when they inline nothing (at
+                // -O0). MinGW-w64's headers then declare their CRT
+                // functions instead of defining inline versions, some of
+                // which are x87 extended asm (`fabsl` in <math.h>) that this
+                // compiler does not accept. The library has every one.
+                ("__NO_INLINE__", "1"),
+            ]);
+            if msvc {
+                out.extend(msvc_macros());
+            } else {
+                out.extend(mingw_macros());
+            }
+        }
     }
     if let Target::Arm64Apple { .. } = target {
         out.extend([("__arm64__", "1"), ("__arm64", "1")]);
@@ -156,7 +203,15 @@ pub(super) fn target_macros(target: Target) -> Vec<(&'static str, &'static str)>
     if !target.char_is_signed() {
         out.push(("__CHAR_UNSIGNED__", "1"));
     }
-    if target.wchar_is_signed() {
+    if target.is_windows() {
+        out.extend([
+            ("__WCHAR_TYPE__", "unsigned short"),
+            ("__WCHAR_MAX__", "65535"),
+            ("__WCHAR_UNSIGNED__", "1"),
+            ("__SIZEOF_WCHAR_T__", "2"),
+            ("__SIZEOF_WINT_T__", "2"),
+        ]);
+    } else if target.wchar_is_signed() {
         out.extend([
             ("__WCHAR_TYPE__", "int"),
             ("__WCHAR_MAX__", "2147483647"),
@@ -170,8 +225,11 @@ pub(super) fn target_macros(target: Target) -> Vec<(&'static str, &'static str)>
             ("__WCHAR_UNSIGNED__", "1"),
         ]);
     }
-    // wint_t is `int` on Apple and `unsigned int` in glibc.
-    if target.is_apple() {
+    // wint_t is `int` on Apple, `unsigned int` in glibc, and `unsigned
+    // short` on Windows.
+    if target.is_windows() {
+        out.push(("__WINT_TYPE__", "unsigned short"));
+    } else if target.is_apple() {
         out.push(("__WINT_TYPE__", "int"));
     } else {
         out.push(("__WINT_TYPE__", "unsigned int"));
@@ -179,6 +237,148 @@ pub(super) fn target_macros(target: Target) -> Vec<(&'static str, &'static str)>
     float_macros(target.long_double(), &mut out);
     out
 }
+
+/// The data-model macros: LP64 everywhere except Windows, which is LLP64
+/// (`long` is 32 bits; `size_t`, `ptrdiff_t`, `intptr_t` and `intmax_t`
+/// are `long long`), and the GNU version macros, which every target but
+/// MSVC defines (Clang leaves them out for MSVC, observed as a black box).
+fn data_model_macros(target: Target, out: &mut Vec<(&'static str, &'static str)>) {
+    if target.long_is_64() {
+        out.extend([
+            ("__LP64__", "1"),
+            ("_LP64", "1"),
+            ("__SIZEOF_LONG__", "8"),
+            ("__LONG_WIDTH__", "64"),
+            ("__LONG_MAX__", "9223372036854775807L"),
+            ("__INTMAX_MAX__", "9223372036854775807L"),
+            ("__UINTMAX_MAX__", "18446744073709551615UL"),
+            ("__SIZE_TYPE__", "long unsigned int"),
+            ("__PTRDIFF_TYPE__", "long int"),
+            ("__INTMAX_TYPE__", "long int"),
+            ("__UINTMAX_TYPE__", "long unsigned int"),
+            ("__INTPTR_TYPE__", "long int"),
+            ("__UINTPTR_TYPE__", "long unsigned int"),
+        ]);
+    } else {
+        out.extend([
+            ("__SIZEOF_LONG__", "4"),
+            ("__LONG_WIDTH__", "32"),
+            ("__LONG_MAX__", "2147483647L"),
+            ("__INTMAX_MAX__", "9223372036854775807LL"),
+            ("__UINTMAX_MAX__", "18446744073709551615ULL"),
+            ("__SIZE_MAX__", "18446744073709551615ULL"),
+            ("__PTRDIFF_MAX__", "9223372036854775807LL"),
+            ("__INTPTR_MAX__", "9223372036854775807LL"),
+            ("__UINTPTR_MAX__", "18446744073709551615ULL"),
+            ("__SIZE_TYPE__", "long long unsigned int"),
+            ("__PTRDIFF_TYPE__", "long long int"),
+            ("__INTMAX_TYPE__", "long long int"),
+            ("__UINTMAX_TYPE__", "long long unsigned int"),
+            ("__INTPTR_TYPE__", "long long int"),
+            ("__UINTPTR_TYPE__", "long long unsigned int"),
+            ("__INT64_TYPE__", "long long int"),
+            ("__UINT64_TYPE__", "long long unsigned int"),
+            ("__INT64_C_SUFFIX__", "LL"),
+            ("__UINT64_C_SUFFIX__", "ULL"),
+        ]);
+    }
+    if !target.is_msvc() {
+        out.extend([
+            ("__GNUC__", "4"),
+            ("__GNUC_MINOR__", "2"),
+            ("__GNUC_PATCHLEVEL__", "1"),
+            ("__GNUC_STDC_INLINE__", "1"),
+        ]);
+    }
+}
+
+/// MinGW-w64 (`x86_64-w64-windows-gnu`): the macros Clang predefines for
+/// the triple (observed as a black box). The Microsoft calling-convention
+/// keywords become GNU attributes, which this compiler accepts and, on
+/// x86-64 where there is one convention, ignores.
+fn mingw_macros() -> [(&'static str, &'static str); 22] {
+    [
+        ("__MINGW32__", "1"),
+        ("__MINGW64__", "1"),
+        ("__MSVCRT__", "1"),
+        ("__SEH__", "1"),
+        ("__WIN32", "1"),
+        ("__WIN32__", "1"),
+        ("__WIN64", "1"),
+        ("__WIN64__", "1"),
+        ("__WINNT", "1"),
+        ("__WINNT__", "1"),
+        ("__declspec(a)", "__attribute__((a))"),
+        ("__cdecl", "__attribute__((__cdecl__))"),
+        ("__stdcall", "__attribute__((__stdcall__))"),
+        ("__fastcall", "__attribute__((__fastcall__))"),
+        ("__thiscall", "__attribute__((__thiscall__))"),
+        ("__pascal", "__attribute__((__pascal__))"),
+        ("_cdecl", "__attribute__((__cdecl__))"),
+        ("_stdcall", "__attribute__((__stdcall__))"),
+        ("_fastcall", "__attribute__((__fastcall__))"),
+        ("_thiscall", "__attribute__((__thiscall__))"),
+        ("_pascal", "__attribute__((__pascal__))"),
+        ("__GXX_TYPEINFO_EQUALITY_INLINE", "0"),
+    ]
+}
+
+/// MSVC (`x86_64-pc-windows-msvc`): the identification macros Clang
+/// predefines for the triple (observed as a black box). `_MSC_VER` 1933 is
+/// Visual Studio 2022 17.3, Clang's default.
+fn msvc_macros() -> Vec<(&'static str, &'static str)> {
+    let mut macros = vec![
+        ("_MSC_VER", "1933"),
+        ("_MSC_FULL_VER", "193300000"),
+        ("_MSC_BUILD", "1"),
+        ("_M_X64", "100"),
+        ("_M_AMD64", "100"),
+        ("_INTEGRAL_MAX_BITS", "64"),
+        ("_ISO_VOLATILE", "1"),
+    ];
+    macros.extend(MSVC_KEYWORDS);
+    macros
+}
+
+/// Microsoft's C keywords that the MSVC and Windows SDK headers use, as
+/// macros over this compiler's own spellings (Microsoft's public C language
+/// reference). Clang treats them as keywords; macros are enough for the
+/// headers. On x64 the calling-convention keywords other than
+/// `__vectorcall` mean the one convention, so they expand to nothing.
+/// `__vectorcall` (more vector registers) would change the code, so it
+/// becomes an attribute that the parser rejects. `__ptr32` (a 4-byte
+/// pointer) is not supported and is erased, because <basetsd.h> uses it in
+/// inline functions that every <windows.h> user sees; a record with a
+/// `__ptr32` member gets the wrong layout (see the platform report). MinGW-w64's <_mingw.h> defines
+/// most of these itself, so the MSVC stand-in (harness/windows_x64.py)
+/// undefines them.
+pub const MSVC_KEYWORDS: [(&str, &str); 22] = [
+    ("__int8", "char"),
+    ("__int16", "short"),
+    ("__int32", "int"),
+    ("__int64", "long long"),
+    ("__cdecl", ""),
+    ("__stdcall", ""),
+    ("__fastcall", ""),
+    ("__thiscall", ""),
+    ("__vectorcall", "__attribute__((__vectorcall__))"),
+    ("__clrcall", ""),
+    ("__ptr32", ""),
+    ("__ptr64", ""),
+    ("__unaligned", ""),
+    ("__w64", ""),
+    ("__sptr", ""),
+    ("__uptr", ""),
+    ("__inline", "inline"),
+    (
+        "__forceinline",
+        "__inline__ __attribute__((__always_inline__))",
+    ),
+    ("__declspec(spec)", "__attribute__((spec))"),
+    ("__pragma(text)", "_Pragma(#text)"),
+    ("__restrict", "restrict"),
+    ("__alignof", "_Alignof"),
+];
 
 /// `__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__` as Availability.h
 /// expects it: `1090` for 10.9 (the old four-digit form, used before 10.10),

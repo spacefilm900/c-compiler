@@ -5,6 +5,8 @@ under qemu-aarch64, or Intel macOS through its x86_64 Linux stand-in.
     python3 harness/run_cross.py --target aarch64-linux-gnu
     python3 harness/run_cross.py --target arm64-apple-macos
     python3 harness/run_cross.py --target x86_64-apple-macos
+    python3 harness/run_cross.py --target x86_64-w64-windows-gnu
+    python3 harness/run_cross.py --target x86_64-pc-windows-msvc
 
 The test set is the one harness/run_tests.py uses on x86_64: tests/*.c,
 tests/hosted/*.c, the tests/xabi/ pairs (this compiler's object linked with
@@ -42,9 +44,16 @@ the programs run natively, linked with glibc. System V variadic calls are
 the same on both systems, so no stdio shim is needed. The AArch64 tests in
 tests/arm64/ are not run for it.
 
+x86_64-w64-windows-gnu (MinGW-w64) and x86_64-pc-windows-msvc run under
+Wine, as harness/windows_x64.py describes: MinGW-w64 is real (its headers,
+COFF objects, its C runtime), and the MSVC target is a stand-in that reads
+the MinGW-w64 headers. The AArch64 tests are not run for them.
+
 harness/cross_known_failures.txt lists expected failures as
-"TARGET LABEL  # reason". A listed test that passes is reported so the
-line can be removed. An unlisted failure fails the run.
+"TARGET LABEL [native|standin]  # reason" (the optional field limits a
+Windows entry to the native runner or the Wine stand-in). A listed test
+that passes is reported so the line can be removed. An unlisted failure
+fails the run, and so does a compiler crash on a listed test.
 
 Env: CC_UNDER_TEST, CLANG (default clang), QEMU_AARCH64 (default
 qemu-aarch64), AARCH64_LINK (default "clang --target=aarch64-linux-gnu
@@ -59,6 +68,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "harness"))
 import intel_mac_proxy as intel  # noqa: E402
+import windows_x64 as win  # noqa: E402
 from run_gcc_torture import dg_flags  # noqa: E402
 import run_gcc_torture  # noqa: E402
 COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
@@ -95,6 +105,7 @@ class Toolchain:
         self.target = target
         self.apple = target == "arm64-apple-macos"
         self.intel = target == intel.TARGET
+        self.windows = target in win.TARGETS
         self.tmp = tmp
         self.shims = []
         self.llc = self.opt = None
@@ -107,6 +118,13 @@ class Toolchain:
     def setup(self):
         """Build the Apple stdio shim, or the Intel macOS stand-in's
         sysroot. Returns an error string or None."""
+        if self.windows:
+            missing = win.available(self.target)
+            if missing:
+                return missing
+            os.environ.update(win.wine_env())
+            win.start_server()
+            return None
         if self.intel:
             self.sysroot = intel.make_sysroot(self.tmp)
             if self.sysroot is None:
@@ -132,6 +150,8 @@ class Toolchain:
 
     def ours(self, src, ll, std, extra=()):
         cmd = [str(COMPILER), "-target", self.target, *extra]
+        if self.windows:
+            cmd += win.ours_flags(self.target)
         if self.apple or self.intel:
             cmd += ["-isysroot", str(self.sysroot)]
         if self.intel:
@@ -145,6 +165,9 @@ class Toolchain:
 
     def oracle_obj(self, src, obj, std):
         """Clang's object for one translation unit."""
+        if self.windows:
+            return run([CLANG, "-target", self.target, *win.clang_flags(self.target), "-w",
+                        f"-std={std}", "-c", str(src), "-o", str(obj)])
         if self.intel:
             ll = obj.with_suffix(".clang.ll")
             rc, out, err = run([CLANG, "-target", intel.CLANG_TRIPLE, "-isysroot", str(self.sysroot),
@@ -165,6 +188,8 @@ class Toolchain:
 
     def ll_obj(self, ll, obj):
         """Object file for an IR file from either compiler."""
+        if self.windows:
+            return run(win.object_command(CLANG, self.target, ll, obj))
         if self.intel:
             proxy = ll.with_suffix(".proxy.ll")
             proxy.write_text(intel.proxy_ir(ll.read_text(errors="replace")))
@@ -181,11 +206,17 @@ class Toolchain:
         return run(LINK + ["-w", "-c", str(ll), "-o", str(obj)])
 
     def link(self, objs, out):
+        if self.windows:
+            # The MSVC linker reports on standard output.
+            rc, so, se = run(win.link_command(objs, f"{out}.exe", self.target))
+            return rc, so, win.link_messages(so, se)
         if self.intel:
             return run([CLANG, *[str(o) for o in objs], "-lm", "-o", str(out)])
         return run(LINK + [str(o) for o in objs] + self.shims + ["-lm", "-o", str(out)])
 
     def execute(self, binary):
+        if self.windows:
+            return run(win.run_command(f"{binary}.exe"))
         if self.intel:
             return run([str(binary)])
         return run([QEMU, str(binary)])
@@ -195,7 +226,7 @@ def build_ours(tc, src, base, std, extra=()):
     ll, obj = base.with_suffix(".ll"), base.with_suffix(".o")
     rc, _, err = tc.ours(src, ll, std, extra)
     if rc != 0:
-        return None, f"compiler failed ({rc}): {short(err)}"
+        return None, compiler_crash(rc, err) or f"compiler failed ({rc}): {short(err)}"
     rc, _, err = tc.ll_obj(ll, obj)
     if rc != 0:
         return None, f"LLVM rejected IR ({rc}): {short(err)}"
@@ -259,6 +290,10 @@ def test_gnu(tc, src, work):
     rc, _, err = tc.ours(src, work / f"{src.stem}.strict.ll", "c11")
     if rc == 0:
         return "strict C11 accepted a GNU-only program"
+    crash = compiler_crash(rc, err)
+    if crash:
+        # Keep the crash marker, so a listed test is still a failure.
+        return f"strict C11 check: {crash}"
     if b"error:" not in err:
         return "strict C11 rejected the program without an error message"
     return test(tc, src, work, "gnu11")
@@ -308,12 +343,35 @@ def known_failures(target):
     known = {}
     if not KNOWN.is_file():
         return known
+    where = "native" if win.NATIVE else "standin"
     for line in KNOWN.read_text().splitlines():
         body, _, reason = line.partition("#")
         parts = body.split()
-        if len(parts) == 2 and parts[0] == target:
+        if len(parts) in (2, 3) and parts[0] == target and parts[2:] in ([], [where]):
             known[parts[1]] = reason.strip()
     return known
+
+
+CRASH = "compiler crashed"
+
+
+def crashed(err):
+    """A compiler crash is never a known failure, even on a listed test."""
+    return CRASH in err or "panicked" in err or "internal compiler error" in err
+
+
+def compiler_crash(rc, err):
+    """The result text for a compiler run that crashed, or None. A crash is
+    a Rust panic (exit 101, or its message anywhere in standard error), an
+    internal compiler error, death by a POSIX signal (negative status) or
+    a Windows exception status (0xC0000000 and up). The message starts
+    with CRASH, so the classification survives short()'s truncation."""
+    if not isinstance(rc, int):
+        return None  # "timeout" and "oserror" keep their own path
+    text = err.decode(errors="replace")
+    if rc < 0 or rc == 101 or rc >= 0xC0000000 or crashed(text):
+        return f"{CRASH} ({rc}): {short(err)}"
+    return None
 
 
 def torture(target, label_filter):
@@ -397,7 +455,7 @@ def torture(target, label_filter):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True,
-                        choices=["aarch64-linux-gnu", "arm64-apple-macos", intel.TARGET])
+                        choices=["aarch64-linux-gnu", "arm64-apple-macos", intel.TARGET, *win.TARGETS])
     parser.add_argument("--filter", default="", help="only labels containing this text")
     parser.add_argument("--torture", action="store_true",
                         help="instead, run gcc.c-torture/execute (a gate for x86_64-apple-macos, "
@@ -418,10 +476,11 @@ def main():
         jobs.append((f"gnu/{t.name}", test_gnu, (t,)))
     for t in sorted((ROOT / "tests" / "gnu" / "both").glob("*.c")):
         jobs.append((f"gnu/both/{t.name}", test_both, (t,)))
-    arm64 = [] if args.target == intel.TARGET else sorted((ROOT / "tests" / "arm64").glob("*.c"))
+    x86 = args.target == intel.TARGET or args.target in win.TARGETS
+    arm64 = [] if x86 else sorted((ROOT / "tests" / "arm64").glob("*.c"))
     for t in arm64:
         jobs.append((f"arm64/{t.name}", test, (t,)))
-    arm64 = [] if args.target == intel.TARGET else sorted((ROOT / "tests" / "arm64" / "xabi").glob("*_def.c"))
+    arm64 = [] if x86 else sorted((ROOT / "tests" / "arm64" / "xabi").glob("*_def.c"))
     for t in arm64:
         use = t.with_name(t.name[: -len("_def.c")] + "_use.c")
         jobs.append((f"arm64/xabi/{t.name[: -len('_def.c')]}", test_cross, (t, use)))
@@ -455,7 +514,7 @@ def main():
                 print(f"NOW_PASS {label} (remove it from {KNOWN.name})")
             else:
                 print(f"PASS {label}")
-        elif label in known:
+        elif label in known and not crashed(r):
             known_failed += 1
             print(f"KNOWN {label}: {known[label]}")
         else:

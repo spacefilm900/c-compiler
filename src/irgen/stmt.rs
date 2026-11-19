@@ -32,7 +32,15 @@ impl Gen {
                         let value = self.gen_val(expr);
                         let value =
                             self.convert(&value, &expr.ty().expect("typed"), &self.ret_ty.clone());
-                        self.emit(&format!("  ret {} {value}", self.ret_ty.ir_type()));
+                        if self.ret_agg.is_some() {
+                            // Windows x64: a scalar returned in memory or as
+                            // `<2 x i64>` goes through a slot.
+                            let ret = self.ret_ty.unqualified();
+                            let slot = self.scalar_copy(&ret, &value);
+                            self.emit_record_return(&slot, false);
+                        } else {
+                            self.emit(&format!("  ret {} {value}", self.ret_ty.ir_type()));
+                        }
                     }
                 } else {
                     self.emit("  ret void");

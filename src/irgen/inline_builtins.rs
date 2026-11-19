@@ -76,7 +76,7 @@ impl Gen {
             _ => return None,
         };
         let dest = self.gen_val(&args[0]);
-        let len_ty = CType::from_name(TypeName::ULong);
+        let len_ty = CType::from_name(TypeName::size_t());
         let len_src = args[2].ty().expect("typed");
         let len_val = self.gen_val(&args[2]);
         let len = self.convert(&len_val, &len_src, &len_ty);
@@ -227,6 +227,28 @@ impl Gen {
                 let value = self.builtin_arg(inline, args, 0);
                 let _ = self.builtin_arg(inline, args, 1);
                 Some(value)
+            }
+            Inline::MsVaStart => {
+                let ap = self.builtin_arg(inline, args, 0);
+                let _ = self.builtin_arg(inline, args, 1);
+                self.needs_va = true;
+                self.emit(&format!("  call void @llvm.va_start(ptr {ap})"));
+                None
+            }
+            Inline::DebugBreak => {
+                self.intrinsic("declare void @llvm.debugtrap()");
+                self.emit("  call void @llvm.debugtrap()");
+                None
+            }
+            Inline::FastFail => {
+                let code = self.builtin_arg(inline, args, 0);
+                self.emit(&format!(
+                    "  call void asm sideeffect \"int $$0x29\", \"{{cx}},~{{dirflag}},~{{fpsr}},~{{flags}}\"(i32 {code})"
+                ));
+                self.emit("  unreachable");
+                self.terminated = true;
+                self.ensure_block();
+                None
             }
             Inline::Unreachable | Inline::Trap => {
                 if inline == Inline::Trap {

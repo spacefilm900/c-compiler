@@ -26,6 +26,7 @@ pub mod target;
 mod target_tests;
 pub mod timing;
 pub mod token;
+pub mod win64;
 
 pub use diag::{Diagnostic, Warning};
 pub use dialect::Dialect;
@@ -280,7 +281,9 @@ mod tests {
             assert!(strict_err(source).contains("error"), "{source}");
             gnu_ok(source);
         }
-        assert!(strict_err("__typeof__(1) x;").contains("-std=gnu11"));
+        // The reserved spelling is accepted in strict mode too.
+        let unit = compile("__typeof__(1) x; __typeof(2.0) y;", Dialect::C11);
+        assert!(unit.is_ok(), "{:?}", unit.err());
         assert!(strict_err("int f(int x) { return x ?: 2; }").contains("-std=gnu11"));
         assert!(strict_err("int main(void) { return ({ 1; }); }").contains("-std=gnu11"));
         assert!(strict_err("void *f(void) { l: return &&l; }").contains("-std=gnu11"));

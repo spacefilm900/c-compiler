@@ -1,5 +1,36 @@
-# Cross-target harness known failures: "TARGET LABEL # reason".
-# TARGET is the --target name given to harness/run_cross.py.
+# Cross-target harness known failures: "TARGET LABEL [WHERE] # reason".
+# TARGET is the --target name given to harness/run_cross.py. WHERE, for the
+# Windows targets, limits an entry to the native Windows runner ("native")
+# or to the Linux stand-in under Wine ("standin"); without it the entry
+# applies to both.
 arm64-apple-macos 112_longdouble.c # test dumps 10 bytes of a long double; on Apple arm64 long double is the 8-byte double, so bytes 8-9 are outside the object
 arm64-apple-macos gnu/both/01_attributes.c # test uses the ELF section name ".data.custom"; Mach-O needs "segment,section", so the Clang oracle rejects it
 x86_64-apple-macos gnu/both/01_attributes.c # test uses the ELF section name ".data.custom"; Mach-O needs "segment,section", so the Clang oracle rejects it
+x86_64-w64-windows-gnu 44_globals.c # test assumes LP64: `1ul << 40` shifts a 32-bit unsigned long by more than its width (undefined; Clang only warns)
+x86_64-w64-windows-gnu 45_calls.c # test assumes LP64: shifts a 32-bit long by 40 bits (undefined behaviour), so results differ
+x86_64-w64-windows-gnu 47_const_types.c # test assumes LP64: a constant shift of a 32-bit long by 40 bits is undefined
+x86_64-w64-windows-gnu 54_global.c # test assumes LP64: casts an address to 32-bit long in a static initializer (Clang also rejects it)
+x86_64-w64-windows-gnu 138_union_address_init.c # test assumes LP64: `(long)&x` in a static initializer truncates the address to 32 bits; this compiler rejects it, Clang only warns
+x86_64-w64-windows-gnu 121_signal.c # test calls glibc's `__sysv_signal`, which the Windows C runtime does not have
+x86_64-w64-windows-gnu 122_utf8_ucn.c # test assumes a 32-bit wchar_t: L'\U0001F600' does not fit the 16-bit Windows wchar_t (Clang also rejects it)
+x86_64-w64-windows-gnu gnu/03_typeof.c # test assumes LP64: `1L << 40` on a 32-bit long is undefined
+x86_64-w64-windows-gnu gnu/11_label_address_constants.c # test assumes LP64: casts a label address to 32-bit long in a static initializer (Clang also rejects it)
+x86_64-w64-windows-gnu gnu/16_enum_outside_int.c # test's _Generic associations assume LP64 (an enum beyond int is long long under LLP64, not long)
+x86_64-w64-windows-gnu gnu/both/02_builtins_bits.c # test assumes LP64: `__builtin_clzl` of a value truncated to 0 in a 32-bit long is undefined
+x86_64-pc-windows-msvc 44_globals.c # test assumes LP64: `1ul << 40` shifts a 32-bit unsigned long by more than its width (undefined; Clang only warns)
+x86_64-pc-windows-msvc 45_calls.c # test assumes LP64: shifts a 32-bit long by 40 bits (undefined behaviour), so results differ
+x86_64-pc-windows-msvc 47_const_types.c # test assumes LP64: a constant shift of a 32-bit long by 40 bits is undefined
+x86_64-pc-windows-msvc 54_global.c # test assumes LP64: casts an address to 32-bit long in a static initializer (Clang also rejects it)
+x86_64-pc-windows-msvc 138_union_address_init.c # test assumes LP64: `(long)&x` in a static initializer truncates the address to 32 bits; this compiler rejects it, Clang only warns
+x86_64-pc-windows-msvc 121_signal.c # test calls glibc's `__sysv_signal`, which the Windows C runtime does not have
+x86_64-pc-windows-msvc 122_utf8_ucn.c # test assumes a 32-bit wchar_t: L'\U0001F600' does not fit the 16-bit Windows wchar_t (Clang also rejects it)
+x86_64-pc-windows-msvc gnu/03_typeof.c # test assumes LP64: `1L << 40` on a 32-bit long is undefined
+x86_64-pc-windows-msvc gnu/11_label_address_constants.c # test assumes LP64: casts a label address to 32-bit long in a static initializer (Clang also rejects it)
+x86_64-pc-windows-msvc gnu/16_enum_outside_int.c # test's _Generic associations assume LP64 (an enum beyond int is long long under LLP64, not long)
+x86_64-pc-windows-msvc gnu/both/02_builtins_bits.c # test assumes LP64: `__builtin_clzl` of a value truncated to 0 in a 32-bit long is undefined
+x86_64-pc-windows-msvc 112_longdouble.c # test dumps 10 bytes of a long double; on MSVC long double is the 8-byte double, so bytes 8-9 are outside the object
+x86_64-pc-windows-msvc hosted/02_runtime_nan_tag.c standin # stand-in only: calls nanl, which MinGW-w64 implements for the x87 long double (returned through a hidden pointer), not the 8-byte MSVC one; it writes through the tag string pointer and the program faults
+x86_64-pc-windows-msvc 131_offsetof_ice.c native # native MSVC only: the test typedefs size_t as unsigned long, and Clang for MSVC (with Microsoft compatibility, as on Windows) predeclares it as unsigned long long, so the oracle rejects the program
+x86_64-pc-windows-msvc 134_offsetof_runtime_index.c native # native MSVC only: same size_t typedef as 131_offsetof_ice.c, rejected by Clang too
+x86_64-pc-windows-msvc 145_uint128_more.c native # native MSVC only: converting a double to __int128 is a call to the compiler-rt helper __fixdfti (Clang emits the same fptosi), and the Microsoft libraries have no such function, so neither build links
+x86_64-w64-windows-gnu gnu/15_cond_short_floating_constant.c native # native MinGW only: printf is declared by hand, so msvcrt's printf reads %Lg as an 8-byte double while MinGW passes the 16-byte x87 long double by reference; both builds print an address-dependent value (under Wine they happen to agree)

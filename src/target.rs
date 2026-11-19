@@ -22,6 +22,15 @@
 //!   `char` and `wchar_t` are unsigned, `long double` is IEEE binary128,
 //!   and `va_list` is the AAPCS64 register-save structure. It exists to run
 //!   AArch64 code under user-mode emulation on a Linux host.
+//! - `x86_64-pc-windows-msvc` and `x86_64-w64-windows-gnu` (MinGW-w64):
+//!   Microsoft's published "x64 calling convention" and "x64 software
+//!   conventions", and its LLP64 data model ("Data Type Ranges"): `int` and
+//!   `long` are 32 bits, `long long` and pointers 64, `size_t` is
+//!   `unsigned long long`, and `wchar_t` is a 16-bit `unsigned short`.
+//!   `long double` is `double` for MSVC; MinGW keeps the x87 80-bit format
+//!   in 16 bytes (observed with Clang as a black box). Records use the
+//!   Microsoft bit-field layout that the GCC manual describes under
+//!   `-mms-bitfields`, the default for both.
 //!
 //! LLVM data layout strings are the ones LLVM 18 expects for each triple.
 //! LLVM 19 reads them unchanged and adds its function-pointer alignment
@@ -42,6 +51,10 @@ pub enum Target {
     /// `x86_64-apple-macosx`, System V AMD64 on Darwin (Intel Macs).
     /// `macos_major.macos_minor` is the minimum macOS version.
     X86_64Apple { macos_major: u32, macos_minor: u32 },
+    /// 64-bit Windows: `x86_64-pc-windows-msvc` when `msvc`, otherwise
+    /// `x86_64-w64-windows-gnu` (MinGW-w64). Both use the Microsoft x64
+    /// calling convention and LLP64.
+    X86_64Windows { msvc: bool },
 }
 
 /// How `long double` is represented.
@@ -63,6 +76,20 @@ pub enum Abi {
     Aapcs64 {
         apple: bool,
     },
+    /// The Microsoft x64 calling convention.
+    Win64,
+}
+
+/// What `__builtin_va_list` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VaListKind {
+    /// System V AMD64: `[1 x struct __va_list_tag]`, the register-save
+    /// descriptor.
+    SysV,
+    /// Apple arm64 and Windows x64: a `char *` into the argument area.
+    CharPtr,
+    /// AAPCS64 (AArch64 Linux): `struct __va_list`, passed by value.
+    Aapcs64,
 }
 
 impl Default for Target {
@@ -83,6 +110,12 @@ pub const APPLE_X86_64_DEFAULT: Target = Target::X86_64Apple {
     macos_major: 10,
     macos_minor: 15,
 };
+
+/// `x86_64-pc-windows-msvc`.
+pub const WINDOWS_MSVC: Target = Target::X86_64Windows { msvc: true };
+
+/// `x86_64-w64-windows-gnu` (MinGW-w64).
+pub const WINDOWS_GNU: Target = Target::X86_64Windows { msvc: false };
 
 impl Target {
     /// The machine this compiler binary runs on, when it is a supported
@@ -106,6 +139,10 @@ impl Target {
             APPLE_X86_64_DEFAULT
         } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
             Target::Aarch64Linux
+        } else if cfg!(all(windows, target_arch = "x86_64", target_env = "gnu")) {
+            WINDOWS_GNU
+        } else if cfg!(all(windows, target_arch = "x86_64")) {
+            WINDOWS_MSVC
         } else {
             Target::X86_64Linux
         }
@@ -122,6 +159,11 @@ impl Target {
     /// - `x86_64-apple-macos`, `x86_64-apple-macosx`, `x86_64-apple-darwin`,
     ///   with an optional version of 10.0 or later, such as
     ///   `x86_64-apple-macos13` or `x86_64-apple-macosx10.15.0`
+    /// - `x86_64-pc-windows-msvc`, `x86_64-windows-msvc`, `x86_64-pc-windows`
+    ///   (MSVC is the default Windows environment, as in Clang), with an
+    ///   optional MSVC version such as `x86_64-pc-windows-msvc19.33.0`
+    /// - `x86_64-w64-windows-gnu`, `x86_64-pc-windows-gnu`,
+    ///   `x86_64-w64-mingw32`
     ///
     /// A `darwinN` version is a Darwin kernel version and is translated to
     /// its macOS version (`darwin25` is macOS 26, `darwin20` is macOS 11,
@@ -148,8 +190,11 @@ impl Target {
                 let rest: Vec<&str> = rest
                     .iter()
                     .copied()
-                    .filter(|part| *part != "pc" && *part != "unknown")
+                    .filter(|part| *part != "pc" && *part != "unknown" && *part != "w64")
                     .collect();
+                if let Some(windows) = parse_windows(&rest) {
+                    return (arch == "x86_64").then_some(windows);
+                }
                 (rest == ["linux", "gnu"] || rest == ["linux"]).then_some(Target::X86_64Linux)
             }
             "arm64" | "aarch64" => {
@@ -184,6 +229,8 @@ impl Target {
             Target::Arm64Apple { .. } => "arm64-apple-macos",
             Target::Aarch64Linux => "aarch64-linux-gnu",
             Target::X86_64Apple { .. } => "x86_64-apple-macos",
+            Target::X86_64Windows { msvc: true } => "x86_64-pc-windows-msvc",
+            Target::X86_64Windows { msvc: false } => "x86_64-w64-windows-gnu",
         }
     }
 
@@ -200,6 +247,7 @@ impl Target {
                 macos_major,
                 macos_minor,
             } => format!("x86_64-apple-macosx{macos_major}.{macos_minor}.0"),
+            Target::X86_64Windows { .. } => self.name().to_string(),
         }
     }
 
@@ -220,7 +268,81 @@ impl Target {
             Target::X86_64Apple { .. } => {
                 "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
             }
+            // `m:w` is Windows COFF mangling: no prefix on x86-64 C names.
+            Target::X86_64Windows { .. } => {
+                "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+            }
         }
+    }
+
+    /// A 64-bit Windows target, MSVC or MinGW.
+    pub fn is_windows(self) -> bool {
+        matches!(self, Target::X86_64Windows { .. })
+    }
+
+    /// The MSVC environment of 64-bit Windows.
+    pub fn is_msvc(self) -> bool {
+        matches!(self, Target::X86_64Windows { msvc: true })
+    }
+
+    /// `long` is 64 bits (LP64), except on Windows (LLP64), where it is 32.
+    pub fn long_is_64(self) -> bool {
+        !self.is_windows()
+    }
+
+    /// `size_t`: `unsigned long` under LP64, `unsigned long long` under
+    /// LLP64.
+    pub fn size_type(self) -> crate::ast::TypeName {
+        if self.long_is_64() {
+            crate::ast::TypeName::ULong
+        } else {
+            crate::ast::TypeName::ULongLong
+        }
+    }
+
+    /// `ptrdiff_t` and `intptr_t`: `long` under LP64, `long long` under
+    /// LLP64.
+    pub fn ptrdiff_type(self) -> crate::ast::TypeName {
+        if self.long_is_64() {
+            crate::ast::TypeName::Long
+        } else {
+            crate::ast::TypeName::LongLong
+        }
+    }
+
+    /// The width of `wchar_t` in bits: 16 on Windows (UTF-16 code units),
+    /// 32 elsewhere.
+    pub fn wchar_bits(self) -> u32 {
+        if self.is_windows() {
+            16
+        } else {
+            32
+        }
+    }
+
+    /// The type of `wchar_t` (and of a wide character constant).
+    pub fn wchar_type(self) -> crate::ast::TypeName {
+        if self.is_windows() {
+            crate::ast::TypeName::UShort
+        } else if self.wchar_is_signed() {
+            crate::ast::TypeName::Int
+        } else {
+            crate::ast::TypeName::UInt
+        }
+    }
+
+    pub fn va_list_kind(self) -> VaListKind {
+        match self {
+            Target::X86_64Linux | Target::X86_64Apple { .. } => VaListKind::SysV,
+            Target::Arm64Apple { .. } | Target::X86_64Windows { .. } => VaListKind::CharPtr,
+            Target::Aarch64Linux => VaListKind::Aapcs64,
+        }
+    }
+
+    /// Records use the Microsoft layout for bit-fields (GCC manual,
+    /// `-mms-bitfields`).
+    pub fn ms_layout(self) -> bool {
+        self.is_windows()
     }
 
     /// An Apple (Darwin, Mach-O) target on either architecture.
@@ -252,6 +374,7 @@ impl Target {
             Target::X86_64Linux | Target::X86_64Apple { .. } => Abi::SysV,
             Target::Arm64Apple { .. } => Abi::Aapcs64 { apple: true },
             Target::Aarch64Linux => Abi::Aapcs64 { apple: false },
+            Target::X86_64Windows { .. } => Abi::Win64,
         }
     }
 
@@ -262,31 +385,38 @@ impl Target {
     }
 
     /// `wchar_t` (and `wint_t`) is `int`, except on AArch64 Linux, where it
-    /// is `unsigned int`.
+    /// is `unsigned int`, and on Windows, where it is `unsigned short`.
     pub fn wchar_is_signed(self) -> bool {
-        !matches!(self, Target::Aarch64Linux)
+        !matches!(self, Target::Aarch64Linux | Target::X86_64Windows { .. })
     }
 
     pub fn long_double(self) -> LongDouble {
         match self {
-            Target::X86_64Linux | Target::X86_64Apple { .. } => LongDouble::X87,
-            Target::Arm64Apple { .. } => LongDouble::Double,
+            Target::X86_64Linux
+            | Target::X86_64Apple { .. }
+            | Target::X86_64Windows { msvc: false } => LongDouble::X87,
+            Target::Arm64Apple { .. } | Target::X86_64Windows { msvc: true } => LongDouble::Double,
             Target::Aarch64Linux => LongDouble::Quad,
         }
     }
 
     /// An array object of 16 bytes or more is aligned to at least 16 bytes
     /// (System V AMD64 psABI 3.1.2), on Linux and on Intel Macs. AAPCS64
-    /// and Apple's arm64 ABI align an array as its element type.
+    /// and Apple's arm64 ABI align an array as its element type. Clang does
+    /// the same on 64-bit Windows (observed as a black box).
     pub fn boosts_large_arrays(self) -> bool {
-        matches!(self, Target::X86_64Linux | Target::X86_64Apple { .. })
+        matches!(
+            self,
+            Target::X86_64Linux | Target::X86_64Apple { .. } | Target::X86_64Windows { .. }
+        )
     }
 
     /// The caller extends an integer argument or return value narrower
     /// than 32 bits (`signext` / `zeroext` in LLVM). System V AMD64 and
-    /// Apple arm64 require it; AAPCS64 leaves the upper bits unspecified.
+    /// Apple arm64 require it; AAPCS64 leaves the upper bits unspecified,
+    /// and so does the Microsoft x64 convention.
     pub fn extends_narrow_args(self) -> bool {
-        !matches!(self, Target::Aarch64Linux)
+        !matches!(self, Target::Aarch64Linux | Target::X86_64Windows { .. })
     }
 
     /// An unnamed bit-field, including a zero-width one, raises the
@@ -308,6 +438,28 @@ impl Target {
             Target::X86_64Apple { .. } => "\"frame-pointer\"=\"all\"",
             _ => "",
         }
+    }
+}
+
+/// A Windows OS and environment, after the vendor (`pc`, `w64`) is
+/// removed: `windows` or `windows-msvc[VERSION]` is MSVC, `windows-gnu`
+/// and `mingw32` are MinGW-w64.
+fn parse_windows(rest: &[&str]) -> Option<Target> {
+    match rest {
+        ["windows"] => Some(WINDOWS_MSVC),
+        ["windows", env] => {
+            if *env == "gnu" {
+                return Some(WINDOWS_GNU);
+            }
+            let version = env.strip_prefix("msvc")?;
+            let valid = version.is_empty()
+                || version
+                    .split('.')
+                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+            valid.then_some(WINDOWS_MSVC)
+        }
+        ["mingw32"] => Some(WINDOWS_GNU),
+        _ => None,
     }
 }
 
@@ -511,6 +663,51 @@ mod tests {
         assert_eq!(t.function_attrs(), "\"frame-pointer\"=\"all\"");
         assert_eq!(t.macos_version(), Some((10, 15)));
         assert_eq!(Target::X86_64Linux.macos_version(), None);
+    }
+
+    #[test]
+    fn windows_triples_and_type_model() {
+        for triple in [
+            "x86_64-pc-windows-msvc",
+            "x86_64-windows-msvc",
+            "x86_64-pc-windows",
+            "x86_64-unknown-windows-msvc19.33.0",
+        ] {
+            assert_eq!(Target::parse(triple), Some(WINDOWS_MSVC), "{triple}");
+        }
+        for triple in [
+            "x86_64-w64-windows-gnu",
+            "x86_64-pc-windows-gnu",
+            "x86_64-w64-mingw32",
+        ] {
+            assert_eq!(Target::parse(triple), Some(WINDOWS_GNU), "{triple}");
+        }
+        for triple in [
+            "aarch64-pc-windows-msvc",
+            "i686-w64-mingw32",
+            "x86_64-w64-cygwin",
+        ] {
+            assert_eq!(Target::parse(triple), None, "{triple}");
+        }
+        assert_eq!(WINDOWS_MSVC.triple(), "x86_64-pc-windows-msvc");
+        assert_eq!(WINDOWS_GNU.triple(), "x86_64-w64-windows-gnu");
+        for t in [WINDOWS_MSVC, WINDOWS_GNU] {
+            assert!(t.is_windows() && !t.is_apple() && !t.is_aarch64());
+            assert!(t.data_layout().starts_with("e-m:w-"));
+            assert_eq!(t.abi(), Abi::Win64);
+            assert_eq!(t.va_list_kind(), VaListKind::CharPtr);
+            assert!(!t.long_is_64() && t.ms_layout());
+            assert_eq!(t.wchar_bits(), 16);
+            assert!(t.char_is_signed() && !t.wchar_is_signed());
+            assert!(t.boosts_large_arrays() && !t.extends_narrow_args());
+        }
+        assert!(WINDOWS_MSVC.is_msvc() && !WINDOWS_GNU.is_msvc());
+        assert_eq!(WINDOWS_MSVC.long_double(), LongDouble::Double);
+        assert_eq!(WINDOWS_GNU.long_double(), LongDouble::X87);
+        for t in [Target::X86_64Linux, APPLE_DEFAULT, APPLE_X86_64_DEFAULT] {
+            assert!(t.long_is_64() && !t.ms_layout() && !t.is_windows());
+            assert_eq!(t.wchar_bits(), 32);
+        }
     }
 
     #[test]

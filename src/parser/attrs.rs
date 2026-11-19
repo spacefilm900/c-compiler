@@ -5,11 +5,16 @@ use super::*;
 
 /// An attribute name without surrounding `__` (`__packed__` is `packed`).
 pub(super) fn attr_name(spelling: &str) -> String {
-    spelling
+    let name = spelling
         .strip_prefix("__")
         .and_then(|rest| rest.strip_suffix("__"))
-        .unwrap_or(spelling)
-        .to_string()
+        .unwrap_or(spelling);
+    // On MSVC `__declspec` is an attribute list (see pp/predefined.rs), and
+    // its `align(N)` is GCC's `aligned(N)`.
+    if name == "align" && crate::target::current().is_msvc() {
+        return "aligned".to_string();
+    }
+    name.to_string()
 }
 
 pub(super) fn attr_class(name: &str) -> AttrClass {
@@ -98,9 +103,12 @@ pub(super) fn attr_class(name: &str) -> AttrClass {
         | "sysv_abi"
         | "force_align_arg_pointer"
         | "expected_throw" => AttrClass::Known,
-        "vector_size" | "cleanup" | "alias" | "ifunc" | "naked" | "weakref" => {
+        "vector_size" | "cleanup" | "alias" | "ifunc" | "naked" | "weakref" | "vectorcall" => {
             AttrClass::Unsupported
         }
+        // Microsoft's `__declspec(selectany)` has an effect only on Windows;
+        // elsewhere it is unknown, as in GCC.
+        "selectany" if crate::target::current().is_windows() => AttrClass::Known,
         _ => AttrClass::Unknown,
     }
 }
@@ -404,6 +412,7 @@ impl Parser<'_> {
                 "weak" => out.weak = true,
                 "used" => out.used = true,
                 "section" => out.section = Self::attr_string(attr),
+                "selectany" if crate::target::current().is_windows() => out.selectany = true,
                 _ => {}
             }
         }
@@ -455,8 +464,7 @@ impl Parser<'_> {
             (16, false) => TypeName::UShort,
             (32, true) => TypeName::Int,
             (32, false) => TypeName::UInt,
-            (_, true) => TypeName::Long,
-            (_, false) => TypeName::ULong,
+            (_, signed) => TypeName::int64(signed),
         };
         Ok(CType::Int(chosen).with_quals(ty.quals()))
     }

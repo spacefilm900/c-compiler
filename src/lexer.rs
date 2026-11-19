@@ -229,7 +229,8 @@ impl Lexer<'_> {
         // Encoding prefixes (C11 6.4.4.4, 6.4.5). The prefix is not a
         // separate token: it is recognized only when the quote is the next
         // byte. `u8` names a character constant only in C23, so that form
-        // is a diagnostic. `wchar_t` is `int`. `char16_t` is the unsigned
+        // is a diagnostic. `wchar_t` is the target's (`int`, or a 16-bit
+        // `unsigned short` on Windows). `char16_t` is the unsigned
         // 16-bit type and `char32_t` is the unsigned 32-bit type.
         if matches!(spelling, "L" | "u" | "U" | "u8") && matches!(self.peek(), Some(b'\'' | b'"')) {
             let quote = self.peek();
@@ -239,6 +240,7 @@ impl Lexer<'_> {
             let bits: u32 = match spelling {
                 "u" => 16,
                 "u8" => 8,
+                "L" => crate::target::current().wchar_bits(),
                 _ => 32,
             };
             return if quote == Some(b'\'') {
@@ -749,8 +751,8 @@ impl Lexer<'_> {
         self.bump();
         let value = self.char_body(line, column, bits)?;
         let spelling = self.source[start..self.index].to_string();
-        let ty = if wchar && crate::target::current().wchar_is_signed() {
-            TypeName::Int
+        let ty = if wchar {
+            crate::target::current().wchar_type()
         } else if bits == 16 {
             TypeName::UShort
         } else {

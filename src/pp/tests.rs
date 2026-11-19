@@ -439,3 +439,52 @@ fn only_one_compiler_header_tree_is_searched() {
     assert_eq!(dirs, vec![first]);
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn command_line_function_like_macro() {
+    // GCC manual, "Preprocessor Options": -D 'name(args...)=definition'.
+    let mut options = PpOptions::default();
+    options.definitions.push(CliMacro::Define {
+        name: "TWICE(x, y)".to_string(),
+        replacement: Some("((x) + (y))".to_string()),
+    });
+    let text = preprocess("int n = TWICE(1, 2);\n", "t.c", &options).unwrap();
+    assert!(text.contains("int n = ((1) + (2));"), "{text}");
+    options.definitions[0] = CliMacro::Define {
+        name: "BAD(1)".to_string(),
+        replacement: None,
+    };
+    assert!(preprocess("int n;\n", "t.c", &options).is_err());
+    for bad in ["F(x,,y)", "F(x", "F(x)y", "F((x))", "F(x,)"] {
+        options.definitions[0] = CliMacro::Define {
+            name: bad.to_string(),
+            replacement: Some("x".to_string()),
+        };
+        assert!(preprocess("int n;\n", "t.c", &options).is_err(), "{bad}");
+    }
+    options.definitions[0] = CliMacro::Define {
+        name: "ONE()".to_string(),
+        replacement: Some("1".to_string()),
+    };
+    let text = preprocess("int n = ONE();\n", "t.c", &options).unwrap();
+    assert!(text.contains("int n = 1;"), "{text}");
+}
+
+#[test]
+fn pragma_operator_is_applied_and_removed() {
+    // C11 6.10.9: `_Pragma("...")` acts as a #pragma line; the pragmas it
+    // gives here are ignored, as unknown #pragma lines are.
+    let options = PpOptions::default();
+    let text = preprocess(
+        "#define P(x) _Pragma(#x)\nP(warning(push)) int a; _Pragma(\"pack(1)\") int b;\n",
+        "t.c",
+        &options,
+    )
+    .unwrap();
+    assert!(
+        !text.contains("_Pragma") && !text.contains("warning"),
+        "{text}"
+    );
+    assert!(text.contains("int a;") && text.contains("int b;"), "{text}");
+    assert!(preprocess("_Pragma(x) int a;\n", "t.c", &options).is_err());
+}
