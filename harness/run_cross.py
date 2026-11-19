@@ -290,6 +290,9 @@ def test_gnu(tc, src, work):
     rc, _, err = tc.ours(src, work / f"{src.stem}.strict.ll", "c11")
     if rc == 0:
         return "strict C11 accepted a GNU-only program"
+    if crashed(err.decode(errors="replace")):
+        # Keep the crash text, so a listed test is still a failure.
+        return f"strict C11 check: compiler failed ({rc}): {short(err)}"
     if b"error:" not in err:
         return "strict C11 rejected the program without an error message"
     return test(tc, src, work, "gnu11")
