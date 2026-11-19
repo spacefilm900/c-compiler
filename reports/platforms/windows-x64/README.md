@@ -103,9 +103,9 @@ it was removed before the merge.
 
 After this run, `cross_known_failures.txt` entries were scoped to where
 they apply (`native` or `standin`) and a compiler crash on a listed test
-became a failure (CodeRabbit review). With that scoping the MSVC line
-reads 178 passed, 14 known: `hosted/02_runtime_nan_tag.c`, which passes
-natively, is now listed for the stand-in only. The workflow is manual-only
+became a failure (CodeRabbit review). The counts above do not change:
+`hosted/02_runtime_nan_tag.c`, which passes natively, is now listed for the
+stand-in only, so it is no longer reported as "now passing". The workflow is manual-only
 now, so this was checked on the Linux stand-in, not re-run on Windows.
 
 The same run passed the unit tests on Windows (227, 23 ignored because
