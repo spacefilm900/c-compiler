@@ -33,17 +33,20 @@ MINGW_GCC = os.environ.get("MINGW_GCC", "x86_64-w64-mingw32-gcc")
 MINGW_ROOT = "/usr/x86_64-w64-mingw32"
 # The MSVC stand-in: MinGW-w64's headers without MSVC's identification
 # macros, which would select code paths for Microsoft's own compiler.
+# printf and friends come from msvcrt.dll, as with MSVC, not MinGW-w64's
+# own (__USE_MINGW_ANSI_STDIO), which reads `%Lf` as the x87 format.
 MSVC_STANDIN_FLAGS = ["-isysroot", MINGW_ROOT, "-U_MSC_VER", "-U_MSC_FULL_VER", "-U_MSC_BUILD",
                       "-D__MINGW32__", "-D__MINGW64__", "-D__MSVCRT__", "-D__GNUC__=4",
                       "-D__GNUC_MINOR__=2", "-D__declspec(a)=__attribute__((a))",
-                      "-D__cdecl=__attribute__((__cdecl__))"]
+                      "-D__cdecl=__attribute__((__cdecl__))", "-D__USE_MINGW_ANSI_STDIO=0"]
 # Clang for the MSVC triple: the same stand-in, and no MSVC compatibility
 # extensions, so both compilers see the same headers the same way.
 CLANG_MSVC_FLAGS = ["-isystem", MINGW_ROOT + "/include", "-fno-ms-compatibility",
                     "-fno-ms-extensions", "-U_MSC_VER", "-U_MSC_FULL_VER", "-U_MSC_BUILD",
                     "-D__MINGW32__", "-D__MINGW64__", "-D__MSVCRT__", "-D__GNUC__=4",
                     "-D__GNUC_MINOR__=2", "-D__declspec(a)=__attribute__((a))",
-                    "-D__cdecl=__attribute__((__cdecl__))", "-fno-stack-protector"]
+                    "-D__cdecl=__attribute__((__cdecl__))", "-D__USE_MINGW_ANSI_STDIO=0",
+                    "-fno-stack-protector"]
 
 
 def ours_flags(target):
@@ -95,7 +98,9 @@ def link_command(objs, out, target=GNU):
 def wine_env():
     env = dict(os.environ)
     env.setdefault("WINEDEBUG", "-all")
-    env.setdefault("WINEDLLOVERRIDES", "mscoree,mshtml=")
+    # No Gecko/Mono installers, and no debugger on a crash: winedbg would
+    # wait for input until the harness's timeout.
+    env.setdefault("WINEDLLOVERRIDES", "mscoree,mshtml=;winedbg.exe=d")
     return env
 
 
