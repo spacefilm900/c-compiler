@@ -226,7 +226,7 @@ def build_ours(tc, src, base, std, extra=()):
     ll, obj = base.with_suffix(".ll"), base.with_suffix(".o")
     rc, _, err = tc.ours(src, ll, std, extra)
     if rc != 0:
-        return None, f"compiler failed ({rc}): {short(err)}"
+        return None, compiler_crash(rc, err) or f"compiler failed ({rc}): {short(err)}"
     rc, _, err = tc.ll_obj(ll, obj)
     if rc != 0:
         return None, f"LLVM rejected IR ({rc}): {short(err)}"
@@ -290,9 +290,10 @@ def test_gnu(tc, src, work):
     rc, _, err = tc.ours(src, work / f"{src.stem}.strict.ll", "c11")
     if rc == 0:
         return "strict C11 accepted a GNU-only program"
-    if crashed(err.decode(errors="replace")):
-        # Keep the crash text, so a listed test is still a failure.
-        return f"strict C11 check: compiler failed ({rc}): {short(err)}"
+    crash = compiler_crash(rc, err)
+    if crash:
+        # Keep the crash marker, so a listed test is still a failure.
+        return f"strict C11 check: {crash}"
     if b"error:" not in err:
         return "strict C11 rejected the program without an error message"
     return test(tc, src, work, "gnu11")
@@ -351,9 +352,26 @@ def known_failures(target):
     return known
 
 
+CRASH = "compiler crashed"
+
+
 def crashed(err):
     """A compiler crash is never a known failure, even on a listed test."""
-    return "panicked" in err or "internal compiler error" in err
+    return CRASH in err or "panicked" in err or "internal compiler error" in err
+
+
+def compiler_crash(rc, err):
+    """The result text for a compiler run that crashed, or None. A crash is
+    a Rust panic (exit 101, or its message anywhere in standard error), an
+    internal compiler error, death by a POSIX signal (negative status) or
+    a Windows exception status (0xC0000000 and up). The message starts
+    with CRASH, so the classification survives short()'s truncation."""
+    if not isinstance(rc, int):
+        return None  # "timeout" and "oserror" keep their own path
+    text = err.decode(errors="replace")
+    if rc < 0 or rc == 101 or rc >= 0xC0000000 or crashed(text):
+        return f"{CRASH} ({rc}): {short(err)}"
+    return None
 
 
 def torture(target, label_filter):
