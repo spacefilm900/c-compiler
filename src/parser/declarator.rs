@@ -281,6 +281,12 @@ impl Parser<'_> {
                 RawDecl::Func(Box::new(RawDecl::Abstract(line, column)), params)
             } else {
                 self.bump();
+                // GNU attributes may open a parenthesized declarator
+                // (`int (__attribute__((__cdecl__)) *fp)(void)`, which
+                // MinGW-w64's `__cdecl` expands to). They are ignored.
+                if self.at_attribute() {
+                    self.parse_attributes_into()?;
+                }
                 let inner = self.parse_raw_declarator(abstract_ok)?;
                 self.expect_skip(TokenKind::RParen, "')'")?;
                 inner

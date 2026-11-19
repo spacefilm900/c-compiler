@@ -413,7 +413,8 @@ impl LitPrefix {
         match self {
             LitPrefix::None | LitPrefix::U8 => 1,
             LitPrefix::U => 2,
-            LitPrefix::UU | LitPrefix::L => 4,
+            LitPrefix::L => crate::target::current().wchar_bits() as usize / 8,
+            LitPrefix::UU => 4,
         }
     }
 
@@ -472,6 +473,9 @@ struct Specs {
     /// The type specifier was an untagged struct or union definition, so a
     /// member declaration with no declarator is an anonymous member.
     anon_record: bool,
+    /// The type specifier was a struct or union definition (`struct S {
+    /// ... }`), as opposed to a reference to a record declared elsewhere.
+    defined_record: bool,
     /// See [`Parser::shadow_decl`].
     shadow_decl: Option<(String, RecordKind)>,
     line: usize,
@@ -511,6 +515,7 @@ struct SpecFlags {
     /// `enum { ... }` or `enum Tag { ... }` with no declarator is a declaration.
     introduced_tag: bool,
     anon_record: bool,
+    defined_record: bool,
     any: bool,
     /// The `inline` function specifier.
     inline_: bool,

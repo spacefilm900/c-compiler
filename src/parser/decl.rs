@@ -197,13 +197,13 @@ impl Parser<'_> {
         first: NamedDecl,
     ) -> Result<Vec<TopDecl>, Diagnostic> {
         self.reject_func_spec(&specs)?;
-        self.bind_typedef_decl(&specs.attrs, &first)?;
+        self.bind_typedef_decl(&specs, &first)?;
         while self.match_kind(TokenKind::Comma) {
             let next = self.parse_named_decl(specs.ty.clone())?;
             if next.is_function() && self.current().kind == TokenKind::LBrace {
                 return Err(self.error("a function definition cannot follow another declarator"));
             }
-            self.bind_typedef_decl(&specs.attrs, &next)?;
+            self.bind_typedef_decl(&specs, &next)?;
         }
         self.expect_skip(TokenKind::Semi, "';'")?;
         Ok(Vec::new())
@@ -216,7 +216,7 @@ impl Parser<'_> {
             if declarator.is_function() && self.current().kind == TokenKind::LBrace {
                 return Err(self.error("a typedef cannot have a function body"));
             }
-            self.bind_typedef_decl(&specs.attrs, &declarator)?;
+            self.bind_typedef_decl(specs, &declarator)?;
             if self.match_kind(TokenKind::Comma) {
                 continue;
             }
@@ -228,7 +228,7 @@ impl Parser<'_> {
 
     pub(super) fn bind_typedef_decl(
         &mut self,
-        spec_attrs: &[Attr],
+        specs: &Specs,
         declarator: &NamedDecl,
     ) -> Result<(), Diagnostic> {
         if self.current().kind == TokenKind::Assign {
@@ -238,16 +238,26 @@ impl Parser<'_> {
             DeclKind::Object(ty) => ty.clone(),
             DeclKind::Function { .. } => decl_kind_type(&declarator.kind),
         };
-        let attrs: Vec<Attr> = spec_attrs
+        let attrs: Vec<Attr> = specs
+            .attrs
             .iter()
             .chain(&declarator.attrs)
             .cloned()
             .collect();
         let ty = self.apply_mode(ty, &attrs)?;
         // A typedef with its own alignment is a distinct type in GCC. Only
-        // the type's own alignment is supported here.
+        // the type's own alignment is supported here, plus one form that
+        // MinGW-w64's <setjmp.h> uses: `typedef __attribute__((aligned(16)))
+        // struct S { ... } T;`, where the record is defined in this very
+        // declaration and its size is already a multiple of the alignment.
+        // The record itself takes the alignment, so `_Alignof(struct S)` is
+        // also raised, where GCC and Clang keep the record's own alignment.
         if let Some(align) = self.attrs_align(&attrs)? {
-            if ty.size().is_none() || ty.member_align() != align {
+            if let Some(handle) = raisable_record(specs, &ty, align) {
+                handle.set_unadjusted_align(handle.unadjusted_align());
+                handle.raise_align(align);
+                handle.set_irregular();
+            } else if ty.size().is_none() || ty.member_align() != align {
                 return Err(self.error_at(
                     declarator.line,
                     declarator.column,
@@ -739,4 +749,16 @@ impl Parser<'_> {
             align,
         })
     }
+}
+
+/// The record a typedef's `aligned(align)` can raise: one defined by this
+/// declaration's own type specifier, named by the declarator without
+/// derivation or qualifiers, whose size is a multiple of `align` and whose
+/// alignment is lower.
+fn raisable_record<'a>(specs: &'a Specs, ty: &CType, align: u32) -> Option<&'a StructRef> {
+    let handle = specs.ty.struct_ref()?;
+    let same = matches!(ty, CType::Struct(own) if own.id() == handle.id());
+    let size = handle.size()?;
+    (specs.defined_record && same && handle.align() < align && size % u64::from(align) == 0)
+        .then_some(handle)
 }
