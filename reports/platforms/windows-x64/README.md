@@ -101,6 +101,13 @@ it was removed before the merge.
 | MinGW-w64 (MSYS2) | 44537682786 at `a125bfc` | 193 tests: 181 pass, 12 known, 0 unexpected | 50/50 |
 | MSVC + UCRT | 44537682786 at `a125bfc` | 193 tests: 178 pass, 15 known, 0 unexpected | 50/50 |
 
+After this run, `cross_known_failures.txt` entries were scoped to where
+they apply (`native` or `standin`) and a compiler crash on a listed test
+became a failure (CodeRabbit review). With that scoping the MSVC line
+reads 178 passed, 14 known: `hosted/02_runtime_nan_tag.c`, which passes
+natively, is now listed for the stand-in only. The workflow is manual-only
+now, so this was checked on the Linux stand-in, not re-run on Windows.
+
 The same run passed the unit tests on Windows (227, 23 ignored because
 they need a Linux Clang) and hello world with MSVC.
 

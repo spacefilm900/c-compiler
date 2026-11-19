@@ -50,8 +50,10 @@ COFF objects, its C runtime), and the MSVC target is a stand-in that reads
 the MinGW-w64 headers. The AArch64 tests are not run for them.
 
 harness/cross_known_failures.txt lists expected failures as
-"TARGET LABEL  # reason". A listed test that passes is reported so the
-line can be removed. An unlisted failure fails the run.
+"TARGET LABEL [native|standin]  # reason" (the optional field limits a
+Windows entry to the native runner or the Wine stand-in). A listed test
+that passes is reported so the line can be removed. An unlisted failure
+fails the run, and so does a compiler crash on a listed test.
 
 Env: CC_UNDER_TEST, CLANG (default clang), QEMU_AARCH64 (default
 qemu-aarch64), AARCH64_LINK (default "clang --target=aarch64-linux-gnu
@@ -337,12 +339,18 @@ def known_failures(target):
     known = {}
     if not KNOWN.is_file():
         return known
+    where = "native" if win.NATIVE else "standin"
     for line in KNOWN.read_text().splitlines():
         body, _, reason = line.partition("#")
         parts = body.split()
-        if len(parts) == 2 and parts[0] == target:
+        if len(parts) in (2, 3) and parts[0] == target and parts[2:] in ([], [where]):
             known[parts[1]] = reason.strip()
     return known
+
+
+def crashed(err):
+    """A compiler crash is never a known failure, even on a listed test."""
+    return "panicked" in err or "internal compiler error" in err
 
 
 def torture(target, label_filter):
@@ -485,7 +493,7 @@ def main():
                 print(f"NOW_PASS {label} (remove it from {KNOWN.name})")
             else:
                 print(f"PASS {label}")
-        elif label in known:
+        elif label in known and not crashed(r):
             known_failed += 1
             print(f"KNOWN {label}: {known[label]}")
         else:

@@ -321,8 +321,12 @@ def run(cmd, timeout=60):
             out, err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
+                if os.name == "nt":
+                    # No process groups on Windows: end the direct child.
+                    proc.kill()
+                else:
+                    os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
                 pass
             # A descendant that left the group may still hold the pipes, so
             # do not wait for EOF: close them and reap the direct child.
