@@ -47,7 +47,7 @@ follows the host toolchain.
   - MSVC: `_MSC_VER` 1933, `_M_X64`, `_M_AMD64`, and no `__GNUC__`. Microsoft's C keywords (`__int64`, `__cdecl`, `__forceinline`, `__declspec(...)`, `__pragma(...)` and others) are macros over this compiler's spellings, and `__declspec(align(N))` means `aligned(N)`.
   - MSVC also puts every non-static definition written `inline` in a COMDAT, as Clang does for that target: `linkonce_odr`, or `weak_odr` for `extern inline`, even after a non-inline declaration (the UCRT's `<stdio.h>` defines `printf` and its relatives this way). `__declspec(selectany)` objects are `weak_odr` COMDATs too (`<fenv.h>` uses it).
   - Two intrinsics are added: `__va_start` (used by `<vadefs.h>`), and `__debugbreak`/`__fastfail` on both targets.
-- **Also added for every target:** the `_Pragma` operator (C11 6.10.9; the pragma is ignored like an unknown `#pragma`), and `__typeof__` in strict C11 (plain `typeof` stays GNU-only). `typedef __attribute__((aligned(N))) struct {...} T;` now works when the record is defined there and its size is a multiple of N. Function-like `-D` is accepted.
+- **Also added for every target:** the `_Pragma` operator (C11 6.10.9; the pragma is ignored like an unknown `#pragma`), and `__typeof__` in strict C11 (plain `typeof` stays GNU-only). `typedef __attribute__((aligned(N))) struct {...} T;` now works when the record is defined there, its size is a multiple of N, and `T` is the only declarator (see "What remains"). Function-like `-D 'F(a,b)=...'` is accepted; a malformed parameter list is rejected. These three changes reach every target; the owner kept them as they are.
 
 ## What Linux checks (normal CI job `windows-standin`)
 
@@ -107,10 +107,10 @@ billed minutes at the private-repository rate (budget: 120).
 
 - Not run on the Windows runner: GCC torture, Lua, SQLite, DOOM, WACC, Csmith and the AWK suites. Torture was run under Wine with MinGW (above). Each could be added to `windows.yml` later as a manual option.
 - The harness does not run `cl.exe` itself; Clang for MSVC is the oracle and linker driver. `link.exe` and the UCRT are real.
-- `#pragma pack` is ignored on every target (an older gap). It matters more on Windows, where the SDK headers use it.
-- `returns_twice` is not emitted for `setjmp` on any target. `setjmp`/`longjmp` work at `-O0` under Wine.
+- `#pragma pack` is ignored on every target (an older gap, left unchanged). It matters more on Windows, where the SDK headers use it.
+- `returns_twice` is not emitted for `setjmp` on any target (left unchanged). `setjmp`/`longjmp` work at `-O0` under Wine.
 - `__declspec(align(N))` written *before* `struct` in a declaration with no declarator is ignored, as GCC ignores an attribute there. The SDK uses the form after `struct`.
-- `typedef __attribute__((aligned(16))) struct _S {...} T;` (MinGW-w64's `<setjmp.h>`) also raises `_Alignof(struct _S)`, where GCC and Clang keep the record's own alignment. It is accepted only for an untagged record or a tag reserved to the implementation (`__x`, `_X`); with any other tag it is diagnosed, as before.
-- `__ptr32` (a 4-byte pointer) is erased, not implemented: `<basetsd.h>` uses it in inline functions that every `<windows.h>` user sees. A record with a `__ptr32` member gets an 8-byte pointer, so its layout differs from MSVC's. `__vectorcall` is rejected with a diagnostic.
+- `typedef __attribute__((aligned(16))) struct _S {...} T;` (MinGW-w64's `<setjmp.h>`) also raises `_Alignof(struct _S)`, where GCC and Clang keep the record's own alignment. It is accepted only for an untagged record or a tag reserved to the implementation (`__x`, `_X`), and only when the typedef is the declaration's single declarator (so no other typedef name shares the raised record); any other form is diagnosed, as before. This is a deliberate trade-off kept by the owner's decision.
+- `__ptr32` (a 4-byte pointer) is erased, not implemented (kept by the owner's decision): `<basetsd.h>` uses it in inline functions that every `<windows.h>` user sees. A record with a `__ptr32` member gets an 8-byte pointer, so its layout differs from MSVC's. `__vectorcall` is rejected with a diagnostic.
 - A by-reference argument's caller copy is 16-byte aligned, as Microsoft's convention requires (Clang uses the record's own alignment; both are compatible).
 - The temporary push trigger in `windows.yml` (commit message `[win-native]`) must be removed before merging. GitHub only dispatches workflows that are already on `main`.
