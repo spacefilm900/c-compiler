@@ -763,6 +763,27 @@ fn msvc_keywords_and_inline_definitions() {
         module.contains("add i32 %t2, 16") || module.contains(", 16"),
         "{module}"
     );
+    // A prior non-inline declaration does not change it, and `extern
+    // inline` is weak_odr (the UCRT's printf family and fenv.h need both,
+    // as does __declspec(selectany)).
+    let module = ir(
+        MSVC,
+        "int h(void);\ninline int h(void) { return 2; }\n\
+         extern __inline int k(void) { return 3; }\n\
+         extern __declspec(selectany) const int s = 4;\n\
+         int u(void) { return h() + k() + s; }\n",
+    );
+    for want in [
+        "$h = comdat any",
+        "define linkonce_odr i32 @h() comdat",
+        "$k = comdat any",
+        "define weak_odr i32 @k() comdat",
+        "$s = comdat any",
+        "@s = weak_odr constant i32 4, comdat, align 4",
+        "define i32 @u()",
+    ] {
+        assert!(module.contains(want), "missing {want}:\n{module}");
+    }
     // MinGW keeps C11 inline semantics, and __int64 comes from <_mingw.h>.
     let module = ir(
         MINGW,

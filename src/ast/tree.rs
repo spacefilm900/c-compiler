@@ -1164,6 +1164,10 @@ pub struct FnAttrs {
     /// definition another translation unit or library provides. Set by the
     /// parser once the whole translation unit is read.
     pub available_externally: bool,
+    /// MSVC: the definition was written `inline`, so it is emitted in a
+    /// COMDAT with this linkage (`linkonce_odr` or `weak_odr`). Set by the
+    /// parser for the MSVC target only.
+    pub msvc_comdat: Option<&'static str>,
 }
 
 impl FnAttrs {
@@ -1187,6 +1191,9 @@ impl FnAttrs {
         self.destructor |= other.destructor;
         self.gnu_inline |= other.gnu_inline;
         self.available_externally |= other.available_externally;
+        if other.msvc_comdat.is_some() {
+            self.msvc_comdat = other.msvc_comdat;
+        }
     }
 }
 
@@ -1199,6 +1206,9 @@ pub struct VarAttrs {
     pub section: Option<String>,
     pub weak: bool,
     pub used: bool,
+    /// Microsoft `__declspec(selectany)`: the definition goes in a COMDAT
+    /// (`weak_odr`), so every unit may define it and the linker keeps one.
+    pub selectany: bool,
 }
 
 impl VarAttrs {
@@ -1211,6 +1221,7 @@ impl VarAttrs {
         }
         self.weak |= other.weak;
         self.used |= other.used;
+        self.selectany |= other.selectany;
     }
 }
 

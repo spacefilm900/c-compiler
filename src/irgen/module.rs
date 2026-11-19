@@ -310,8 +310,10 @@ pub(super) fn render_global(global: &IrGlobal, renames: &Renames) -> Result<Stri
         "global"
     };
     if let Some(value) = &global.init {
+        let selectany = global.linkage == Linkage::External && global.attrs.selectany;
         let linkage = match global.linkage {
             Linkage::Internal => "internal ",
+            Linkage::External if selectany => "weak_odr ",
             Linkage::External if global.attrs.weak => "weak ",
             Linkage::External => "",
         };
@@ -320,6 +322,14 @@ pub(super) fn render_global(global: &IrGlobal, renames: &Renames) -> Result<Stri
         // every access goes through an opaque `ptr`, so only the size and
         // alignment have to agree.
         let (ir, spelled) = render_typed_const(&global.ty, value, renames)?;
+        if selectany {
+            // Clang (black box) puts a selectany object in a COMDAT of its
+            // own name.
+            return Ok(format!(
+                "${} = comdat any\n{name} = {linkage}{kind} {ir} {spelled}{section}, comdat, align {align}",
+                &name[1..]
+            ));
+        }
         Ok(format!(
             "{name} = {linkage}{kind} {ir} {spelled}{section}, align {align}"
         ))
@@ -507,23 +517,25 @@ pub(super) fn render_function(
     let mut gen = Gen::new(func.ret_type.clone(), sig.ret_agg.clone());
     gen.renames = renames.clone();
     gen.addr_labels = func.addr_labels.iter().map(|name| c_label(name)).collect();
-    let inline_only =
-        func.linkage == Linkage::External && attrs.is_some_and(|attrs| attrs.available_externally);
     // MSVC gives every C `inline` definition external linkage in a COMDAT
-    // that the linker folds (observed with Clang for x86_64-pc-windows-msvc
-    // as a black box: `linkonce_odr` with a `comdat`), so a call that is
-    // not inlined still finds a body. Elsewhere C11 6.7.4p7 applies.
-    let msvc_inline = inline_only && crate::target::current().is_msvc();
+    // that the linker folds (Parser::mark_inline_definitions), so a call
+    // that is not inlined still finds a body.
+    let msvc_comdat = attrs
+        .and_then(|attrs| attrs.msvc_comdat)
+        .filter(|_| func.linkage == Linkage::External);
+    let msvc_linkage = msvc_comdat.map(|linkage| format!("{linkage} "));
     let linkage = match func.linkage {
         Linkage::Internal => "internal ",
-        Linkage::External if msvc_inline => "linkonce_odr ",
-        Linkage::External if inline_only => "available_externally ",
+        Linkage::External if msvc_linkage.is_some() => msvc_linkage.as_deref().unwrap_or(""),
+        Linkage::External if attrs.is_some_and(|attrs| attrs.available_externally) => {
+            "available_externally "
+        }
         Linkage::External if attrs.is_some_and(|attrs| attrs.weak) => "weak ",
         Linkage::External => "",
     };
     let params = sig_params(&sig, func.variadic, Some(&names));
     let global = llvm_global(renamed(&func.symbol, renames));
-    let comdat = if msvc_inline {
+    let comdat = if msvc_comdat.is_some() {
         gen.emit(&format!("${} = comdat any", &global[1..]));
         " comdat"
     } else {

@@ -439,6 +439,7 @@ impl Parser<'_> {
         }
         if definition {
             seen.extern_inline_def = specs.inline_ && is_extern;
+            seen.def_inline = specs.inline_;
             seen.def_symbol = Some(symbol.to_string());
         }
     }
@@ -451,8 +452,26 @@ impl Parser<'_> {
     /// for inlining, and a plain `inline` one is an external definition.
     /// `-fgnu89-inline` gives every function the `gnu_inline` semantics.
     /// `static` functions have internal linkage and are not affected.
+    ///
+    /// MSVC instead puts every non-static definition written with `inline`
+    /// in a COMDAT, whatever the other declarations say: `linkonce_odr`,
+    /// or `weak_odr` for `extern inline` (observed with Clang for
+    /// x86_64-pc-windows-msvc as a black box). The UCRT headers rely on it
+    /// for `printf` and its relatives.
     pub(super) fn mark_inline_definitions(&mut self) {
+        let msvc = crate::target::current().is_msvc();
         for seen in std::mem::take(&mut self.inline_seen).into_values() {
+            if msvc {
+                if let (true, Some(symbol)) = (seen.def_inline, seen.def_symbol) {
+                    self.fn_attrs.entry(symbol).or_default().msvc_comdat =
+                        Some(if seen.extern_inline_def {
+                            "weak_odr"
+                        } else {
+                            "linkonce_odr"
+                        });
+                }
+                continue;
+            }
             let gnu = self.gnu89_inline
                 || seen.symbols.iter().any(|symbol| {
                     self.fn_attrs

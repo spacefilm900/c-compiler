@@ -454,6 +454,8 @@ struct InlineSeen {
     symbols: Vec<String>,
     /// The linker name the definition is emitted under, if there is one.
     def_symbol: Option<String>,
+    /// The definition itself has `inline`.
+    def_inline: bool,
 }
 
 struct Specs {

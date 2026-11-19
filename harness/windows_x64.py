@@ -134,7 +134,14 @@ __chkstk:
 
 def link_command(objs, out, target=GNU):
     if NATIVE and target == MSVC:
-        return [CLANG, "-target", MSVC, *[str(o) for o in objs], "-o", str(out)]
+        # The UCRT defines the printf family only as inline functions in
+        # <stdio.h>; Microsoft's documented legacy_stdio_definitions.lib
+        # gives a body to a call that never saw the header
+        # (__builtin_sprintf, for one).
+        return [
+            CLANG, "-target", MSVC, *[str(o) for o in objs],
+            "-llegacy_stdio_definitions", "-o", str(out),
+        ]
     if NATIVE:
         return [MINGW_GCC, *[str(o) for o in objs], "-o", str(out)]
     extra = []

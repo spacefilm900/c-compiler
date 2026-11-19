@@ -29,6 +29,7 @@ pub(super) fn attr_class(name: &str) -> AttrClass {
         | "noinline"
         | "section"
         | "weak"
+        | "selectany"
         | "format"
         | "format_arg"
         | "deprecated"
@@ -409,6 +410,7 @@ impl Parser<'_> {
                 "weak" => out.weak = true,
                 "used" => out.used = true,
                 "section" => out.section = Self::attr_string(attr),
+                "selectany" if crate::target::current().is_windows() => out.selectany = true,
                 _ => {}
             }
         }
