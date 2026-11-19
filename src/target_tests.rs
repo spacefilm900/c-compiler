@@ -826,6 +826,13 @@ fn windows_review_fixes() {
              int n = _Alignof(T);\n",
         );
         assert!(module.contains("@n = global i32 16"), "{module}");
+        // Nor a record that another typedef name in the same declaration
+        // shares.
+        let message = err(
+            target,
+            "typedef struct { int a[4]; } A __attribute__((aligned(16))), B;\n",
+        );
+        assert!(message.contains("aligned"), "{message}");
     }
     let message = err(MSVC, "double __vectorcall f(double);\n");
     assert!(message.contains("vectorcall"), "{message}");

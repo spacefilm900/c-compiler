@@ -29,7 +29,6 @@ pub(super) fn attr_class(name: &str) -> AttrClass {
         | "noinline"
         | "section"
         | "weak"
-        | "selectany"
         | "format"
         | "format_arg"
         | "deprecated"
@@ -107,6 +106,9 @@ pub(super) fn attr_class(name: &str) -> AttrClass {
         "vector_size" | "cleanup" | "alias" | "ifunc" | "naked" | "weakref" | "vectorcall" => {
             AttrClass::Unsupported
         }
+        // Microsoft's `__declspec(selectany)` has an effect only on Windows;
+        // elsewhere it is unknown, as in GCC.
+        "selectany" if crate::target::current().is_windows() => AttrClass::Known,
         _ => AttrClass::Unknown,
     }
 }

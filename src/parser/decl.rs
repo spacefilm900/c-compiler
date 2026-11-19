@@ -197,13 +197,13 @@ impl Parser<'_> {
         first: NamedDecl,
     ) -> Result<Vec<TopDecl>, Diagnostic> {
         self.reject_func_spec(&specs)?;
-        self.bind_typedef_decl(&specs, &first)?;
+        self.bind_typedef_decl(&specs, &first, true)?;
         while self.match_kind(TokenKind::Comma) {
             let next = self.parse_named_decl(specs.ty.clone())?;
             if next.is_function() && self.current().kind == TokenKind::LBrace {
                 return Err(self.error("a function definition cannot follow another declarator"));
             }
-            self.bind_typedef_decl(&specs, &next)?;
+            self.bind_typedef_decl(&specs, &next, false)?;
         }
         self.expect_skip(TokenKind::Semi, "';'")?;
         Ok(Vec::new())
@@ -211,12 +211,14 @@ impl Parser<'_> {
 
     pub(super) fn parse_typedef_declarators(&mut self, specs: &Specs) -> Result<(), Diagnostic> {
         self.reject_func_spec(specs)?;
+        let mut first = true;
         loop {
             let declarator = self.parse_named_decl(specs.ty.clone())?;
             if declarator.is_function() && self.current().kind == TokenKind::LBrace {
                 return Err(self.error("a typedef cannot have a function body"));
             }
-            self.bind_typedef_decl(specs, &declarator)?;
+            self.bind_typedef_decl(specs, &declarator, first)?;
+            first = false;
             if self.match_kind(TokenKind::Comma) {
                 continue;
             }
@@ -230,6 +232,7 @@ impl Parser<'_> {
         &mut self,
         specs: &Specs,
         declarator: &NamedDecl,
+        first: bool,
     ) -> Result<(), Diagnostic> {
         if self.current().kind == TokenKind::Assign {
             return Err(self.error("a typedef cannot have an initializer"));
@@ -255,9 +258,11 @@ impl Parser<'_> {
         // raised where GCC and Clang keep the record's own alignment, so the
         // form is accepted only for a tag reserved to the implementation
         // (C11 7.1.3: `__x` or `_X`), which a program does not name; any
-        // other tag is still diagnosed.
+        // other tag is still diagnosed. The typedef must also be the only
+        // declarator, so no other typedef name shares the raised record.
         if let Some(align) = self.attrs_align(&attrs)? {
-            if let Some(handle) = raisable_record(specs, &ty, align) {
+            let only = first && self.current().kind == TokenKind::Semi;
+            if let Some(handle) = raisable_record(specs, &ty, align).filter(|_| only) {
                 handle.set_unadjusted_align(handle.unadjusted_align());
                 handle.raise_align(align);
                 handle.set_irregular();
