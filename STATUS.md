@@ -832,10 +832,10 @@ Linux x86-64 old-vs-new: 13,362 compilations, 18 differences, all from these fix
 | Harness under Wine, MSVC stand-in | 180/193, 13 known, 0 unexpected |
 | Random ABI pairs under Wine | 100/100 each target, plain and `--int128` |
 | GCC torture under Wine (MinGW, local) | 1,335/1,746; 4 beyond the x86-64 list (2 need `<sys/mman.h>`, 2 fail with Clang too) |
-| Windows runner, MinGW-w64 (run 44528247584) | harness 181/193, 12 known, 0 unexpected; ABI pairs 50/50 |
-| Windows runner, MSVC + UCRT + `link.exe` (run 44530767776) | hello world; harness 178/193, 15 known, 0 unexpected; ABI pairs 50/50 |
+| Windows runner, MinGW-w64 (run 44532852765, `fc450cf`) | unit tests; harness 181/193, 12 known, 0 unexpected; ABI pairs 50/50 |
+| Windows runner, MSVC + UCRT + `link.exe` (same run) | hello world; harness 178/193, 15 known, 0 unexpected; ABI pairs 50/50 |
 
-Windows minutes: five manual runs, about 28 runner minutes, about 56 billed (private repository, 2x), under the 120 ceiling. Not run natively: torture, Lua, SQLite, DOOM, WACC, Csmith, AWK. Changes that reach every target: `__typeof__` in strict C11, the `_Pragma` operator, function-like `-D`, and an aligned typedef of a record defined in the same declaration (GCC torture `20050215-1.c` now passes). Old-vs-new IR on the four existing targets: 1,883 files each, the only difference is that torture file.
+Windows minutes: six manual runs, about 33 runner minutes, about 66 billed (private repository, 2x), under the 120 ceiling. Not run natively: torture, Lua, SQLite, DOOM, WACC, Csmith, AWK. Changes that reach every target: `__typeof__` in strict C11, the `_Pragma` operator, function-like `-D`, and an aligned typedef of a record defined in the same declaration (GCC torture `20050215-1.c` now passes). Old-vs-new IR on the four existing targets: 1,883 files each, the only difference is that torture file.
 
 ## Next actions
 

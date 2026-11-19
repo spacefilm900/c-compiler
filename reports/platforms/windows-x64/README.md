@@ -84,8 +84,11 @@ with `[msvc-only]` runs only the MSVC half.
 
 | Target | Run | Differential harness | Random ABI pairs |
 | --- | --- | --- | --- |
-| MinGW-w64 (MSYS2) | 44528247584 | 193 tests: 181 pass, 12 known, 0 unexpected | 50/50 |
-| MSVC + UCRT | 44530767776 | 193 tests: 178 pass, 15 known, 0 unexpected | 50/50 |
+| MinGW-w64 (MSYS2) | 44532852765 at `fc450cf` | 193 tests: 181 pass, 12 known, 0 unexpected | 50/50 |
+| MSVC + UCRT | 44532852765 at `fc450cf` | 193 tests: 178 pass, 15 known, 0 unexpected | 50/50 |
+
+The same run passed the unit tests on Windows (227, 23 ignored because
+they need a Linux Clang) and hello world with MSVC.
 
 The native-only known failures are:
 - MinGW: `gnu/15_cond_short_floating_constant.c` (a hand-declared `printf` given `%Lg` with an x87 `long double`; msvcrt reads a `double`);
@@ -96,8 +99,9 @@ The harness links MSVC programs with `legacy_stdio_definitions.lib`, which
 Microsoft documents for code that calls the `printf` family without
 `<stdio.h>` (`__builtin_sprintf` does).
 
-Five runs were used, about 28 runner minutes, so about 56 billed minutes at
-the private-repository rate (budget: 120).
+Six runs were used (the first four found and fixed header, intrinsic and
+linkage problems), about 33 runner minutes rounded up per job, so about 66
+billed minutes at the private-repository rate (budget: 120).
 
 ## What remains
 
