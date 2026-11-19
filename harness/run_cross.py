@@ -117,7 +117,7 @@ class Toolchain:
         """Build the Apple stdio shim, or the Intel macOS stand-in's
         sysroot. Returns an error string or None."""
         if self.windows:
-            missing = win.available()
+            missing = win.available(self.target)
             if missing:
                 return missing
             os.environ.update(win.wine_env())

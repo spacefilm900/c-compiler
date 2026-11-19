@@ -19,7 +19,15 @@ Two targets, both with the Microsoft x64 calling convention and LLP64:
   real headers, CRT and linker are checked by the manual Windows job in
   .github/workflows/windows.yml.
 
-Env: WINE (default wine), MINGW_GCC (default x86_64-w64-mingw32-gcc).
+On a Windows host (NATIVE) the same harnesses run the programs directly:
+the MSVC target uses the real MSVC headers (this compiler reads the INCLUDE
+variable a Visual Studio developer prompt sets; Clang finds them itself)
+and Clang links with the MSVC linker and CRT; the MinGW-w64 target reads
+the headers under MINGW_SYSROOT and links with MINGW_GCC.
+
+Env: WINE (default wine), MINGW_GCC (default x86_64-w64-mingw32-gcc, or gcc
+on Windows), MINGW_SYSROOT (Windows only: the MinGW-w64 directory holding
+include/, default derived from MINGW_GCC's location).
 """
 import os
 import shutil
@@ -28,8 +36,10 @@ import subprocess
 GNU = "x86_64-w64-windows-gnu"
 MSVC = "x86_64-pc-windows-msvc"
 TARGETS = (GNU, MSVC)
+NATIVE = os.name == "nt"
 WINE = os.environ.get("WINE", "wine")
-MINGW_GCC = os.environ.get("MINGW_GCC", "x86_64-w64-mingw32-gcc")
+MINGW_GCC = os.environ.get("MINGW_GCC", "gcc" if NATIVE else "x86_64-w64-mingw32-gcc")
+CLANG = os.environ.get("CLANG", "clang")
 MINGW_ROOT = "/usr/x86_64-w64-mingw32"
 # The MSVC stand-in: MinGW-w64's headers without MSVC's identification
 # macros, which would select code paths for Microsoft's own compiler.
@@ -49,16 +59,46 @@ CLANG_MSVC_FLAGS = ["-isystem", MINGW_ROOT + "/include", "-fno-ms-compatibility"
                     "-fno-stack-protector"]
 
 
+def mingw_sysroot():
+    """Windows host: the MinGW-w64 directory with include/ (next to the
+    compiler's bin/, as in the MSYS2 and WinLibs layouts)."""
+    if os.environ.get("MINGW_SYSROOT"):
+        return os.environ["MINGW_SYSROOT"]
+    gcc = shutil.which(MINGW_GCC)
+    if gcc is None:
+        return None
+    base = os.path.dirname(os.path.dirname(os.path.realpath(gcc)))
+    for root in (os.path.join(base, "x86_64-w64-mingw32"), base):
+        if os.path.isfile(os.path.join(root, "include", "_mingw.h")):
+            return root
+    return None
+
+
 def ours_flags(target):
+    if NATIVE:
+        if target == GNU:
+            root = mingw_sysroot()
+            return ["-isysroot", root] if root else []
+        return []
     return list(MSVC_STANDIN_FLAGS) if target == MSVC else []
 
 
 def clang_flags(target):
+    if NATIVE:
+        return []
     return list(CLANG_MSVC_FLAGS) if target == MSVC else []
 
 
-def available():
-    """An error string when the MinGW-w64 toolchain or Wine is missing."""
+def available(target=GNU):
+    """An error string when the toolchain (or Wine) is missing."""
+    if NATIVE:
+        if shutil.which(CLANG) is None:
+            return f"{CLANG} not found"
+        if target == GNU and (shutil.which(MINGW_GCC) is None or mingw_sysroot() is None):
+            return f"MinGW-w64 not found ({MINGW_GCC}, MINGW_SYSROOT)"
+        if target == MSVC and not os.environ.get("INCLUDE"):
+            return "INCLUDE is not set: run from a Visual Studio developer environment"
+        return None
     for tool in (MINGW_GCC, WINE):
         if shutil.which(tool) is None:
             return f"{tool} not found (apt: mingw-w64 wine64)"
@@ -86,6 +126,10 @@ __chkstk:
 
 
 def link_command(objs, out, target=GNU):
+    if NATIVE and target == MSVC:
+        return [CLANG, "-target", MSVC, *[str(o) for o in objs], "-o", str(out)]
+    if NATIVE:
+        return [MINGW_GCC, *[str(o) for o in objs], "-o", str(out)]
     extra = []
     if target == MSVC:
         shim = f"{out}.chkstk.s"
@@ -106,7 +150,9 @@ def wine_env():
 
 def start_server():
     """Keep one wineserver alive for the whole run, so each program does
-    not pay for starting it."""
+    not pay for starting it. Nothing to do on Windows itself."""
+    if NATIVE:
+        return
     # The server outlives this call, so it must not hold a pipe of ours.
     quiet = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
              "stderr": subprocess.DEVNULL}
@@ -115,4 +161,4 @@ def start_server():
 
 
 def run_command(binary):
-    return [WINE, str(binary)]
+    return [str(binary)] if NATIVE else [WINE, str(binary)]

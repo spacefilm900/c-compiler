@@ -373,7 +373,7 @@ class Windows:
     under Wine."""
 
     def __init__(self, target: str):
-        problem = win.available()
+        problem = win.available(target)
         if problem:
             sys.exit(problem)
         self.target = target

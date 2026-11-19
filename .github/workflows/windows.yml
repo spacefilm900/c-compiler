@@ -1,0 +1,122 @@
+# Native 64-bit Windows check (PLAN.md step 11) on GitHub's windows-latest
+# runner. Windows minutes cost twice Linux minutes, so this runs only by
+# hand, never on a push, a pull request or a schedule:
+#   gh workflow run windows.yml --ref BRANCH            (both targets)
+#   gh workflow run windows.yml --ref BRANCH -f target=msvc
+# Day-to-day coverage is the Linux stand-in job in ci.yml (MinGW-w64 under
+# Wine, and the MSVC type model on MinGW-w64's headers); see
+# reports/platforms/windows-x64/README.md.
+#
+# x86_64-pc-windows-msvc: this compiler reads the real MSVC and Windows SDK
+# headers (INCLUDE from the Visual Studio developer environment), Clang is
+# the oracle, and Clang links both with the MSVC linker and CRT.
+# x86_64-w64-windows-gnu: MSYS2's MinGW-w64 GCC (the msvcrt environment)
+# supplies the headers and links; Clang is the oracle.
+
+name: windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Targets: both, msvc or mingw"
+        type: choice
+        options: ["both", "msvc", "mingw"]
+        default: "both"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}-${{ inputs.target }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Windows x64 native (${{ inputs.target }})
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      CC_UNDER_TEST: build/compiler.exe
+      PYTHONUTF8: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+
+      - name: Tools
+        run: |
+          set -euo pipefail
+          rustc --version
+          clang --version
+          python --version
+          echo "CLANG=clang" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          cargo build --release --offline
+          mkdir -p build
+          cp target/release/compiler.exe build/compiler.exe
+
+      - name: Unit tests
+        run: cargo test --offline --lib
+
+      # The Visual Studio developer environment (INCLUDE, LIB, PATH), as
+      # vcvars64.bat sets it, for every later step.
+      - name: MSVC environment
+        if: inputs.target != 'mingw'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+            if ($_ -match '^(INCLUDE|LIB|LIBPATH|PATH|VCToolsInstallDir|WindowsSdkDir|UCRTVersion)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+
+      - name: MSVC hello, world
+        if: inputs.target != 'mingw'
+        run: |
+          set -euo pipefail
+          printf '#include <stdio.h>\nint main(void) { printf("hello from %%s\\n", "msvc"); return 0; }\n' > hello.c
+          build/compiler.exe -target x86_64-pc-windows-msvc hello.c -o hello.ll
+          clang -target x86_64-pc-windows-msvc hello.ll -o hello.exe
+          ./hello.exe
+
+      - name: MSVC differential harness and random ABI pairs
+        if: inputs.target != 'mingw' && (success() || failure())
+        run: |
+          set -uo pipefail
+          status=0
+          python harness/run_cross.py --target x86_64-pc-windows-msvc || status=1
+          python tools/abi_fuzz.py --count 50 --int128 --target x86_64-pc-windows-msvc || status=1
+          exit $status
+
+      - name: MinGW-w64 toolchain (MSYS2)
+        if: inputs.target != 'msvc' && (success() || failure())
+        run: |
+          set -euo pipefail
+          /c/msys64/usr/bin/pacman -S --noconfirm --needed mingw-w64-x86_64-gcc
+          echo "C:\\msys64\\mingw64\\bin" >> "$GITHUB_PATH"
+          echo "MINGW_GCC=C:\\msys64\\mingw64\\bin\\gcc.exe" >> "$GITHUB_ENV"
+          echo "MINGW_SYSROOT=C:\\msys64\\mingw64" >> "$GITHUB_ENV"
+
+      - name: MinGW-w64 differential harness and random ABI pairs
+        if: inputs.target != 'msvc' && (success() || failure())
+        run: |
+          set -uo pipefail
+          status=0
+          python harness/run_cross.py --target x86_64-w64-windows-gnu || status=1
+          python tools/abi_fuzz.py --count 50 --int128 --target x86_64-w64-windows-gnu || status=1
+          exit $status
