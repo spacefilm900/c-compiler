@@ -456,3 +456,22 @@ fn command_line_function_like_macro() {
     };
     assert!(preprocess("int n;\n", "t.c", &options).is_err());
 }
+
+#[test]
+fn pragma_operator_is_applied_and_removed() {
+    // C11 6.10.9: `_Pragma("...")` acts as a #pragma line; the pragmas it
+    // gives here are ignored, as unknown #pragma lines are.
+    let options = PpOptions::default();
+    let text = preprocess(
+        "#define P(x) _Pragma(#x)\nP(warning(push)) int a; _Pragma(\"pack(1)\") int b;\n",
+        "t.c",
+        &options,
+    )
+    .unwrap();
+    assert!(
+        !text.contains("_Pragma") && !text.contains("warning"),
+        "{text}"
+    );
+    assert!(text.contains("int a;") && text.contains("int b;"), "{text}");
+    assert!(preprocess("_Pragma(x) int a;\n", "t.c", &options).is_err());
+}

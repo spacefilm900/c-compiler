@@ -139,7 +139,54 @@ fn run(source: &str, filename: &str, options: &PpOptions) -> Result<Vec<PpToken>
     let mut processor = Processor::new(options)?;
     processor.push_main(filename);
     processor.tokens = crate::timing::lexing(|| lex_source(source, filename, 0))?;
-    processor.expand_all(false)
+    let tokens = processor.expand_all(false)?;
+    remove_pragma_operators(tokens)
+}
+
+/// The `_Pragma ( string-literal )` operator (C11 6.10.9), applied after
+/// macro expansion. Its pragma behaves as a `#pragma` line would; every
+/// pragma except `once` is ignored by this implementation, and `once` in
+/// this form is ignored too (it rarely comes from a macro). The operator
+/// and its operand are removed.
+fn remove_pragma_operators(tokens: Vec<PpToken>) -> Result<Vec<PpToken>, Diagnostic> {
+    if !tokens
+        .iter()
+        .any(|tok| tok.kind == PpKind::Ident && tok.spelling == "_Pragma")
+    {
+        return Ok(tokens);
+    }
+    let skippable = |tok: &PpToken| matches!(tok.kind, PpKind::Newline | PpKind::Placemarker);
+    let mut out = Vec::with_capacity(tokens.len());
+    let mut index = 0;
+    while index < tokens.len() {
+        let tok = &tokens[index];
+        if tok.kind != PpKind::Ident || tok.spelling != "_Pragma" {
+            out.push(tok.clone());
+            index += 1;
+            continue;
+        }
+        let mut parts = Vec::new();
+        let mut next = index + 1;
+        while parts.len() < 3 && next < tokens.len() {
+            if !skippable(&tokens[next]) {
+                parts.push(&tokens[next]);
+            }
+            next += 1;
+        }
+        let well_formed = parts.len() == 3
+            && parts[0].is_lparen()
+            && parts[1].kind == PpKind::String
+            && !parts[1].spelling.starts_with(['u', 'U'])
+            && parts[2].is_rparen();
+        if !well_formed {
+            return Err(error_at(
+                tok,
+                "_Pragma requires a parenthesized string literal",
+            ));
+        }
+        index = next;
+    }
+    Ok(out)
 }
 
 fn format_tokens(tokens: &[PpToken]) -> String {
