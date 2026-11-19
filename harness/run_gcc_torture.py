@@ -44,7 +44,10 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import resource
+try:
+    import resource
+except ImportError:  # Windows: no rlimits; the wall-clock timeout remains
+    resource = None
 import subprocess
 import sys
 import tempfile
@@ -189,7 +192,7 @@ def run(
             cwd=cwd,
             capture_output=True,
             timeout=timeout,
-            preexec_fn=limit_program if limit else None,
+            preexec_fn=limit_program if limit and resource is not None else None,
         )
         return proc.returncode, proc.stdout, proc.stderr
     except subprocess.TimeoutExpired:
