@@ -79,13 +79,27 @@ tests, then, for MSVC: sets up the Visual Studio developer environment
 differential harness and 50 random ABI pairs (`--int128`) against Clang for
 `x86_64-pc-windows-msvc`, with the real MSVC and Windows SDK headers, the
 UCRT and `link.exe`. For MinGW it installs MSYS2's `mingw-w64-x86_64-gcc`
-and runs the same against GCC's headers, CRT and linker. A commit message
-with `[msvc-only]` runs only the MSVC half.
+and runs the same against GCC's headers, CRT and linker. 
+
+**Starting it by hand.** The job never runs on a push, a pull request or a
+schedule. Once `windows.yml` is on `main`, start it from the Actions tab
+(windows, "Run workflow", choose the branch and `both`, `msvc` or `mingw`)
+or with the GitHub CLI:
+
+```
+gh workflow run windows.yml --ref main                  # both targets
+gh workflow run windows.yml --ref BRANCH -f target=msvc # one target
+```
+
+A run takes about 5 minutes, which is about 10 billed minutes at the
+private-repository rate. During step 11, before the file was on `main`, a
+temporary push trigger (commit message `[win-native]`) stood in for this;
+it was removed before the merge.
 
 | Target | Run | Differential harness | Random ABI pairs |
 | --- | --- | --- | --- |
-| MinGW-w64 (MSYS2) | 44532852765 at `fc450cf` | 193 tests: 181 pass, 12 known, 0 unexpected | 50/50 |
-| MSVC + UCRT | 44532852765 at `fc450cf` | 193 tests: 178 pass, 15 known, 0 unexpected | 50/50 |
+| MinGW-w64 (MSYS2) | 44537682786 at `a125bfc` | 193 tests: 181 pass, 12 known, 0 unexpected | 50/50 |
+| MSVC + UCRT | 44537682786 at `a125bfc` | 193 tests: 178 pass, 15 known, 0 unexpected | 50/50 |
 
 The same run passed the unit tests on Windows (227, 23 ignored because
 they need a Linux Clang) and hello world with MSVC.
@@ -99,9 +113,10 @@ The harness links MSVC programs with `legacy_stdio_definitions.lib`, which
 Microsoft documents for code that calls the `printf` family without
 `<stdio.h>` (`__builtin_sprintf` does).
 
-Six runs were used (the first four found and fixed header, intrinsic and
-linkage problems), about 33 runner minutes rounded up per job, so about 66
-billed minutes at the private-repository rate (budget: 120).
+Seven runs were used (the first four found and fixed header, intrinsic
+and linkage problems; the last ran on the final code), about 40 runner
+minutes rounded up per job, so about 80 billed minutes at the
+private-repository rate (budget: 120).
 
 ## What remains
 
@@ -113,4 +128,3 @@ billed minutes at the private-repository rate (budget: 120).
 - `typedef __attribute__((aligned(16))) struct _S {...} T;` (MinGW-w64's `<setjmp.h>`) also raises `_Alignof(struct _S)`, where GCC and Clang keep the record's own alignment. It is accepted only for an untagged record or a tag reserved to the implementation (`__x`, `_X`), and only when the typedef is the declaration's single declarator (so no other typedef name shares the raised record); any other form is diagnosed, as before. This is a deliberate trade-off kept by the owner's decision.
 - `__ptr32` (a 4-byte pointer) is erased, not implemented (kept by the owner's decision): `<basetsd.h>` uses it in inline functions that every `<windows.h>` user sees. A record with a `__ptr32` member gets an 8-byte pointer, so its layout differs from MSVC's. `__vectorcall` is rejected with a diagnostic.
 - A by-reference argument's caller copy is 16-byte aligned, as Microsoft's convention requires (Clang uses the record's own alignment; both are compatible).
-- The temporary push trigger in `windows.yml` (commit message `[win-native]`) must be removed before merging. GitHub only dispatches workflows that are already on `main`.

@@ -822,7 +822,7 @@ Linux x86-64 old-vs-new: 13,362 compilations, 18 differences, all from these fix
 
 ## 64-bit Windows (step 11, branch `windows-x64`)
 
-`-target x86_64-w64-windows-gnu` (MinGW-w64) and `-target x86_64-pc-windows-msvc`: LLP64 types, the Microsoft x64 calling convention (`src/win64.rs`), Microsoft bit-field layout, COFF names, the Windows predefined macros, Microsoft's C keywords and `__declspec` on MSVC, and MSVC's COMDAT rules for `inline` and `selectany`. Done the low-cost way of step 10: the checking runs on Linux, and a `windows-latest` job (`.github/workflows/windows.yml`) runs only by hand. Full report: `reports/platforms/windows-x64/README.md`.
+`-target x86_64-w64-windows-gnu` (MinGW-w64) and `-target x86_64-pc-windows-msvc`: LLP64 types, the Microsoft x64 calling convention (`src/win64.rs`), Microsoft bit-field layout, COFF names, the Windows predefined macros, Microsoft's C keywords and `__declspec` on MSVC, and MSVC's COMDAT rules for `inline` and `selectany`. Done the low-cost way of step 10: the checking runs on Linux, and a `windows-latest` job (`.github/workflows/windows.yml`) runs only by hand (`gh workflow run windows.yml --ref BRANCH [-f target=msvc|mingw]`, or "Run workflow" in the Actions tab). Full report: `reports/platforms/windows-x64/README.md`.
 
 | Check | Result |
 | --- | --- |
@@ -832,10 +832,10 @@ Linux x86-64 old-vs-new: 13,362 compilations, 18 differences, all from these fix
 | Harness under Wine, MSVC stand-in | 180/193, 13 known, 0 unexpected |
 | Random ABI pairs under Wine | 100/100 each target, plain and `--int128` |
 | GCC torture under Wine (MinGW, local) | 1,335/1,746; 4 beyond the x86-64 list (2 need `<sys/mman.h>`, 2 fail with Clang too) |
-| Windows runner, MinGW-w64 (run 44532852765, `fc450cf`) | unit tests; harness 181/193, 12 known, 0 unexpected; ABI pairs 50/50 |
+| Windows runner, MinGW-w64 (run 44537682786, `a125bfc`) | unit tests; harness 181/193, 12 known, 0 unexpected; ABI pairs 50/50 |
 | Windows runner, MSVC + UCRT + `link.exe` (same run) | hello world; harness 178/193, 15 known, 0 unexpected; ABI pairs 50/50 |
 
-Windows minutes: six manual runs, about 33 runner minutes, about 66 billed (private repository, 2x), under the 120 ceiling. Not run natively: torture, Lua, SQLite, DOOM, WACC, Csmith, AWK. Changes that reach every target: `__typeof__` in strict C11, the `_Pragma` operator, function-like `-D`, and an aligned typedef of a record defined in the same declaration (GCC torture `20050215-1.c` now passes). Old-vs-new IR on the four existing targets: 1,883 files each, the only difference is that torture file.
+Windows minutes: seven manual runs, about 40 runner minutes, about 80 billed (private repository, 2x), under the 120 ceiling. Not run natively: torture, Lua, SQLite, DOOM, WACC, Csmith, AWK. Changes that reach every target: `__typeof__` in strict C11, the `_Pragma` operator, function-like `-D`, and an aligned typedef of a record defined in the same declaration (GCC torture `20050215-1.c` now passes). Old-vs-new IR on the four existing targets: 1,883 files each, the only difference is that torture file.
 
 ## Next actions
 

@@ -2,7 +2,9 @@
 # runner. Windows minutes cost twice Linux minutes, so this runs only by
 # hand, never on a push, a pull request or a schedule:
 #   gh workflow run windows.yml --ref BRANCH            (both targets)
-#   gh workflow run windows.yml --ref BRANCH -f target=msvc
+#   gh workflow run windows.yml --ref BRANCH -f target=msvc   (or mingw)
+# or Actions > windows > "Run workflow" on GitHub. The file must be on main
+# for GitHub to offer it; --ref then picks the branch to test.
 # Day-to-day coverage is the Linux stand-in job in ci.yml (MinGW-w64 under
 # Wine, and the MSVC type model on MinGW-w64's headers); see
 # reports/platforms/windows-x64/README.md.
@@ -16,12 +18,6 @@
 name: windows
 
 on:
-  # TEMPORARY, remove before merging: GitHub only dispatches a workflow
-  # that is already on the default branch, so until this file is on main
-  # a push to the step 11 branch whose commit message contains
-  # "[win-native]" runs it once. Other pushes skip the job (no minutes).
-  push:
-    branches: [windows-x64]
   workflow_dispatch:
     inputs:
       target:
@@ -40,15 +36,13 @@ concurrency:
 jobs:
   native:
     name: Windows x64 native (${{ inputs.target || 'both' }})
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[win-native]')
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
       run:
         shell: bash
     env:
-      # "[msvc-only]" in a triggering commit message limits a push run to MSVC.
-      WIN_TARGET: ${{ inputs.target || (contains(github.event.head_commit.message, '[msvc-only]') && 'msvc') || 'both' }}
+      WIN_TARGET: ${{ inputs.target || 'both' }}
       CC_UNDER_TEST: build/compiler.exe
       PYTHONUTF8: "1"
     steps:
