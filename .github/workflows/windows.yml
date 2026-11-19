@@ -16,6 +16,12 @@
 name: windows
 
 on:
+  # TEMPORARY, remove before merging: GitHub only dispatches a workflow
+  # that is already on the default branch, so until this file is on main
+  # a push to the step 11 branch whose commit message contains
+  # "[win-native]" runs it once. Other pushes skip the job (no minutes).
+  push:
+    branches: [windows-x64]
   workflow_dispatch:
     inputs:
       target:
@@ -28,12 +34,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-${{ github.ref }}-${{ inputs.target }}
+  group: windows-${{ github.ref }}-${{ inputs.target || 'both' }}
   cancel-in-progress: true
 
 jobs:
   native:
-    name: Windows x64 native (${{ inputs.target }})
+    name: Windows x64 native (${{ inputs.target || 'both' }})
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[win-native]')
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
