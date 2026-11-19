@@ -5,11 +5,16 @@ use super::*;
 
 /// An attribute name without surrounding `__` (`__packed__` is `packed`).
 pub(super) fn attr_name(spelling: &str) -> String {
-    spelling
+    let name = spelling
         .strip_prefix("__")
         .and_then(|rest| rest.strip_suffix("__"))
-        .unwrap_or(spelling)
-        .to_string()
+        .unwrap_or(spelling);
+    // On MSVC `__declspec` is an attribute list (see pp/predefined.rs), and
+    // its `align(N)` is GCC's `aligned(N)`.
+    if name == "align" && crate::target::current().is_msvc() {
+        return "aligned".to_string();
+    }
+    name.to_string()
 }
 
 pub(super) fn attr_class(name: &str) -> AttrClass {

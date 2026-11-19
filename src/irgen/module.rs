@@ -507,20 +507,32 @@ pub(super) fn render_function(
     let mut gen = Gen::new(func.ret_type.clone(), sig.ret_agg.clone());
     gen.renames = renames.clone();
     gen.addr_labels = func.addr_labels.iter().map(|name| c_label(name)).collect();
+    let inline_only =
+        func.linkage == Linkage::External && attrs.is_some_and(|attrs| attrs.available_externally);
+    // MSVC gives every C `inline` definition external linkage in a COMDAT
+    // that the linker folds (observed with Clang for x86_64-pc-windows-msvc
+    // as a black box: `linkonce_odr` with a `comdat`), so a call that is
+    // not inlined still finds a body. Elsewhere C11 6.7.4p7 applies.
+    let msvc_inline = inline_only && crate::target::current().is_msvc();
     let linkage = match func.linkage {
         Linkage::Internal => "internal ",
-        Linkage::External if attrs.is_some_and(|attrs| attrs.available_externally) => {
-            "available_externally "
-        }
+        Linkage::External if msvc_inline => "linkonce_odr ",
+        Linkage::External if inline_only => "available_externally ",
         Linkage::External if attrs.is_some_and(|attrs| attrs.weak) => "weak ",
         Linkage::External => "",
     };
     let params = sig_params(&sig, func.variadic, Some(&names));
+    let global = llvm_global(renamed(&func.symbol, renames));
+    let comdat = if msvc_inline {
+        gen.emit(&format!("${} = comdat any", &global[1..]));
+        " comdat"
+    } else {
+        ""
+    };
     gen.emit(&format!(
-        "define {linkage}{}{} {}({params}){} {{",
+        "define {linkage}{}{} {global}({params}){}{comdat} {{",
         sig.ret_prefix,
         sig.ret_type,
-        llvm_global(renamed(&func.symbol, renames)),
         fn_attr_suffix(attrs, true)
     ));
     gen.emit("entry:");

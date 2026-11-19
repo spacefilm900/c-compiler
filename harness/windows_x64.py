@@ -49,6 +49,13 @@ MSVC_STANDIN_FLAGS = ["-isysroot", MINGW_ROOT, "-U_MSC_VER", "-U_MSC_FULL_VER", 
                       "-D__MINGW32__", "-D__MINGW64__", "-D__MSVCRT__", "-D__GNUC__=4",
                       "-D__GNUC_MINOR__=2", "-D__declspec(a)=__attribute__((a))",
                       "-D__cdecl=__attribute__((__cdecl__))", "-D__USE_MINGW_ANSI_STDIO=0"]
+# This compiler's Microsoft keyword macros for the MSVC target
+# (MSVC_KEYWORDS in src/pp/predefined.rs): <_mingw.h> defines its own.
+MSVC_KEYWORD_MACROS = ["__int8", "__int16", "__int32", "__int64", "__cdecl", "__stdcall",
+                       "__fastcall", "__thiscall", "__vectorcall", "__clrcall", "__ptr32",
+                       "__ptr64", "__unaligned", "__w64", "__sptr", "__uptr", "__inline",
+                       "__forceinline", "__declspec", "__pragma", "__restrict", "__alignof"]
+MSVC_STANDIN_FLAGS = [f"-U{name}" for name in MSVC_KEYWORD_MACROS] + MSVC_STANDIN_FLAGS
 # Clang for the MSVC triple: the same stand-in, and no MSVC compatibility
 # extensions, so both compilers see the same headers the same way.
 CLANG_MSVC_FLAGS = ["-isystem", MINGW_ROOT + "/include", "-fno-ms-compatibility",

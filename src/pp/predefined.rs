@@ -326,8 +326,8 @@ fn mingw_macros() -> [(&'static str, &'static str); 22] {
 /// MSVC (`x86_64-pc-windows-msvc`): the identification macros Clang
 /// predefines for the triple (observed as a black box). `_MSC_VER` 1933 is
 /// Visual Studio 2022 17.3, Clang's default.
-fn msvc_macros() -> [(&'static str, &'static str); 7] {
-    [
+fn msvc_macros() -> Vec<(&'static str, &'static str)> {
+    let mut macros = vec![
         ("_MSC_VER", "1933"),
         ("_MSC_FULL_VER", "193300000"),
         ("_MSC_BUILD", "1"),
@@ -335,8 +335,45 @@ fn msvc_macros() -> [(&'static str, &'static str); 7] {
         ("_M_AMD64", "100"),
         ("_INTEGRAL_MAX_BITS", "64"),
         ("_ISO_VOLATILE", "1"),
-    ]
+    ];
+    macros.extend(MSVC_KEYWORDS);
+    macros
 }
+
+/// Microsoft's C keywords that the MSVC and Windows SDK headers use, as
+/// macros over this compiler's own spellings (Microsoft's public C language
+/// reference). Clang treats them as keywords; macros are enough for the
+/// headers. On x64 every calling-convention keyword means the one
+/// convention, so they expand to nothing. MinGW-w64's <_mingw.h> defines
+/// most of these itself, so the MSVC stand-in (harness/windows_x64.py)
+/// undefines them.
+pub const MSVC_KEYWORDS: [(&str, &str); 22] = [
+    ("__int8", "char"),
+    ("__int16", "short"),
+    ("__int32", "int"),
+    ("__int64", "long long"),
+    ("__cdecl", ""),
+    ("__stdcall", ""),
+    ("__fastcall", ""),
+    ("__thiscall", ""),
+    ("__vectorcall", ""),
+    ("__clrcall", ""),
+    ("__ptr32", ""),
+    ("__ptr64", ""),
+    ("__unaligned", ""),
+    ("__w64", ""),
+    ("__sptr", ""),
+    ("__uptr", ""),
+    ("__inline", "inline"),
+    (
+        "__forceinline",
+        "__inline__ __attribute__((__always_inline__))",
+    ),
+    ("__declspec(spec)", "__attribute__((spec))"),
+    ("__pragma(text)", "_Pragma(#text)"),
+    ("__restrict", "restrict"),
+    ("__alignof", "_Alignof"),
+];
 
 /// `__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__` as Availability.h
 /// expects it: `1090` for 10.9 (the old four-digit form, used before 10.10),

@@ -743,3 +743,33 @@ fn windows_passes_flexible_array_records_by_reference() {
         }
     }
 }
+
+#[test]
+fn msvc_keywords_and_inline_definitions() {
+    let source = "typedef unsigned __int64 u64;\n\
+                  struct __declspec(align(16)) A { int x; };\n\
+                  __declspec(noreturn) void die(void);\n\
+                  __inline int f(void) { return 1; }\n\
+                  int __cdecl g(void) { return f() + (int)sizeof(u64) + _Alignof(struct A); }\n";
+    let module = ir(MSVC, source);
+    for want in [
+        "$f = comdat any",
+        "define linkonce_odr i32 @f() comdat",
+        "define i32 @g()",
+    ] {
+        assert!(module.contains(want), "missing {want}:\n{module}");
+    }
+    assert!(
+        module.contains("add i32 %t2, 16") || module.contains(", 16"),
+        "{module}"
+    );
+    // MinGW keeps C11 inline semantics, and __int64 comes from <_mingw.h>.
+    let module = ir(
+        MINGW,
+        "inline int f(void) { return 1; }\nint g(void) { return f(); }\n",
+    );
+    assert!(
+        module.contains("define available_externally i32 @f()"),
+        "{module}"
+    );
+}
