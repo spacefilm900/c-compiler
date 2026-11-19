@@ -439,3 +439,20 @@ fn only_one_compiler_header_tree_is_searched() {
     assert_eq!(dirs, vec![first]);
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn command_line_function_like_macro() {
+    // GCC manual, "Preprocessor Options": -D 'name(args...)=definition'.
+    let mut options = PpOptions::default();
+    options.definitions.push(CliMacro::Define {
+        name: "TWICE(x, y)".to_string(),
+        replacement: Some("((x) + (y))".to_string()),
+    });
+    let text = preprocess("int n = TWICE(1, 2);\n", "t.c", &options).unwrap();
+    assert!(text.contains("int n = ((1) + (2));"), "{text}");
+    options.definitions[0] = CliMacro::Define {
+        name: "BAD(1)".to_string(),
+        replacement: None,
+    };
+    assert!(preprocess("int n;\n", "t.c", &options).is_err());
+}

@@ -39,9 +39,11 @@ options:
                   external, `extern inline` ones are only for inlining
   -target TRIPLE  compile for TRIPLE (also --target=TRIPLE): x86_64-linux-gnu,
                   x86_64-apple-macos[VERSION], arm64-apple-macos[VERSION],
-                  or aarch64-linux-gnu;
+                  aarch64-linux-gnu, x86_64-w64-windows-gnu (MinGW-w64),
+                  or x86_64-pc-windows-msvc;
                   the default is the host
   -isysroot DIR   find the C library headers under DIR/usr/include
+                  (DIR/include for the Windows targets)
   --time-phases   print frontend phase times as JSON on stderr
   -h, --help      show this help
 Compile a C subset to textual LLVM IR.";
@@ -367,10 +369,25 @@ fn parse_define(text: &str) -> Result<CliMacro, String> {
         .bytes()
         .position(|byte| !(byte.is_ascii_alphanumeric() || byte == b'_'))
         .unwrap_or(text.len());
-    let name = &text[..name_len];
-    if !is_macro_name(name) {
+    let mut name_len = name_len;
+    if !is_macro_name(&text[..name_len]) {
         return Err(format!("invalid macro name '{text}'"));
     }
+    // GCC's `-D 'NAME(args...)=definition'` form: a function-like macro.
+    if text.as_bytes().get(name_len) == Some(&b'(') {
+        let close = text[name_len..]
+            .find(')')
+            .ok_or_else(|| format!("invalid macro name '{text}'"))?;
+        let params_ok = text[name_len + 1..name_len + close]
+            .split(',')
+            .map(str::trim)
+            .all(|param| param.is_empty() || is_macro_name(param));
+        if !params_ok {
+            return Err(format!("invalid macro name '{text}'"));
+        }
+        name_len += close + 1;
+    }
+    let name = &text[..name_len];
     let replacement = if name_len == text.len() {
         None
     } else if text.as_bytes().get(name_len) == Some(&b'=') {

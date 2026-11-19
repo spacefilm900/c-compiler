@@ -41,7 +41,10 @@ const DEFAULT_INCLUDE_DEPTH: usize = 200;
 #[derive(Debug, Clone)]
 pub enum CliMacro {
     /// `-D NAME` defines `NAME` as `1`. `-D NAME=` defines it as empty.
-    /// `-D NAME=tokens` uses `tokens` as the replacement list.
+    /// `-D NAME=tokens` uses `tokens` as the replacement list. A `name`
+    /// written `NAME(PARAM, ...)` defines a function-like macro, as GCC's
+    /// `-D 'NAME(args...)=definition'` does (GCC manual, "Preprocessor
+    /// Options").
     Define {
         name: String,
         replacement: Option<String>,
@@ -441,12 +444,9 @@ impl Processor {
             ("__STDC_NO_THREADS__", "1"),
             ("__STDC_NO_VLA__", "1"),
             ("__STRICT_ANSI__", "1"),
-            ("__LP64__", "1"),
-            ("_LP64", "1"),
             ("__CHAR_BIT__", "8"),
             ("__SIZEOF_SHORT__", "2"),
             ("__SIZEOF_INT__", "4"),
-            ("__SIZEOF_LONG__", "8"),
             ("__SIZEOF_LONG_LONG__", "8"),
             ("__SIZEOF_POINTER__", "8"),
             ("__SIZEOF_SIZE_T__", "8"),
@@ -455,25 +455,11 @@ impl Processor {
             ("__SIZEOF_DOUBLE__", "8"),
             ("__POINTER_WIDTH__", "64"),
             ("__INT_WIDTH__", "32"),
-            ("__LONG_WIDTH__", "64"),
             ("__LONG_LONG_WIDTH__", "64"),
             ("__SCHAR_MAX__", "127"),
             ("__SHRT_MAX__", "32767"),
             ("__INT_MAX__", "2147483647"),
-            ("__LONG_MAX__", "9223372036854775807L"),
             ("__LONG_LONG_MAX__", "9223372036854775807LL"),
-            ("__INTMAX_MAX__", "9223372036854775807L"),
-            ("__UINTMAX_MAX__", "18446744073709551615UL"),
-            ("__SIZE_TYPE__", "long unsigned int"),
-            ("__PTRDIFF_TYPE__", "long int"),
-            ("__INTMAX_TYPE__", "long int"),
-            ("__UINTMAX_TYPE__", "long unsigned int"),
-            ("__INTPTR_TYPE__", "long int"),
-            ("__UINTPTR_TYPE__", "long unsigned int"),
-            ("__GNUC__", "4"),
-            ("__GNUC_MINOR__", "2"),
-            ("__GNUC_PATCHLEVEL__", "1"),
-            ("__GNUC_STDC_INLINE__", "1"),
             ("__ORDER_LITTLE_ENDIAN__", "1234"),
             ("__ORDER_BIG_ENDIAN__", "4321"),
             ("__ORDER_PDP_ENDIAN__", "3412"),
@@ -481,7 +467,9 @@ impl Processor {
         ];
         let target = target_macros(crate::target::current());
         for (name, body) in BUILTINS.iter().chain(target.iter()) {
-            let mac = self.macro_from_parts(name, None, false, body_tokens(body)?, None)?;
+            // A function-like builtin is written `NAME(PARAM, ...)`.
+            let (name, params) = split_function_like(name);
+            let mac = self.macro_from_parts(name, params, false, body_tokens(body)?, None)?;
             self.macros
                 .insert(mac.name.clone(), MacroEntry::Defined(Rc::new(mac)));
         }
@@ -495,15 +483,22 @@ impl Processor {
                 self.macros.insert(name.clone(), MacroEntry::Undefined);
                 Ok(())
             }
-            CliMacro::Define { name, replacement } => {
-                if !is_ident_text(name) || *name == "defined" {
-                    return Err(error_at(&at, format!("invalid macro name '{name}'")));
+            CliMacro::Define {
+                name: spelling,
+                replacement,
+            } => {
+                let (name, params) = split_function_like(spelling);
+                let params_ok = params
+                    .as_ref()
+                    .is_none_or(|list| list.iter().all(|param| is_ident_text(param)));
+                if !is_ident_text(name) || name == "defined" || !params_ok {
+                    return Err(error_at(&at, format!("invalid macro name '{spelling}'")));
                 }
                 let body = match replacement {
                     None => body_tokens("1")?,
                     Some(text) => body_tokens(text)?,
                 };
-                let mac = self.macro_from_parts(name, None, false, body, Some(&at))?;
+                let mac = self.macro_from_parts(name, params, false, body, Some(&at))?;
                 self.macros
                     .insert(mac.name.clone(), MacroEntry::Defined(Rc::new(mac)));
                 Ok(())
@@ -521,6 +516,23 @@ impl Processor {
             found_dir: None,
             system: false,
         });
+    }
+}
+
+/// Split `NAME(PARAM, ...)` into the name and its parameters; a plain
+/// `NAME` has none.
+fn split_function_like(spelling: &str) -> (&str, Option<Vec<String>>) {
+    match spelling.split_once('(') {
+        Some((name, rest)) => {
+            let params = rest
+                .trim_end_matches(')')
+                .split(',')
+                .map(|param| param.trim().to_string())
+                .filter(|param| !param.is_empty())
+                .collect();
+            (name, Some(params))
+        }
+        None => (spelling, None),
     }
 }
 
