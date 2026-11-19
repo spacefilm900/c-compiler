@@ -42,7 +42,7 @@ The owner approved this revised order on 2026-11-12, and on 2026-11-13, after th
 
 - Frontend emits textual LLVM IR (or builds it via LLVM libraries).
 - LLVM (`opt` / `llc` / `clang`) performs optimisation and native code generation.
-- LLVM stays the backend until a solid release. A small non-optimising backend of our own may be considered only after 0.1, alongside LLVM. No custom backend is required to achieve good performance.
+- LLVM stays the default backend. An experimental backend of our own, with simple optimisations, is step 15 of the forward plan; it lives alongside LLVM, which it does not replace. No custom backend is required to achieve good performance.
 - Rust standard library only.
 
 ### 4. Agent workflow
