@@ -228,6 +228,13 @@ impl Gen {
                 let _ = self.builtin_arg(inline, args, 1);
                 Some(value)
             }
+            Inline::MsVaStart => {
+                let ap = self.builtin_arg(inline, args, 0);
+                let _ = self.builtin_arg(inline, args, 1);
+                self.needs_va = true;
+                self.emit(&format!("  call void @llvm.va_start(ptr {ap})"));
+                None
+            }
             Inline::DebugBreak => {
                 self.intrinsic("declare void @llvm.debugtrap()");
                 self.emit("  call void @llvm.debugtrap()");

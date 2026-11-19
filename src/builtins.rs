@@ -65,6 +65,10 @@ pub enum Inline {
     /// `int 0x29` fail-fast interrupt with `code` in ECX, as Microsoft
     /// documents the x64 intrinsic. It does not return.
     FastFail,
+    /// MSVC `__va_start(&ap, last)`: the x64 intrinsic that the Windows
+    /// SDK's <vadefs.h> uses for `va_start` (`va_list` is `char *`); the
+    /// same as `__builtin_va_start(ap, last)`.
+    MsVaStart,
 }
 
 impl Inline {
@@ -76,6 +80,9 @@ impl Inline {
             match name {
                 "__debugbreak" => return Some(Inline::DebugBreak),
                 "__fastfail" => return Some(Inline::FastFail),
+                "__va_start" if crate::target::current().is_msvc() => {
+                    return Some(Inline::MsVaStart)
+                }
                 _ => {}
             }
         }
@@ -166,7 +173,7 @@ impl Inline {
     pub fn arity(self) -> (usize, usize) {
         match self {
             Inline::Unreachable | Inline::Trap | Inline::DebugBreak => (0, 0),
-            Inline::Expect => (2, 2),
+            Inline::Expect | Inline::MsVaStart => (2, 2),
             Inline::Prefetch => (1, 3),
             Inline::AssumeAligned => (2, 3),
             Inline::Overflow { .. } => (3, 3),
@@ -193,7 +200,8 @@ impl Inline {
             | Inline::Trap
             | Inline::Prefetch
             | Inline::DebugBreak
-            | Inline::FastFail => CType::Void,
+            | Inline::FastFail
+            | Inline::MsVaStart => CType::Void,
             Inline::Alloca
             | Inline::AssumeAligned
             | Inline::ReturnAddress

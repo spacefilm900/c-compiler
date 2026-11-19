@@ -2,10 +2,63 @@
    float is IEEE binary32 and double is IEEE binary64 on every target.
    long double is the x87 80-bit extended format on x86_64 Linux, the
    binary64 format on Apple arm64 (__LDBL_MANT_DIG__ == 53), and IEEE
-   binary128 on AArch64 Linux (__LDBL_MANT_DIG__ == 113). The long double
+   binary128 on AArch64 Linux (__LDBL_MANT_DIG__ == 113); on 64-bit
+   Windows it is x87 for MinGW-w64 and binary64 for MSVC. The long double
    macros use an L suffix so they have the right type. */
 #ifndef _FLOAT_H
 #define _FLOAT_H
+
+/* On Windows the C library's <float.h> also declares the floating-point
+   control functions and their constants (_controlfp, _clearfp, _SW_INVALID
+   and so on), which other headers such as <fenv.h> use. Pull it in first,
+   then replace its values for the standard macros with these.
+   MinGW-w64's header skips its own #include_next when __FLOAT_H is set. */
+#if defined(_WIN32) && defined(__has_include_next)
+#define __FLOAT_H 1
+#if __has_include_next(<float.h>)
+#include_next <float.h>
+#endif
+#undef FLT_ROUNDS
+#undef FLT_EVAL_METHOD
+#undef FLT_RADIX
+#undef FLT_MANT_DIG
+#undef DBL_MANT_DIG
+#undef FLT_DIG
+#undef DBL_DIG
+#undef FLT_MIN_EXP
+#undef DBL_MIN_EXP
+#undef FLT_MIN_10_EXP
+#undef DBL_MIN_10_EXP
+#undef FLT_MAX_EXP
+#undef DBL_MAX_EXP
+#undef FLT_MAX_10_EXP
+#undef DBL_MAX_10_EXP
+#undef FLT_MAX
+#undef FLT_MIN
+#undef FLT_EPSILON
+#undef FLT_TRUE_MIN
+#undef FLT_DECIMAL_DIG
+#undef FLT_HAS_SUBNORM
+#undef DBL_MAX
+#undef DBL_MIN
+#undef DBL_EPSILON
+#undef DBL_TRUE_MIN
+#undef DBL_DECIMAL_DIG
+#undef DBL_HAS_SUBNORM
+#undef LDBL_MANT_DIG
+#undef LDBL_DIG
+#undef LDBL_MIN_EXP
+#undef LDBL_MIN_10_EXP
+#undef LDBL_MAX_EXP
+#undef LDBL_MAX_10_EXP
+#undef LDBL_MAX
+#undef LDBL_MIN
+#undef LDBL_EPSILON
+#undef LDBL_TRUE_MIN
+#undef LDBL_DECIMAL_DIG
+#undef LDBL_HAS_SUBNORM
+#undef DECIMAL_DIG
+#endif
 
 #define FLT_ROUNDS 1
 #define FLT_EVAL_METHOD 0
