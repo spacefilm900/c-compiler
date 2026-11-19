@@ -545,7 +545,7 @@ pub(super) fn ptr_as_int(ptr: PtrConst, dest: TypeName) -> ConstInit {
     match ptr {
         PtrConst::Null => ConstInit::Int(0),
         PtrConst::IntToPtr(bits) => {
-            ConstInit::Int(convert_bits(u128::from(bits), TypeName::ULong, dest))
+            ConstInit::Int(convert_bits(u128::from(bits), TypeName::ULongLong, dest))
         }
         other => ConstInit::PtrToInt {
             ptr: other,
@@ -635,7 +635,7 @@ pub(super) fn add_ptr_const(
     if negate {
         index = index
             .checked_neg()
-            .ok_or(ConstError::Overflow(TypeName::Long))?;
+            .ok_or(ConstError::Overflow(TypeName::int64(true)))?;
     }
     let size = ptr_expr
         .ty()
@@ -645,13 +645,13 @@ pub(super) fn add_ptr_const(
         .ok_or(ConstError::NotConst)? as i64;
     let delta = index
         .checked_mul(size)
-        .ok_or(ConstError::Overflow(TypeName::Long))?;
+        .ok_or(ConstError::Overflow(TypeName::int64(true)))?;
     match base {
         PtrConst::Addr { name, offset } => Ok(PtrConst::Addr {
             name,
             offset: offset
                 .checked_add(delta)
-                .ok_or(ConstError::Overflow(TypeName::Long))?,
+                .ok_or(ConstError::Overflow(TypeName::int64(true)))?,
         }),
         PtrConst::Null => {
             if delta == 0 {
@@ -685,7 +685,7 @@ pub(super) fn int_expr_to_ptr(expr: &Expr) -> Result<PtrConst, ConstError> {
         }
     }
     let value = eval_const_expr(expr)?;
-    let bits = convert_bits(value.bits, value.ty, TypeName::ULong);
+    let bits = convert_bits(value.bits, value.ty, TypeName::ULongLong);
     if bits == 0 {
         Ok(PtrConst::Null)
     } else {
@@ -700,9 +700,9 @@ pub(super) fn narrow_ptr(ptr: PtrConst, int_ty: TypeName) -> Result<PtrConst, Co
     match ptr {
         PtrConst::Null => Ok(PtrConst::Null),
         PtrConst::IntToPtr(bits) => {
-            let narrowed = convert_bits(u128::from(bits), TypeName::ULong, int_ty);
+            let narrowed = convert_bits(u128::from(bits), TypeName::ULongLong, int_ty);
             Ok(PtrConst::IntToPtr(
-                convert_bits(narrowed, int_ty, TypeName::ULong) as u64,
+                convert_bits(narrowed, int_ty, TypeName::ULongLong) as u64,
             ))
         }
         // A file-scope address truncated to 32 bits is still a relocation.
@@ -760,9 +760,9 @@ pub(super) fn designator(expr: &Expr) -> Result<(String, i64), ConstError> {
                 offset
                     .checked_add(
                         step.checked_mul(elem)
-                            .ok_or(ConstError::Overflow(TypeName::Long))?,
+                            .ok_or(ConstError::Overflow(TypeName::int64(true)))?,
                     )
-                    .ok_or(ConstError::Overflow(TypeName::Long))?,
+                    .ok_or(ConstError::Overflow(TypeName::int64(true)))?,
             ))
         }
         Expr::Unary {
@@ -777,7 +777,7 @@ pub(super) fn designator(expr: &Expr) -> Result<(String, i64), ConstError> {
             ..
         } => {
             let member_off = i64::try_from(offset.ok_or(ConstError::NotConst)?)
-                .map_err(|_| ConstError::Overflow(TypeName::Long))?;
+                .map_err(|_| ConstError::Overflow(TypeName::int64(true)))?;
             let (name, base_off) = if *arrow {
                 pointer_object(base)?
             } else {
@@ -787,7 +787,7 @@ pub(super) fn designator(expr: &Expr) -> Result<(String, i64), ConstError> {
                 name,
                 base_off
                     .checked_add(member_off)
-                    .ok_or(ConstError::Overflow(TypeName::Long))?,
+                    .ok_or(ConstError::Overflow(TypeName::int64(true)))?,
             ))
         }
         _ => Err(ConstError::NotConst),

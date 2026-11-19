@@ -403,7 +403,7 @@ impl Parser<'_> {
                 }
                 return Ok(Expr::int(
                     u64::from(ty.member_align()),
-                    TypeName::ULong,
+                    TypeName::size_t(),
                     line,
                     column,
                 ));
@@ -429,7 +429,7 @@ impl Parser<'_> {
         }
         Ok(Expr::int(
             u64::from(ty.member_align()),
-            TypeName::ULong,
+            TypeName::size_t(),
             line,
             column,
         ))
@@ -597,7 +597,7 @@ impl Parser<'_> {
         // offset + i1 * size1 + i2 * size2 + ... in size_t: plain integer
         // arithmetic, with no address formed from a null pointer.
         Ok(runtime.into_iter().fold(
-            Expr::int(offset, TypeName::ULong, line, column),
+            Expr::int(offset, TypeName::size_t(), line, column),
             |sum, term| Expr::bin(BinOp::Add, sum, term, line, column),
         ))
     }
@@ -728,12 +728,17 @@ impl Parser<'_> {
                 // the same conversion and leaves semantic
                 // analysis to require an integer operand.
                 let as_size = if index_ty.is_some() {
-                    Expr::cast(CType::from_name(TypeName::ULong), index, at_line, at_column)
+                    Expr::cast(
+                        CType::from_name(TypeName::size_t()),
+                        index,
+                        at_line,
+                        at_column,
+                    )
                 } else {
                     Expr::bin(
                         BinOp::BitOr,
                         index,
-                        Expr::int(0, TypeName::ULong, at_line, at_column),
+                        Expr::int(0, TypeName::size_t(), at_line, at_column),
                         at_line,
                         at_column,
                     )
@@ -741,7 +746,7 @@ impl Parser<'_> {
                 runtime.push(Expr::bin(
                     BinOp::Mul,
                     as_size,
-                    Expr::int(size, TypeName::ULong, at_line, at_column),
+                    Expr::int(size, TypeName::size_t(), at_line, at_column),
                     at_line,
                     at_column,
                 ));

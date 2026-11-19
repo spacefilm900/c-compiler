@@ -455,8 +455,7 @@ impl Parser<'_> {
             (16, false) => TypeName::UShort,
             (32, true) => TypeName::Int,
             (32, false) => TypeName::UInt,
-            (_, true) => TypeName::Long,
-            (_, false) => TypeName::ULong,
+            (_, signed) => TypeName::int64(signed),
         };
         Ok(CType::Int(chosen).with_quals(ty.quals()))
     }

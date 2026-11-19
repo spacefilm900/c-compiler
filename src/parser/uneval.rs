@@ -482,7 +482,7 @@ pub(super) fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
             let len = bytes.len() as u64 / enc.unit() as u64 + 1;
             Ok(CType::array(CType::from_name(enc.elem()), Some(len)))
         }
-        Expr::Sizeof { .. } => Ok(CType::from_name(TypeName::ULong)),
+        Expr::Sizeof { .. } => Ok(CType::from_name(TypeName::size_t())),
         Expr::Var { name, .. } => match env_lookup(env, name) {
             Some(NameBinding::Ordinary(Some(ty))) => Ok(ty.clone()),
             // An object's scope starts after its declarator (C11 6.2.1p7),
@@ -570,7 +570,7 @@ fn bin_type_only(op: BinOp, left: &Expr, right: &Expr, env: Env) -> Result<CType
     }
     match op {
         BinOp::Add | BinOp::Sub if left.is_pointer() && right.is_pointer() => {
-            Ok(CType::from_name(TypeName::Long))
+            Ok(CType::from_name(TypeName::ptrdiff_t()))
         }
         BinOp::Add | BinOp::Sub if left.is_pointer() => Ok(left),
         BinOp::Add if right.is_pointer() => Ok(right),

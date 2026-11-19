@@ -150,6 +150,30 @@ impl Gen {
         }
     }
 
+    /// Windows x64: `va_list` is a `char *` into the argument slots, each
+    /// 8 bytes. A struct or union whose size is not 1, 2, 4 or 8, and a
+    /// scalar wider than 8 bytes (MinGW's x87 `long double`, `__int128`),
+    /// was passed by reference, so its slot holds the address of a copy
+    /// (Microsoft "x64 calling convention", varargs).
+    pub(super) fn win64_va_arg_addr(&mut self, ap: &str, ty: &CType) -> String {
+        let by_ref = if ty.unqualified().is_record() {
+            !matches!(ty.size(), Some(1 | 2 | 4 | 8))
+        } else {
+            crate::win64::scalar_by_reference(ty)
+        };
+        let ptr_ty = CType::pointer(CType::Void);
+        let current = self.load(&ptr_ty, ap);
+        let next = self.fresh();
+        self.emit(&format!(
+            "  {next} = getelementptr inbounds i8, ptr {current}, i64 8"
+        ));
+        self.store(&ptr_ty, &next, ap);
+        if by_ref {
+            return self.load(&ptr_ty, &current);
+        }
+        current
+    }
+
     /// Apple arm64: `va_list` is a `char *` into the stack, where every
     /// variadic argument has its own slot of a multiple of 8 bytes (16-byte
     /// aligned for a 16-byte-aligned type). A composite passed by reference
@@ -290,6 +314,17 @@ impl Gen {
             unreachable!("va_arg");
         };
         let ap_ptr = self.gen_val(ap);
+        if crate::target::current().abi() == crate::target::Abi::Win64 {
+            let addr = self.win64_va_arg_addr(&ap_ptr, type_arg);
+            let tmp = self.fresh();
+            self.emit(&format!(
+                "  {tmp} = load{} {}, ptr {addr}, align {}",
+                vol_attr(type_arg),
+                type_arg.ir_type(),
+                type_arg.align().min(8)
+            ));
+            return tmp;
+        }
         if crate::target::current().is_aarch64() {
             let addr = self.aarch64_va_arg_addr(&ap_ptr, type_arg);
             let tmp = self.fresh();
@@ -324,6 +359,12 @@ impl Gen {
             unreachable!("va_arg record");
         };
         let ap_ptr = self.gen_val(ap);
+        if crate::target::current().abi() == crate::target::Abi::Win64 {
+            let addr = self.win64_va_arg_addr(&ap_ptr, type_arg);
+            let slot = self.entry_alloca(type_arg);
+            self.copy_struct(type_arg, &addr, &slot, type_arg.is_volatile());
+            return slot;
+        }
         if crate::target::current().is_aarch64() {
             let addr = self.aarch64_va_arg_addr(&ap_ptr, type_arg);
             let slot = self.entry_alloca(type_arg);

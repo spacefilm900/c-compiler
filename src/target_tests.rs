@@ -1,4 +1,4 @@
-//! Whole-pipeline checks for the non-default targets (AArch64 and Intel macOS): the IR each one gets for
+//! Whole-pipeline checks for the non-default targets (AArch64, Intel macOS and 64-bit Windows): the IR each one gets for
 //! a few small programs. The expected lowering was read from Clang as a
 //! black box (`clang -target ... -S -emit-llvm`); harness/run_arm64_ir.py
 //! and harness/run_cross.py check much more of it against Clang directly.
@@ -574,4 +574,151 @@ fn intel_mac_passes_a_lone_x87up_eightbyte_as_sse() {
         linux.contains("define void @id(ptr sret(%union.A) align 16 %agg.result, ptr byval(%union.A) align 16 %p0)"),
         "{linux}"
     );
+}
+
+/// 64-bit Windows: MinGW-w64 and MSVC. Expected values read from Clang 19
+/// (`clang -target x86_64-w64-windows-gnu` / `x86_64-pc-windows-msvc`) as
+/// a black box.
+const MINGW: Target = crate::target::WINDOWS_GNU;
+const MSVC: Target = crate::target::WINDOWS_MSVC;
+
+#[test]
+fn windows_header_and_type_model() {
+    for (target, triple) in [
+        (MINGW, "x86_64-w64-windows-gnu"),
+        (MSVC, "x86_64-pc-windows-msvc"),
+    ] {
+        let module = ir(target, "int x;");
+        assert!(
+            module.contains(&format!("target triple = \"{triple}\"")),
+            "{module}"
+        );
+        assert!(module.contains(
+            "target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\""
+        ));
+        // LLP64, a 16-bit unsigned wchar_t, and `char *` as va_list.
+        let probe =
+            "sizeof(long), sizeof(void *), sizeof(sizeof 0), sizeof((char *)0 - (char *)0), \
+                     sizeof(L'a'), L'\\xffff' > 0, sizeof(__builtin_va_list), \
+                     _Generic(sizeof 0, unsigned long long: 1, default: 0), \
+                     _Generic(L'a', unsigned short: 1, default: 0), (char)-1 < 0";
+        assert_eq!(values(target, probe), "4, 8, 8, 8, 2, 1, 8, 1, 1, 1");
+    }
+    let probe = "sizeof(long double), _Alignof(long double), __LDBL_MANT_DIG__";
+    assert_eq!(values(MINGW, probe), "16, 16, 64");
+    assert_eq!(values(MSVC, probe), "8, 8, 53");
+}
+
+#[test]
+fn windows_predefined_macros() {
+    let probe = "#if defined _WIN32 && defined _WIN64 && defined __x86_64__ && !defined __linux__ \
+                 && !defined __ELF__ && __SIZEOF_LONG__ == 4 && __SIZEOF_WCHAR_T__ == 2 && \
+                 __LONG_MAX__ == 2147483647L\nint windows;\n#endif\n\
+                 #if defined __MINGW32__ && defined __MINGW64__ && defined __GNUC__\nint mingw;\n#endif\n\
+                 #if defined _MSC_VER && defined _M_X64 && defined _M_AMD64 && !defined __GNUC__\n\
+                 int msvc;\n#endif\n\
+                 #define STR2(x) #x\n#define STR(x) STR2(x)\n\
+                 const char prefix[] = STR(__USER_LABEL_PREFIX__);\n\
+                 const char size[] = STR(__SIZE_TYPE__);\n";
+    let mingw = ir(MINGW, probe);
+    assert!(mingw.contains("@windows") && mingw.contains("@mingw") && !mingw.contains("@msvc"));
+    assert!(mingw.contains("c\"\\00\""), "{mingw}");
+    assert!(mingw.contains("c\"long long unsigned int\\00\""), "{mingw}");
+    let msvc = ir(MSVC, probe);
+    assert!(msvc.contains("@windows") && msvc.contains("@msvc") && !msvc.contains("@mingw"));
+    for other in [Target::X86_64Linux, INTEL_MAC] {
+        let module = ir(other, probe);
+        assert!(!module.contains("@windows"), "{other:?}: {module}");
+    }
+}
+
+const WIN64_AGGREGATES: &str = "struct F4 { float a, b, c, d; };\n\
+    struct C3 { char a, b, c; };\n\
+    struct L2 { long a, b; };\n\
+    struct F1 { float a; };\n\
+    struct F4 f4(struct F4 x) { return x; }\n\
+    struct C3 c3(struct C3 x) { return x; }\n\
+    struct L2 l2(struct L2 x) { return x; }\n\
+    float f1(struct F1 x) { return x.a; }\n\
+    int narrow(char c, unsigned short s, _Bool b) { return c + s + b; }\n\
+    long double ld(long double x) { return x; }\n\
+    __int128 i128(__int128 x) { return x; }\n\
+    int sum(int n, ...);\n\
+    int callv(void) { struct F4 s = {0}; return sum(2, s, 1.5f); }\n";
+
+#[test]
+fn windows_uses_the_microsoft_x64_convention() {
+    for target in [MINGW, MSVC] {
+        let module = ir(target, WIN64_AGGREGATES);
+        for want in [
+            // Records of 1, 2, 4 or 8 bytes travel as one integer, even
+            // when they hold a float; every other size by reference.
+            "define void @f4(ptr sret(%struct.F4) align 4 %agg.result, ptr %p0)",
+            "define void @c3(ptr sret(%struct.C3) align 1 %agg.result, ptr %p0)",
+            "define i64 @l2(i64 %p0)",
+            "define float @f1(i32 %p0)",
+            // Only _Bool is extended.
+            "define i32 @narrow(i8 %p0, i16 %p1, i8 zeroext %p2)",
+            "define <2 x i64> @i128(ptr %p0)",
+            // A variadic float is promoted; a large record goes by pointer.
+            "call i32 (i32, ...) @sum(i32 2, ptr ",
+        ] {
+            assert!(
+                module.contains(want),
+                "{target:?}: missing {want}:\n{module}"
+            );
+        }
+    }
+    let module = ir(MINGW, WIN64_AGGREGATES);
+    assert!(
+        module.contains("define void @ld(ptr sret(x86_fp80) align 16 %agg.result, ptr %p0)"),
+        "{module}"
+    );
+    let module = ir(MSVC, WIN64_AGGREGATES);
+    assert!(module.contains("define double @ld(double %p0)"), "{module}");
+}
+
+#[test]
+fn windows_va_arg_reads_eight_byte_slots() {
+    let source = "struct B { int a, b, c; };\n\
+                  int f(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n);\n\
+                  struct B b = __builtin_va_arg(ap, struct B); int i = __builtin_va_arg(ap, int);\n\
+                  __builtin_va_end(ap); return b.a + i; }\n";
+    let module = ir(MINGW, source);
+    // Each argument takes one 8-byte slot; a 12-byte record's slot holds a
+    // pointer to it.
+    for want in [
+        "%t2 = getelementptr inbounds i8, ptr %t1, i64 8",
+        "%t3 = load ptr, ptr %t1, align 8",
+        "%t6 = getelementptr inbounds i8, ptr %t5, i64 8",
+        "%t7 = load i32, ptr %t5, align 4",
+    ] {
+        assert!(module.contains(want), "missing {want}:\n{module}");
+    }
+    assert!(!module.contains(" va_arg "), "{module}");
+}
+
+#[test]
+fn windows_lays_out_bit_fields_like_msvc() {
+    // GCC manual, -mms-bitfields; Clang uses it for both Windows targets.
+    let probe = "sizeof(struct { char a : 3; int b : 4; }), \
+                 sizeof(struct { char a; int : 0; char b; }), \
+                 sizeof(struct { int a : 3; int : 0; char b; }), \
+                 _Alignof(struct { char a : 3; int : 4; }), \
+                 sizeof(union { char a; int b : 3; })";
+    assert_eq!(values(MINGW, probe), "8, 2, 8, 4, 4");
+    assert_eq!(values(MSVC, probe), "8, 2, 8, 4, 4");
+    assert_eq!(values(Target::X86_64Linux, probe), "4, 5, 8, 1, 4");
+}
+
+#[test]
+fn windows_intrinsics() {
+    let module = ir(
+        MINGW,
+        "void f(void) { __debugbreak(); }\nvoid g(void) { __fastfail(7); }\n",
+    );
+    assert!(module.contains("call void @llvm.debugtrap()"), "{module}");
+    assert!(module.contains("int $$0x29"), "{module}");
+    let message = err(Target::X86_64Linux, "void f(void) { __debugbreak(); }\n");
+    assert!(message.contains("__debugbreak"), "{message}");
 }

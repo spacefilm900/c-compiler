@@ -19,7 +19,28 @@ impl Gen {
         let resolved = resolved.as_ref().expect("resolved call");
         let sig =
             function_sig(&resolved.ret, &resolved.params).expect("call has a System V signature");
-        let tmp = self.entry_alloca(&ty);
+        let saved = self.pos;
+        self.pos = (expr.line(), expr.column());
+        let slot = self.call_into_slot(callee, args, resolved, &sig, &ty);
+        self.pos = saved;
+        slot
+    }
+
+    /// Call a function whose result comes back in memory or as a coerced
+    /// value, and leave the result in a fresh slot of type `ty`. A record
+    /// return always takes this path; on Windows x64 so does a scalar
+    /// returned by reference or in XMM0 (`win64::function_sig`).
+    pub(super) fn call_into_slot(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        resolved: &CallRes,
+        sig: &FnSig,
+        ty: &CType,
+    ) -> String {
+        let tmp = self.entry_alloca(ty);
+        let sig = sig.clone();
+        let ty = ty.clone();
         match sig.ret_agg.clone() {
             Some(AggAbi::Memory) => {
                 let rendered = self.render_call_args(args, resolved, &sig, Some(&tmp));
@@ -29,7 +50,7 @@ impl Gen {
                 let rendered = self.render_call_args(args, resolved, &sig, None);
                 let value = self
                     .emit_call(callee, resolved, &sig, &rendered)
-                    .unwrap_or_else(|| self.ice_in(expr, "call returning a struct gave no value"));
+                    .unwrap_or_else(|| self.ice("call returning a struct gave no value"));
                 let align = ty.align().max(16);
                 self.emit(&format!(
                     "  store x86_fp80 {value}, ptr {tmp}, align {align}"
@@ -39,18 +60,18 @@ impl Gen {
                 let rendered = self.render_call_args(args, resolved, &sig, None);
                 let value = self
                     .emit_call(callee, resolved, &sig, &rendered)
-                    .unwrap_or_else(|| self.ice_in(expr, "call returning a struct gave no value"));
+                    .unwrap_or_else(|| self.ice("call returning a struct gave no value"));
                 self.store_pieces(&tmp, ty.align(), &pieces, &value);
             }
             Some(AggAbi::Coerce { ty: ir, size }) => {
                 let rendered = self.render_call_args(args, resolved, &sig, None);
                 let value = self
                     .emit_call(callee, resolved, &sig, &rendered)
-                    .unwrap_or_else(|| self.ice_in(expr, "call returning a struct gave no value"));
+                    .unwrap_or_else(|| self.ice("call returning a struct gave no value"));
                 self.store_coerced(&value, &tmp, &ty, &ir, size);
             }
             Some(AggAbi::Indirect) | None => {
-                self.ice_in(expr, "call returning a struct has no return convention");
+                self.ice("call returning a struct has no return convention");
             }
         }
         tmp
@@ -87,6 +108,7 @@ impl Gen {
                 }
                 if parts.len() == 1
                     && matches!(parts[0].kind, PartKind::Coerce { .. } | PartKind::Indirect)
+                    && resolved.params[index].unqualified().is_record()
                 {
                     let value = self.aapcs64_record_arg(arg, &parts[0]);
                     rendered.push(format_part(
@@ -115,6 +137,13 @@ impl Gen {
                 let src = arg.ty().expect("typed");
                 let param_ty = &resolved.params[index];
                 let value = self.convert(&value, &src, param_ty);
+                if parts.len() == 1 && matches!(parts[0].kind, PartKind::Indirect) {
+                    // Windows x64: a scalar wider than 8 bytes is passed as
+                    // a pointer to a copy.
+                    let copy = self.scalar_copy(param_ty, &value);
+                    rendered.push(format_part("ptr", "", Some(&copy)));
+                    continue;
+                }
                 rendered.push(param_ir(param_ty, Some(&value)));
             } else if arg.ty().is_some_and(|ty| ty.is_record()) {
                 rendered.extend(self.variadic_record(arg, &mut free_int, &mut free_sse));
@@ -139,6 +168,13 @@ impl Gen {
                     }
                 }
                 let value = self.convert(&value, &src, &promoted);
+                if crate::target::current().abi() == crate::target::Abi::Win64
+                    && crate::win64::scalar_by_reference(&promoted)
+                {
+                    let copy = self.scalar_copy(&promoted, &value);
+                    rendered.push(format_part("ptr", "", Some(&copy)));
+                    continue;
+                }
                 rendered.push(format!("{} {value}", promoted.ir_type()));
             }
         }
@@ -152,6 +188,11 @@ impl Gen {
         free_sse: &mut usize,
     ) -> Vec<String> {
         let ty = arg.ty().expect("typed");
+        if crate::target::current().abi() == crate::target::Abi::Win64 {
+            let parts = crate::win64::arg_parts(&ty).expect("variadic aggregate");
+            let value = self.aapcs64_record_arg(arg, &parts[0]);
+            return vec![format_part(&parts[0].ir_type, "", Some(&value))];
+        }
         if crate::target::current().is_aarch64() {
             let parts = crate::aapcs64::arg_parts(&ty).expect("variadic aggregate");
             let value = self.aapcs64_record_arg(arg, &parts[0]);
@@ -265,6 +306,19 @@ impl Gen {
             param.slot,
             param.ty.align()
         ));
+    }
+
+    /// A fresh entry-block slot of type `ty` holding `value`, for a scalar
+    /// passed by reference.
+    pub(super) fn scalar_copy(&mut self, ty: &CType, value: &str) -> String {
+        let bare = ty.unqualified();
+        let slot = self.entry_alloca(&bare);
+        self.emit(&format!(
+            "  store {} {value}, ptr {slot}, align {}",
+            bare.ir_type(),
+            bare.align()
+        ));
+        slot
     }
 
     /// An entry-block slot of LLVM type `ir`.
@@ -538,6 +592,12 @@ impl Gen {
         }
         let sig =
             function_sig(&resolved.ret, &resolved.params).expect("call has a System V signature");
+        if sig.ret_agg.is_some() && !resolved.ret.unqualified().is_record() {
+            // Windows x64: a scalar returned in memory or as `<2 x i64>`.
+            let ret = resolved.ret.unqualified();
+            let slot = self.call_into_slot(callee, args, resolved, &sig, &ret);
+            return Some(self.load(&ret, &slot));
+        }
         let rendered = self.render_call_args(args, resolved, &sig, None);
         self.emit_call(callee, resolved, &sig, &rendered)
     }

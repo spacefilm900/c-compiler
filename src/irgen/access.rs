@@ -371,7 +371,7 @@ impl Gen {
             if value == "0" {
                 return "null".to_string();
             }
-            let wide = self.convert(value, from, &CType::from_name(TypeName::Long));
+            let wide = self.convert(value, from, &CType::from_name(TypeName::int64(true)));
             let tmp = self.fresh();
             self.emit(&format!("  {tmp} = inttoptr i64 {wide} to ptr"));
             return tmp;
@@ -427,7 +427,7 @@ impl Gen {
     }
 
     pub(super) fn extend_i64(&mut self, value: &str, ty: &CType) -> String {
-        self.convert(value, ty, &CType::from_name(TypeName::Long))
+        self.convert(value, ty, &CType::from_name(TypeName::int64(true)))
     }
 
     /// A pointer operand, or a null pointer constant turned into `ptr null`.
@@ -481,8 +481,7 @@ pub(super) fn container_type(bits: u32, signed_field: bool, quals: Quals) -> CTy
         (16, false) => TypeName::UShort,
         (32, true) => TypeName::Int,
         (32, false) => TypeName::UInt,
-        (_, true) => TypeName::Long,
-        (_, false) => TypeName::ULong,
+        (_, signed) => TypeName::int64(signed),
     };
     CType::from_name(name).with_quals(quals)
 }

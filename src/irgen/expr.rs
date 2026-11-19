@@ -228,7 +228,7 @@ impl Gen {
         let Some(size) = size else {
             return self.ice_in(whole, "sizeof of an incomplete type");
         };
-        TypeName::ULong.format_bits(u128::from(size))
+        TypeName::size_t().format_bits(u128::from(size))
     }
 
     /// Emit a statement expression's block up to its last expression

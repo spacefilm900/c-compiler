@@ -338,7 +338,7 @@ pub(super) fn eval_const_expr(expr: &Expr) -> Result<CVal, ConstError> {
             };
             Ok(CVal {
                 bits: u128::from(size.ok_or(ConstError::NotConst)?),
-                ty: TypeName::ULong,
+                ty: TypeName::size_t(),
             })
         }
         Expr::Unary { op, expr, .. } => eval_unary(*op, expr),
