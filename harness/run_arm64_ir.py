@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Check this compiler's IR for the non-default targets without running it.
 
-    python3 harness/run_arm64_ir.py [--target arm64-apple-macos|aarch64-linux-gnu|x86_64-apple-macos]
+    python3 harness/run_arm64_ir.py [--target arm64-apple-macos|aarch64-linux-gnu|x86_64-apple-macos|
+                                      x86_64-w64-windows-gnu|x86_64-pc-windows-msvc]
 
-Two checks, for each of the AArch64 targets and Intel macOS (all three by
-default):
+Two checks, for each of the AArch64 targets, Intel macOS and the two 64-bit
+Windows targets (all five by default):
 
 1. Signature lowering. The calling-convention battery
    (tests/arm64/xabi/*_def.c and tests/xabi/*_def.c), and every other test
@@ -26,7 +27,11 @@ default):
    the AArch64 glibc headers are present (AARCH64_INCLUDE, default
    /usr/aarch64-linux-gnu/include); for x86_64-apple-macos they read the
    x86_64 glibc headers through harness/intel_mac_proxy.py. This needs no
-   Mac, and the macOS SDK headers are not used.
+   Mac, and the macOS SDK headers are not used. For x86_64-w64-windows-gnu
+   both compilers read the MinGW-w64 headers when they are installed
+   (/usr/x86_64-w64-mingw32/include) and llc writes a COFF object; for
+   x86_64-pc-windows-msvc, whose headers are not on Linux, programs that
+   include system headers are skipped.
 
 Env: CC_UNDER_TEST, CLANG (default clang), LLC (default: llc, llc-18..21),
 AARCH64_INCLUDE, JOBS.
@@ -37,6 +42,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "harness"))
 import intel_mac_proxy as intel  # noqa: E402
+import windows_x64 as win  # noqa: E402
 COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
 CLANG = os.environ.get("CLANG", "clang")
 INCLUDE = Path(os.environ.get("AARCH64_INCLUDE", "/usr/aarch64-linux-gnu/include"))
@@ -44,7 +50,22 @@ TARGETS = {
     "arm64-apple-macos": ("arm64-apple-macos11", "arm64-apple-macosx11.0.0"),
     "aarch64-linux-gnu": ("aarch64-linux-gnu", "aarch64-unknown-linux-gnu"),
     intel.TARGET: (intel.CLANG_TRIPLE, intel.IR_TRIPLE),
+    win.GNU: (win.GNU, win.GNU),
+    win.MSVC: (win.MSVC, win.MSVC),
 }
+MINGW_INCLUDE = Path("/usr/x86_64-w64-mingw32/include")
+# Tests that assume a 64-bit long. Under LLP64 their constant initializers
+# shift a 32-bit long by 40 bits; this compiler rejects that constant
+# expression and Clang only warns (harness/cross_known_failures.txt).
+LLP64_REJECTS = {"44_globals.c", "47_const_types.c"}
+
+
+def headers_found(target, sysroot):
+    """Both compilers find the C library headers for `target`: through the
+    stand-in sysroot, or for MinGW-w64 in their default place."""
+    if target == win.GNU:
+        return MINGW_INCLUDE.is_dir()
+    return sysroot is not None and target != win.MSVC
 ABI_ATTRS = ("signext", "zeroext", "inreg", "sret", "byval", "alignstack")
 
 
@@ -157,6 +178,11 @@ def canon_param(param, types):
         if am:
             if attr == "alignstack":
                 attrs.append(am.group(0))
+            elif attr == "sret" and am.group(2) and SRET_LAYOUT[0]:
+                # Windows: the hidden result pointer only needs the size and
+                # alignment of the memory it points to.
+                size, align = ir_layout(am.group(2), types)
+                attrs.append(f"sret(size {size} align {align})")
             elif attr == "byval" and am.group(2) and X86_LAYOUT[0]:
                 # A byval copy is memory: its size and its stack alignment
                 # (the `align` attribute, else the type's) matter to the
@@ -177,6 +203,8 @@ def canon_param(param, types):
 
 # Set while the x86_64 target is checked (see split_i128 and canon_param).
 X86_LAYOUT = [False]
+# Set while a Windows target is checked (see canon_param).
+SRET_LAYOUT = [False]
 
 
 def split_i128(sig_params, ret):
@@ -245,7 +273,7 @@ def check_signatures(target, tmp, sysroot):
     sources = sorted(must) + [p for p in programs() if p not in must]
 
     def one(src):
-        if uses_system_headers(src) and sysroot is None:
+        if uses_system_headers(src) and not headers_found(target, sysroot):
             return 0, []
         std = "gnu11" if "gnu" in src.parts else "c11"
         tag = f"{target}-{src.parent.name}-{src.stem}"
@@ -270,6 +298,7 @@ def check_signatures(target, tmp, sysroot):
             return 0, [f"{src.name}: clang failed: {err2.strip()[:300]}"]
         local = set()
         X86_LAYOUT[0] = target == intel.TARGET
+        SRET_LAYOUT[0] = target in win.TARGETS
         mine, theirs = signatures(ours.read_text()), signatures(ref.read_text(), local)
         compared, failures = 0, []
         for name in sorted(theirs):
@@ -307,7 +336,7 @@ def programs():
 def check_llc(target, tmp, llc, sysroot):
     _, triple = TARGETS[target]
     def one(src):
-        if uses_system_headers(src) and sysroot is None:
+        if uses_system_headers(src) and not headers_found(target, sysroot):
             return "skip", None
         std = "gnu11" if "gnu" in src.parts else "c11"
         x86 = run([str(COMPILER), f"-std={std}", "-I", str(src.parent), str(src), "-o", os.devnull])
@@ -322,6 +351,8 @@ def check_llc(target, tmp, llc, sysroot):
         rc, _, err = run(cmd)
         if crashed(rc, err):
             return "fail", f"{src.relative_to(ROOT)}: compile crashed ({rc}): {err.strip()[:300]}"
+        if rc and target in win.TARGETS and src.name in LLP64_REJECTS:
+            return "lp64", None
         if rc:
             # A program the target itself rejects (an ELF section name on
             # Mach-O, say) passes when Clang rejects it too.
@@ -340,7 +371,8 @@ def check_llc(target, tmp, llc, sysroot):
     workers = int(os.environ.get("JOBS", os.cpu_count() or 2))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         results = list(pool.map(one, programs()))
-    counts = {k: sum(1 for r in results if r[0] == k) for k in ("pass", "fail", "skip", "rejected")}
+    counts = {k: sum(1 for r in results if r[0] == k)
+              for k in ("pass", "fail", "skip", "rejected", "lp64")}
     return counts, [msg for kind, msg in results if kind == "fail"]
 
 
@@ -362,6 +394,8 @@ def main():
             (arm_sysroot / "usr" / "include").symlink_to(INCLUDE)
         for target in args.target or sorted(TARGETS):
             sysroot = intel.make_sysroot(tmp) if target == intel.TARGET else arm_sysroot
+            if target in win.TARGETS:
+                sysroot = None
             if target == intel.TARGET and sysroot is None:
                 # The Intel checks need the stand-in's headers; without them
                 # they would skip every program that includes one.
@@ -377,7 +411,8 @@ def main():
                 print(f"FAIL llc {target} {f}")
             print(f"{target}: llc -filetype=obj accepted {counts['pass']} programs, "
                   f"{counts['fail']} failed, {counts['rejected']} rejected by both compilers "
-                  f"for this target, {counts['skip']} skipped")
+                  f"for this target, {counts['skip']} skipped"
+                  + (f", {counts['lp64']} LP64-only" if counts["lp64"] else ""))
             bad += len(failures) + len(llc_failures)
     return 1 if bad else 0
 

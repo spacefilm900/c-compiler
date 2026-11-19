@@ -722,3 +722,24 @@ fn windows_intrinsics() {
     let message = err(Target::X86_64Linux, "void f(void) { __debugbreak(); }\n");
     assert!(message.contains("__debugbreak"), "{message}");
 }
+
+#[test]
+fn windows_passes_flexible_array_records_by_reference() {
+    let source = "struct F { int n; int a[]; };\nunion U { struct F f; int x; };\n\
+                  struct E { int n; char a[0]; };\n\
+                  struct F idf(struct F x) { return x; }\nunion U idu(union U x) { return x; }\n\
+                  struct E ide(struct E x) { return x; }\n";
+    for target in [MINGW, MSVC] {
+        let module = ir(target, source);
+        for want in [
+            "define void @idf(ptr sret(%struct.F) align 4 %agg.result, ptr %p0)",
+            "define void @idu(ptr sret(%union.U) align 4 %agg.result, ptr %p0)",
+            "define i32 @ide(i32 %p0)",
+        ] {
+            assert!(
+                module.contains(want),
+                "{target:?}: missing {want}:\n{module}"
+            );
+        }
+    }
+}

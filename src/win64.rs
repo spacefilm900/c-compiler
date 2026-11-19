@@ -20,6 +20,8 @@
 //!   An x87 `long double` is returned through a hidden pointer; `__int128`
 //!   is returned in XMM0, which LLVM spells `<2 x i64>` (Clang does both,
 //!   observed as a black box).
+//!   Clang also sends a struct with a flexible array member (or a union
+//!   holding one) this way whatever its size.
 //! - Integers narrower than 32 bits are not extended by the caller (the
 //!   upper bits are unspecified), except `_Bool`, which is a zero-extended
 //!   byte ([`crate::ast::TypeName::abi_attr`]).
@@ -45,7 +47,10 @@ pub fn classify(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
     let Some(size) = bare.size() else {
         return Err(AbiFail::Incomplete);
     };
-    if register_sized(size) {
+    // Clang (observed as a black box) passes and returns a struct with a
+    // flexible array member by reference even at a register size, and so
+    // a union holding one; a GNU zero-length array does not count.
+    if register_sized(size) && !bare.flexible_carrier() {
         return Ok(AggAbi::Coerce {
             ty: format!("i{}", size * 8),
             size,
