@@ -47,6 +47,8 @@ jobs:
       run:
         shell: bash
     env:
+      # "[msvc-only]" in a triggering commit message limits a push run to MSVC.
+      WIN_TARGET: ${{ inputs.target || (contains(github.event.head_commit.message, '[msvc-only]') && 'msvc') || 'both' }}
       CC_UNDER_TEST: build/compiler.exe
       PYTHONUTF8: "1"
     steps:
@@ -81,7 +83,7 @@ jobs:
       # The Visual Studio developer environment (INCLUDE, LIB, PATH), as
       # vcvars64.bat sets it, for every later step.
       - name: MSVC environment
-        if: inputs.target != 'mingw'
+        if: env.WIN_TARGET != 'mingw'
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -93,7 +95,7 @@ jobs:
           }
 
       - name: MSVC hello, world
-        if: inputs.target != 'mingw'
+        if: env.WIN_TARGET != 'mingw'
         run: |
           set -euo pipefail
           printf '#include <stdio.h>\nint main(void) { printf("hello from %%s\\n", "msvc"); return 0; }\n' > hello.c
@@ -102,7 +104,7 @@ jobs:
           ./hello.exe
 
       - name: MSVC differential harness and random ABI pairs
-        if: inputs.target != 'mingw' && (success() || failure())
+        if: env.WIN_TARGET != 'mingw' && (success() || failure())
         run: |
           set -uo pipefail
           status=0
@@ -111,7 +113,7 @@ jobs:
           exit $status
 
       - name: MinGW-w64 toolchain (MSYS2)
-        if: inputs.target != 'msvc' && (success() || failure())
+        if: env.WIN_TARGET != 'msvc' && (success() || failure())
         run: |
           set -euo pipefail
           /c/msys64/usr/bin/pacman -S --noconfirm --needed mingw-w64-x86_64-gcc
@@ -120,7 +122,7 @@ jobs:
           echo "MINGW_SYSROOT=C:\\msys64\\mingw64" >> "$GITHUB_ENV"
 
       - name: MinGW-w64 differential harness and random ABI pairs
-        if: inputs.target != 'msvc' && (success() || failure())
+        if: env.WIN_TARGET != 'msvc' && (success() || failure())
         run: |
           set -uo pipefail
           status=0

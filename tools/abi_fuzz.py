@@ -396,7 +396,8 @@ class Windows:
         return rc, err
 
     def link(self, objs: list, exe: Path):
-        return run(win.link_command(objs, exe, self.target))
+        rc, out, err = run(win.link_command(objs, exe, self.target))
+        return rc, out, win.link_messages(out, err)
 
     def exe(self, work: Path, tag: str) -> Path:
         return work / f"abi.{tag}.exe"

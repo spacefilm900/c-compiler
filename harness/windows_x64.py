@@ -146,6 +146,15 @@ def link_command(objs, out, target=GNU):
     return [MINGW_GCC, *[str(o) for o in objs], *extra, "-o", str(out)]
 
 
+def link_messages(out, err):
+    """The linker's own error lines first (link.exe writes them to standard
+    output; the Clang driver's summary is on standard error)."""
+    text = (out or b"") + b"\n" + (err or b"")
+    lines = text.decode(errors="replace").splitlines()
+    picked = [line for line in lines if "error" in line.lower() or "LNK" in line]
+    return ("\n".join(picked) if picked else text.decode(errors="replace")).encode()
+
+
 def wine_env():
     env = dict(os.environ)
     env.setdefault("WINEDEBUG", "-all")

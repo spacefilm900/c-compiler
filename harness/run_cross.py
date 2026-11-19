@@ -205,7 +205,9 @@ class Toolchain:
 
     def link(self, objs, out):
         if self.windows:
-            return run(win.link_command(objs, f"{out}.exe", self.target))
+            # The MSVC linker reports on standard output.
+            rc, so, se = run(win.link_command(objs, f"{out}.exe", self.target))
+            return rc, so, win.link_messages(so, se)
         if self.intel:
             return run([CLANG, *[str(o) for o in objs], "-lm", "-o", str(out)])
         return run(LINK + [str(o) for o in objs] + self.shims + ["-lm", "-o", str(out)])
