@@ -794,3 +794,42 @@ fn msvc_keywords_and_inline_definitions() {
         "{module}"
     );
 }
+
+#[test]
+fn windows_review_fixes() {
+    for target in [MINGW, MSVC] {
+        // va_arg of a record with a flexible array member reads a pointer
+        // from its slot, as a call passes it.
+        let module = ir(
+            target,
+            "struct F { int n; char d[]; };\n\
+             int g(int c, ...) { __builtin_va_list ap; __builtin_va_start(ap, c);\n\
+             struct F f = __builtin_va_arg(ap, struct F); __builtin_va_end(ap); return f.n; }\n",
+        );
+        assert!(module.matches("load ptr, ptr").count() >= 2, "{module}");
+        // A by-reference argument's copy is 16-byte aligned (Microsoft
+        // "x64 calling convention").
+        let module = ir(
+            target,
+            "struct P { int a[3]; };\nvoid take(struct P);\nvoid h(struct P *p) { take(*p); }\n",
+        );
+        assert!(module.contains("alloca %struct.P, align 16"), "{module}");
+        // A typedef alignment may not raise an ordinary tagged record.
+        let message = err(
+            target,
+            "typedef __attribute__((aligned(16))) struct S { int a[4]; } T;\n",
+        );
+        assert!(message.contains("aligned"), "{message}");
+        let module = ir(
+            target,
+            "typedef __attribute__((aligned(16))) struct _S { int a[4]; } T;\n\
+             int n = _Alignof(T);\n",
+        );
+        assert!(module.contains("@n = global i32 16"), "{module}");
+    }
+    let message = err(MSVC, "double __vectorcall f(double);\n");
+    assert!(message.contains("vectorcall"), "{message}");
+    // C11 6.5.5p2 holds inside an unevaluated __typeof__ too.
+    let message = err(MSVC, "__typeof__(1.0 % 2.0) x;\n");
+    assert!(!message.is_empty());
+}

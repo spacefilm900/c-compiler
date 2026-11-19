@@ -104,7 +104,7 @@ pub(super) fn attr_class(name: &str) -> AttrClass {
         | "sysv_abi"
         | "force_align_arg_pointer"
         | "expected_throw" => AttrClass::Known,
-        "vector_size" | "cleanup" | "alias" | "ifunc" | "naked" | "weakref" => {
+        "vector_size" | "cleanup" | "alias" | "ifunc" | "naked" | "weakref" | "vectorcall" => {
             AttrClass::Unsupported
         }
         _ => AttrClass::Unknown,

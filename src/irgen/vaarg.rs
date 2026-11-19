@@ -157,7 +157,12 @@ impl Gen {
     /// (Microsoft "x64 calling convention", varargs).
     pub(super) fn win64_va_arg_addr(&mut self, ap: &str, ty: &CType) -> String {
         let by_ref = if ty.unqualified().is_record() {
-            !matches!(ty.size(), Some(1 | 2 | 4 | 8))
+            // The same rule as a call: this also sends a record with a
+            // flexible array member by reference at any size.
+            !matches!(
+                crate::win64::classify(ty, crate::abi::AggUse::Param),
+                Ok(crate::abi::AggAbi::Coerce { .. })
+            )
         } else {
             crate::win64::scalar_by_reference(ty)
         };

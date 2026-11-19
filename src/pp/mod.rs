@@ -567,20 +567,28 @@ impl Processor {
 }
 
 /// Split `NAME(PARAM, ...)` into the name and its parameters; a plain
-/// `NAME` has none.
+/// `NAME` has none. A malformed list (no closing parenthesis, text after
+/// it, or an empty parameter between commas) yields an empty parameter,
+/// which the caller rejects as not an identifier. `NAME()` has no
+/// parameters.
 fn split_function_like(spelling: &str) -> (&str, Option<Vec<String>>) {
-    match spelling.split_once('(') {
-        Some((name, rest)) => {
-            let params = rest
-                .trim_end_matches(')')
-                .split(',')
-                .map(|param| param.trim().to_string())
-                .filter(|param| !param.is_empty())
-                .collect();
-            (name, Some(params))
-        }
-        None => (spelling, None),
+    let Some((name, rest)) = spelling.split_once('(') else {
+        return (spelling, None);
+    };
+    let Some(inner) = rest.strip_suffix(')') else {
+        return (name, Some(vec![String::new()]));
+    };
+    if inner.contains(['(', ')']) {
+        return (name, Some(vec![String::new()]));
     }
+    if inner.trim().is_empty() {
+        return (name, Some(Vec::new()));
+    }
+    let params = inner
+        .split(',')
+        .map(|param| param.trim().to_string())
+        .collect();
+    (name, Some(params))
 }
 
 #[cfg(test)]

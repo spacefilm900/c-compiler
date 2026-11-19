@@ -343,8 +343,13 @@ fn msvc_macros() -> Vec<(&'static str, &'static str)> {
 /// Microsoft's C keywords that the MSVC and Windows SDK headers use, as
 /// macros over this compiler's own spellings (Microsoft's public C language
 /// reference). Clang treats them as keywords; macros are enough for the
-/// headers. On x64 every calling-convention keyword means the one
-/// convention, so they expand to nothing. MinGW-w64's <_mingw.h> defines
+/// headers. On x64 the calling-convention keywords other than
+/// `__vectorcall` mean the one convention, so they expand to nothing.
+/// `__vectorcall` (more vector registers) would change the code, so it
+/// becomes an attribute that the parser rejects. `__ptr32` (a 4-byte
+/// pointer) is not supported and is erased, because <basetsd.h> uses it in
+/// inline functions that every <windows.h> user sees; a record with a
+/// `__ptr32` member gets the wrong layout (see the platform report). MinGW-w64's <_mingw.h> defines
 /// most of these itself, so the MSVC stand-in (harness/windows_x64.py)
 /// undefines them.
 pub const MSVC_KEYWORDS: [(&str, &str); 22] = [
@@ -356,7 +361,7 @@ pub const MSVC_KEYWORDS: [(&str, &str); 22] = [
     ("__stdcall", ""),
     ("__fastcall", ""),
     ("__thiscall", ""),
-    ("__vectorcall", ""),
+    ("__vectorcall", "__attribute__((__vectorcall__))"),
     ("__clrcall", ""),
     ("__ptr32", ""),
     ("__ptr64", ""),

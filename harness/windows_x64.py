@@ -92,6 +92,11 @@ def ours_flags(target):
 
 def clang_flags(target):
     if NATIVE:
+        # Clang finds a MinGW-w64 on PATH by itself; one chosen by
+        # MINGW_SYSROOT has to be named, so both compilers read the same
+        # headers.
+        if target == GNU and os.environ.get("MINGW_SYSROOT"):
+            return ["--sysroot", os.environ["MINGW_SYSROOT"]]
         return []
     return list(CLANG_MSVC_FLAGS) if target == MSVC else []
 

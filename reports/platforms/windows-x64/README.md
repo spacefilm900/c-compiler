@@ -106,5 +106,7 @@ the private-repository rate (budget: 120).
 - `#pragma pack` is ignored on every target (an older gap). It matters more on Windows, where the SDK headers use it.
 - `returns_twice` is not emitted for `setjmp` on any target. `setjmp`/`longjmp` work at `-O0` under Wine.
 - `__declspec(align(N))` written *before* `struct` in a declaration with no declarator is ignored, as GCC ignores an attribute there. The SDK uses the form after `struct`.
-- `typedef __attribute__((aligned(16))) struct S {...} T;` also raises `_Alignof(struct S)`. GCC and Clang keep it at the record's own alignment.
+- `typedef __attribute__((aligned(16))) struct _S {...} T;` (MinGW-w64's `<setjmp.h>`) also raises `_Alignof(struct _S)`, where GCC and Clang keep the record's own alignment. It is accepted only for an untagged record or a tag reserved to the implementation (`__x`, `_X`); with any other tag it is diagnosed, as before.
+- `__ptr32` (a 4-byte pointer) is erased, not implemented: `<basetsd.h>` uses it in inline functions that every `<windows.h>` user sees. A record with a `__ptr32` member gets an 8-byte pointer, so its layout differs from MSVC's. `__vectorcall` is rejected with a diagnostic.
+- A by-reference argument's caller copy is 16-byte aligned, as Microsoft's convention requires (Clang uses the record's own alignment; both are compatible).
 - The temporary push trigger in `windows.yml` (commit message `[win-native]`) must be removed before merging. GitHub only dispatches workflows that are already on `main`.

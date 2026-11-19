@@ -341,7 +341,15 @@ impl Gen {
             }
             PartKind::Indirect => {
                 // The callee may modify its parameter, so it gets a copy.
-                let copy = self.entry_alloca(&ty.unqualified());
+                // On Windows x64 that caller-allocated copy must be 16-byte
+                // aligned (Microsoft "x64 calling convention", parameter
+                // passing).
+                let copy = if crate::target::current().abi() == crate::target::Abi::Win64 {
+                    let own = ty.unqualified();
+                    self.entry_alloca_ir(&own.ir_type(), own.align().max(16))
+                } else {
+                    self.entry_alloca(&ty.unqualified())
+                };
                 self.copy_struct(&ty, &src, &copy, ty.is_volatile());
                 copy
             }

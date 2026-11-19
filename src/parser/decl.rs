@@ -248,10 +248,14 @@ impl Parser<'_> {
         // A typedef with its own alignment is a distinct type in GCC. Only
         // the type's own alignment is supported here, plus one form that
         // MinGW-w64's <setjmp.h> uses: `typedef __attribute__((aligned(16)))
-        // struct S { ... } T;`, where the record is defined in this very
+        // struct _S { ... } T;`, where the record is defined in this very
         // declaration and its size is already a multiple of the alignment.
-        // The record itself takes the alignment, so `_Alignof(struct S)` is
-        // also raised, where GCC and Clang keep the record's own alignment.
+        // The record itself takes the alignment. That is exact when the
+        // record has no tag. With a tag, `_Alignof(struct _S)` would also be
+        // raised where GCC and Clang keep the record's own alignment, so the
+        // form is accepted only for a tag reserved to the implementation
+        // (C11 7.1.3: `__x` or `_X`), which a program does not name; any
+        // other tag is still diagnosed.
         if let Some(align) = self.attrs_align(&attrs)? {
             if let Some(handle) = raisable_record(specs, &ty, align) {
                 handle.set_unadjusted_align(handle.unadjusted_align());
@@ -778,6 +782,14 @@ fn raisable_record<'a>(specs: &'a Specs, ty: &CType, align: u32) -> Option<&'a S
     let handle = specs.ty.struct_ref()?;
     let same = matches!(ty, CType::Struct(own) if own.id() == handle.id());
     let size = handle.size()?;
-    (specs.defined_record && same && handle.align() < align && size % u64::from(align) == 0)
+    let tag = handle.tag();
+    let reserved = tag.is_empty()
+        || tag.starts_with("__")
+        || (tag.starts_with('_') && tag[1..].starts_with(|c: char| c.is_ascii_uppercase()));
+    (specs.defined_record
+        && same
+        && reserved
+        && handle.align() < align
+        && size % u64::from(align) == 0)
         .then_some(handle)
 }

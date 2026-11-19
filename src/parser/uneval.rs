@@ -69,6 +69,15 @@ pub(super) fn check_uneval(expr: &Expr, env: Env) -> Result<(), BoundErr> {
             if matches!(op, BinOp::Add | BinOp::Sub) {
                 check_uneval_pointer_arith(*op, left, right, env)?;
             }
+            // `%`, the shifts and the bitwise operators need integer
+            // operands (C11 6.5.5p2, 6.5.7p2, 6.5.10p2 to 6.5.12p2).
+            if matches!(
+                op,
+                BinOp::Mod | BinOp::Shl | BinOp::Shr | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor
+            ) && !(rvalue_type(left, env)?.is_integer() && rvalue_type(right, env)?.is_integer())
+            {
+                return Err(BoundErr::InvalidOperand);
+            }
             Ok(())
         }
         Expr::Comma { left, right, .. } => {

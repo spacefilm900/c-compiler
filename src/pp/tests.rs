@@ -455,6 +455,19 @@ fn command_line_function_like_macro() {
         replacement: None,
     };
     assert!(preprocess("int n;\n", "t.c", &options).is_err());
+    for bad in ["F(x,,y)", "F(x", "F(x)y", "F((x))", "F(x,)"] {
+        options.definitions[0] = CliMacro::Define {
+            name: bad.to_string(),
+            replacement: Some("x".to_string()),
+        };
+        assert!(preprocess("int n;\n", "t.c", &options).is_err(), "{bad}");
+    }
+    options.definitions[0] = CliMacro::Define {
+        name: "ONE()".to_string(),
+        replacement: Some("1".to_string()),
+    };
+    let text = preprocess("int n = ONE();\n", "t.c", &options).unwrap();
+    assert!(text.contains("int n = 1;"), "{text}");
 }
 
 #[test]
