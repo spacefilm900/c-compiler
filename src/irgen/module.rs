@@ -548,7 +548,7 @@ pub(super) fn render_function(
         .iter()
         .map(|bound| (bound.id, bound.expr.clone()))
         .collect();
-    let (depths, max_vla_depth) = label_vla_depths(body);
+    let (depths, max_vla_depth) = label_vla_depths(body, vla_sizes);
     gen.label_vla_depths = depths;
     // MSVC gives every C `inline` definition external linkage in a COMDAT
     // that the linker folds (Parser::mark_inline_definitions), so a call

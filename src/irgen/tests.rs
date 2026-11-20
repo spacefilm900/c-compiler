@@ -1670,3 +1670,26 @@ fn for_init_label_after_a_vla_keeps_the_array() {
     let ir = gnu_ir(src);
     assert_eq!(run_binary(&ir).0, 7);
 }
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn computed_goto_into_a_later_label_still_verifies() {
+    let src =
+        "int main(void) { void *p = &&A; goto *p; int n = 2; int a[n]; a[0] = 1; A: return 0; }\n";
+    let ir = gnu_ir(src);
+    assert_eq!(run_binary(&ir).0, 0);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn label_in_a_vla_bound_does_not_free_an_earlier_array() {
+    let src = "int f(int n) { int a[n]; a[0] = 7; int b[({ void *p = &&L; goto *p; L:; n; })]; b[0] = 9; return a[0]; } int main(void) { return f(4); }\n";
+    let ir = gnu_ir(src);
+    assert_eq!(run_binary(&ir).0, 7);
+}
