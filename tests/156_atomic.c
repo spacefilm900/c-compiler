@@ -32,11 +32,16 @@ int main(void)
     old = p++;
     f = 1.5f;
     f += 2.25f;
-    /* Lvalue conversion yields a non-atomic float; print that, not the
-       atomic object, so a variadic call is not an atomic type. */
+    /* Print converted non-atomic values, not the atomic objects, so a
+       variadic call is not an atomic type. Clang's Apple arm64 stand-in
+       can pass an atomic lvalue to printf incorrectly. */
     {
+        int xv = x;
+        unsigned uv = u;
+        int gv = g;
+        int pv = p[0];
         float fv = f;
-        printf("%d %u %d %d %d %.2f\n", x, u, g, old[0], p[0], fv);
-        return (x == 13 && u == 3 && g == 6 && old[0] == 1 && p[0] == 2 && fv > 3.7f && fv < 3.8f) ? 0 : 1;
+        printf("%d %u %d %d %d %.2f\n", xv, uv, gv, old[0], pv, fv);
+        return (xv == 13 && uv == 3 && gv == 6 && old[0] == 1 && pv == 2 && fv > 3.7f && fv < 3.8f) ? 0 : 1;
     }
 }
