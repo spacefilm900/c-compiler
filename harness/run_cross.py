@@ -246,14 +246,20 @@ def test(tc, src, work, std="c11"):
     mine, err = build_ours(tc, src, base, std)
     if err:
         return err
-    ref, err = build_ref(tc, src, base, std)
-    if err:
-        return err
-    a, b = base.with_suffix(".mine"), base.with_suffix(".refbin")
-    for objs, out, who in (([mine], a, "ours"), ([ref], b, "oracle")):
-        rc, _, e = tc.link(objs, out)
-        if rc != 0:
-            return f"{who} link failed ({rc}): {short(e)}"
+    ref, oracle_err = build_ref(tc, src, base, std)
+    a = base.with_suffix(".mine")
+    rc, _, e = tc.link([mine], a)
+    if rc != 0:
+        return f"ours link failed ({rc}): {short(e)}"
+    if oracle_err:
+        # An oracle-only known failure must not hide a link or run failure
+        # of this compiler. Run our binary, then report the oracle error.
+        got = tc.execute(a)
+        return not_run(got, "ours") or oracle_err
+    b = base.with_suffix(".refbin")
+    rc, _, e = tc.link([ref], b)
+    if rc != 0:
+        return f"oracle link failed ({rc}): {short(e)}"
     got, exp = tc.execute(a), tc.execute(b)
     err = not_run(got, "ours") or not_run(exp, "oracle")
     if err:
@@ -374,6 +380,17 @@ def known_failures(target):
 
 
 CRASH = "compiler crashed"
+
+
+def oracle_failure(err):
+    """True when the reported failure is the Clang oracle's, including a
+    cross-ABI `def: ` or `use: ` prefix from test_cross()."""
+    text = err
+    for prefix in ("def: ", "use: "):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    return text.startswith("oracle ")
 
 
 def crashed(err):
@@ -537,7 +554,7 @@ def main():
                 print(f"PASS {label}")
         elif label in known and not crashed(r):
             reason, side = known[label]
-            if side == "oracle" and not r.startswith("oracle "):
+            if side == "oracle" and not oracle_failure(r):
                 unexpected += 1
                 print(f"FAIL {label}: {r}")
             else:

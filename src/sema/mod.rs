@@ -84,6 +84,7 @@ pub fn analyze_dialect(
         func_order: Vec::new(),
         strings: Vec::new(),
         static_locals: Vec::new(),
+        folding_tls: None,
         static_seq: 0,
         library_nan_calls: Vec::new(),
         object_decls: HashMap::new(),
@@ -283,6 +284,9 @@ struct Sema<'t> {
     /// Block-scope `static` objects. They have no linkage, so they are not in
     /// the file-scope symbol table. The name is an LLVM symbol, not the C name.
     static_locals: Vec<IrGlobal>,
+    /// IR name of a `_Thread_local` static local whose initializer is
+    /// being folded, before it is pushed onto `static_locals`.
+    folding_tls: Option<String>,
     static_seq: u32,
     /// Runtime calls of the C library `nan`, `nanf`, or `nanl` that IR
     /// lowering emits for a malformed quiet `__builtin_nan*` tag: the

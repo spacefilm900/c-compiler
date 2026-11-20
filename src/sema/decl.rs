@@ -508,9 +508,7 @@ impl Sema<'_> {
                     // the file symbol, but the parser only fills var_attrs
                     // for file-scope declarations.
                     attrs.thread_local = attrs.thread_local || info.thread_local;
-                    if attrs.align.is_none() {
-                        attrs.align = info.alignas;
-                    }
+                    attrs.align = attrs.align.max(info.alignas);
                     globals.push(IrGlobal {
                         name: var.name.clone(),
                         ty: var.ty.clone(),
@@ -741,16 +739,23 @@ impl Sema<'_> {
         }
         decl.ty = ty.clone();
         self.set_local_var_type(&decl.name, ty.clone());
-        let value = if decl.init.is_some() {
+        if decl.thread_local {
+            self.folding_tls = Some(symbol.clone());
+        }
+        let folded = if decl.init.is_some() {
             let mut stores = stores;
-            self.check_stores(&mut stores)?;
-            self.check_stores(&mut overridden)?;
-            let value = self.fold_stores(&decl.name, &ty, &stores)?;
-            self.fold_overridden(&decl.name, &overridden)?;
-            value
+            self.check_stores(&mut stores)
+                .and_then(|()| self.check_stores(&mut overridden))
+                .and_then(|()| self.fold_stores(&decl.name, &ty, &stores))
+                .and_then(|value| {
+                    self.fold_overridden(&decl.name, &overridden)?;
+                    Ok(value)
+                })
         } else {
-            zero_const(&ty)
+            Ok(zero_const(&ty))
         };
+        self.folding_tls = None;
+        let value = folded?;
         self.static_locals.push(IrGlobal {
             name: symbol,
             ty,

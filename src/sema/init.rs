@@ -1141,6 +1141,7 @@ impl Sema<'_> {
         self.static_locals
             .iter()
             .any(|global| global.name == name && global.attrs.thread_local)
+            || self.folding_tls.as_deref() == Some(name)
     }
 
     pub(super) fn fold_one(
@@ -1175,6 +1176,7 @@ impl Sema<'_> {
             {
                 if let Some(cast_int) = ty_name.as_integer() {
                     if let Ok(ptr) = eval_ptr(inner) {
+                        self.reject_thread_local_address(name, inner)?;
                         // Conversion to `_Bool` compares with 0 (C11
                         // 6.3.1.2); it does not truncate the address.
                         if cast_int == TypeName::Bool {

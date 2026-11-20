@@ -1854,6 +1854,15 @@ fn alignas_and_thread_local_redeclarations() {
             .contains("'_Thread_local' must be present on every declaration")
     );
     assert!(sema_err("_Thread_local int x; int *p = &x;").contains("not a constant expression"));
+    assert!(
+        sema_err("_Thread_local int t; unsigned long long x = (unsigned long long)&t;")
+            .contains("not a constant expression")
+    );
+    assert!(
+        sema_err("void f(void) { static _Thread_local void *p = &p; }")
+            .contains("not a constant expression")
+    );
+    sema_ok("void f(void) { static void *p = &p; }");
     sema_ok("_Thread_local int x; int *f(void) { return &x; }");
 }
 

@@ -239,12 +239,14 @@ impl Parser<'_> {
         first: NamedDecl,
     ) -> Result<Vec<TopDecl>, Diagnostic> {
         self.reject_func_spec(&specs)?;
+        self.reject_typedef_identifier_list(&first)?;
         self.bind_typedef_decl(&specs, &first, true)?;
         while self.match_kind(TokenKind::Comma) {
             let next = self.parse_named_decl(specs.ty.clone())?;
             if next.is_function() && self.current().kind == TokenKind::LBrace {
                 return Err(self.error("a function definition cannot follow another declarator"));
             }
+            self.reject_typedef_identifier_list(&next)?;
             self.bind_typedef_decl(&specs, &next, false)?;
         }
         self.expect_skip(TokenKind::Semi, "';'")?;
@@ -259,6 +261,7 @@ impl Parser<'_> {
             if declarator.is_function() && self.current().kind == TokenKind::LBrace {
                 return Err(self.error("a typedef cannot have a function body"));
             }
+            self.reject_typedef_identifier_list(&declarator)?;
             self.bind_typedef_decl(specs, &declarator, first)?;
             first = false;
             if self.match_kind(TokenKind::Comma) {
@@ -848,6 +851,21 @@ impl Parser<'_> {
             alignas: specs.alignas,
             thread_local: specs.thread_local,
         })
+    }
+
+    fn reject_typedef_identifier_list(&self, declarator: &NamedDecl) -> Result<(), Diagnostic> {
+        if let DeclKind::Function {
+            prototype, params, ..
+        } = &declarator.kind
+        {
+            self.reject_identifier_list_decl(
+                *prototype,
+                params,
+                declarator.line,
+                declarator.column,
+            )?;
+        }
+        Ok(())
     }
 
     fn reject_identifier_list_decl(

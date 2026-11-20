@@ -1470,6 +1470,15 @@ fn thread_local_is_emitted_on_globals_and_static_locals() {
 }
 
 #[test]
+fn alignas_and_gnu_aligned_take_the_stricter_value() {
+    let source = "__attribute__((aligned(8))) int x;
+                  int get(void) { extern _Alignas(32) int x; return x; }
+";
+    let ir = crate::compile_to_ir(source, "align-merge.c").unwrap();
+    assert!(ir.contains("@x = global i32 0, align 32"), "{ir}");
+}
+
+#[test]
 fn kr_definition_uses_promoted_abi_and_narrows() {
     // C11 6.5.2.2 / 6.9.1: a call without a prototype promotes float to
     // double and char to int; the K&R definition converts back.

@@ -1555,6 +1555,11 @@ fn kr_definitions_parse_and_reject_bad_lists() {
         .contains("identifier list in a function declarator that is not a definition"));
     assert!(parse_err("int outer(int callback(x));")
         .contains("identifier list in a function declarator that is not a definition"));
+    assert!(
+        parse_err("typedef int F(x);").contains("identifier list")
+            || parse_err("typedef int F(x);").contains("must be a definition")
+    );
+    let _ = parsed("typedef int F(int);\n");
     assert!(parse_err("int f(x) auto int x; { return x; }").contains("may only use the 'register'"));
     assert!(
         parsed("int f(a) enum { Value = 7 } a; { return a; }\nint Value;\n").contains("func int f")
