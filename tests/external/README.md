@@ -64,7 +64,7 @@ For a large coverage campaign, use `tools/csmith_campaign.py`. The default mode 
 
 ```sh
 python3 tools/csmith_campaign.py \
-  --compiler build/compiler \
+  --compiler build/hcc \
   --seed-start 1 --count 500 \
   --opt O0 --opt O2 \
   --out /tmp/csmith-coverage

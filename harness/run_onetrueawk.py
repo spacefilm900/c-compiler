@@ -109,8 +109,8 @@ def testdir_compare(clang_awk: Path, our_awk: Path) -> tuple[int, str]:
 def main() -> int:
     if not SRC.is_dir():
         sys.exit(f"One True AWK not found: {SRC}. Run scripts/fetch_onetrueawk.sh first.")
-    if not (ROOT / "build" / "compiler").is_file() and not os.environ.get("CC_UNDER_TEST"):
-        sys.exit("build/compiler not found. Run make first.")
+    if not (ROOT / "build" / "hcc").is_file() and not os.environ.get("CC_UNDER_TEST"):
+        sys.exit("build/hcc not found. Run make first.")
 
     with tempfile.TemporaryDirectory(prefix="otawk-") as tmp:
         work = Path(tmp)

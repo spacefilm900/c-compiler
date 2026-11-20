@@ -6,4 +6,4 @@ You are building a C compiler that targets LLVM IR.
 - Work incrementally with frequent small commits.
 - Keep STATUS.md up to date.
 - After every significant change, run `python3 harness/run_tests.py`; every change must pass existing tests.
-- Compiler CLI contract: `build/compiler input.c -o output.ll` writes textual LLVM IR, exits 0 on success, non-zero with a diagnostic on stderr on error.
+- Compiler CLI contract: `build/hcc input.c -o output.ll` writes textual LLVM IR, exits 0 on success, non-zero with a diagnostic on stderr on error.

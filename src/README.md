@@ -1,6 +1,6 @@
 # src
 
-Rust sources for the clean-room frontend. `make` (or `cargo build --release`) produces `build/compiler`. Each directory is one module: `mod.rs` holds the shared types and entry points, and unit tests live in the directory's `tests.rs` (plus `ice_tests.rs` and `precise_tests.rs` in `irgen/`).
+Rust sources for the clean-room frontend. `make` (or `cargo build --release`) produces `build/hcc`. Each directory is one module: `mod.rs` holds the shared types and entry points, and unit tests live in the directory's `tests.rs` (plus `ice_tests.rs` and `precise_tests.rs` in `irgen/`).
 
 | File or directory | Role |
 | --- | --- |

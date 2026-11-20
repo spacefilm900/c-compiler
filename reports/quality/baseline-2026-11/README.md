@@ -111,7 +111,7 @@ Full lists: `mutants-*/missed.txt`; `outcomes.json.gz` has every mutant.
 tools/quality/coverage.sh                       # OUT=dir SUITES="tests wacc torture"
 python3 tools/quality/complexity.py --csv f.csv --files files.csv
 python3 tools/quality/crash_points.py --overrides reports/quality/baseline-2026-11/crash-points-review.csv --csv cp.csv --summary cp.md
-python3 tools/quality/panic_fuzz.py --compiler build/compiler --corpus tests --out /tmp/fuzz [--stack 3] [--arg=-std=gnu11]
+python3 tools/quality/panic_fuzz.py --compiler build/hcc --corpus tests --out /tmp/fuzz [--stack 3] [--arg=-std=gnu11]
 cargo mutants --file src/sema.rs --shard 0/10 --sharding round-robin -j 4
 python3 tools/quality/check_missed.py --mutants-out mutants.out --scratch /tmp/mc --csv check.csv
 python3 -m unittest tools/quality/test_quality_tools.py

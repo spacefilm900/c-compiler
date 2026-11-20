@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the Writing a C Compiler suite against build/compiler.
+"""Run the Writing a C Compiler suite against build/hcc.
 
 The suite is fetched by scripts/fetch_wacc_tests.sh into tests/external/wacc
 (gitignored). This runner does not call the suite's test_compiler script.
@@ -40,7 +40,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "harness"))
 from target_arch import arch_of, clang_triple  # noqa: E402
-COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
+COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "hcc"))
 CLANG = os.environ.get("CLANG", "clang")
 TIMEOUT = float(os.environ.get("TIMEOUT", "10"))
 SUITE = Path(os.environ.get("WACC_ROOT", ROOT / "tests" / "external" / "wacc"))

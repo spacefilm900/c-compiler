@@ -31,7 +31,7 @@ harness/intel_mac_proxy.py. --target x86_64-w64-windows-gnu or
 x86_64-pc-windows-msvc builds COFF objects for 64-bit Windows, links them
 with MinGW-w64 and runs them under Wine (harness/windows_x64.py; the MSVC
 target is a stand-in on MinGW-w64's headers and C runtime).
-Env: CC_UNDER_TEST (default build/compiler), CLANG (default clang). Without
+Env: CC_UNDER_TEST (default build/hcc), CLANG (default clang). Without
 --target, the target is whatever both produce by default; for AArch64 under
 qemu, use wrappers that add --target and -target.
 Exit status: 0 when every compared seed agrees, 1 when a seed fails (an
@@ -55,7 +55,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "harness"))
 import intel_mac_proxy as intel  # noqa: E402
 import windows_x64 as win  # noqa: E402
-COMPILER = os.environ.get("CC_UNDER_TEST", str(ROOT / "build" / "compiler"))
+COMPILER = os.environ.get("CC_UNDER_TEST", str(ROOT / "build" / "hcc"))
 CLANG = os.environ.get("CLANG", "clang")
 
 # (C spelling, printf format, cast for printf, kind)

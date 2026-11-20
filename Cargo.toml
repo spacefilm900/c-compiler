@@ -1,10 +1,10 @@
 [package]
-name = "cc"
+name = "hcc"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Clean-room C subset compiler that emits textual LLVM IR"
+description = "Haviland C Compiler (hcc): a clean-room C subset compiler that emits textual LLVM IR"
 
 [[bin]]
-name = "compiler"
+name = "hcc"
 path = "src/main.rs"

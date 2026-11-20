@@ -9,7 +9,7 @@ runner never trips them; they exist to catch the kind of quadratic slowdown
 the performance phase removed (sqlite3.c's frontend was 90x Clang -O0).
 
 Usage: tools/perf_guard.py [--runs 2] [--max-ratio 6] [--max-seconds 30]
-Env: CC_UNDER_TEST (default build/compiler), CLANG (default clang).
+Env: CC_UNDER_TEST (default build/hcc), CLANG (default clang).
 """
 
 from __future__ import annotations

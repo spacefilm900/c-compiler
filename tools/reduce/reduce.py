@@ -771,8 +771,8 @@ def parse_args(argv):
                         choices=["ice", "crash", "miscompile", "reject", "accept", "bad-ir", "cmd"])
     parser.add_argument("--message", help="text the relevant stderr must contain")
     parser.add_argument("--cmd", help="for --mode cmd: shell command, exit 0 = interesting")
-    parser.add_argument("--compiler", default=str(ROOT / "build" / "compiler"),
-                        help="this compiler (default build/compiler)")
+    parser.add_argument("--compiler", default=str(ROOT / "build" / "hcc"),
+                        help="this compiler (default build/hcc)")
     parser.add_argument("--clang", default=os.environ.get("CLANG", "clang"))
     parser.add_argument("--std", default="c11", choices=["c11", "gnu11"])
     parser.add_argument("--flags", help="extra flags for this compiler, e.g. '-target ...'")

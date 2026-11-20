@@ -10,7 +10,7 @@ non-zero exit for bad input, never a crash.
 Inputs are only fed to the compiler as test inputs; nothing here inspects
 another compiler. Mutations are reproducible from --seed.
 
-Usage: python3 tools/quality/panic_fuzz.py --compiler build/compiler
+Usage: python3 tools/quality/panic_fuzz.py --compiler build/hcc
            --corpus tests --corpus tests/external/wacc/tests
            [--mutants-per-file 20] [--stack 1] [--arg -std=gnu11]
            [--seed 1] [--jobs 8] [--timeout 5]

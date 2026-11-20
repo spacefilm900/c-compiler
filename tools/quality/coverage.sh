@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Line and function coverage with cargo-llvm-cov, in two layers:
 #   1. the Rust unit tests (`cargo test`), and
-#   2. the same plus an instrumented build/compiler driven by the external
+#   2. the same plus an instrumented build/hcc driven by the external
 #      suites named in SUITES (default: the main differential suite and WACC).
 # Writes OUT/unit.lcov (unit tests) and OUT/suites.lcov (the instrumented
 # compiler under the suites), then prints per-file summaries of non-test code

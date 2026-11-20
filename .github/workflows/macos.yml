@@ -98,7 +98,7 @@ jobs:
       - name: Hello, world (docs/USER_GUIDE_MACOS.md)
         run: |
           set -euo pipefail
-          build/compiler harness/macos/hello.c -o hello.ll
+          build/hcc harness/macos/hello.c -o hello.ll
           grep -q 'target triple = "arm64-apple-macosx' hello.ll
           "${CLANG}" hello.ll -o hello
           file hello
@@ -253,7 +253,7 @@ jobs:
         if: env.ALL == 'true'
         run: |
           set -euo pipefail
-          build/compiler harness/macos/hello.c -o hello.ll
+          build/hcc harness/macos/hello.c -o hello.ll
           grep -q 'target triple = "x86_64-apple-macosx' hello.ll
           "${CLANG}" hello.ll -o hello
           file hello

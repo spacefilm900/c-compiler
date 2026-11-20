@@ -17,7 +17,7 @@ must give the same bytes (the dumps are deterministic).
 Usage: run_dump_tests.py [--update]. `--update` rewrites the expected files
 from the current compiler; review the diff before committing it.
 
-Env: CC_UNDER_TEST (default build/compiler), TIMEOUT (seconds, default 10).
+Env: CC_UNDER_TEST (default build/hcc), TIMEOUT (seconds, default 10).
 Exit status 0 only if every check passes.
 """
 import argparse
@@ -30,7 +30,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DUMPS = ROOT / "harness" / "dumps"
-COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler")).resolve()
+COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "hcc")).resolve()
 TIMEOUT = float(os.environ.get("TIMEOUT", "10"))
 TARGET = ["-target", "x86_64-linux-gnu"]
 

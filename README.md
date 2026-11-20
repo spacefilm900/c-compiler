@@ -1,6 +1,6 @@
 # Clean-room C compiler → LLVM IR
 
-A small C compiler that emits textual LLVM IR. LLVM (`clang`, and optionally `opt` / `llc`) optimizes that IR and generates native code. This milestone is a C subset: enough to lex, preprocess, parse, check, and run functions and file-scope objects of the LP64 integer types, with prototypes, pointers, arrays, string literals, `const`, `volatile`, and `restrict`, calls to variadic library functions such as `printf`, simple structs and unions passed and returned by value, `float` and `double`, typedefs, enumerations, `_Bool`, function pointers, arithmetic, bitwise and shift operators, `++`/`--`, compound assignment, `?:`, the comma operator, `sizeof`, casts, branches, loops, `switch`, and calls. A built-in preprocessor runs before the parser. Hello world compiles from `#include <stdio.h>`, and that header is the host's. It is not a full C compiler.
+The program is `hcc`, the Haviland C Compiler. It is a small C compiler that emits textual LLVM IR. LLVM (`clang`, and optionally `opt` / `llc`) optimizes that IR and generates native code. This milestone is a C subset: enough to lex, preprocess, parse, check, and run functions and file-scope objects of the LP64 integer types, with prototypes, pointers, arrays, string literals, `const`, `volatile`, and `restrict`, calls to variadic library functions such as `printf`, simple structs and unions passed and returned by value, `float` and `double`, typedefs, enumerations, `_Bool`, function pointers, arithmetic, bitwise and shift operators, `++`/`--`, compound assignment, `?:`, the comma operator, `sizeof`, casts, branches, loops, `switch`, and calls. A built-in preprocessor runs before the parser. Hello world compiles from `#include <stdio.h>`, and that header is the host's. It is not a full C compiler.
 
 **Play DOOM on a Mac:** [docs/DOOM_ON_MAC.md](docs/DOOM_ON_MAC.md) is a step-by-step guide for an Apple Silicon Mac. One command, `./tools/mac/play_doom.sh`, builds DOOM with this compiler and opens it in a window.
 
@@ -24,19 +24,19 @@ Emitting IR does not need Clang. Running the result does. The IR uses opaque poi
 make
 # equivalent:
 # cargo build --release
-# cp -f target/release/compiler build/compiler
+# cp -f target/release/hcc build/hcc
 ```
 
-`make` (GNU make 4.4.1 locally) writes `build/compiler`.
+`make` (GNU make 4.4.1 locally) writes `build/hcc`.
 
 Local execution used Debian Clang/LLVM **19.1.7**. Put that install's `bin` directory on `PATH` (set this to your path). Any Clang/LLVM 18 or newer on `PATH` is enough for the harness (for example a recent Homebrew `llvm`).
 
 ## Contract
 
 ```sh
-build/compiler [options] INPUT.c -o OUTPUT.ll
-build/compiler -E [options] INPUT.c [-o OUTPUT.i]
-build/compiler --dump-STAGE [options] INPUT.c [-o OUTPUT]
+build/hcc [options] INPUT.c -o OUTPUT.ll
+build/hcc -E [options] INPUT.c [-o OUTPUT.i]
+build/hcc --dump-STAGE [options] INPUT.c [-o OUTPUT]
 ```
 
 Options are `-I DIR` (also `-IDIR`), `-D NAME[=text]` (also `-DNAME=text`; a bare `-DNAME` defines `NAME` as `1`), `-U NAME`, and `-E`. `-D` and `-U` apply in order, after the predefined macros.
@@ -180,7 +180,7 @@ The parser or checker rejects variable-length arrays, a `static` or `extern` dec
 
 - `src/` — Rust frontend (`pp`, `lexer`, `parser`, `ast`, `sema`, `irgen`, `driver`)
 - `include/` — headers the compiler supplies (`stddef.h`, `stdarg.h`, `stdbool.h`, `limits.h`)
-- `build/compiler` — release binary produced by `make` (not committed)
+- `build/hcc` — release binary produced by `make` (not committed)
 - `tests/` — C programs for the differential harness; `tests/inc/` holds headers those programs include
 - `harness/run_tests.py` — Clang oracle
 - `src/target.rs`, `src/aapcs64.rs` — target selection and the Arm 64-bit calling convention

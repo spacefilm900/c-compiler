@@ -17,7 +17,7 @@ agree on a completed run and the candidate also runs to completion
 Usage (from the repository root, after `make` and `scripts/fetch_csmith.sh`):
 
   python3 tools/csmith_campaign.py \\
-    --compiler build/compiler \\
+    --compiler build/hcc \\
     --seed-start 1 --count 500 \\
     --opt O0 --opt O2 \\
     --out /tmp/csmith-coverage
@@ -66,7 +66,7 @@ VALID_COMPARISON_STATUSES = frozenset(
     {"agreement", "candidate-wrong-output"}
 )
 
-DEFAULT_COMPILER = ROOT / "build" / "compiler"
+DEFAULT_COMPILER = ROOT / "build" / "hcc"
 DEFAULT_CSMITH = (
     ROOT / "tests" / "external" / "csmith" / "install" / "bin" / "csmith"
 )

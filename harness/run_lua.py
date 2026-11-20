@@ -70,7 +70,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
+COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "hcc"))
 CLANG = os.environ.get("CLANG", "clang")
 VERSION = "5.4.7"
 LUA_ROOT = Path(os.environ.get("LUA_ROOT", ROOT / "tests" / "external" / "lua"))

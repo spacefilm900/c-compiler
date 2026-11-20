@@ -1,6 +1,6 @@
 //! Command-line driver.
 //!
-//! `compiler INPUT.c -o OUTPUT.ll` writes textual LLVM IR.
+//! `hcc INPUT.c -o OUTPUT.ll` writes textual LLVM IR.
 //! `-E` writes the preprocessed text instead. `--dump-tokens`, `--dump-ast`,
 //! `--dump-sema` and `--dump-ir` stop after that stage and write its dump
 //! (to `-o FILE`, or standard output); see `docs/DEBUGGING.md`. `-I`, `-D`, and `-U` are
@@ -20,9 +20,9 @@ use crate::dialect::Dialect;
 use crate::pp::{preprocess, CliMacro, PpOptions};
 
 const USAGE: &str = "\
-usage: compiler [options] INPUT.c -o OUTPUT.ll
-       compiler -E [options] INPUT.c [-o OUTPUT.i]
-       compiler --dump-STAGE [options] INPUT.c [-o OUTPUT]
+usage: hcc [options] INPUT.c -o OUTPUT.ll
+       hcc -E [options] INPUT.c [-o OUTPUT.i]
+       hcc --dump-STAGE [options] INPUT.c [-o OUTPUT]
 options:
   -I DIR          add DIR to the include search path
   -D NAME[=text]  define NAME as text, or as 1 if text is omitted
@@ -428,14 +428,14 @@ mod tests {
 
     #[test]
     fn cli_usage_success_and_error() {
-        assert_eq!(run(&["compiler".into()]), 2);
-        assert_eq!(run(&["compiler".into(), "--help".into()]), 0);
+        assert_eq!(run(&["hcc".into()]), 2);
+        assert_eq!(run(&["hcc".into(), "--help".into()]), 0);
 
         let (src, out) = temp_paths();
         std::fs::write(&src, "int main(void) { return 42; }\n").unwrap();
         assert_eq!(
             run(&[
-                "compiler".into(),
+                "hcc".into(),
                 src.display().to_string(),
                 "-o".into(),
                 out.display().to_string(),
@@ -452,7 +452,7 @@ mod tests {
         let _ = std::fs::remove_file(&bad_out);
         assert_eq!(
             run(&[
-                "compiler".into(),
+                "hcc".into(),
                 bad.display().to_string(),
                 "-o".into(),
                 bad_out.display().to_string(),
@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn dump_options_parse_and_conflict() {
         let args = |list: &[&str]| -> Vec<String> {
-            std::iter::once("compiler")
+            std::iter::once("hcc")
                 .chain(list.iter().copied())
                 .map(String::from)
                 .collect()
@@ -512,7 +512,7 @@ mod tests {
         let dump = |flag: &str| {
             let _ = std::fs::remove_file(&dumped);
             let status = run(&[
-                "compiler".into(),
+                "hcc".into(),
                 flag.into(),
                 path.clone(),
                 "-o".into(),
@@ -569,7 +569,7 @@ mod tests {
                 "x86_64-apple-macosx13.0.0",
             ),
         ] {
-            let mut args = vec!["compiler".to_string()];
+            let mut args = vec!["hcc".to_string()];
             args.extend(flags.iter().map(|flag| flag.to_string()));
             args.extend([path.clone(), "-o".to_string(), ll.clone()]);
             assert_eq!(run(&args), 0, "{flags:?}");
@@ -579,7 +579,7 @@ mod tests {
                 "{text}"
             );
         }
-        let args: Vec<String> = ["compiler", "-target", "mips-linux-gnu", &path, "-o", &ll]
+        let args: Vec<String> = ["hcc", "-target", "mips-linux-gnu", &path, "-o", &ll]
             .iter()
             .map(|arg| arg.to_string())
             .collect();
@@ -596,7 +596,7 @@ mod tests {
         let pre = out.with_extension("i");
         assert_eq!(
             run(&[
-                "compiler".into(),
+                "hcc".into(),
                 "-DNAME=7".into(),
                 "-E".into(),
                 src.display().to_string(),
@@ -619,7 +619,7 @@ mod tests {
         let included = pre.with_extension("inc.i");
         assert_eq!(
             run(&[
-                "compiler".into(),
+                "hcc".into(),
                 format!("-I{}", header_dir.display()),
                 "-E".into(),
                 src.display().to_string(),
@@ -668,7 +668,7 @@ mod tests {
         for target in ["x86_64-apple-macos", "arm64-apple-macos"] {
             assert_eq!(
                 run(&[
-                    "compiler".into(),
+                    "hcc".into(),
                     "-target".into(),
                     target.into(),
                     "-isysroot".into(),
@@ -698,7 +698,7 @@ mod tests {
         for target in ["x86_64-apple-macos", "arm64-apple-macos"] {
             assert_eq!(
                 run(&[
-                    "compiler".into(),
+                    "hcc".into(),
                     "-target".into(),
                     target.into(),
                     "-isysroot".into(),
@@ -729,7 +729,7 @@ mod tests {
         .unwrap();
         let compile = |flags: &[&str]| {
             let _ = std::fs::remove_file(&out);
-            let mut args: Vec<String> = vec!["compiler".into()];
+            let mut args: Vec<String> = vec!["hcc".into()];
             args.extend(flags.iter().map(|flag| flag.to_string()));
             args.extend([
                 src.display().to_string(),

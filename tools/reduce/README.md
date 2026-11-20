@@ -65,7 +65,7 @@ candidate's result is cached by its SHA-256, so nothing is tested twice.
 | `demo/bitfield_mix.c` | `miscompile` | 118 lines | 14 lines (1,803 tests, about 80 s) |
 | `demo/wide_address.c` | `bad-ir` | 39 lines | 2 lines (260 tests, about 1 s) |
 
-It then checks that the current `build/compiler` no longer shows either
+It then checks that the current `build/hcc` no longer shows either
 bug. `OLD_COMPILER=path` skips the build.
 
 ## Tests

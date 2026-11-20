@@ -7,7 +7,7 @@
 #                   bit-field overwrote its neighbour)
 #   wide_address.c  with --mode bad-ir     (bug a: an address converted to
 #                   __int128 in a static initializer gave invalid IR)
-# Each result is checked against the current compiler (build/compiler),
+# Each result is checked against the current compiler (build/hcc),
 # which must no longer show the bug. Results go to $OUT (default
 # /tmp/reduce-demo). Needs clang, and git and cargo when building.
 set -euo pipefail
@@ -27,9 +27,9 @@ if [ -z "${OLD_COMPILER:-}" ]; then
         git -C "$ROOT" worktree add --detach "$tree" 0cab101
     fi
     (cd "$tree" && cargo build --release --quiet)
-    OLD_COMPILER="$tree/target/release/compiler"
+    OLD_COMPILER="$tree/target/release/hcc"
 fi
-NEW_COMPILER="${NEW_COMPILER:-$ROOT/build/compiler}"
+NEW_COMPILER="${NEW_COMPILER:-$ROOT/build/hcc}"
 for compiler in "$OLD_COMPILER" "$NEW_COMPILER"; do
     if [ ! -x "$compiler" ]; then
         echo "FAIL: $compiler is not an executable (run make)" >&2

@@ -26,7 +26,7 @@ The five `-O2` reference disagreements (seeds 568, 1085, 1502, 1562, 1810) are c
 1. **`repro-struct-return-flag.c`** — after a discarded return of a bit-field struct, an `int` flag of 0 is treated as true when passed as the third argument of a function (integer, pointer, int). Found in seeds 121, 755, 819, 1468, 1841, and 1855 at `-O0`. The checksum line still matches; extra `transparent_crc` traces are printed. The same six seeds agree at `-O2`.
 2. **`repro-pointer-compare.c`** and **`repro-pointer-assign.c`** — this compiler rejects incompatible object-pointer comparisons and assignments that GCC and Clang accept in GNU mode. 418 comparisons and 90 assignments at `-O0`. GNU mode today only allows `void *` compared with a function pointer.
 
-Rerun: `python3 tools/csmith_campaign.py --compiler build/compiler --seed-start 1 --count 500 --opt O0 --opt O2 --out DIR`.
+Rerun: `python3 tools/csmith_campaign.py --compiler build/hcc --seed-start 1 --count 500 --opt O0 --opt O2 --out DIR`.
 
 ## Follow-up run after the fixes (13 November 2026)
 

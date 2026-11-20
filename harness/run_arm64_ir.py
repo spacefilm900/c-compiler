@@ -43,7 +43,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "harness"))
 import intel_mac_proxy as intel  # noqa: E402
 import windows_x64 as win  # noqa: E402
-COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
+COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "hcc"))
 CLANG = os.environ.get("CLANG", "clang")
 INCLUDE = Path(os.environ.get("AARCH64_INCLUDE", "/usr/aarch64-linux-gnu/include"))
 TARGETS = {

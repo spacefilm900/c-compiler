@@ -27,9 +27,9 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-# Keep the environment string. Path("./compiler") stringifies to "compiler",
+# Keep the environment string. Path("./hcc") stringifies to "hcc",
 # which is then looked up on PATH instead of in the current directory.
-COMPILER_COMMAND = os.environ.get("CC_UNDER_TEST", str(ROOT / "build" / "compiler"))
+COMPILER_COMMAND = os.environ.get("CC_UNDER_TEST", str(ROOT / "build" / "hcc"))
 COMPILER = Path(COMPILER_COMMAND)
 CLANG = os.environ.get("CLANG", "clang")
 OUT = Path(os.environ.get("PERF_JSON", ROOT / "reports" / "perf.json"))
