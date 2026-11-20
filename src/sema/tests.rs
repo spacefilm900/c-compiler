@@ -1925,6 +1925,11 @@ fn vla_constraints_and_jumps() {
 #[test]
 fn atomic_types_and_lock_free_sizes() {
     crate::compile_to_ir(
+        "struct Node { struct Node *next; int v; } n; int main(void) { return 0; }\n",
+        "t.c",
+    )
+    .unwrap();
+    crate::compile_to_ir(
         "_Atomic int x; int main(void) { x = 1; return x; }\n",
         "t.c",
     )
