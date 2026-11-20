@@ -242,6 +242,13 @@ impl Parser<'_> {
             .map(|(_, line, column)| (*line, *column))
             .unwrap_or_else(|| decl_pos(&raw));
         let ty = layer_type(self.derive(base, &raw, line, column)?);
+        if type_has_identifier_list(&ty) {
+            return Err(self.error_at(
+                line,
+                column,
+                "an identifier list in a function declarator that is not a definition shall be empty",
+            ));
+        }
         let ty = self.adjust_parameter(ty, line, column)?;
         if let Some((name, line, column)) = &named {
             self.bind_ordinary(name, Some(ty.clone()), *line, *column)?;
@@ -650,5 +657,21 @@ pub(super) fn decl_pos(raw: &RawDecl) -> (usize, usize) {
         RawDecl::Pointer(_, inner) | RawDecl::Array(inner, _) | RawDecl::Func(inner, _) => {
             decl_pos(inner)
         }
+    }
+}
+
+/// C11 6.7.6.3p3: a non-empty identifier list is allowed only on a
+/// function definition's declarator, not on a parameter or a nested type.
+fn type_has_identifier_list(ty: &CType) -> bool {
+    match ty {
+        CType::Func(func) => {
+            (!func.prototype && !func.params.is_empty())
+                || type_has_identifier_list(&func.ret)
+                || func.params.iter().any(type_has_identifier_list)
+        }
+        CType::Pointer(inner) | CType::Array(inner, _) | CType::Qualified(_, inner) => {
+            type_has_identifier_list(inner)
+        }
+        CType::Void | CType::Int(_) | CType::Float(_) | CType::Struct(_) => false,
     }
 }

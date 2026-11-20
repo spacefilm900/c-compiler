@@ -2,14 +2,12 @@
    (C11 6.2.4p4). The POSIX thread functions are declared here rather than
    by including <pthread.h>, because glibc's header uses a GNU `aligned`
    typedef whose size is not a multiple of its alignment, which this
-   compiler does not accept. The native Linux/macOS harness links with
-   `-pthread`; the Windows Wine stand-in does not run this directory. */
+   compiler does not accept. `pthread_t` is a pointer-sized unsigned long
+   on the LP64 hosts that run this test. The native Linux/macOS harness
+   links with `-pthread`; the Windows Wine stand-in does not run this
+   directory. */
 
-#if defined(__APPLE__)
-typedef struct _opaque_pthread_t *pthread_t;
-#else
 typedef unsigned long pthread_t;
-#endif
 
 int pthread_create(pthread_t *, const void *, void *(*)(void *), void *);
 int pthread_join(pthread_t, void **);

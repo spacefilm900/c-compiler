@@ -51,7 +51,10 @@ impl Sema<'_> {
         } else {
             self.reveal_file(&name);
             self.set_global_type(&name, ty.clone());
-            let is_def = !(decl.init.is_none() && decl.storage == Storage::Extern);
+            // C11 6.9.2: a tentative declaration is not the object's
+            // definition when an initialized definition is present. Only an
+            // initialized definition is `is_def` for 6.7.5p7.
+            let is_def = decl.init.is_some();
             self.check_and_merge_tls_alignas(
                 &name,
                 decl.thread_local,
@@ -157,6 +160,33 @@ impl Sema<'_> {
         Ok(())
     }
 
+    /// `_Alignas` on an incomplete record is checked again when the type
+    /// is complete (C11 6.7.5p4). An `extern` that stays incomplete is left
+    /// to the other translation unit.
+    fn deferred_alignas_error(&self) -> Option<(String, u32, u32, usize, usize)> {
+        for name in &self.global_order {
+            let Some(Symbol::Var(var)) = self.file_get(name) else {
+                continue;
+            };
+            let Some(info) = var.global.as_ref() else {
+                continue;
+            };
+            let Some(requested) = info.alignas else {
+                continue;
+            };
+            let ready = var.ty.is_complete() || var.ty.is_array();
+            if !ready {
+                continue;
+            }
+            let natural = var.ty.member_align();
+            if requested < natural {
+                let (line, column) = self.object_decls.get(name).copied().unwrap_or((1, 1));
+                return Some((var.ty.display(), requested, natural, line, column));
+            }
+        }
+        None
+    }
+
     /// Bind a file-scope object's name before its initializer is checked
     /// (C11 6.2.1p7), or reveal a name hidden by a block-scope `extern`.
     /// Returns the hidden declaration's type in the second case.
@@ -186,7 +216,7 @@ impl Sema<'_> {
             self.object_decls
                 .entry(name.to_string())
                 .or_insert((decl.line, decl.column));
-            let is_def = !(decl.init.is_none() && decl.storage == Storage::Extern);
+            let is_def = decl.init.is_some();
             self.insert_file(Symbol::Var(VarSym {
                 name: name.to_string(),
                 slot: format!("@{name}"),
@@ -392,6 +422,15 @@ impl Sema<'_> {
 
     pub(super) fn finish(&mut self, unit: &mut TranslationUnit) -> Result<(), Diagnostic> {
         self.check_library_nan_clash()?;
+        if let Some((name, requested, natural, line, column)) = self.deferred_alignas_error() {
+            return self.err(
+                line,
+                column,
+                format!(
+                    "requested alignment {requested} is less than the alignment of '{name}' ({natural})"
+                ),
+            );
+        }
         let mut missing_static = None;
         let mut incomplete_array = None;
         let mut func_decls = Vec::new();
@@ -464,12 +503,20 @@ impl Sema<'_> {
                         GlobalState::Tentative => Some(zero_const(&var.ty)),
                         GlobalState::Defined(value) => Some(value.clone()),
                     };
+                    let mut attrs = unit.var_attrs.get(name).cloned().unwrap_or_default();
+                    // A block-scope `extern _Thread_local` records TLS on
+                    // the file symbol, but the parser only fills var_attrs
+                    // for file-scope declarations.
+                    attrs.thread_local = attrs.thread_local || info.thread_local;
+                    if attrs.align.is_none() {
+                        attrs.align = info.alignas;
+                    }
                     globals.push(IrGlobal {
                         name: var.name.clone(),
                         ty: var.ty.clone(),
                         linkage: info.linkage,
                         init,
-                        attrs: unit.var_attrs.get(name).cloned().unwrap_or_default(),
+                        attrs,
                     });
                 }
             }
@@ -760,8 +807,8 @@ impl Sema<'_> {
             global: Some(GlobalInfo {
                 linkage,
                 state: GlobalState::Declared,
-                thread_local: false,
-                alignas: None,
+                thread_local: decl.thread_local,
+                alignas: decl.alignas,
                 defined: false,
                 def_alignas: None,
             }),
@@ -800,6 +847,14 @@ impl Sema<'_> {
                 );
             }
             self.set_global_type(&name, composite(&file_var.ty, &local_ty));
+            self.check_and_merge_tls_alignas(
+                &name,
+                decl.thread_local,
+                decl.alignas,
+                false,
+                decl.line,
+                decl.column,
+            )?;
         }
         self.set_local_var_type(&name, local_ty.clone());
         decl.ty = local_ty;

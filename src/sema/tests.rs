@@ -1825,8 +1825,18 @@ fn alignas_and_thread_local_redeclarations() {
     sema_ok("_Alignas(16) int x; int x;");
     sema_ok("_Alignas(16) int x; _Alignas(16) int x;");
     sema_ok("extern int x; _Alignas(8) int x;");
-    assert!(sema_err("int x; _Alignas(16) int x;").contains("alignment specifier"));
+    // N1570 6.7.5p7: a declaration may omit the specifier when the
+    // definition has one. `int x;` is a tentative declaration, not a
+    // definition that forbids a later specifier.
+    sema_ok("int x; _Alignas(16) int x;");
+    sema_ok("int x; _Alignas(16) int x = 1;");
+    sema_ok("_Alignas(32) int x = 1; int x; extern _Alignas(32) int x;");
+    assert!(sema_err("int x = 1; _Alignas(16) int x;").contains("alignment specifier"));
     assert!(sema_err("_Alignas(8) int x; _Alignas(16) int x;").contains("conflicting alignment"));
+    assert!(
+        sema_err("_Alignas(1) struct S x; struct S { int member; };")
+            .contains("less than the alignment")
+    );
     sema_ok("_Thread_local int t; extern _Thread_local int t;");
     sema_ok("_Thread_local static int t; _Thread_local static int t;");
     assert!(sema_err("_Thread_local int t; int t;")
@@ -1839,6 +1849,12 @@ fn alignas_and_thread_local_redeclarations() {
         sema_err("extern _Thread_local int t; int main(void) { extern int t; return t; }")
             .contains("'_Thread_local' must be present on every declaration")
     );
+    assert!(
+        sema_err("void f(void) { extern _Thread_local int x; extern int x; }")
+            .contains("'_Thread_local' must be present on every declaration")
+    );
+    assert!(sema_err("_Thread_local int x; int *p = &x;").contains("not a constant expression"));
+    sema_ok("_Thread_local int x; int *f(void) { return &x; }");
 }
 
 #[test]
@@ -1855,6 +1871,7 @@ fn kr_definition_compatible_with_promoted_prototype() {
             || sema_err("int f(int, int); int f(a) int a; { return a; }").contains("conflicting")
     );
     sema_ok("int f(); int f(a) int a; { return a; }");
+    sema_ok("int f(); int f(x) float x; { return 0; } int f(double);");
     assert!(
         sema_err("int f(int); int f() { return 0; }").contains("incompatible")
             || sema_err("int f(int); int f() { return 0; }").contains("conflicting")

@@ -1460,6 +1460,13 @@ fn thread_local_is_emitted_on_globals_and_static_locals() {
         "{ir}"
     );
     assert!(ir.contains("thread_local global i32 5, align 4"), "{ir}");
+
+    let only_extern = "int get(void) { extern _Thread_local int x; return x; }\n";
+    let ir = crate::compile_to_ir(only_extern, "tls-extern.c").unwrap();
+    assert!(
+        ir.contains("@x = external thread_local global i32, align 4"),
+        "{ir}"
+    );
 }
 
 #[test]

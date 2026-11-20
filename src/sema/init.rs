@@ -1116,12 +1116,40 @@ impl Sema<'_> {
         }
     }
 
+    /// C11 6.6p9: an address constant names an object of static storage
+    /// duration. `_Thread_local` objects have thread storage duration.
+    fn reject_thread_local_address(&self, name: &str, expr: &Expr) -> Result<(), Diagnostic> {
+        let Ok(PtrConst::Addr { name: object, .. }) = eval_ptr(expr) else {
+            return Ok(());
+        };
+        if !self.object_is_thread_local(&object) {
+            return Ok(());
+        }
+        self.err(
+            expr.line(),
+            expr.column(),
+            format!("initializer of '{name}' is not a constant expression"),
+        )
+    }
+
+    fn object_is_thread_local(&self, name: &str) -> bool {
+        if let Some(Symbol::Var(var)) = self.file_get(name) {
+            if var.global.as_ref().is_some_and(|info| info.thread_local) {
+                return true;
+            }
+        }
+        self.static_locals
+            .iter()
+            .any(|global| global.name == name && global.attrs.thread_local)
+    }
+
     pub(super) fn fold_one(
         &self,
         name: &str,
         expr: &Expr,
         dest: &CType,
     ) -> Result<ConstInit, Diagnostic> {
+        self.reject_thread_local_address(name, expr)?;
         if let Some(dest_int) = dest.as_integer() {
             match eval_num(expr) {
                 Ok(NumConst::Int(value)) => {

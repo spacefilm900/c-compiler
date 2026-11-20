@@ -223,6 +223,7 @@ impl Parser<'_> {
             thread_local: flags.thread_local,
             thread_local_at: flags.thread_local_at,
             register: flags.register,
+            plain_storage: flags.plain_storage,
         })
     }
 

@@ -34,13 +34,14 @@ impl Parser<'_> {
         }
         let mut params = params;
         let kr_def = !prototype && !params.is_empty();
-        if kr_def {
-            self.parse_kr_declaration_list(&mut params)?;
-        } else if !prototype && self.starts_declaration() {
+        if !kr_def && !prototype && self.starts_declaration() {
             return Err(self.error(
                 "a declaration list is not allowed after a function declarator with no identifier list",
             ));
         }
+        // C11 6.2.1p4: identifiers in the parameter declaration list have
+        // the function's block scope. Open it before that list is parsed
+        // so enumerators and earlier parameters are not bound at file scope.
         self.push_tags();
         for (name, entry) in declarator.param_tags {
             self.tags
@@ -55,10 +56,7 @@ impl Parser<'_> {
                 .insert(name, binding);
         }
         if kr_def {
-            for param in &params {
-                let name = param.name.as_ref().expect("named K&R parameter");
-                self.bind_ordinary(name, Some(param.ty.clone()), param.line, param.column)?;
-            }
+            self.parse_kr_declaration_list(&mut params)?;
         }
         // C11 6.4.2.2: static const char __func__[] = "function-name";
         {
@@ -891,7 +889,7 @@ impl Parser<'_> {
                     "alignment specifiers are not allowed on a parameter",
                 ));
             }
-            if specs.storage != Storage::None {
+            if specs.storage != Storage::None || (specs.plain_storage && !specs.register) {
                 return Err(self.error(
                     "a parameter declaration may only use the 'register' storage-class specifier",
                 ));
@@ -928,6 +926,12 @@ impl Parser<'_> {
                 params[index].ty = ty;
                 params[index].line = named.line;
                 params[index].column = named.column;
+                self.bind_ordinary(
+                    &named.name,
+                    Some(params[index].ty.clone()),
+                    named.line,
+                    named.column,
+                )?;
                 if self.match_kind(TokenKind::Comma) {
                     continue;
                 }

@@ -514,6 +514,9 @@ struct Specs {
     thread_local_at: Option<(usize, usize)>,
     /// `register`, which forbids `_Alignas` (C11 6.7.5p2).
     register: bool,
+    /// `auto` or `register` was written. K&R parameter declarations
+    /// may use `register` but not `auto` (C11 6.9.1p5).
+    plain_storage: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

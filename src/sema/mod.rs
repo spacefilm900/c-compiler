@@ -501,10 +501,13 @@ impl FuncSym {
     /// Take the composite type with a compatible later declaration (C11
     /// 6.2.7p4): a prototype replaces a declaration that had none.
     fn absorb(&mut self, new: &FuncTy) {
-        if !self.prototype && new.prototype {
+        // A later prototype, or a K&R definition with an identifier list,
+        // replaces an empty unprototyped declaration `int f();`. The
+        // definition stays unprototyped (C11 6.7.6.3p15).
+        if !self.prototype && (new.prototype || !new.params.is_empty()) {
             self.params = new.params.clone();
             self.variadic = new.variadic;
-            self.prototype = true;
+            self.prototype = new.prototype;
         }
     }
 }

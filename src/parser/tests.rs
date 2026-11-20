@@ -1553,4 +1553,14 @@ fn kr_definitions_parse_and_reject_bad_lists() {
     assert!(parse_err("int f(a) int a = 1; { return a; }").contains("initializer"));
     assert!(parse_err("int (*p)(a, b);")
         .contains("identifier list in a function declarator that is not a definition"));
+    assert!(parse_err("int outer(int callback(x));")
+        .contains("identifier list in a function declarator that is not a definition"));
+    assert!(parse_err("int f(x) auto int x; { return x; }").contains("may only use the 'register'"));
+    assert!(
+        parsed("int f(a) enum { Value = 7 } a; { return a; }\nint Value;\n").contains("func int f")
+    );
+    assert!(
+        parsed("int f(a, b) int a; int (*b)[sizeof a]; { return sizeof *b; }\n")
+            .contains("func int f")
+    );
 }
