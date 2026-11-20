@@ -1538,3 +1538,57 @@ fn vla_fsize3_matches_the_standard_example() {
     let ir = crate::compile_to_ir(src, "vla.c").unwrap();
     assert_eq!(run_binary(&ir).0, 13);
 }
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn vla_inherited_bound_is_not_re_evaluated() {
+    let td = "typedef";
+    let src = format!(
+        "int main(void) {{ int n = 2, m = 3; {td} int T[n++]; T a[m++]; return n + m + (int)(sizeof(T) / sizeof(int)) + (int)(sizeof(a) / sizeof(int)); }}\n"
+    );
+    let ir = crate::compile_to_ir(&src, "vla.c").unwrap();
+    assert_eq!(run_binary(&ir).0, 15);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn vla_cast_evaluates_the_bound_before_the_operand() {
+    let src = "int main(void) { int n = 3; (void)(int (*)[n++])0; return n; }\n";
+    let ir = crate::compile_to_ir(src, "vla.c").unwrap();
+    assert_eq!(run_binary(&ir).0, 4);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn vla_struct_return_survives_stackrestore() {
+    let src = "struct S { int x, y; }; struct S f(int n) { struct S a[n]; a[0].x = 1; a[0].y = 2; return a[0]; } int main(void) { struct S s = f(4); return s.x + s.y; }\n";
+    let ir = crate::compile_to_ir(src, "vla.c").unwrap();
+    assert_eq!(run_binary(&ir).0, 3);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn computed_goto_keeps_a_vla_in_scope_at_its_destination() {
+    let src = "int main(void) { int n = 2; int a[n]; a[0] = 7; void *p = &&L; goto *p; L: return a[0]; }\n";
+    let ir = crate::compile_dialect(
+        src,
+        "vla.c",
+        &crate::PpOptions::default(),
+        crate::Dialect::Gnu11,
+    )
+    .unwrap()
+    .ir;
+    assert_eq!(run_binary(&ir).0, 7);
+}

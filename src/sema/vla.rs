@@ -276,6 +276,18 @@ impl VmWalk {
                 self.labels.insert(name.clone(), self.pos());
                 self.switch_body(stmt, rec);
             }
+            Stmt::If {
+                then_stmt,
+                else_stmt,
+                ..
+            } => {
+                self.switch_body(then_stmt, rec);
+                if let Some(else_stmt) = else_stmt {
+                    self.switch_body(else_stmt, rec);
+                }
+            }
+            Stmt::While { body, .. } | Stmt::Do { body, .. } => self.switch_body(body, rec),
+            Stmt::For { body, .. } => self.switch_body(body, rec),
             Stmt::Switch { .. } => self.stmt(stmt),
             other => self.stmt(other),
         }

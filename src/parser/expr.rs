@@ -456,6 +456,13 @@ impl Parser<'_> {
         line: usize,
         column: usize,
     ) -> Result<Expr, Diagnostic> {
+        if ty.is_vla() {
+            return Err(self.error_at(
+                line,
+                column,
+                "a variable length array cannot be a compound literal type",
+            ));
+        }
         let init = self.parse_initializer()?;
         Ok(Expr::CompoundLit {
             decl: Box::new(VarDecl {
@@ -470,7 +477,7 @@ impl Parser<'_> {
                 align: None,
                 alignas: None,
                 thread_local: false,
-                eval_vla: false,
+                vla_from: None,
             }),
             line,
             column,

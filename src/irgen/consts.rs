@@ -419,7 +419,7 @@ pub(super) fn render_ptr(ptr: &PtrConst, renames: &Renames) -> String {
         PtrConst::Label { func, label } => format!(
             "blockaddress({}, %{})",
             llvm_global(renamed(func, renames)),
-            c_label(label)
+            c_label_via_ptr(label)
         ),
     }
 }

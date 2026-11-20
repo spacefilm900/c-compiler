@@ -538,7 +538,11 @@ pub(super) fn render_function(
         .collect();
     let mut gen = Gen::new(func.ret_type.clone(), sig.ret_agg.clone());
     gen.renames = renames.clone();
-    gen.addr_labels = func.addr_labels.iter().map(|name| c_label(name)).collect();
+    gen.addr_labels = func
+        .addr_labels
+        .iter()
+        .map(|name| c_label_via_ptr(name))
+        .collect();
     gen.vla_bounds = vla_sizes
         .iter()
         .map(|bound| (bound.id, bound.expr.clone()))

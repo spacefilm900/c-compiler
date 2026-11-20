@@ -626,8 +626,8 @@ struct NamedDecl {
     symbol: Option<String>,
     /// GNU attributes in and after the declarator.
     attrs: Vec<Attr>,
-    /// This declarator allocated one or more VLA size identifiers.
-    eval_vla: bool,
+    /// First VLA id this declarator allocated, if any.
+    vla_from: Option<crate::ast::VlaId>,
 }
 
 impl NamedDecl {

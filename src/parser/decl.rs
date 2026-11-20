@@ -31,7 +31,7 @@ impl Parser<'_> {
                     "parameter name omitted in function definition",
                 ));
             }
-            if param.star_array || type_has_star_array(&param.ty) {
+            if param.star_array || type_has_star_param(&param.ty) {
                 return Err(self.error_at(
                     param.line,
                     param.column,
@@ -385,7 +385,7 @@ impl Parser<'_> {
             align: None,
             alignas: None,
             thread_local: false,
-            eval_vla: declarator.eval_vla,
+            vla_from: declarator.vla_from,
         }))
     }
 
@@ -399,7 +399,18 @@ impl Parser<'_> {
         let scope = self.names.last_mut().expect("name scope");
         if let Some(existing) = scope.get(name) {
             match existing {
-                NameBinding::Typedef(old) if compatible(old, &ty) => return Ok(()),
+                NameBinding::Typedef(old) if compatible(old, &ty) => {
+                    // C11 6.7p3: a typedef may be redefined to the same type
+                    // only when that type is not variably modified.
+                    if ty.is_variably_modified() || old.is_variably_modified() {
+                        return Err(self.error_at(
+                            line,
+                            column,
+                            "a typedef of a variably modified type cannot be redefined",
+                        ));
+                    }
+                    return Ok(());
+                }
                 _ => {
                     return Err(self.error_at(line, column, format!("redefinition of '{name}'")));
                 }
@@ -930,7 +941,7 @@ impl Parser<'_> {
             align,
             alignas: specs.alignas,
             thread_local: specs.thread_local,
-            eval_vla: declarator.eval_vla,
+            vla_from: declarator.vla_from,
         })
     }
 

@@ -1598,4 +1598,10 @@ fn variable_length_arrays_parse_and_reject_constraints() {
     assert!(parse_err("void f(int n) { struct S { int (*p)[n]; }; }").contains("member"));
     assert!(parse_err("void f(int a[*]) { }").contains("star array notation"));
     assert!(parse_err("int a[*];").contains("star array notation"));
+    // `[*]` in a nested prototype is allowed on a definition (C11 6.7.6.2p4).
+    let _ = parsed("void f(void (*cb)(int a[2][*])) { }\n");
+    assert!(
+        parse_err("void f(int n) { typedef int T[n]; typedef int T[n]; }").contains("redefined")
+    );
+    assert!(parse_err("void f(int n) { (int[n]){0}; }").contains("compound literal"));
 }

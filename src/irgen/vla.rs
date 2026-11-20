@@ -7,33 +7,38 @@ use super::*;
 impl Gen {
     /// Type-check already happened; evaluate every VLA size in `ty` now.
     pub(super) fn eval_vla_sizes(&mut self, ty: &CType) {
-        self.eval_vla_sizes_force(ty, false);
+        self.eval_vla_sizes_from(ty, None);
     }
 
     pub(super) fn force_eval_vla_sizes(&mut self, ty: &CType) {
-        self.eval_vla_sizes_force(ty, true);
+        self.eval_vla_sizes_from(ty, Some(VlaId(0)));
     }
 
-    fn eval_vla_sizes_force(&mut self, ty: &CType, force: bool) {
+    pub(super) fn force_eval_vla_sizes_from(&mut self, ty: &CType, from: VlaId) {
+        self.eval_vla_sizes_from(ty, Some(from));
+    }
+
+    fn eval_vla_sizes_from(&mut self, ty: &CType, from: Option<VlaId>) {
         match ty.peel() {
             CType::Array(elem, len) => {
-                self.eval_vla_sizes_force(elem, force);
+                self.eval_vla_sizes_from(elem, from);
                 if let ArrayLen::Vla(id) = *len {
-                    self.eval_vla_id(id, elem, force);
+                    self.eval_vla_id(id, elem, from);
                 }
             }
-            CType::Pointer(inner) => self.eval_vla_sizes_force(inner, force),
+            CType::Pointer(inner) => self.eval_vla_sizes_from(inner, from),
             CType::Func(func) => {
-                self.eval_vla_sizes_force(&func.ret, force);
+                self.eval_vla_sizes_from(&func.ret, from);
                 for param in &func.params {
-                    self.eval_vla_sizes_force(param, force);
+                    self.eval_vla_sizes_from(param, from);
                 }
             }
             _ => {}
         }
     }
 
-    fn eval_vla_id(&mut self, id: VlaId, elem: &CType, force: bool) {
+    fn eval_vla_id(&mut self, id: VlaId, elem: &CType, from: Option<VlaId>) {
+        let force = from.is_some_and(|from| id.0 >= from.0);
         if !force && self.vla_bytes.contains_key(&id) {
             return;
         }
@@ -59,7 +64,7 @@ impl Gen {
                 if let Some(bytes) = self.vla_bytes.get(id).cloned() {
                     bytes
                 } else {
-                    self.eval_vla_id(*id, elem, false);
+                    self.eval_vla_id(*id, elem, None);
                     self.vla_bytes
                         .get(id)
                         .cloned()

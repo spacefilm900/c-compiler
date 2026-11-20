@@ -32,8 +32,16 @@ impl Gen {
                     if self.ret_ty.unqualified().is_record() {
                         let src_volatile = expr.ty().is_some_and(|ty| ty.is_volatile());
                         let src = self.record_ptr(expr);
-                        self.restore_vla_to(0);
-                        self.emit_record_return(&src, src_volatile);
+                        if self.vla_depth() > 0 {
+                            let ret = self.ret_ty.unqualified();
+                            let tmp = self.entry_alloca(&ret);
+                            self.copy_struct(&ret, &src, &tmp, src_volatile);
+                            self.restore_vla_to(0);
+                            self.emit_record_return(&tmp, false);
+                        } else {
+                            self.restore_vla_to(0);
+                            self.emit_record_return(&src, src_volatile);
+                        }
                     } else {
                         let value = self.gen_val(expr);
                         let value =
@@ -93,6 +101,22 @@ impl Gen {
             }
             Stmt::Label { name, stmt, .. } => {
                 let block = c_label(name);
+                if self
+                    .addr_labels
+                    .iter()
+                    .any(|label| label == &c_label_via_ptr(name))
+                {
+                    // Indirect goto lands on a trampoline that restores to
+                    // this label's VLA depth, then branches here. Direct
+                    // goto and fall-through still enter `block` itself.
+                    if !self.terminated {
+                        self.br(&block);
+                    }
+                    self.start(c_label_via_ptr(name));
+                    let depth = self.label_vla_depths.get(name).copied().unwrap_or(0);
+                    self.restore_vla_to(depth);
+                    self.br(&block);
+                }
                 self.place_label(&block);
                 return self.gen_stmt(stmt);
             }
@@ -107,7 +131,9 @@ impl Gen {
                 // function takes (LLVM LangRef, `indirectbr`).
                 self.ensure_block();
                 let target = self.gen_val(expr);
-                self.restore_vla_to(0);
+                // Each address-taken label has a trampoline that restores
+                // to that label's VLA depth. Restoring here would free
+                // storage still in scope at a destination after a VLA.
                 let dests: Vec<String> = self
                     .addr_labels
                     .iter()
@@ -142,8 +168,8 @@ impl Gen {
     }
 
     pub(super) fn gen_decl(&mut self, decl: &VarDecl) {
-        if decl.eval_vla {
-            self.force_eval_vla_sizes(&decl.ty);
+        if let Some(from) = decl.vla_from {
+            self.force_eval_vla_sizes_from(&decl.ty, from);
         } else if decl.ty.is_variably_modified() {
             self.eval_vla_sizes(&decl.ty);
         }

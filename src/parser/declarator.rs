@@ -51,7 +51,7 @@ impl Parser<'_> {
             param_names,
             symbol,
             attrs: Vec::new(),
-            eval_vla: self.vla_next != vla_before,
+            vla_from: (self.vla_next != vla_before).then_some(VlaId(vla_before)),
         })
     }
 
@@ -251,7 +251,7 @@ impl Parser<'_> {
             .map(|(_, line, column)| (*line, *column))
             .unwrap_or_else(|| decl_pos(&raw));
         let ty = layer_type(self.derive(base, &raw, line, column)?);
-        let star_array = type_has_star_array(&ty);
+        let star_array = type_has_star_param(&ty);
         if type_has_identifier_list(&ty) {
             return Err(self.error_at(
                 line,
@@ -676,15 +676,15 @@ pub(super) fn star_out_vla_types(ty: &mut CType) {
     }
 }
 
-/// Whether a type uses `[*]` array notation.
-pub(super) fn type_has_star_array(ty: &CType) -> bool {
+/// Whether this parameter's own type (after walking arrays and pointers,
+/// but not into a nested function type) uses `[*]`. A definition may not
+/// use `[*]` on its parameters, but `void f(void (*cb)(int a[*])) {}` is
+/// valid: the star belongs to `cb`'s prototype (C11 6.7.6.2p4).
+pub(super) fn type_has_star_param(ty: &CType) -> bool {
     match ty.peel() {
         CType::Array(_, ArrayLen::Star) => true,
-        CType::Array(elem, _) => type_has_star_array(elem),
-        CType::Pointer(inner) => type_has_star_array(inner),
-        CType::Func(func) => {
-            type_has_star_array(&func.ret) || func.params.iter().any(type_has_star_array)
-        }
+        CType::Array(elem, _) => type_has_star_param(elem),
+        CType::Pointer(inner) => type_has_star_param(inner),
         _ => false,
     }
 }

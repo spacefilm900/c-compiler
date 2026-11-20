@@ -391,6 +391,9 @@ impl Sema<'_> {
             let Some(name) = param.name.clone() else {
                 continue;
             };
+            // The parameter is not in scope in its own declarator (C11 6.2.1p7),
+            // so the bound is checked before the current name is inserted.
+            self.check_vla_sizes(&param.unadjusted, param.line, param.column)?;
             self.insert(Symbol::Var(VarSym {
                 name,
                 slot: param.slot.clone(),
@@ -398,7 +401,6 @@ impl Sema<'_> {
                 global: None,
                 file_visible: true,
             }));
-            self.check_vla_sizes(&param.unadjusted, param.line, param.column)?;
         }
         let body = func.body.as_mut().expect("defined function");
         self.labels.clear();
@@ -718,6 +720,7 @@ impl Sema<'_> {
                 format!("redefinition of '{}'", decl.name),
             );
         }
+        self.check_vla_sizes(&decl.ty, decl.line, decl.column)?;
         let symbol = self.fresh_static_name(&decl.name);
         let slot = format!("@{symbol}");
         decl.slot = slot.clone();

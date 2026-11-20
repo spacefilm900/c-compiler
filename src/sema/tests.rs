@@ -1904,4 +1904,14 @@ fn vla_constraints_and_jumps() {
             .contains("variably modified")
     );
     sema_ok("void f(int n) { int a[n]; switch (n) { case 1: a[0] = 1; } }");
+    assert!(sema_err(
+        "void f(int n, int x) { switch (x) { int a[n]; if (1) { case 0: a[0] = 1; } } }"
+    )
+    .contains("variably modified"));
+    sema_ok("int n = 3; void f(int n[n]) { n[0] = 1; }");
+    assert!(sema_err("void f(int n) { static int (*p)[n + 1.0]; }").contains("integer"));
+    assert!(sema_err(
+        "void f(int n) { _Static_assert(_Generic(0, int (*)[n]: 1, default: 1), \"ok\"); }"
+    )
+    .contains("generic association"));
 }

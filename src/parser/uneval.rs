@@ -25,7 +25,7 @@ pub(super) fn check_generic_assocs(
             default = true;
             continue;
         };
-        if assoc_ty.is_func() || !assoc_ty.is_complete() {
+        if assoc_ty.is_func() || !assoc_ty.is_complete() || assoc_ty.is_variably_modified() {
             return Err(BoundErr::GenericBadType);
         }
         for earlier in assocs[..index].iter().filter_map(|a| a.ty.as_ref()) {
@@ -609,7 +609,7 @@ fn check_uneval_pointer_arith(
     let (Some(lp), Some(rp)) = (left.pointee(), right.pointee()) else {
         return Ok(());
     };
-    let complete_object = |ty: &CType| !ty.is_func() && !ty.is_void() && ty.size().is_some();
+    let complete_object = |ty: &CType| ty.is_complete();
     let ok = op == BinOp::Sub
         && complete_object(lp)
         && complete_object(rp)

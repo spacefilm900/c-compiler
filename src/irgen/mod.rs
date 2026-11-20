@@ -372,6 +372,10 @@ fn c_label(name: &str) -> String {
     format!("C.{name}")
 }
 
+fn c_label_via_ptr(name: &str) -> String {
+    format!("{}.via_ptr", c_label(name))
+}
+
 /// `@name` when `name` matches LLVM's unquoted identifier pattern, otherwise
 /// a quoted global. C identifiers already match the unquoted pattern.
 fn llvm_global(name: &str) -> String {

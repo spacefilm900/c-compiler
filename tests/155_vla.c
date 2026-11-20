@@ -122,6 +122,38 @@ int goto_inner_lab(void)
     return n;
 }
 
+int inherit_size(void)
+{
+    int n = 2, m = 3;
+    typedef int T[n++];
+    T a[m++];
+    return n + m + (int)(sizeof(T) / sizeof(int)) + (int)(sizeof(a) / sizeof(int));
+}
+
+int cast_side(void)
+{
+    int n = 3;
+    (void)(int (*)[n++])0;
+    return n;
+}
+
+int ptrdiff_size(void)
+{
+    int n = 4;
+    int a[2][n];
+    return (int)sizeof(a - a);
+}
+
+struct S { int x, y; };
+
+struct S ret_elem(int n)
+{
+    struct S a[n];
+    a[0].x = 1;
+    a[0].y = 2;
+    return a[0];
+}
+
 int main(void)
 {
     int m = 3;
@@ -141,5 +173,12 @@ int main(void)
     }
     printf("%d\n", goto_reuse());
     printf("%d\n", goto_inner_lab());
+    printf("%d\n", inherit_size());
+    printf("%d\n", cast_side());
+    printf("%d\n", ptrdiff_size());
+    {
+        struct S s = ret_elem(4);
+        printf("%d\n", s.x + s.y);
+    }
     return 0;
 }

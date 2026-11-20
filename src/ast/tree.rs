@@ -914,9 +914,10 @@ pub struct VarDecl {
     /// `_Thread_local` (C11 6.7.1). Block-scope thread-local objects also
     /// have `static` or `extern` storage.
     pub thread_local: bool,
-    /// This declarator introduced a VLA size expression, which must be
-    /// evaluated each time the declaration is reached (C11 6.7.6.2p5).
-    pub eval_vla: bool,
+    /// First VLA id this declarator allocated, if any. Only those ids are
+    /// re-evaluated when the declaration is reached (C11 6.7.6.2p5); a bound
+    /// inherited from a typedef keeps the size recorded at the typedef.
+    pub vla_from: Option<VlaId>,
 }
 
 #[derive(Debug, Clone)]

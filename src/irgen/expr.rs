@@ -26,7 +26,7 @@ impl Gen {
                 Some(format!(
                     "blockaddress({}, %{})",
                     llvm_global(renamed(func, &self.renames)),
-                    c_label(name)
+                    c_label_via_ptr(name)
                 ))
             }
             Expr::Var { resolved, ty, .. } => {
@@ -69,6 +69,7 @@ impl Gen {
             }
             Expr::Sizeof { operand, .. } => Some(self.gen_sizeof(expr, operand)),
             Expr::Cast { ty_name, expr, .. } => {
+                self.eval_vla_sizes(ty_name);
                 if ty_name.is_void() {
                     let _ = self.gen_expr(expr);
                     None
@@ -112,9 +113,11 @@ impl Gen {
                 unreachable!("semantic analysis replaces a generic selection")
             }
             Expr::StmtExpr { body, ty, .. } => {
+                let depth = self.vla_depth();
                 let last = self.gen_stmt_expr_body(body);
                 let value = last.and_then(|last| self.gen_expr(last));
                 self.ensure_block();
+                self.leave_vla_to(depth);
                 if ty.as_ref().is_some_and(CType::is_void) {
                     None
                 } else {

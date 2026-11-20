@@ -858,7 +858,7 @@ Diagnostics: no VM type at file scope, no static or `_Thread_local` VLA object, 
 
 Nine GCC torture execute tests that were listed under `vla` now pass (known failures 379 after step 12a → 370; 1376 passed, 1746 executed, 0 unexpected): `20040411-1.c`, `20040811-1.c`, `20221006-1.c`, `920929-1.c`, `970217-1.c`, `pr22061-2.c`, `pr43220.c`, `pr77767.c`, and `vla-dealloc-1.c`. Twelve VLA-tagged tests remain: they use a GNU nested function, an undeclared `alloca`, or a variably modified struct or union member, which C11 forbids.
 
-Local results on rustc 1.85.1 and Clang 19.1.7: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **262 passed**, `make` produced `build/hcc`, `python3 harness/run_tests.py` **200/200 passed**, `python3 harness/run_gcc_torture.py` **1376 passed, 370 known failures, 0 unexpected, 1746 executed, 144 builtins files skipped**.
+Local results on rustc 1.85.1 and Clang 19.1.7: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **266 passed**, `make` produced `build/hcc`, `python3 harness/run_tests.py` **200/200 passed**, `python3 harness/run_gcc_torture.py` **1376 passed, 370 known failures, 0 unexpected, 1746 executed, 144 builtins files skipped**.
 
 ## Next actions
 
