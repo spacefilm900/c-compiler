@@ -19,21 +19,18 @@
 # `};` after a function is an empty file-scope declaration) and pr84748.c
 # (`__int128`).
 
-20000112-1.c old-style-decl
+# After the required C11 features of step 12a: 1334 passed, 379 known
+# failures, 0 unexpected, 1746 executed, 144 builtins files skipped.
+# 32 old-style-decl tests and pr68532.c (alignas) now pass.
 20000223-1.c compile-error
 20000227-1.c compile-error
 20000314-3.c old-style-decl
 20000412-3.c compile-error
 20000717-3.c compile-error
-20000726-1.c old-style-decl
 20000801-3.c compile-error
-20000808-1.c old-style-decl
-20000815-1.c old-style-decl
 20000822-1.c nested-function
 20000914-1.c old-style-decl
 20001009-2.c compile-error
-20001026-1.c old-style-decl
-20001101.c old-style-decl
 20010122-1.c compile-error
 20010209-1.c vla
 20010605-1.c nested-function
@@ -96,7 +93,6 @@
 20111208-1.c compile-error
 20120427-1.c compile-error
 20120427-2.c compile-error
-20170401-2.c old-style-decl
 20180112-1.c compile-error
 20221006-1.c vla
 20230630-2.c compile-error
@@ -110,15 +106,11 @@
 920428-2.c compile-error
 920429-1.c compile-error
 920501-1.c compile-error
-920501-2.c old-style-decl
 920501-3.c old-style-decl
-920501-6.c old-style-decl
 920501-7.c compile-error
 920501-9.c compile-error
 920520-1.c compile-error
 920603-1.c compile-error
-920604-1.c old-style-decl
-920612-1.c old-style-decl
 920612-2.c nested-function
 920721-2.c compile-error
 920721-3.c compile-error
@@ -129,12 +121,10 @@
 920812-1.c compile-error
 920908-2.c compile-error
 920909-1.c compile-error
-920922-1.c old-style-decl
 920929-1.c vla
 921013-1.c compile-error
 921017-1.c compile-error
 921110-1.c compile-error
-921112-1.c old-style-decl
 921123-1.c compile-error
 921124-1.c compile-error
 921202-1.c compile-error
@@ -168,7 +158,6 @@
 930929-1.c compile-error
 930930-1.c compile-error
 931002-1.c nested-function
-931005-1.c old-style-decl
 931009-1.c compile-error
 931012-1.c compile-error
 931017-1.c compile-error
@@ -180,38 +169,23 @@
 931228-1.c compile-error
 940115-1.c compile-error
 940122-1.c compile-error
-941015-1.c old-style-decl
-941021-1.c old-style-decl
-941025-1.c old-style-decl
 941101-1.c compile-error
 941110-1.c compile-error
 941202-1.c compile-error
-950221-1.c old-style-decl
 950322-1.c compile-error
 950426-1.c compile-error
 950512-1.c old-style-decl
 950605-1.c compile-error
 950621-1.c compile-error
-960209-1.c old-style-decl
 960218-1.c compile-error
 960312-1.c compile-error
 960402-1.c compile-error
 960416-1.c compile-error
-960419-1.c old-style-decl
 960512-1.c compile-error
-960513-1.c old-style-decl
-960608-1.c old-style-decl
 960830-1.c compile-error
-960909-1.c old-style-decl
-961026-1.c old-style-decl
 961112-1.c compile-error
 970217-1.c vla
-970923-1.c old-style-decl
-980506-1.c old-style-decl
-980506-3.c old-style-decl
 980526-1.c compile-error
-980526-3.c old-style-decl
-981130-1.c old-style-decl
 990106-1.c compile-error
 990130-1.c compile-error
 990413-2.c compile-error
@@ -242,13 +216,11 @@ complex-5.c compile-error
 complex-6.c compile-error
 complex-7.c compile-error
 compndlit-1.c compile-error
-conversion.c old-style-decl
 dbra-1.c compile-error
 divmod-1.c compile-error
 eeprof-1.c runtime
 fprintf-1.c compile-error
 fprintf-chk-1.c compile-error
-ieee/920810-1.c old-style-decl
 ieee/cdivchkd.c complex
 ieee/cdivchkf.c complex
 ieee/cdivchkld.c complex
@@ -281,7 +253,6 @@ nestfunc-3.c nested-function
 nestfunc-5.c compile-error
 nestfunc-6.c compile-error
 nestfunc-7.c nested-function
-pending-4.c old-style-decl
 pr101188.c compile-error
 pr103209.c compile-error
 pr103376.c compile-error
@@ -370,7 +341,6 @@ pr65427.c compile-error
 pr65648.c compile-error
 pr65956.c compile-error
 pr68328.c compile-error
-pr68532.c alignas
 pr69320-2.c compile-error
 pr69691.c builtin
 pr70460.c compile-error

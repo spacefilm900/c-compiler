@@ -15,6 +15,8 @@ int bump(void) {
 int main(void) {
     g = 10;
     s = s + 1;
-    printf("%d %d %d %d\n", g, s, bump(), bump());
+    int first = bump();
+    int second = bump();
+    printf("%d %d %d %d\n", g, s, first, second);
     return 0;
 }
