@@ -15,7 +15,7 @@
 # C file and the window code with this compiler, links them with SDL2, and
 # starts the game.
 #
-# Every C file is compiled by build/compiler into LLVM IR text; Apple's
+# Every C file is compiled by build/hcc into LLVM IR text; Apple's
 # clang then turns that IR into machine code and links the program, the
 # way the rest of this project uses it (clang never sees the C source).
 #
@@ -142,8 +142,8 @@ say "  Everything needed is installed."
 # --- 2. Build the compiler and fetch the game ------------------------------
 
 step "Building the C compiler (the first time takes a minute or two)"
-make -s build/compiler
-COMPILER="$ROOT/build/compiler"
+make -s build/hcc
+COMPILER="$ROOT/build/hcc"
 
 step "Fetching the DOOM source code (doomgeneric) and the Freedoom game data"
 sh scripts/fetch_doomgeneric.sh

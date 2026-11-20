@@ -46,10 +46,10 @@ You need three things.
 ```sh
 git clone https://github.com/spacefilm900/c-compiler.git
 cd c-compiler
-make            # or: cargo build --release && mkdir -p build && cp target/release/compiler build/
+make            # or: cargo build --release && mkdir -p build && cp target/release/hcc build/
 ```
 
-The result is `build/compiler`.
+The result is `build/hcc`.
 
 ## 3. Hello, world
 
@@ -67,7 +67,7 @@ int main(void) {
 Then:
 
 ```sh
-build/compiler hello.c -o hello.ll     # C to LLVM IR (target: arm64-apple-macos)
+build/hcc hello.c -o hello.ll     # C to LLVM IR (target: arm64-apple-macos)
 clang hello.ll -o hello                # IR to a Mac program
 ./hello
 ```
@@ -78,7 +78,7 @@ arm64-apple-macosx26.0.0`: the `.ll` file says macOS 11.0 (the default
 minimum), and Clang uses the running system's version. The warning is
 harmless; `-target arm64-apple-macos26` in the first command matches them.
 
-`build/compiler` finds the SDK with `xcrun`. To name it yourself, pass
+`build/hcc` finds the SDK with `xcrun`. To name it yourself, pass
 `-isysroot "$(xcrun --sdk macosx --show-sdk-path)"`, or set `SDKROOT`.
 `-target arm64-apple-macos14` sets the minimum macOS version (default 11.0).
 

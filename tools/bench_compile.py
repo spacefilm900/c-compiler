@@ -31,10 +31,10 @@ Usage:
 
 --compiler-rev names the revision the measured executable was built from.
 It is recorded separately from the benchmark checkout's commit. Without it,
-the checkout commit is assumed when CC_UNDER_TEST is unset (build/compiler
+the checkout commit is assumed when CC_UNDER_TEST is unset (build/hcc
 from this tree), and "unknown" is recorded when CC_UNDER_TEST is set.
 
-Env: CC_UNDER_TEST (default build/compiler), CLANG (default clang).
+Env: CC_UNDER_TEST (default build/hcc), CLANG (default clang).
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 EXT = ROOT / "tests" / "external"
-COMPILER = os.environ.get("CC_UNDER_TEST", str(ROOT / "build" / "compiler"))
+COMPILER = os.environ.get("CC_UNDER_TEST", str(ROOT / "build" / "hcc"))
 CLANG = os.environ.get("CLANG", "clang")
 PHASES = ["lex", "preprocess", "parse", "sema", "irgen", "write"]
 GROUPS = ["sqlite3", "shell", "lua", "doom", "torture"]

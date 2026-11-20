@@ -32,7 +32,7 @@ esac
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 SRC="$ROOT/tests/external/onetrueawk"
-COMPILER=${CC_UNDER_TEST:-$ROOT/build/compiler}
+COMPILER=${CC_UNDER_TEST:-$ROOT/build/hcc}
 CLANG=${CLANG:-clang}
 
 if [ ! -f "$SRC/awkgram.y" ]; then

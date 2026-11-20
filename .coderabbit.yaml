@@ -28,7 +28,7 @@ reviews:
         A test may call a C library function only by declaring the prototype in the file, for example `int printf(const char *, ...);`, `int puts(const char *);`, `int putchar(int);`, or `unsigned long strlen(const char *);`. Do not include a header for that declaration.
     - path: "harness/**/*.py"
       instructions: |
-        Preserve the harness contract: build/compiler INPUT.c -o OUTPUT.ll, then compare the program's exit status and output with Clang.
+        Preserve the harness contract: build/hcc INPUT.c -o OUTPUT.ll, then compare the program's exit status and output with Clang.
         Do not replace this runner with a call into a C compiler frontend.
         harness/run_wacc.py runs the external Writing a C Compiler suite. It must not invoke that suite's test_compiler script.
         Invalid programs must be a non-zero exit with no panic. Do not vendor the suite.
@@ -45,7 +45,7 @@ reviews:
         Keep permissions at contents: read. Pin actions to full commit SHAs. Do not add write tokens.
     - path: "Makefile"
       instructions: |
-        make must keep producing build/compiler. The test target must keep running python3 harness/run_tests.py.
+        make must keep producing build/hcc. The test target must keep running python3 harness/run_tests.py.
   tools:
     ast-grep:
       enabled: true

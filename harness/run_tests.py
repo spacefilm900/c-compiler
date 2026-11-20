@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Differential test runner.
 
-Contract: build/compiler INPUT.c -o OUTPUT.ll  -> textual LLVM IR, exit 0.
+Contract: build/hcc INPUT.c -o OUTPUT.ll  -> textual LLVM IR, exit 0.
 For each tests/*.c:
   1. project compiler -> .ll; clang (backend only) links .ll -> binary A
   2. clang (black-box oracle) compiles the .c -> binary B
@@ -53,7 +53,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "harness"))
 from target_arch import arch_of, clang_triple  # noqa: E402
-COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
+COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "hcc"))
 CLANG = os.environ.get("CLANG", "clang")
 TIMEOUT = float(os.environ.get("TIMEOUT", "10"))
 MIN_CLANG_MAJOR = 18

@@ -49,7 +49,7 @@ def main():
         (shutil.copytree(s, scratch / item, symlinks=True) if s.is_dir() else shutil.copy2(s, scratch / item))
     pristine = scratch / "src.orig"
     shutil.copytree(scratch / "src", pristine)
-    compiler = scratch / "target/release/compiler"
+    compiler = scratch / "target/release/hcc"
 
     def suite():
         env = dict(os.environ, CC_UNDER_TEST=str(compiler))

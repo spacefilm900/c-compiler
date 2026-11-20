@@ -58,7 +58,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "harness"))
 from target_arch import arch_of, clang_triple  # noqa: E402
 
-COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "compiler"))
+COMPILER = Path(os.environ.get("CC_UNDER_TEST", ROOT / "build" / "hcc"))
 CLANG = os.environ.get("CLANG", "clang")
 SUITE = Path(
     os.environ.get(

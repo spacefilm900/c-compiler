@@ -16,7 +16,7 @@ Approved by the owner on 2026-11-09 (pull request 1).
 
 ## Output
 
-The compiler writes textual LLVM IR. `PLAN.md` also allows building IR through the LLVM libraries; the implementation, the CLI in `BOT.md`, and the driver write text. The contract is `build/compiler INPUT.c -o OUTPUT.ll` (and `-E` for preprocessed text). Success exits 0. Failure exits non-zero, prints one diagnostic to stderr, and does not create the output file.
+The compiler writes textual LLVM IR. `PLAN.md` also allows building IR through the LLVM libraries; the implementation, the CLI in `BOT.md`, and the driver write text. The contract is `build/hcc INPUT.c -o OUTPUT.ll` (and `-E` for preprocessed text). Success exits 0. Failure exits non-zero, prints one diagnostic to stderr, and does not create the output file.
 
 LLVM (`clang`, and optionally `opt` / `llc`) optimizes that IR and generates native code. There is no custom backend. `PLAN.md` keeps LLVM as the backend until a solid release; a small non-optimising backend of our own may be considered only after 0.1, alongside LLVM. The module uses opaque pointers (LLVM 15+), and a 128-bit argument must never be split between a register and the stack (LLVM 18+), so Clang/LLVM must be 18 or newer.
 
@@ -74,7 +74,7 @@ Approved by the owner on 2026-11-10 (pull request 11).
 
 Unit tests live in the Rust sources. `cargo test --offline --lib` runs the lexer, preprocessor, parser, diagnostic, layout, and IR checks.
 
-`harness/run_tests.py` is the differential runner. It compiles each `tests/*.c` with `build/compiler`, links the `.ll` with Clang, compiles the same source with `clang -std=c11`, runs both programs, and compares exit status, stdout, and stderr. `cargo test` also compares those programs with Clang. Clang is the oracle only. Its source is not inspected.
+`harness/run_tests.py` is the differential runner. It compiles each `tests/*.c` with `build/hcc`, links the `.ll` with Clang, compiles the same source with `clang -std=c11`, runs both programs, and compares exit status, stdout, and stderr. `cargo test` also compares those programs with Clang. Clang is the oracle only. Its source is not inspected.
 
 Approved by the owner on 2026-11-09 (pull request 1).
 

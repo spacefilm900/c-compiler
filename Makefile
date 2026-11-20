@@ -1,24 +1,24 @@
-# Build the compiler the harness expects at build/compiler.
+# Build the compiler the harness expects at build/hcc.
 CARGO ?= cargo
 
 .PHONY: all test wacc csmith csmith-campaign otawk torture perf awk-extra doom lua sqlite clean
 
-all: build/compiler
+all: build/hcc
 
-build/compiler: Cargo.toml $(wildcard src/*.rs src/*/*.rs)
+build/hcc: Cargo.toml $(wildcard src/*.rs src/*/*.rs)
 	$(CARGO) build --release
 	mkdir -p build
-	cp -f target/release/compiler $@
+	cp -f target/release/hcc $@
 
-test: build/compiler
+test: build/hcc
 	$(CARGO) test
 	python3 harness/run_tests.py
 
-wacc: build/compiler
+wacc: build/hcc
 	scripts/fetch_wacc_tests.sh
 	python3 harness/run_wacc.py
 
-csmith: build/compiler
+csmith: build/hcc
 	scripts/fetch_csmith.sh
 	python3 harness/run_csmith.py
 
@@ -26,35 +26,35 @@ csmith: build/compiler
 SEED_START ?= 1
 COUNT ?= 100
 OUT ?= csmith-campaign-results
-csmith-campaign: build/compiler
+csmith-campaign: build/hcc
 	scripts/fetch_csmith.sh
-	python3 tools/csmith_campaign.py --compiler build/compiler --seed-start $(SEED_START) --count $(COUNT) --opt O0 --opt O2 --out $(OUT)
+	python3 tools/csmith_campaign.py --compiler build/hcc --seed-start $(SEED_START) --count $(COUNT) --opt O0 --opt O2 --out $(OUT)
 
-otawk: build/compiler
+otawk: build/hcc
 	scripts/fetch_onetrueawk.sh
 	python3 harness/run_onetrueawk.py
 
-torture: build/compiler
+torture: build/hcc
 	scripts/fetch_gcc_torture.sh
 	python3 harness/run_gcc_torture.py
 
-doom: build/compiler
+doom: build/hcc
 	scripts/fetch_doomgeneric.sh
 	scripts/fetch_freedoom.sh
 	python3 harness/run_doom.py
 
-lua: build/compiler
+lua: build/hcc
 	scripts/fetch_lua.sh
 	python3 harness/run_lua.py
 
-sqlite: build/compiler
+sqlite: build/hcc
 	scripts/fetch_sqlite.sh
 	python3 harness/run_sqlite.py
 
-perf: build/compiler
+perf: build/hcc
 	python3 harness/perf.py
 
-awk-extra: build/compiler
+awk-extra: build/hcc
 	scripts/fetch_onetrueawk.sh
 	scripts/build_onetrueawk.sh clang build/otawk-clang
 	scripts/build_onetrueawk.sh ccomp build/otawk-ccomp
@@ -62,4 +62,4 @@ awk-extra: build/compiler
 
 clean:
 	$(CARGO) clean
-	rm -f build/compiler
+	rm -f build/hcc

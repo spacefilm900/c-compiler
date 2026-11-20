@@ -43,7 +43,7 @@ jobs:
         shell: bash
     env:
       WIN_TARGET: ${{ inputs.target || 'both' }}
-      CC_UNDER_TEST: build/compiler.exe
+      CC_UNDER_TEST: build/hcc.exe
       PYTHONUTF8: "1"
     steps:
       - name: Checkout
@@ -69,7 +69,7 @@ jobs:
           set -euo pipefail
           cargo build --release --offline
           mkdir -p build
-          cp target/release/compiler.exe build/compiler.exe
+          cp target/release/hcc.exe build/hcc.exe
 
       - name: Unit tests
         run: cargo test --offline --lib
@@ -93,7 +93,7 @@ jobs:
         run: |
           set -euo pipefail
           printf '#include <stdio.h>\nint main(void) { printf("hello from %%s\\n", "msvc"); return 0; }\n' > hello.c
-          build/compiler.exe -target x86_64-pc-windows-msvc hello.c -o hello.ll
+          build/hcc.exe -target x86_64-pc-windows-msvc hello.c -o hello.ll
           clang -target x86_64-pc-windows-msvc hello.ll -o hello.exe
           ./hello.exe
 

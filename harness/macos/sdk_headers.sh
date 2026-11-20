@@ -3,7 +3,7 @@
 # compiler can include, each on its own (strict C11 and gnu11), and the
 # Darwin headers SQLite's amalgamation and shell reach on macOS. Report
 # only: always exits 0. Run on a Mac after `make`.
-compiler="${CC_UNDER_TEST:-build/compiler}"
+compiler="${CC_UNDER_TEST:-build/hcc}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 ok=0
