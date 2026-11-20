@@ -253,9 +253,16 @@ def test(tc, src, work, std="c11"):
         return f"ours link failed ({rc}): {short(e)}"
     if oracle_err:
         # An oracle-only known failure must not hide a link or run failure
-        # of this compiler. Run our binary, then report the oracle error.
+        # of this compiler. Run our binary and require a successful exit,
+        # then report the oracle error. `not_run()` only covers timeouts
+        # and OS errors, not a non-zero exit from the test itself.
         got = tc.execute(a)
-        return not_run(got, "ours") or oracle_err
+        err = not_run(got, "ours")
+        if err:
+            return err
+        if got[0] != 0:
+            return f"ours run failed (exit {got[0]}, expected 0)"
+        return oracle_err
     b = base.with_suffix(".refbin")
     rc, _, e = tc.link([ref], b)
     if rc != 0:
