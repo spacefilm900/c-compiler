@@ -1592,3 +1592,59 @@ fn computed_goto_keeps_a_vla_in_scope_at_its_destination() {
     .ir;
     assert_eq!(run_binary(&ir).0, 7);
 }
+
+fn gnu_ir(src: &str) -> String {
+    crate::compile_dialect(
+        src,
+        "vla.c",
+        &crate::PpOptions::default(),
+        crate::Dialect::Gnu11,
+    )
+    .unwrap()
+    .ir
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn computed_goto_out_of_a_vla_reuses_the_stack() {
+    let src = "int main(void) { int n = 256; int count = 1000000; void *p = &&again; again: if (count-- == 0) return 0; { char buf[n]; buf[0] = 1; (void)buf[0]; goto *p; } }\n";
+    let ir = gnu_ir(src);
+    assert_eq!(run_binary(&ir).0, 0);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn sizeof_vla_keeps_a_label_address_in_its_operand() {
+    let src = "int sink(void *p) { (void)p; return 0; } int main(void) { int n = 2; int a[n]; a[0] = 3; return (int)sizeof *(sink(&&L), &a); L: return 0; }\n";
+    let ir = gnu_ir(src);
+    assert!(ir.contains("%C.L.via_ptr"), "{ir}");
+    assert_eq!(run_binary(&ir).0, 8);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn statement_expression_goto_keeps_an_outer_vla() {
+    let src = "int main(void) { int n = 2; int a[n]; a[0] = 5; int x; ({ goto L; L: x = a[0]; }); return x; }\n";
+    let ir = gnu_ir(src);
+    assert_eq!(run_binary(&ir).0, 5);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn nested_prototype_vla_bound_is_not_evaluated_on_definition_entry() {
+    let src = "int hits; void outer(void (*cb)(int a[1][++hits])) { (void)cb; } void cb(int a[1][1]) { (void)a; } int main(void) { hits = 0; outer(cb); return hits; }\n";
+    let ir = crate::compile_to_ir(src, "vla.c").unwrap();
+    assert_eq!(run_binary(&ir).0, 0);
+}

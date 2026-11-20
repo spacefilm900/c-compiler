@@ -427,6 +427,7 @@ impl Parser<'_> {
                 "invalid application of '_Alignof' to an incomplete type",
             ));
         }
+        self.check_vla_bound_types(&ty)?;
         Ok(Expr::int(
             u64::from(ty.member_align()),
             TypeName::size_t(),
@@ -1148,4 +1149,48 @@ pub(super) fn concat_encoded(
     let mut out = retarget(left_prefix, left, merged);
     out.extend(retarget(right_prefix, right, merged));
     out
+}
+
+impl Parser<'_> {
+    /// Type-check VLA size expressions in `ty` without evaluating them.
+    /// `_Alignof` does not evaluate its operand (C11 6.5.3.4p3), but the
+    /// size still must have integer type (C11 6.7.6.2p1).
+    fn check_vla_bound_types(&self, ty: &CType) -> Result<(), Diagnostic> {
+        match ty {
+            CType::Array(elem, len) => {
+                self.check_vla_bound_types(elem)?;
+                if let ArrayLen::Vla(id) = *len {
+                    self.check_vla_bound_id(id)?;
+                }
+            }
+            CType::Pointer(inner) | CType::Qualified(_, inner) => {
+                self.check_vla_bound_types(inner)?;
+            }
+            CType::Func(func) => {
+                self.check_vla_bound_types(&func.ret)?;
+                for param in &func.params {
+                    self.check_vla_bound_types(param)?;
+                }
+            }
+            CType::Void | CType::Int(_) | CType::Float(_) | CType::Struct(_) => {}
+        }
+        Ok(())
+    }
+
+    fn check_vla_bound_id(&self, id: VlaId) -> Result<(), Diagnostic> {
+        let Some(bound) = self.vla_sizes.iter().find(|bound| bound.id == id) else {
+            return Ok(());
+        };
+        let ty = type_only(&bound.expr, self.env()).map_err(|err| {
+            self.error_at(bound.expr.line(), bound.expr.column(), bound_message(err))
+        })?;
+        if !ty.is_integer() {
+            return Err(self.error_at(
+                bound.expr.line(),
+                bound.expr.column(),
+                "array size expression must have integer type",
+            ));
+        }
+        Ok(())
+    }
 }

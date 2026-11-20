@@ -560,6 +560,7 @@ impl Gen {
                 }
                 AggAbi::Indirect => unreachable!("AAPCS64 returns use sret"),
             }
+            self.terminated = true;
             return;
         }
         if self.ret_ty.is_void() {
@@ -575,6 +576,7 @@ impl Gen {
         } else {
             self.emit(&format!("  ret {} 0", self.ret_ty.ir_type()));
         }
+        self.terminated = true;
     }
 
     pub(super) fn gen_call(

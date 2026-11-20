@@ -538,6 +538,7 @@ pub(super) fn render_function(
         .collect();
     let mut gen = Gen::new(func.ret_type.clone(), sig.ret_agg.clone());
     gen.renames = renames.clone();
+    gen.addr_label_names = func.addr_labels.clone();
     gen.addr_labels = func
         .addr_labels
         .iter()
@@ -547,7 +548,8 @@ pub(super) fn render_function(
         .iter()
         .map(|bound| (bound.id, bound.expr.clone()))
         .collect();
-    gen.label_vla_depths = label_vla_depths(body);
+    let (depths, max_vla_depth) = label_vla_depths(body);
+    gen.label_vla_depths = depths;
     // MSVC gives every C `inline` definition external linkage in a COMDAT
     // that the linker folds (Parser::mark_inline_definitions), so a call
     // that is not inlined still finds a body.
@@ -596,6 +598,20 @@ pub(super) fn render_function(
             ty.ir_type()
         ));
     }
+    // Computed goto may land on a label emitted before a later VLA was
+    // saved, so stacksave results live in entry-block slots that every
+    // trampoline can load.
+    if max_vla_depth > 0 && !func.addr_labels.is_empty() {
+        gen.declare_stack_intrinsics();
+        for index in 0..max_vla_depth {
+            let slot = format!("%vla.save.{index}");
+            gen.emit(&format!("  {slot} = alloca ptr, align 8"));
+            gen.vla_slots.push(slot);
+        }
+        gen.vla_depth_slot = Some("%vla.cur".to_string());
+        gen.emit("  %vla.cur = alloca i32, align 4");
+        gen.emit("  store i32 0, ptr %vla.cur");
+    }
     // Temps allocated while the body is emitted are inserted here, still in
     // the entry block, so a call inside a loop does not grow the stack.
     gen.alloca_at = gen.lines.len();
@@ -627,6 +643,7 @@ pub(super) fn render_function(
     if !gen.terminated {
         gen.emit_implicit_return();
     }
+    gen.emit_addr_label_trampolines();
     if let Some(ice) = gen.ice.take() {
         return Err(ice);
     }

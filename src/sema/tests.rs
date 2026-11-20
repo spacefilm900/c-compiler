@@ -1914,4 +1914,10 @@ fn vla_constraints_and_jumps() {
         "void f(int n) { _Static_assert(_Generic(0, int (*)[n]: 1, default: 1), \"ok\"); }"
     )
     .contains("generic association"));
+    assert!(sema_err(
+        "void f(int n, int x) { switch (x) { for (int a[n]; ;) { case 0: a[0] = 1; } } }"
+    )
+    .contains("variably modified"));
+    sema_ok("void f(int n) { (int (*)[n]){0}; }");
+    assert!(sema_err("void f(void) { (int (*)[1.0]){0}; }").contains("integer"));
 }

@@ -69,9 +69,11 @@ impl Sema<'_> {
                 if !self.labels.contains_key(name.as_str()) {
                     return self.err(*line, *column, self.missing_label(name));
                 }
-                // An unevaluated `sizeof` operand emits no code, so its
-                // label address is no destination of a computed `goto`.
-                if self.unevaluated_depth == 0 && !self.addr_labels.contains(name) {
+                // Record even inside `sizeof`: a VLA operand is evaluated
+                // (C11 6.5.3.4p2) and `end_unevaluated` is skipped for it,
+                // so the address must stay in `addr_labels`. A non-VLA
+                // `sizeof` still rolls the list back.
+                if !self.addr_labels.contains(name) {
                     self.addr_labels.push(name.clone());
                 }
                 *func = Some(self.current_symbol.clone());
@@ -231,6 +233,7 @@ impl Sema<'_> {
                 "a variable length array cannot be a compound literal type",
             );
         }
+        self.check_vla_sizes(&decl.ty, line, column)?;
         let unknown_array = matches!(decl.ty.peel(), CType::Array(_, ArrayLen::Incomplete));
         if !decl.ty.is_complete() && !unknown_array {
             return self.err(

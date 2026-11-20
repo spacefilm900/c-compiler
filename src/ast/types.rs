@@ -804,6 +804,9 @@ impl CType {
         match self.peel() {
             CType::Array(elem, len) => len.is_variable() || elem.is_variably_modified(),
             CType::Pointer(inner) => inner.is_variably_modified(),
+            // Derived from the return type (C11 6.7.6p3). Parameter VLA
+            // types do not make the function type itself variably modified.
+            CType::Func(func) => func.ret.is_variably_modified(),
             _ => false,
         }
     }

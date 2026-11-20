@@ -101,22 +101,6 @@ impl Gen {
             }
             Stmt::Label { name, stmt, .. } => {
                 let block = c_label(name);
-                if self
-                    .addr_labels
-                    .iter()
-                    .any(|label| label == &c_label_via_ptr(name))
-                {
-                    // Indirect goto lands on a trampoline that restores to
-                    // this label's VLA depth, then branches here. Direct
-                    // goto and fall-through still enter `block` itself.
-                    if !self.terminated {
-                        self.br(&block);
-                    }
-                    self.start(c_label_via_ptr(name));
-                    let depth = self.label_vla_depths.get(name).copied().unwrap_or(0);
-                    self.restore_vla_to(depth);
-                    self.br(&block);
-                }
                 self.place_label(&block);
                 return self.gen_stmt(stmt);
             }

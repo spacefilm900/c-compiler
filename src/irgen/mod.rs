@@ -180,6 +180,15 @@ struct Gen {
     vla_bytes: std::collections::HashMap<VlaId, String>,
     /// `llvm.stacksave` values for open VLA object scopes, innermost last.
     vla_saves: Vec<String>,
+    /// Entry-block slots holding those saves so a computed-goto trampoline
+    /// at the end of the function can restore a depth that did not exist
+    /// when the destination label was emitted.
+    vla_slots: Vec<String>,
+    /// Entry-block slot holding the current VLA depth (i32).
+    vla_depth_slot: Option<String>,
+    /// C names of labels whose address this function takes, in the order
+    /// `addr_labels` lists their trampoline blocks.
+    addr_label_names: Vec<String>,
     /// Number of open VLA object scopes at each C label in this function.
     label_vla_depths: std::collections::HashMap<String, usize>,
     /// VLA scope depth at each `break` target.
@@ -230,6 +239,9 @@ impl Gen {
             vla_counts: std::collections::HashMap::new(),
             vla_bytes: std::collections::HashMap::new(),
             vla_saves: Vec::new(),
+            vla_slots: Vec::new(),
+            vla_depth_slot: None,
+            addr_label_names: Vec::new(),
             label_vla_depths: std::collections::HashMap::new(),
             break_vla: Vec::new(),
             continue_vla: Vec::new(),

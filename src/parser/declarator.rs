@@ -676,6 +676,20 @@ pub(super) fn star_out_vla_types(ty: &mut CType) {
     }
 }
 
+/// Star out VLA bounds that belong to a nested function type, leaving
+/// this parameter's own array bounds in place. A definition must still
+/// evaluate `void f(int n, int a[n])`, but
+/// `void f(void (*cb)(int a[1][++hits])) {}` is a prototype parameter
+/// of `cb` and is replaced with `[*]` (C11 6.7.6.3p12).
+pub(super) fn star_out_nested_fn_vlas(ty: &mut CType) {
+    match ty {
+        CType::Array(elem, _) => star_out_nested_fn_vlas(elem),
+        CType::Pointer(inner) | CType::Qualified(_, inner) => star_out_nested_fn_vlas(inner),
+        CType::Func(_) => star_out_vla_types(ty),
+        CType::Void | CType::Int(_) | CType::Float(_) | CType::Struct(_) => {}
+    }
+}
+
 /// Whether this parameter's own type (after walking arrays and pointers,
 /// but not into a nested function type) uses `[*]`. A definition may not
 /// use `[*]` on its parameters, but `void f(void (*cb)(int a[*])) {}` is

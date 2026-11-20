@@ -287,7 +287,28 @@ impl VmWalk {
                 }
             }
             Stmt::While { body, .. } | Stmt::Do { body, .. } => self.switch_body(body, rec),
-            Stmt::For { body, .. } => self.switch_body(body, rec),
+            Stmt::For { init, body, .. } => {
+                self.tick();
+                self.push_scope();
+                if let ForInit::Decl(decls) = init {
+                    for decl in decls {
+                        self.tick();
+                        if decl.ty.is_variably_modified() {
+                            if let Some(scope) = self.scopes.last().copied() {
+                                self.idents.push(VmIdent {
+                                    name: decl.name.clone(),
+                                    scope,
+                                    time: self.time,
+                                    line: decl.line,
+                                    column: decl.column,
+                                });
+                            }
+                        }
+                    }
+                }
+                self.switch_body(body, rec);
+                self.pop_scope();
+            }
             Stmt::Switch { .. } => self.stmt(stmt),
             other => self.stmt(other),
         }

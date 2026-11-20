@@ -23,6 +23,7 @@ impl Parser<'_> {
                 "expected a function definition",
             ));
         };
+        self.reject_vm_function_ret(&ret, declarator.line, declarator.column)?;
         for param in &params {
             if param.name.is_none() {
                 return Err(self.error_at(
@@ -64,6 +65,10 @@ impl Parser<'_> {
         }
         if kr_def {
             self.parse_kr_declaration_list(&mut params)?;
+        }
+        for param in &mut params {
+            star_out_nested_fn_vlas(&mut param.ty);
+            star_out_nested_fn_vlas(&mut param.unadjusted);
         }
         // C11 6.4.2.2: static const char __func__[] = "function-name";
         {
@@ -135,6 +140,7 @@ impl Parser<'_> {
             else {
                 unreachable!("function declarator");
             };
+            self.reject_vm_function_ret(&ret, declarator.line, declarator.column)?;
             for param in &mut params {
                 star_out_vla_types(&mut param.ty);
             }
@@ -819,6 +825,7 @@ impl Parser<'_> {
         else {
             unreachable!("function declarator");
         };
+        self.reject_vm_function_ret(&ret, declarator.line, declarator.column)?;
         for param in &mut params {
             star_out_vla_types(&mut param.ty);
         }
@@ -1124,6 +1131,25 @@ impl Parser<'_> {
                 line,
                 column,
                 "a variable length array cannot have static or thread storage duration",
+            ));
+        }
+        Ok(())
+    }
+
+    /// C11 6.7.6.2p2: a function identifier cannot have a variably
+    /// modified type, including one derived from a variably modified
+    /// return type (`int (*f(void))[n]`).
+    fn reject_vm_function_ret(
+        &self,
+        ret: &CType,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        if ret.is_variably_modified() {
+            return Err(self.error_at(
+                line,
+                column,
+                "a function cannot have a variably modified return type",
             ));
         }
         Ok(())
