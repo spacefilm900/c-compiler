@@ -51,6 +51,18 @@ impl Sema<'_> {
         } else {
             self.reveal_file(&name);
             self.set_global_type(&name, ty.clone());
+            // C11 6.9.2: a tentative declaration is not the object's
+            // definition when an initialized definition is present. Only an
+            // initialized definition is `is_def` for 6.7.5p7.
+            let is_def = decl.init.is_some();
+            self.check_and_merge_tls_alignas(
+                &name,
+                decl.thread_local,
+                decl.alignas,
+                is_def,
+                decl.line,
+                decl.column,
+            )?;
         }
         if let Some((_, mut stores, mut overridden)) = shaped {
             if matches!(self.global_state(&name), Some(GlobalState::Defined(_))) {
@@ -65,6 +77,114 @@ impl Sema<'_> {
             self.upgrade_tentative(&name);
         }
         Ok(())
+    }
+
+    /// C11 6.7.1p3: `_Thread_local` shall appear on every declaration of the
+    /// object. C11 6.7.5p7: a definition's `_Alignas`, if any, is the
+    /// reference other declarations must match or omit, and a definition
+    /// with no `_Alignas` forbids the specifier on every other declaration.
+    fn check_and_merge_tls_alignas(
+        &mut self,
+        name: &str,
+        decl_tls: bool,
+        decl_alignas: Option<u32>,
+        is_def: bool,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        let Some(Symbol::Var(var)) = self.file_get(name) else {
+            return Ok(());
+        };
+        let Some(info) = var.global.clone() else {
+            return Ok(());
+        };
+        if info.thread_local != decl_tls {
+            return self.err(
+                line,
+                column,
+                format!("'_Thread_local' must be present on every declaration of '{name}'"),
+            );
+        }
+        if info.defined {
+            if let Some(def_align) = info.def_alignas {
+                if let Some(align) = decl_alignas {
+                    if align != def_align {
+                        return self.err(
+                            line,
+                            column,
+                            format!("conflicting alignment for '{name}'"),
+                        );
+                    }
+                }
+            } else if decl_alignas.is_some() {
+                return self.err(
+                    line,
+                    column,
+                    format!(
+                        "alignment specifier on a declaration of '{name}' whose definition has none"
+                    ),
+                );
+            }
+        } else if is_def {
+            if decl_alignas.is_none() {
+                if info.alignas.is_some() {
+                    return self.err(
+                        line,
+                        column,
+                        format!(
+                            "definition of '{name}' has no alignment specifier, but a declaration does"
+                        ),
+                    );
+                }
+            } else if let Some(prev) = info.alignas {
+                if Some(prev) != decl_alignas {
+                    return self.err(line, column, format!("conflicting alignment for '{name}'"));
+                }
+            }
+        } else if let (Some(prev), Some(align)) = (info.alignas, decl_alignas) {
+            if prev != align {
+                return self.err(line, column, format!("conflicting alignment for '{name}'"));
+            }
+        }
+        if let Some(Symbol::Var(var)) = self.file_get_mut(name) {
+            if let Some(info) = &mut var.global {
+                if decl_alignas.is_some() {
+                    info.alignas = decl_alignas;
+                }
+                if is_def {
+                    info.defined = true;
+                    info.def_alignas = decl_alignas;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `_Alignas` on an incomplete record is checked again when the type
+    /// is complete (C11 6.7.5p4). An `extern` that stays incomplete is left
+    /// to the other translation unit.
+    fn deferred_alignas_error(&self) -> Option<(String, u32, u32, usize, usize)> {
+        for name in &self.global_order {
+            let Some(Symbol::Var(var)) = self.file_get(name) else {
+                continue;
+            };
+            let Some(info) = var.global.as_ref() else {
+                continue;
+            };
+            let Some(requested) = info.alignas else {
+                continue;
+            };
+            let ready = var.ty.is_complete() || var.ty.is_array();
+            if !ready {
+                continue;
+            }
+            let natural = var.ty.member_align();
+            if requested < natural {
+                let (line, column) = self.object_decls.get(name).copied().unwrap_or((1, 1));
+                return Some((var.ty.display(), requested, natural, line, column));
+            }
+        }
+        None
     }
 
     /// Bind a file-scope object's name before its initializer is checked
@@ -96,11 +216,19 @@ impl Sema<'_> {
             self.object_decls
                 .entry(name.to_string())
                 .or_insert((decl.line, decl.column));
+            let is_def = decl.init.is_some();
             self.insert_file(Symbol::Var(VarSym {
                 name: name.to_string(),
                 slot: format!("@{name}"),
                 ty: ty.clone(),
-                global: Some(GlobalInfo { linkage, state }),
+                global: Some(GlobalInfo {
+                    linkage,
+                    state,
+                    thread_local: decl.thread_local,
+                    alignas: decl.alignas,
+                    defined: is_def,
+                    def_alignas: if is_def { decl.alignas } else { None },
+                }),
                 file_visible: true,
             }));
         } else if let Some(Symbol::Var(var)) = prior {
@@ -294,6 +422,15 @@ impl Sema<'_> {
 
     pub(super) fn finish(&mut self, unit: &mut TranslationUnit) -> Result<(), Diagnostic> {
         self.check_library_nan_clash()?;
+        if let Some((name, requested, natural, line, column)) = self.deferred_alignas_error() {
+            return self.err(
+                line,
+                column,
+                format!(
+                    "requested alignment {requested} is less than the alignment of '{name}' ({natural})"
+                ),
+            );
+        }
         let mut missing_static = None;
         let mut incomplete_array = None;
         let mut func_decls = Vec::new();
@@ -366,12 +503,18 @@ impl Sema<'_> {
                         GlobalState::Tentative => Some(zero_const(&var.ty)),
                         GlobalState::Defined(value) => Some(value.clone()),
                     };
+                    let mut attrs = unit.var_attrs.get(name).cloned().unwrap_or_default();
+                    // A block-scope `extern _Thread_local` records TLS on
+                    // the file symbol, but the parser only fills var_attrs
+                    // for file-scope declarations.
+                    attrs.thread_local = attrs.thread_local || info.thread_local;
+                    attrs.align = attrs.align.max(info.alignas);
                     globals.push(IrGlobal {
                         name: var.name.clone(),
                         ty: var.ty.clone(),
                         linkage: info.linkage,
                         init,
-                        attrs: unit.var_attrs.get(name).cloned().unwrap_or_default(),
+                        attrs,
                     });
                 }
             }
@@ -596,16 +739,23 @@ impl Sema<'_> {
         }
         decl.ty = ty.clone();
         self.set_local_var_type(&decl.name, ty.clone());
-        let value = if decl.init.is_some() {
+        if decl.thread_local {
+            self.folding_tls = Some(symbol.clone());
+        }
+        let folded = if decl.init.is_some() {
             let mut stores = stores;
-            self.check_stores(&mut stores)?;
-            self.check_stores(&mut overridden)?;
-            let value = self.fold_stores(&decl.name, &ty, &stores)?;
-            self.fold_overridden(&decl.name, &overridden)?;
-            value
+            self.check_stores(&mut stores)
+                .and_then(|()| self.check_stores(&mut overridden))
+                .and_then(|()| self.fold_stores(&decl.name, &ty, &stores))
+                .and_then(|value| {
+                    self.fold_overridden(&decl.name, &overridden)?;
+                    Ok(value)
+                })
         } else {
-            zero_const(&ty)
+            Ok(zero_const(&ty))
         };
+        self.folding_tls = None;
+        let value = folded?;
         self.static_locals.push(IrGlobal {
             name: symbol,
             ty,
@@ -613,6 +763,7 @@ impl Sema<'_> {
             init: Some(value),
             attrs: VarAttrs {
                 align: decl.align,
+                thread_local: decl.thread_local,
                 ..VarAttrs::default()
             },
         });
@@ -650,7 +801,7 @@ impl Sema<'_> {
         }
         // `extern struct S x;` in a block may name an incomplete type. The
         // object is defined in another translation unit.
-        let slot = self.bind_file_object(&name, &local_ty, linkage, decl.line, decl.column)?;
+        let slot = self.bind_file_object(decl, &local_ty, linkage)?;
         decl.ty = local_ty.clone();
         decl.slot = slot.clone();
         decl.checked = None;
@@ -661,6 +812,10 @@ impl Sema<'_> {
             global: Some(GlobalInfo {
                 linkage,
                 state: GlobalState::Declared,
+                thread_local: decl.thread_local,
+                alignas: decl.alignas,
+                defined: false,
+                def_alignas: None,
             }),
             file_visible: true,
         }));
@@ -697,6 +852,14 @@ impl Sema<'_> {
                 );
             }
             self.set_global_type(&name, composite(&file_var.ty, &local_ty));
+            self.check_and_merge_tls_alignas(
+                &name,
+                decl.thread_local,
+                decl.alignas,
+                false,
+                decl.line,
+                decl.column,
+            )?;
         }
         self.set_local_var_type(&name, local_ty.clone());
         decl.ty = local_ty;
@@ -846,12 +1009,13 @@ impl Sema<'_> {
     /// keeps the composite type, which is what the global is emitted as.
     pub(super) fn bind_file_object(
         &mut self,
-        name: &str,
+        decl: &VarDecl,
         local_ty: &CType,
         linkage: Linkage,
-        line: usize,
-        column: usize,
     ) -> Result<String, Diagnostic> {
+        let name = decl.name.as_str();
+        let line = decl.line;
+        let column = decl.column;
         match self.file_get(name) {
             Some(Symbol::Func(_)) => self.err(
                 line,
@@ -872,6 +1036,14 @@ impl Sema<'_> {
                     return self.err(line, column, format!("conflicting types for '{name}'"));
                 }
                 self.set_global_type(name, composite(&var.ty, local_ty));
+                self.check_and_merge_tls_alignas(
+                    name,
+                    decl.thread_local,
+                    decl.alignas,
+                    false,
+                    line,
+                    column,
+                )?;
                 Ok(var.slot)
             }
             None => {
@@ -887,6 +1059,10 @@ impl Sema<'_> {
                     global: Some(GlobalInfo {
                         linkage,
                         state: GlobalState::Declared,
+                        thread_local: decl.thread_local,
+                        alignas: decl.alignas,
+                        defined: false,
+                        def_alignas: None,
                     }),
                     file_visible: false,
                 }));
@@ -1013,10 +1189,20 @@ pub(super) fn function_types_match(existing: &FuncSym, new: &FuncTy, new_is_def:
     if !compatible_funcs(&old, new) {
         return false;
     }
-    if existing.defined && !old.prototype && new.prototype && !new.params.is_empty() {
+    if existing.defined
+        && !old.prototype
+        && old.params.is_empty()
+        && new.prototype
+        && !new.params.is_empty()
+    {
         return false;
     }
-    if new_is_def && !new.prototype && old.prototype && !old.params.is_empty() {
+    if new_is_def
+        && !new.prototype
+        && new.params.is_empty()
+        && old.prototype
+        && !old.params.is_empty()
+    {
         return false;
     }
     true

@@ -254,14 +254,35 @@ pub fn compatible_funcs(a: &FuncTy, b: &FuncTy) -> bool {
                     .all(|(left, right)| compatible(left, right))
         }
         (false, false) => true,
-        (true, false) => prototype_matches_promotions(a),
-        (false, true) => prototype_matches_promotions(b),
+        (true, false) => prototype_matches_unprototyped(a, b),
+        (false, true) => prototype_matches_unprototyped(b, a),
     }
 }
 
-/// A prototype is compatible with a non-prototype function type only if it
-/// has no `...` and every parameter survives the default argument
-/// promotions unchanged (C11 6.7.6.3p15, 6.5.2.2p6).
+/// A prototype compared with a type that has no parameter type list
+/// (C11 6.7.6.3p15). An empty parameter list is a declaration `int f();`
+/// or a `f()` definition: the prototype must have no `...` and every
+/// parameter must survive the default argument promotions. A non-empty
+/// list is a K&R definition's identifier types: the counts must agree and
+/// each prototype parameter must be compatible with the promoted identifier
+/// type.
+fn prototype_matches_unprototyped(proto: &FuncTy, other: &FuncTy) -> bool {
+    if other.params.is_empty() {
+        prototype_matches_promotions(proto)
+    } else {
+        !proto.variadic
+            && proto.params.len() == other.params.len()
+            && proto
+                .params
+                .iter()
+                .zip(other.params.iter())
+                .all(|(left, right)| compatible(left, &default_promoted(right)))
+    }
+}
+
+/// A prototype is compatible with a non-prototype function type that has no
+/// identifier types only if it has no `...` and every parameter survives
+/// the default argument promotions unchanged (C11 6.7.6.3p15, 6.5.2.2p6).
 pub fn prototype_matches_promotions(func: &FuncTy) -> bool {
     !func.variadic
         && func

@@ -123,13 +123,15 @@ impl Parser<'_> {
                 introduced_names: HashMap::new(),
             });
         }
-        // An identifier list (C11 6.7.6.3p3) belongs to a K&R function
-        // definition, which is not supported. `int f();` is handled above.
+        // An identifier list (C11 6.7.6.3p3, 6.9.1) belongs to a K&R
+        // definition. A non-empty list on a declaration is rejected later.
+        // `int f();` is handled above. A typedef name is a type specifier,
+        // so `typedef int a; void f(a);` stays a prototype.
         if self.current().kind == TokenKind::Ident
             && !self.at_type_specifier(self.current())
             && matches!(self.lookahead(), TokenKind::Comma | TokenKind::RParen)
         {
-            return Err(self.error("old-style function declarations are not supported"));
+            return self.parse_identifier_list();
         }
         let mut params = Vec::new();
         let mut variadic = false;
@@ -156,6 +158,46 @@ impl Parser<'_> {
             params,
             prototype: true,
             variadic,
+            introduced: HashMap::new(),
+            introduced_names: HashMap::new(),
+        })
+    }
+
+    /// Identifier list in a function declarator (C11 6.7.6.3p14, 6.9.1).
+    /// Types come from the following declaration list of a definition.
+    fn parse_identifier_list(&mut self) -> Result<ParsedParams, Diagnostic> {
+        let mut params = Vec::new();
+        let mut names = HashSet::new();
+        loop {
+            if self.current().kind != TokenKind::Ident {
+                return Err(self.error("expected a parameter name"));
+            }
+            let token = self.advance();
+            if !names.insert(token.spelling.clone()) {
+                return Err(self.error_at(
+                    token.line,
+                    token.column,
+                    format!("redefinition of parameter '{}'", token.spelling),
+                ));
+            }
+            params.push(Param {
+                name: Some(token.spelling),
+                ty: CType::from_name(TypeName::Int),
+                line: token.line,
+                column: token.column,
+                slot: String::new(),
+                arg_reg: String::new(),
+            });
+            if self.match_kind(TokenKind::Comma) {
+                continue;
+            }
+            break;
+        }
+        self.expect_skip(TokenKind::RParen, "')'")?;
+        Ok(ParsedParams {
+            params,
+            prototype: false,
+            variadic: false,
             introduced: HashMap::new(),
             introduced_names: HashMap::new(),
         })
@@ -200,6 +242,13 @@ impl Parser<'_> {
             .map(|(_, line, column)| (*line, *column))
             .unwrap_or_else(|| decl_pos(&raw));
         let ty = layer_type(self.derive(base, &raw, line, column)?);
+        if type_has_identifier_list(&ty) {
+            return Err(self.error_at(
+                line,
+                column,
+                "an identifier list in a function declarator that is not a definition shall be empty",
+            ));
+        }
         let ty = self.adjust_parameter(ty, line, column)?;
         if let Some((name, line, column)) = &named {
             self.bind_ordinary(name, Some(ty.clone()), *line, *column)?;
@@ -498,11 +547,15 @@ impl Parser<'_> {
                     // wherever the declarator appears.
                     self.reject_bad_restrict(&ret, line, column)?;
                     if !params.prototype && !params.params.is_empty() {
-                        return Err(self.error_at(
-                            line,
-                            column,
-                            "old-style function declarations are not supported",
-                        ));
+                        // C11 6.7.6.3p3: an identifier list on a declarator
+                        // that is not a function definition shall be empty.
+                        if !matches!(&**inner, RawDecl::Named(..)) {
+                            return Err(self.error_at(
+                                line,
+                                column,
+                                "an identifier list in a function declarator that is not a definition shall be empty",
+                            ));
+                        }
                     }
                     self.derive_layer(
                         Layer::Function {
@@ -604,5 +657,21 @@ pub(super) fn decl_pos(raw: &RawDecl) -> (usize, usize) {
         RawDecl::Pointer(_, inner) | RawDecl::Array(inner, _) | RawDecl::Func(inner, _) => {
             decl_pos(inner)
         }
+    }
+}
+
+/// C11 6.7.6.3p3: a non-empty identifier list is allowed only on a
+/// function definition's declarator, not on a parameter or a nested type.
+fn type_has_identifier_list(ty: &CType) -> bool {
+    match ty {
+        CType::Func(func) => {
+            (!func.prototype && !func.params.is_empty())
+                || type_has_identifier_list(&func.ret)
+                || func.params.iter().any(type_has_identifier_list)
+        }
+        CType::Pointer(inner) | CType::Array(inner, _) | CType::Qualified(_, inner) => {
+            type_has_identifier_list(inner)
+        }
+        CType::Void | CType::Int(_) | CType::Float(_) | CType::Struct(_) => false,
     }
 }

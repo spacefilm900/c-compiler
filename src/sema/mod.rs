@@ -84,6 +84,7 @@ pub fn analyze_dialect(
         func_order: Vec::new(),
         strings: Vec::new(),
         static_locals: Vec::new(),
+        folding_tls: None,
         static_seq: 0,
         library_nan_calls: Vec::new(),
         object_decls: HashMap::new(),
@@ -151,6 +152,13 @@ enum GlobalState {
 struct GlobalInfo {
     linkage: Linkage,
     state: GlobalState,
+    thread_local: bool,
+    /// `_Alignas` on a declaration of this object, if any.
+    alignas: Option<u32>,
+    /// Whether a definition (including a tentative definition) has been seen.
+    defined: bool,
+    /// `_Alignas` on the definition, if a definition has been seen.
+    def_alignas: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -276,6 +284,9 @@ struct Sema<'t> {
     /// Block-scope `static` objects. They have no linkage, so they are not in
     /// the file-scope symbol table. The name is an LLVM symbol, not the C name.
     static_locals: Vec<IrGlobal>,
+    /// IR name of a `_Thread_local` static local whose initializer is
+    /// being folded, before it is pushed onto `static_locals`.
+    folding_tls: Option<String>,
     static_seq: u32,
     /// Runtime calls of the C library `nan`, `nanf`, or `nanl` that IR
     /// lowering emits for a malformed quiet `__builtin_nan*` tag: the
@@ -494,10 +505,13 @@ impl FuncSym {
     /// Take the composite type with a compatible later declaration (C11
     /// 6.2.7p4): a prototype replaces a declaration that had none.
     fn absorb(&mut self, new: &FuncTy) {
-        if !self.prototype && new.prototype {
+        // A later prototype, or a K&R definition with an identifier list,
+        // replaces an empty unprototyped declaration `int f();`. The
+        // definition stays unprototyped (C11 6.7.6.3p15).
+        if !self.prototype && (new.prototype || !new.params.is_empty()) {
             self.params = new.params.clone();
             self.variadic = new.variadic;
-            self.prototype = true;
+            self.prototype = new.prototype;
         }
     }
 }

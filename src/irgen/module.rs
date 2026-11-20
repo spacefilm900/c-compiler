@@ -309,6 +309,11 @@ pub(super) fn render_global(global: &IrGlobal, renames: &Renames) -> Result<Stri
     } else {
         "global"
     };
+    let tls = if global.attrs.thread_local {
+        "thread_local "
+    } else {
+        ""
+    };
     if let Some(value) = &global.init {
         let selectany = global.linkage == Linkage::External && global.attrs.selectany;
         let linkage = match global.linkage {
@@ -326,17 +331,19 @@ pub(super) fn render_global(global: &IrGlobal, renames: &Renames) -> Result<Stri
             // Clang (black box) puts a selectany object in a COMDAT of its
             // own name.
             return Ok(format!(
-                "${} = comdat any\n{name} = {linkage}{kind} {ir} {spelled}{section}, comdat, align {align}",
+                "${} = comdat any\n{name} = {linkage}{tls}{kind} {ir} {spelled}{section}, comdat, align {align}",
                 &name[1..]
             ));
         }
         Ok(format!(
-            "{name} = {linkage}{kind} {ir} {spelled}{section}, align {align}"
+            "{name} = {linkage}{tls}{kind} {ir} {spelled}{section}, align {align}"
         ))
     } else if global.attrs.weak {
-        Ok(format!("{name} = extern_weak {kind} {ir}, align {align}"))
+        Ok(format!(
+            "{name} = extern_weak {tls}{kind} {ir}, align {align}"
+        ))
     } else {
-        Ok(format!("{name} = external {kind} {ir}, align {align}"))
+        Ok(format!("{name} = external {tls}{kind} {ir}, align {align}"))
     }
 }
 
@@ -503,12 +510,22 @@ pub(super) fn render_function(
         .body
         .as_ref()
         .ok_or_else(|| ice("function has no body"))?;
-    let param_tys: Vec<CType> = func.params.iter().map(|param| param.ty.clone()).collect();
+    // A K&R definition receives default-argument-promoted values (C11 6.9.1,
+    // 6.5.2.2). The LLVM signature uses those promoted types; the body
+    // converts each into the declared type.
+    let param_tys: Vec<CType> = if func.kr_def {
+        func.params
+            .iter()
+            .map(|param| default_promoted(&param.ty))
+            .collect()
+    } else {
+        func.params.iter().map(|param| param.ty.clone()).collect()
+    };
     // Semantic analysis rejects a definition whose aggregate needs an SSE
     // register or is still incomplete, so the signature is known here.
     let sig = function_sig(&func.ret_type, &param_tys)
         .map_err(|_| ice("defined function has no calling-convention signature"))?;
-    let names: Vec<Vec<String>> = sig
+    let mut names: Vec<Vec<String>> = sig
         .params
         .iter()
         .enumerate()
@@ -568,6 +585,22 @@ pub(super) fn render_function(
     // Temps allocated while the body is emitted are inserted here, still in
     // the entry block, so a call inside a loop does not grow the stack.
     gen.alloca_at = gen.lines.len();
+    if func.kr_def {
+        for ((param, name_group), parts) in func
+            .params
+            .iter()
+            .zip(names.iter_mut())
+            .zip(sig.params.iter())
+        {
+            if parts.len() == 1 && !name_group.is_empty() {
+                let incoming = default_promoted(&param.ty);
+                if incoming != param.ty.unqualified() {
+                    let converted = gen.convert(&name_group[0], &incoming, &param.ty);
+                    name_group[0] = converted;
+                }
+            }
+        }
+    }
     for ((param, names), parts) in func.params.iter().zip(names.iter()).zip(sig.params.iter()) {
         gen.store_param(param, names, parts);
     }

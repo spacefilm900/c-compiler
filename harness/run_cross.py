@@ -246,17 +246,36 @@ def test(tc, src, work, std="c11"):
     mine, err = build_ours(tc, src, base, std)
     if err:
         return err
-    ref, err = build_ref(tc, src, base, std)
+    ref, oracle_err = build_ref(tc, src, base, std)
+    a = base.with_suffix(".mine")
+    rc, _, e = tc.link([mine], a)
+    if rc != 0:
+        return f"ours link failed ({rc}): {short(e)}"
+    b = base.with_suffix(".refbin")
+    if not oracle_err:
+        rc, _, e = tc.link([ref], b)
+        if rc != 0:
+            oracle_err = f"oracle link failed ({rc}): {short(e)}"
+    if oracle_err:
+        # An oracle-only known failure must not hide a link or run failure
+        # of this compiler. Run our binary and require a successful exit,
+        # then report the oracle error. `not_run()` only covers timeouts
+        # and OS errors, not a non-zero exit from the test itself.
+        got = tc.execute(a)
+        err = not_run(got, "ours")
+        if err:
+            return err
+        if got[0] != 0:
+            return f"ours run failed (exit {got[0]}, expected 0)"
+        return oracle_err
+    got, exp = tc.execute(a), tc.execute(b)
+    err = not_run(got, "ours")
     if err:
         return err
-    a, b = base.with_suffix(".mine"), base.with_suffix(".refbin")
-    for objs, out, who in (([mine], a, "ours"), ([ref], b, "oracle")):
-        rc, _, e = tc.link(objs, out)
-        if rc != 0:
-            return f"{who} link failed ({rc}): {short(e)}"
-    got, exp = tc.execute(a), tc.execute(b)
-    err = not_run(got, "ours") or not_run(exp, "oracle")
+    err = not_run(exp, "oracle")
     if err:
+        if got[0] != 0:
+            return f"ours run failed (exit {got[0]}, expected 0)"
         return err
     if got != exp:
         return mismatch(got, exp)
@@ -306,23 +325,35 @@ def test_both(tc, src, work):
 def test_cross(tc, def_src, use_src, work):
     name = def_src.name[: -len("_def.c")]
     base = work / name
-    objs = {}
+    ours = {}
     for role, src in (("def", def_src), ("use", use_src)):
         o, err = build_ours(tc, src, work / f"{name}_{role}", "c11")
         if err:
             return f"{role}: {err}"
+        ours[role] = o
+    oracle_err = None
+    objs = {}
+    for role, src in (("def", def_src), ("use", use_src)):
         r, err = build_ref(tc, src, work / f"{name}_{role}", "c11")
         if err:
-            return f"{role}: {err}"
-        objs[role] = (o, r)
-    expected_bin = base.with_suffix(".refbin")
-    rc, _, e = tc.link([objs["def"][1], objs["use"][1]], expected_bin)
-    if rc != 0:
-        return f"oracle link failed: {short(e)}"
-    expected = tc.execute(expected_bin)
-    err = not_run(expected, "oracle")
-    if err:
-        return err
+            oracle_err = f"{role}: {err}"
+            break
+        objs[role] = (ours[role], r)
+    expected = None
+    if not oracle_err:
+        expected_bin = base.with_suffix(".refbin")
+        rc, _, e = tc.link([objs["def"][1], objs["use"][1]], expected_bin)
+        if rc != 0:
+            oracle_err = f"oracle link failed: {short(e)}"
+        else:
+            expected = tc.execute(expected_bin)
+            err = not_run(expected, "oracle")
+            if err:
+                oracle_err = err
+    if oracle_err:
+        # An oracle-only known failure must not hide a link or run
+        # failure of this compiler's own def/use pair.
+        return check_ours_pair(tc, ours, base.with_suffix(".both-ours")) or oracle_err
     for label, pair in (("our-def", (objs["def"][0], objs["use"][1])),
                         ("our-use", (objs["def"][1], objs["use"][0])),
                         ("both-ours", (objs["def"][0], objs["use"][0]))):
@@ -339,7 +370,31 @@ def test_cross(tc, def_src, use_src, work):
     return None
 
 
+def check_ours_pair(tc, ours, binary):
+    """Link and run this compiler's def and use objects. Used when the
+    oracle cannot produce a reference result, so a failure of this
+    compiler is not hidden as a known oracle error."""
+    rc, _, e = tc.link([ours["def"], ours["use"]], binary)
+    if rc != 0:
+        return f"both-ours: link failed: {short(e)}"
+    got = tc.execute(binary)
+    err = not_run(got, "both-ours")
+    if err:
+        return err
+    if got[0] != 0:
+        return f"both-ours: run failed (exit {got[0]}, expected 0)"
+    return None
+
+
 def known_failures(target):
+    """Map label -> (reason, side).
+
+    side is None (any non-crash failure), "oracle" (only an oracle
+    compile/link/run failure), or unused after a native/standin filter.
+    A third field "native" or "standin" still limits an entry to that
+    Windows where; "oracle" limits it to a failure reported as the
+    oracle's, so a failure of this compiler stays unexpected.
+    """
     known = {}
     if not KNOWN.is_file():
         return known
@@ -347,12 +402,36 @@ def known_failures(target):
     for line in KNOWN.read_text().splitlines():
         body, _, reason = line.partition("#")
         parts = body.split()
-        if len(parts) in (2, 3) and parts[0] == target and parts[2:] in ([], [where]):
-            known[parts[1]] = reason.strip()
+        if len(parts) < 2 or parts[0] != target:
+            continue
+        side = None
+        if len(parts) == 3:
+            token = parts[2]
+            if token in ("native", "standin"):
+                if token != where:
+                    continue
+            elif token == "oracle":
+                side = "oracle"
+            else:
+                continue
+        elif len(parts) != 2:
+            continue
+        known[parts[1]] = (reason.strip(), side)
     return known
 
 
 CRASH = "compiler crashed"
+
+
+def oracle_failure(err):
+    """True when the reported failure is the Clang oracle's, including a
+    cross-ABI `def: ` or `use: ` prefix from test_cross()."""
+    text = err
+    for prefix in ("def: ", "use: "):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    return text.startswith("oracle ")
 
 
 def crashed(err):
@@ -515,8 +594,13 @@ def main():
             else:
                 print(f"PASS {label}")
         elif label in known and not crashed(r):
-            known_failed += 1
-            print(f"KNOWN {label}: {known[label]}")
+            reason, side = known[label]
+            if side == "oracle" and not oracle_failure(r):
+                unexpected += 1
+                print(f"FAIL {label}: {r}")
+            else:
+                known_failed += 1
+                print(f"KNOWN {label}: {reason}")
         else:
             unexpected += 1
             print(f"FAIL {label}: {r}")

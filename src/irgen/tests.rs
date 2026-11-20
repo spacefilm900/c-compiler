@@ -1421,3 +1421,96 @@ fn runtime_offsetof_has_no_inbounds_gep_from_null() {
     assert!(!ir.contains("ptr null"), "{ir}");
     assert_eq!(run_binary(&ir).0, 0, "{ir}");
 }
+
+#[test]
+fn alignas_is_emitted_on_globals_allocas_and_members() {
+    let source = "_Alignas(16) int g;\n\
+                  struct S { char c; _Alignas(8) int n; };\n\
+                  _Static_assert(_Alignof(struct S) == 8, \"align S\");\n\
+                  _Static_assert(sizeof(struct S) == 16, \"size S\");\n\
+                  int main(void) {\n\
+                    _Alignas(32) char buf[4];\n\
+                    return (int)sizeof(struct S) + (int)sizeof(buf);\n\
+                  }\n";
+    let ir = crate::compile_to_ir(source, "alignas.c").unwrap();
+    assert!(ir.contains("@g = global i32 0, align 16"), "{ir}");
+    assert!(ir.contains("alloca [4 x i8], align 32"), "{ir}");
+}
+
+#[test]
+fn thread_local_is_emitted_on_globals_and_static_locals() {
+    let source = "_Thread_local int g = 3;\n\
+                  _Thread_local static int s = 4;\n\
+                  extern _Thread_local int e;\n\
+                  int main(void) {\n\
+                    static _Thread_local int loc = 5;\n\
+                    return g + s + loc;\n\
+                  }\n";
+    let ir = crate::compile_to_ir(source, "tls.c").unwrap();
+    assert!(
+        ir.contains("@g = thread_local global i32 3, align 4"),
+        "{ir}"
+    );
+    assert!(
+        ir.contains("@s = internal thread_local global i32 4, align 4"),
+        "{ir}"
+    );
+    assert!(
+        ir.contains("@e = external thread_local global i32, align 4"),
+        "{ir}"
+    );
+    assert!(ir.contains("thread_local global i32 5, align 4"), "{ir}");
+
+    let only_extern = "int get(void) { extern _Thread_local int x; return x; }\n";
+    let ir = crate::compile_to_ir(only_extern, "tls-extern.c").unwrap();
+    assert!(
+        ir.contains("@x = external thread_local global i32, align 4"),
+        "{ir}"
+    );
+}
+
+#[test]
+fn alignas_and_gnu_aligned_take_the_stricter_value() {
+    let source = "__attribute__((aligned(8))) int x;
+                  int get(void) { extern _Alignas(32) int x; return x; }
+";
+    let ir = crate::compile_to_ir(source, "align-merge.c").unwrap();
+    assert!(ir.contains("@x = global i32 0, align 32"), "{ir}");
+}
+
+#[test]
+fn kr_definition_uses_promoted_abi_and_narrows() {
+    // C11 6.5.2.2 / 6.9.1: a call without a prototype promotes float to
+    // double and char to int; the K&R definition converts back.
+    let source = "int fi(c) char c; { return c; }\n\
+                  float ff(x) float x; { return x; }\n\
+                  int main(void) {\n\
+                    char c = 65;\n\
+                    float f = 2.0f;\n\
+                    return fi(c) == 65 && ff(f) > 1.5f ? 0 : 1;\n\
+                  }\n";
+    let ir = crate::compile_to_ir(source, "kr.c").unwrap();
+    assert!(ir.contains("define i32 @fi(i32 "), "{ir}");
+    assert!(ir.contains("define float @ff(double "), "{ir}");
+    assert!(ir.contains("trunc i32"), "{ir}");
+    assert!(ir.contains("fptrunc double"), "{ir}");
+}
+
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+#[test]
+fn kr_definition_runtime_matches_promotions() {
+    let source = "int fi(c) char c; { return c + 1; }\n\
+                  double fd(x) float x; { return x; }\n\
+                  int add(a, b) int a; int b; { return a + b; }\n\
+                  int main(void) {\n\
+                    if (fi(41) != 42) return 1;\n\
+                    if (add(20, 22) != 42) return 2;\n\
+                    if (fd(2.5f) < 2.4 || fd(2.5f) > 2.6) return 3;\n\
+                    return 0;\n\
+                  }\n";
+    let ir = crate::compile_to_ir(source, "kr-run.c").unwrap();
+    assert_eq!(run_binary(&ir).0, 0, "{ir}");
+}

@@ -468,6 +468,8 @@ impl Parser<'_> {
                 column,
                 slot: String::new(),
                 align: None,
+                alignas: None,
+                thread_local: false,
             }),
             line,
             column,

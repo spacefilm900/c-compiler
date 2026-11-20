@@ -16,6 +16,10 @@ strlen, malloc, and the macros in limits.h can be compared.
 Harness tests from 119 onward in tests/*.c do not use preprocessor
 directives or headers. tests/hosted/*.c may include system headers such
 as <math.h> and are run the same way as tests/*.c.
+tests/posix/*.c need POSIX threads (`-pthread`) and are run only by
+this native harness, not by the Windows Wine stand-in. On macOS the
+harness runs tests/posix/darwin/*.c instead, so each fixture can use
+the platform's `pthread_t` without preprocessor directives in the test.
 
 tests/xabi/*_def.c is linked with the matching *_use.c in both directions:
 this compiler's IR with a Clang object, and the reverse. Both must match
@@ -107,17 +111,18 @@ def incomplete(result):
 ORACLE_INCOMPLETE = "oracle program did not complete"
 
 
-def test(src, tmp, std="c11"):
+def test(src, tmp, std="c11", link=None):
     name = src.stem
     ll, a, b = tmp / f"{name}.ll", tmp / f"{name}.mine", tmp / f"{name}.ref"
+    extras = link if link is not None else ["-lm"]
     ours = [str(COMPILER)] + ([f"-std={std}"] if std != "c11" else [])
     rc, _, err = run(ours + [str(src), "-o", str(ll)])
     if rc != 0:
         return f"compiler failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
-    rc, _, err = run([CLANG, "-w", str(ll), "-o", str(a), "-lm"])
+    rc, _, err = run([CLANG, "-w", str(ll), "-o", str(a)] + extras)
     if rc != 0:
         return f"clang rejected IR ({rc}): {err.decode(errors='replace').strip()[:300]}"
-    rc, _, err = run([CLANG, "-w", f"-std={std}", str(src), "-o", str(b), "-lm"])
+    rc, _, err = run([CLANG, "-w", f"-std={std}", str(src), "-o", str(b)] + extras)
     if rc != 0:
         return f"oracle compile failed ({rc}): {err.decode(errors='replace').strip()[:300]}"
     got, exp = run([str(a)]), run([str(b)])
@@ -201,6 +206,11 @@ def test_cross(def_src, use_src, tmp):
 def main():
     tests = sorted((ROOT / "tests").glob("*.c"))
     hosted = sorted((ROOT / "tests" / "hosted").glob("*.c"))
+    posix_root = ROOT / "tests" / "posix"
+    if sys.platform == "darwin":
+        posix = sorted((posix_root / "darwin").glob("*.c"))
+    else:
+        posix = sorted(posix_root.glob("*.c"))
     crosses = sorted((ROOT / "tests" / "xabi").glob("*_def.c"))
     gnu = sorted((ROOT / "tests" / "gnu").glob("*.c"))
     both = sorted((ROOT / "tests" / "gnu" / "both").glob("*.c"))
@@ -232,12 +242,14 @@ def main():
                 f"Clang/LLVM >= {MIN_CLANG_MAJOR} is required (LLVM 15-17 split an "
                 f"i128 argument between a register and the stack); got: {major}"
             )
-    total = len(tests) + len(hosted) + len(crosses) + len(gnu) + len(both)
+    total = len(tests) + len(hosted) + len(posix) + len(crosses) + len(gnu) + len(both)
     if problems:
         for t in tests:
             print(f"FAIL {t.name}: " + "; ".join(problems))
         for t in hosted:
             print(f"FAIL {t.parent.name}/{t.name}: " + "; ".join(problems))
+        for t in posix:
+            print(f"FAIL {t.relative_to(ROOT / 'tests').as_posix()}: " + "; ".join(problems))
         for t in crosses + gnu:
             print(f"FAIL {t.parent.name}/{t.name}: " + "; ".join(problems))
         for t in both:
@@ -268,6 +280,8 @@ def main():
             report(t.name, test(t, tmp))
         for t in hosted:
             report(f"{t.parent.relative_to(ROOT / 'tests').as_posix()}/{t.name}", test(t, tmp))
+        for t in posix:
+            report(f"{t.relative_to(ROOT / 'tests').as_posix()}", test(t, tmp, link=["-lm", "-pthread"]))
         for t in crosses:
             use = t.with_name(t.name[: -len("_def.c")] + "_use.c")
             label = f"{t.parent.relative_to(ROOT / 'tests').as_posix()}/{t.name[: -len('_def.c')]}"
