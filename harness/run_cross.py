@@ -331,20 +331,29 @@ def test_cross(tc, def_src, use_src, work):
         if err:
             return f"{role}: {err}"
         ours[role] = o
+    oracle_err = None
     objs = {}
     for role, src in (("def", def_src), ("use", use_src)):
         r, err = build_ref(tc, src, work / f"{name}_{role}", "c11")
         if err:
-            return f"{role}: {err}"
+            oracle_err = f"{role}: {err}"
+            break
         objs[role] = (ours[role], r)
-    expected_bin = base.with_suffix(".refbin")
-    rc, _, e = tc.link([objs["def"][1], objs["use"][1]], expected_bin)
-    if rc != 0:
-        return f"oracle link failed: {short(e)}"
-    expected = tc.execute(expected_bin)
-    err = not_run(expected, "oracle")
-    if err:
-        return err
+    expected = None
+    if not oracle_err:
+        expected_bin = base.with_suffix(".refbin")
+        rc, _, e = tc.link([objs["def"][1], objs["use"][1]], expected_bin)
+        if rc != 0:
+            oracle_err = f"oracle link failed: {short(e)}"
+        else:
+            expected = tc.execute(expected_bin)
+            err = not_run(expected, "oracle")
+            if err:
+                oracle_err = err
+    if oracle_err:
+        # An oracle-only known failure must not hide a link or run
+        # failure of this compiler's own def/use pair.
+        return check_ours_pair(tc, ours, base.with_suffix(".both-ours")) or oracle_err
     for label, pair in (("our-def", (objs["def"][0], objs["use"][1])),
                         ("our-use", (objs["def"][1], objs["use"][0])),
                         ("both-ours", (objs["def"][0], objs["use"][0]))):
@@ -358,6 +367,22 @@ def test_cross(tc, def_src, use_src, work):
             return err
         if got != expected:
             return f"{label}: {mismatch(got, expected)}"
+    return None
+
+
+def check_ours_pair(tc, ours, binary):
+    """Link and run this compiler's def and use objects. Used when the
+    oracle cannot produce a reference result, so a failure of this
+    compiler is not hidden as a known oracle error."""
+    rc, _, e = tc.link([ours["def"], ours["use"]], binary)
+    if rc != 0:
+        return f"both-ours: link failed: {short(e)}"
+    got = tc.execute(binary)
+    err = not_run(got, "both-ours")
+    if err:
+        return err
+    if got[0] != 0:
+        return f"both-ours: run failed (exit {got[0]}, expected 0)"
     return None
 
 
