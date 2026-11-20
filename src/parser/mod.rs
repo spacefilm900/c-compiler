@@ -333,7 +333,8 @@ impl Parser<'_> {
         is_type_specifier(token.kind)
             || matches!(
                 token.kind,
-                TokenKind::KwConst
+                TokenKind::KwAtomic
+                    | TokenKind::KwConst
                     | TokenKind::KwVolatile
                     | TokenKind::KwRestrict
                     | TokenKind::KwStruct
@@ -572,6 +573,8 @@ struct SpecFlags {
     enum_base: Option<TypeName>,
     line: usize,
     column: usize,
+    /// `_Atomic ( type-name )` (C11 6.7.2.4). The type is already atomic.
+    atomic_spec: Option<CType>,
     /// Combined `_Alignas` (0 is dropped).
     alignas: Option<u32>,
     alignas_at: Option<(usize, usize)>,
@@ -720,7 +723,6 @@ fn found(token: &Token) -> String {
 
 fn unsupported(kind: TokenKind) -> Option<&'static str> {
     Some(match kind {
-        TokenKind::KwAtomic => "atomic types are not supported",
         TokenKind::KwComplex | TokenKind::KwImaginary => "complex types are not supported",
         TokenKind::KwNoreturn => "_Noreturn is not supported",
         _ => return None,

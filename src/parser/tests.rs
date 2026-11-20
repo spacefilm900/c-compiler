@@ -1609,3 +1609,53 @@ fn variable_length_arrays_parse_and_reject_constraints() {
     assert!(parse_err("void f(void) { (void)_Alignof(int[1.0]); }").contains("integer type"));
     let _ = parsed("void f(int n) { typedef int T[n]; { double n; (void)_Alignof(T); } }\n");
 }
+
+#[test]
+fn atomic_type_qualifier_and_specifier() {
+    let ast = parsed("_Atomic int x; _Atomic(int) y; const _Atomic volatile int z;\n");
+    assert!(ast.contains("x"), "{ast}");
+    assert!(
+        parse_err("_Atomic(const int) x;").contains("qualified type"),
+        "{}",
+        parse_err("_Atomic(const int) x;")
+    );
+    assert!(
+        parse_err("typedef int A[3]; _Atomic(A) x;").contains("array type"),
+        "{}",
+        parse_err("typedef int A[3]; _Atomic(A) x;")
+    );
+    assert!(
+        parse_err("typedef int F(void); _Atomic(F) x;").contains("function type"),
+        "{}",
+        parse_err("typedef int F(void); _Atomic(F) x;")
+    );
+    assert!(
+        parse_err("typedef _Atomic int Ai; _Atomic(Ai) x;").contains("atomic type"),
+        "{}",
+        parse_err("typedef _Atomic int Ai; _Atomic(Ai) x;")
+    );
+    assert!(
+        parse_err("struct S { _Atomic int x : 3; };").contains("atomic type"),
+        "{}",
+        parse_err("struct S { _Atomic int x : 3; };")
+    );
+    assert!(
+        parse_err("_Atomic _Atomic int x;").contains("duplicate '_Atomic' qualifier"),
+        "{}",
+        parse_err("_Atomic _Atomic int x;")
+    );
+}
+
+#[test]
+fn atomic_pointer_and_array_element() {
+    // `_Atomic int a[3]` is an array of atomic int (C11 6.7.3p9), not an
+    // atomic array. `_Atomic(int *)` is an atomic pointer.
+    assert!(parsed("_Atomic int a[3];\n").contains("a"));
+    assert!(parsed("_Atomic(int *) p;\n").contains("p"));
+    assert!(parsed("typedef int F(void); F *_Atomic p;\n").contains("p"));
+    assert!(
+        parse_err("typedef int F(void); _Atomic F x;").contains("function type"),
+        "{}",
+        parse_err("typedef int F(void); _Atomic F x;")
+    );
+}

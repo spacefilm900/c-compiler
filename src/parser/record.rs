@@ -616,6 +616,13 @@ impl Parser<'_> {
     /// the width of the declared type. `_Bool` is one bit wide.
     pub(super) fn parse_bit_width(&mut self, ty: &CType, named: bool) -> Result<u32, Diagnostic> {
         let colon = self.advance();
+        if ty.is_atomic() {
+            return Err(self.error_at(
+                colon.line,
+                colon.column,
+                "bit-field cannot have an atomic type",
+            ));
+        }
         let Some(integer) = ty.unqualified().as_integer() else {
             return Err(self.error_at(
                 colon.line,

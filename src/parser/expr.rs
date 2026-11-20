@@ -548,7 +548,10 @@ impl Parser<'_> {
             return false;
         };
         self.at_type_specifier(token)
-            || matches!(token.kind, TokenKind::KwConst | TokenKind::KwVolatile)
+            || matches!(
+                token.kind,
+                TokenKind::KwAtomic | TokenKind::KwConst | TokenKind::KwVolatile
+            )
     }
 
     pub(super) fn parse_builtin_va_arg(

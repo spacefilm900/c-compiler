@@ -71,6 +71,11 @@ pub(super) fn render_params(func: &FuncTy) -> String {
 
 pub(super) fn qual_words(quals: Quals) -> Vec<&'static str> {
     let mut words = Vec::new();
+    // `_Atomic` is written first, as in the standard's
+    // `_Atomic volatile int` example (C11 6.7.3p13).
+    if quals.is_atomic {
+        words.push("_Atomic");
+    }
     if quals.is_const {
         words.push("const");
     }
