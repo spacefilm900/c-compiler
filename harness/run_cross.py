@@ -340,6 +340,14 @@ def test_cross(tc, def_src, use_src, work):
 
 
 def known_failures(target):
+    """Map label -> (reason, side).
+
+    side is None (any non-crash failure), "oracle" (only an oracle
+    compile/link/run failure), or unused after a native/standin filter.
+    A third field "native" or "standin" still limits an entry to that
+    Windows where; "oracle" limits it to a failure reported as the
+    oracle's, so a failure of this compiler stays unexpected.
+    """
     known = {}
     if not KNOWN.is_file():
         return known
@@ -347,8 +355,21 @@ def known_failures(target):
     for line in KNOWN.read_text().splitlines():
         body, _, reason = line.partition("#")
         parts = body.split()
-        if len(parts) in (2, 3) and parts[0] == target and parts[2:] in ([], [where]):
-            known[parts[1]] = reason.strip()
+        if len(parts) < 2 or parts[0] != target:
+            continue
+        side = None
+        if len(parts) == 3:
+            token = parts[2]
+            if token in ("native", "standin"):
+                if token != where:
+                    continue
+            elif token == "oracle":
+                side = "oracle"
+            else:
+                continue
+        elif len(parts) != 2:
+            continue
+        known[parts[1]] = (reason.strip(), side)
     return known
 
 
@@ -515,8 +536,13 @@ def main():
             else:
                 print(f"PASS {label}")
         elif label in known and not crashed(r):
-            known_failed += 1
-            print(f"KNOWN {label}: {known[label]}")
+            reason, side = known[label]
+            if side == "oracle" and not r.startswith("oracle "):
+                unexpected += 1
+                print(f"FAIL {label}: {r}")
+            else:
+                known_failed += 1
+                print(f"KNOWN {label}: {reason}")
         else:
             unexpected += 1
             print(f"FAIL {label}: {r}")
