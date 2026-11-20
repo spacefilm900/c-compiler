@@ -1317,4 +1317,8 @@ pub struct TranslationUnit {
 pub struct VlaBound {
     pub id: VlaId,
     pub expr: Expr,
+    /// Whether `expr` has integer type in the scope that introduced this
+    /// bound. Recorded then so a later `_Alignof` is not affected by
+    /// shadowing (C11 6.7.6.2p1, 6.5.3.4p3).
+    pub integer: bool,
 }

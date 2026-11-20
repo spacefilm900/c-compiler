@@ -1181,10 +1181,7 @@ impl Parser<'_> {
         let Some(bound) = self.vla_sizes.iter().find(|bound| bound.id == id) else {
             return Ok(());
         };
-        let ty = type_only(&bound.expr, self.env()).map_err(|err| {
-            self.error_at(bound.expr.line(), bound.expr.column(), bound_message(err))
-        })?;
-        if !ty.is_integer() {
+        if !bound.integer {
             return Err(self.error_at(
                 bound.expr.line(),
                 bound.expr.column(),

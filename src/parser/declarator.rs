@@ -650,7 +650,8 @@ impl Parser<'_> {
     fn alloc_vla(&mut self, expr: Expr) -> VlaId {
         let id = VlaId(self.vla_next);
         self.vla_next += 1;
-        self.vla_sizes.push(VlaBound { id, expr });
+        let integer = type_only(&expr, self.env()).is_ok_and(|ty| ty.is_integer());
+        self.vla_sizes.push(VlaBound { id, expr, integer });
         id
     }
 }

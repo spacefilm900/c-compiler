@@ -142,10 +142,19 @@ pub fn analyze_dialect(
         }
     }
     sema.finish(unit)?;
+    let integers: HashMap<VlaId, bool> = unit
+        .vla_sizes
+        .iter()
+        .map(|bound| (bound.id, bound.integer))
+        .collect();
     unit.vla_sizes = sema
         .vla_bounds
         .into_iter()
-        .map(|(id, expr)| VlaBound { id, expr })
+        .map(|(id, expr)| VlaBound {
+            id,
+            expr,
+            integer: integers.get(&id).copied().unwrap_or(false),
+        })
         .collect();
     Ok(sema.warnings.into_inner())
 }

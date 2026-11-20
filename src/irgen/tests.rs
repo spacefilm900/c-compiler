@@ -1648,3 +1648,25 @@ fn nested_prototype_vla_bound_is_not_evaluated_on_definition_entry() {
     let ir = crate::compile_to_ir(src, "vla.c").unwrap();
     assert_eq!(run_binary(&ir).0, 0);
 }
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn computed_goto_sizeof_vla_is_valid_llvm() {
+    let src = "int f(int n) { void *p = &&B; goto *p; B:; int a[n]; p = &&A; goto *p; A: return (int)sizeof a; } int main(void) { return f(3); }\n";
+    let ir = gnu_ir(src);
+    assert_eq!(run_binary(&ir).0, 12);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn for_init_label_after_a_vla_keeps_the_array() {
+    let src = "int main(void) { int n = 2; for (int a[n], i = ({ goto L; L:; 0; }); ; ) { a[0] = 7; return a[0]; } }\n";
+    let ir = gnu_ir(src);
+    assert_eq!(run_binary(&ir).0, 7);
+}

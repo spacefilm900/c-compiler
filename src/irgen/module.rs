@@ -612,6 +612,17 @@ pub(super) fn render_function(
         gen.emit("  %vla.cur = alloca i32, align 4");
         gen.emit("  store i32 0, ptr %vla.cur");
     }
+    // A computed goto can list a label after a VLA as a destination of an
+    // earlier `indirectbr`, so the SSA size at the declaration would not
+    // dominate that use. Entry-block slots do.
+    if !func.addr_labels.is_empty() {
+        for bound in vla_sizes {
+            let slot = format!("%vla.bytes.{}", bound.id.0);
+            gen.emit(&format!("  {slot} = alloca i64, align 8"));
+            gen.emit(&format!("  store i64 0, ptr {slot}"));
+            gen.vla_byte_slots.insert(bound.id, slot);
+        }
+    }
     // Temps allocated while the body is emitted are inserted here, still in
     // the entry block, so a call inside a loop does not grow the stack.
     gen.alloca_at = gen.lines.len();

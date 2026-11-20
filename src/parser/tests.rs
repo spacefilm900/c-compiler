@@ -1607,4 +1607,5 @@ fn variable_length_arrays_parse_and_reject_constraints() {
     assert!(parse_err("int n; int (*f(void))[n];").contains("variably modified return type"));
     assert!(parse_err("int n; typedef int (*F(void))[n];").contains("file scope"));
     assert!(parse_err("void f(void) { (void)_Alignof(int[1.0]); }").contains("integer type"));
+    let _ = parsed("void f(int n) { typedef int T[n]; { double n; (void)_Alignof(T); } }\n");
 }

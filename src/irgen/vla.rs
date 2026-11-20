@@ -51,7 +51,10 @@ impl Gen {
         let bytes = self.fresh();
         self.emit(&format!("  {bytes} = mul i64 {count}, {elem_bytes}"));
         self.vla_counts.insert(id, count);
-        self.vla_bytes.insert(id, bytes);
+        self.vla_bytes.insert(id, bytes.clone());
+        if let Some(slot) = self.vla_byte_slots.get(&id).cloned() {
+            self.emit(&format!("  store i64 {bytes}, ptr {slot}"));
+        }
     }
 
     /// Byte size of `ty` as an i64 SSA value or constant.
@@ -61,14 +64,17 @@ impl Gen {
         }
         match ty.peel() {
             CType::Array(elem, ArrayLen::Vla(id)) => {
-                if let Some(bytes) = self.vla_bytes.get(id).cloned() {
+                if !self.vla_bytes.contains_key(id) {
+                    self.eval_vla_id(*id, elem, None);
+                }
+                if let Some(slot) = self.vla_byte_slots.get(id).cloned() {
+                    let tmp = self.fresh();
+                    self.emit(&format!("  {tmp} = load i64, ptr {slot}"));
+                    tmp
+                } else if let Some(bytes) = self.vla_bytes.get(id).cloned() {
                     bytes
                 } else {
-                    self.eval_vla_id(*id, elem, None);
-                    self.vla_bytes
-                        .get(id)
-                        .cloned()
-                        .unwrap_or_else(|| "0".to_string())
+                    "0".to_string()
                 }
             }
             CType::Array(elem, ArrayLen::Const(n)) => {
@@ -245,10 +251,6 @@ fn is_vla_object(decl: &VarDecl) -> bool {
     decl.storage == Storage::None && decl.ty.is_vla()
 }
 
-fn vla_object_count(decls: &[VarDecl]) -> usize {
-    decls.iter().filter(|decl| is_vla_object(decl)).count()
-}
-
 fn bump_vla_depth(depth: &mut usize, max_depth: &mut usize, added: usize) {
     *depth += added;
     *max_depth = (*max_depth).max(*depth);
@@ -338,12 +340,17 @@ fn walk_label_depths(
         } => {
             let added = match init {
                 ForInit::Decl(decls) => {
+                    let mut added = 0;
                     for decl in decls {
                         if let Some(init) = decl.init.as_ref() {
                             walk_label_depths_init(init, depth, depths, max_depth);
                         }
+                        if is_vla_object(decl) {
+                            bump_vla_depth(depth, max_depth, 1);
+                            added += 1;
+                        }
                     }
-                    vla_object_count(decls)
+                    added
                 }
                 ForInit::Expr(expr) => {
                     walk_label_depths_expr(expr, depth, depths, max_depth);
@@ -351,7 +358,6 @@ fn walk_label_depths(
                 }
                 ForInit::Empty => 0,
             };
-            bump_vla_depth(depth, max_depth, added);
             if let Some(cond) = cond {
                 walk_label_depths_expr(cond, depth, depths, max_depth);
             }
