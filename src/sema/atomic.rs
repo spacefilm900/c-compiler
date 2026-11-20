@@ -63,3 +63,366 @@ fn bad_atomic(ty: &CType, seen: &mut HashSet<u32>) -> Option<String> {
         _ => None,
     }
 }
+
+impl Sema<'_> {
+    /// Type-generic `__hcc_atomic_*` builtins used by <stdatomic.h>.
+    pub(super) fn check_atomic_builtin(
+        &mut self,
+        expr: &mut Expr,
+        name: &str,
+        op: crate::builtins::AtomicOp,
+    ) -> Result<(), Diagnostic> {
+        use crate::builtins::AtomicOp;
+        let (line, column, argc) = match expr {
+            Expr::Call {
+                args, line, column, ..
+            } => (*line, *column, args.len()),
+            _ => unreachable!("atomic builtin"),
+        };
+        let arity = op.arity();
+        if argc != arity {
+            return self.err(
+                line,
+                column,
+                format!(
+                    "function '{name}' expects {} {}, found {argc}",
+                    arity,
+                    if arity == 1 { "argument" } else { "arguments" },
+                ),
+            );
+        }
+        let Expr::Call { args, .. } = expr else {
+            unreachable!("atomic builtin");
+        };
+        for arg in args.iter_mut() {
+            self.check_expr(arg)?;
+            self.decay(arg)?;
+        }
+
+        let ret = match op {
+            AtomicOp::ThreadFence | AtomicOp::SignalFence => {
+                require_order_ty(self, &args[0])?;
+                check_fence_order(self, &args[0], op, name)?;
+                CType::Void
+            }
+            AtomicOp::IsLockFree => {
+                let obj = atomic_object_ty(self, &args[0], name)?;
+                let _ = obj.size();
+                CType::from_name(TypeName::Bool)
+            }
+            AtomicOp::Init => {
+                let obj = atomic_object_ty(self, &args[0], name)?;
+                if obj.is_const() {
+                    return self.err(
+                        args[0].line(),
+                        args[0].column(),
+                        format!("argument of {name} must be a pointer to a non-const atomic type"),
+                    );
+                }
+                let dest = obj.unqualified();
+                self.can_assign(&dest, &args[1])?;
+                CType::Void
+            }
+            AtomicOp::Load => {
+                let obj = atomic_object_ty(self, &args[0], name)?;
+                require_order_ty(self, &args[1])?;
+                check_named_order(self, &args[1], name, OrderUse::Load)?;
+                obj.unqualified()
+            }
+            AtomicOp::Store => {
+                let obj = atomic_object_ty(self, &args[0], name)?;
+                if obj.is_const() {
+                    return self.err(
+                        args[0].line(),
+                        args[0].column(),
+                        format!("argument of {name} must be a pointer to a non-const atomic type"),
+                    );
+                }
+                self.can_assign(&obj.unqualified(), &args[1])?;
+                require_order_ty(self, &args[2])?;
+                check_named_order(self, &args[2], name, OrderUse::Store)?;
+                CType::Void
+            }
+            AtomicOp::Exchange => {
+                let obj = atomic_object_ty(self, &args[0], name)?;
+                if obj.is_const() {
+                    return self.err(
+                        args[0].line(),
+                        args[0].column(),
+                        format!("argument of {name} must be a pointer to a non-const atomic type"),
+                    );
+                }
+                let dest = obj.unqualified();
+                self.can_assign(&dest, &args[1])?;
+                require_order_ty(self, &args[2])?;
+                check_named_order(self, &args[2], name, OrderUse::Rmw)?;
+                dest
+            }
+            AtomicOp::CompareExchange => {
+                let obj = atomic_object_ty(self, &args[0], name)?;
+                if obj.is_const() {
+                    return self.err(
+                        args[0].line(),
+                        args[0].column(),
+                        format!("argument of {name} must be a pointer to a non-const atomic type"),
+                    );
+                }
+                let dest = obj.unqualified();
+                let expected = args[1].ty().and_then(|ty| ty.pointee().cloned());
+                let Some(expected) = expected else {
+                    return self.err(
+                        args[1].line(),
+                        args[1].column(),
+                        format!("expected-value argument of {name} must be a pointer"),
+                    );
+                };
+                if expected.is_const() {
+                    return self.err(
+                        args[1].line(),
+                        args[1].column(),
+                        format!("expected-value argument of {name} must be a pointer to a non-const type"),
+                    );
+                }
+                if !compatible(&expected.unqualified(), &dest) {
+                    return self.err(
+                        args[1].line(),
+                        args[1].column(),
+                        format!(
+                            "expected-value argument of {name} must be a pointer to '{}'",
+                            dest.display()
+                        ),
+                    );
+                }
+                self.can_assign(&dest, &args[2])?;
+                require_order_ty(self, &args[3])?;
+                require_order_ty(self, &args[4])?;
+                if !args[5].ty().is_some_and(|ty| ty.is_integer()) {
+                    return self.err(
+                        args[5].line(),
+                        args[5].column(),
+                        format!("weak argument of {name} must be an integer"),
+                    );
+                }
+                check_cmpxchg_orders(self, &args[3], &args[4], name)?;
+                CType::from_name(TypeName::Bool)
+            }
+            AtomicOp::FetchAdd | AtomicOp::FetchSub => {
+                let obj = atomic_object_ty(self, &args[0], name)?;
+                if obj.is_const() {
+                    return self.err(
+                        args[0].line(),
+                        args[0].column(),
+                        format!("argument of {name} must be a pointer to a non-const atomic type"),
+                    );
+                }
+                let dest = obj.unqualified();
+                if dest.as_integer() == Some(TypeName::Bool) {
+                    return self.err(
+                        args[0].line(),
+                        args[0].column(),
+                        format!("{name} is not applicable to _Atomic _Bool"),
+                    );
+                }
+                let operand = if dest.is_pointer() {
+                    CType::from_name(TypeName::ptrdiff_t())
+                } else if dest.is_integer() {
+                    dest.clone()
+                } else {
+                    return self.err(
+                        args[0].line(),
+                        args[0].column(),
+                        format!("{name} requires an atomic integer or pointer type"),
+                    );
+                };
+                self.can_assign(&operand, &args[1])?;
+                require_order_ty(self, &args[2])?;
+                check_named_order(self, &args[2], name, OrderUse::Rmw)?;
+                dest
+            }
+            AtomicOp::FetchOr | AtomicOp::FetchXor | AtomicOp::FetchAnd => {
+                let obj = atomic_object_ty(self, &args[0], name)?;
+                if obj.is_const() {
+                    return self.err(
+                        args[0].line(),
+                        args[0].column(),
+                        format!("argument of {name} must be a pointer to a non-const atomic type"),
+                    );
+                }
+                let dest = obj.unqualified();
+                if dest.as_integer() == Some(TypeName::Bool) {
+                    return self.err(
+                        args[0].line(),
+                        args[0].column(),
+                        format!("{name} is not applicable to _Atomic _Bool"),
+                    );
+                }
+                if !dest.is_integer() {
+                    return self.err(
+                        args[0].line(),
+                        args[0].column(),
+                        format!("{name} requires an atomic integer type"),
+                    );
+                }
+                self.can_assign(&dest, &args[1])?;
+                require_order_ty(self, &args[2])?;
+                check_named_order(self, &args[2], name, OrderUse::Rmw)?;
+                dest
+            }
+        };
+
+        if let Expr::Call { resolved, .. } = expr {
+            *resolved = Some(CallRes {
+                name: name.to_string(),
+                ret: ret.clone(),
+                params: Vec::new(),
+                variadic: false,
+                indirect: false,
+            });
+        }
+        expr.set_ty(ret);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OrderUse {
+    Load,
+    Store,
+    Rmw,
+    Fence,
+}
+
+fn require_order_ty(sema: &Sema<'_>, expr: &Expr) -> Result<(), Diagnostic> {
+    if expr.ty().is_some_and(|ty| ty.is_integer()) {
+        Ok(())
+    } else {
+        sema.err(
+            expr.line(),
+            expr.column(),
+            "memory_order argument must be an integer",
+        )
+    }
+}
+
+fn const_order(expr: &Expr) -> Option<i64> {
+    const_index(expr).ok()
+}
+
+fn check_named_order(
+    sema: &Sema<'_>,
+    expr: &Expr,
+    name: &str,
+    use_: OrderUse,
+) -> Result<(), Diagnostic> {
+    let Some(code) = const_order(expr) else {
+        return Ok(());
+    };
+    let Some(order) = memory_order_name(code) else {
+        return sema.err(
+            expr.line(),
+            expr.column(),
+            format!("invalid memory_order value {code} in {name}"),
+        );
+    };
+    let ok = match use_ {
+        OrderUse::Load => matches!(code, 0 | 1 | 2 | 5),
+        OrderUse::Store => matches!(code, 0 | 3 | 5),
+        OrderUse::Rmw | OrderUse::Fence => true,
+    };
+    if !ok {
+        return sema.err(
+            expr.line(),
+            expr.column(),
+            format!("memory_order_{order} is not valid for {name}"),
+        );
+    }
+    Ok(())
+}
+
+fn check_fence_order(
+    sema: &Sema<'_>,
+    expr: &Expr,
+    op: crate::builtins::AtomicOp,
+    name: &str,
+) -> Result<(), Diagnostic> {
+    let _ = op;
+    check_named_order(sema, expr, name, OrderUse::Fence)
+}
+
+fn check_cmpxchg_orders(
+    sema: &Sema<'_>,
+    success: &Expr,
+    failure: &Expr,
+    name: &str,
+) -> Result<(), Diagnostic> {
+    check_named_order(sema, success, name, OrderUse::Rmw)?;
+    let Some(fail) = const_order(failure) else {
+        return Ok(());
+    };
+    let Some(fail_name) = memory_order_name(fail) else {
+        return sema.err(
+            failure.line(),
+            failure.column(),
+            format!("invalid memory_order value {fail} in {name}"),
+        );
+    };
+    // C11 7.17.7.4p2: failure is not release or acq_rel, and is no
+    // stronger than success.
+    if fail == 3 || fail == 4 {
+        return sema.err(
+            failure.line(),
+            failure.column(),
+            format!("memory_order_{fail_name} is not valid as a compare-exchange failure order"),
+        );
+    }
+    if let Some(succ) = const_order(success) {
+        if fail > succ {
+            return sema.err(
+                failure.line(),
+                failure.column(),
+                format!(
+                    "compare-exchange failure order memory_order_{fail_name} is stronger than the success order"
+                ),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn memory_order_name(code: i64) -> Option<&'static str> {
+    Some(match code {
+        0 => "relaxed",
+        1 => "consume",
+        2 => "acquire",
+        3 => "release",
+        4 => "acq_rel",
+        5 => "seq_cst",
+        _ => return None,
+    })
+}
+
+/// The atomic object type pointed to by `arg`, or a diagnostic.
+fn atomic_object_ty(sema: &Sema<'_>, arg: &Expr, name: &str) -> Result<CType, Diagnostic> {
+    let Some(ty) = arg.ty() else {
+        return sema.err(
+            arg.line(),
+            arg.column(),
+            format!("argument of {name} is untyped"),
+        );
+    };
+    let Some(inner) = ty.pointee() else {
+        return sema.err(
+            arg.line(),
+            arg.column(),
+            format!("argument of {name} must be a pointer to an atomic type"),
+        );
+    };
+    if !inner.is_atomic() {
+        return sema.err(
+            arg.line(),
+            arg.column(),
+            format!("argument of {name} must be a pointer to an atomic type"),
+        );
+    }
+    Ok(inner.clone())
+}

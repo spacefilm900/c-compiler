@@ -1944,3 +1944,33 @@ fn atomic_types_and_lock_free_sizes() {
     let err = sema_err("_Atomic int a[3]; struct S { char a[3]; }; _Atomic struct S x;\n");
     assert!(err.contains("not lock-free"), "{err}");
 }
+
+#[test]
+fn stdatomic_header_and_constraints() {
+    crate::compile_to_ir(
+        "#include <stdatomic.h>\n         atomic_int x;\n         int main(void) {\n             atomic_init(&x, 1);\n             atomic_store(&x, 2);\n             int v = atomic_load(&x);\n             v += atomic_fetch_add(&x, 3);\n             int e = 5;\n             atomic_compare_exchange_strong(&x, &e, 9);\n             atomic_thread_fence(memory_order_seq_cst);\n             atomic_signal_fence(memory_order_acquire);\n             atomic_flag f = ATOMIC_FLAG_INIT;\n             (void)atomic_flag_test_and_set(&f);\n             atomic_flag_clear(&f);\n             return v + atomic_is_lock_free(&x);\n         }\n",
+        "t.c",
+    )
+    .unwrap();
+    let err = crate::compile_to_ir(
+        "#include <stdatomic.h>\nint x; int main(void) { return atomic_load(&x); }\n",
+        "t.c",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("atomic type"), "{err}");
+    let err = crate::compile_to_ir(
+        "#include <stdatomic.h>\natomic_int x; int main(void) { atomic_store_explicit(&x, 1, memory_order_acquire); }\n",
+        "t.c",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("not valid"), "{err}");
+    let err = crate::compile_to_ir(
+        "#include <stdatomic.h>\natomic_int x; int e; int main(void) {\n         atomic_compare_exchange_strong_explicit(&x, &e, 1, memory_order_relaxed, memory_order_acquire); }\n",
+        "t.c",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("stronger"), "{err}");
+}

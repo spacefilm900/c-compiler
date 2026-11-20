@@ -17,6 +17,13 @@ impl Gen {
         };
         let ty = ty.clone().expect("typed call");
         let resolved = resolved.as_ref().expect("resolved call");
+        if let Some(op) = crate::builtins::AtomicOp::from_name(&resolved.name) {
+            let saved = self.pos;
+            self.pos = (expr.line(), expr.column());
+            let slot = self.gen_atomic_builtin_record(op, args, &ty);
+            self.pos = saved;
+            return slot;
+        }
         let sig =
             function_sig(&resolved.ret, &resolved.params).expect("call has a System V signature");
         let saved = self.pos;
@@ -599,6 +606,9 @@ impl Gen {
         }
         if let Some(inline) = crate::builtins::Inline::from_name(&resolved.name) {
             return self.gen_inline_builtin(inline, args);
+        }
+        if let Some(op) = crate::builtins::AtomicOp::from_name(&resolved.name) {
+            return self.gen_atomic_builtin(op, args);
         }
         let sig =
             function_sig(&resolved.ret, &resolved.params).expect("call has a System V signature");

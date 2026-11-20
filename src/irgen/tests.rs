@@ -1756,7 +1756,7 @@ int main(void) {
 }
 "#;
     let ir = crate::compile_to_ir(src, "atomic.c").unwrap();
-    assert!(ir.contains("cmpxchg"), "{ir}");
+    assert!(ir.contains("atomicrmw"), "{ir}");
     assert_eq!(run_binary(&ir).0, 13);
 }
 
@@ -1776,4 +1776,52 @@ int main(void) {
 "#;
     let ir = crate::compile_to_ir(src, "atomic.c").unwrap();
     assert_eq!(run_binary(&ir).0, 1 + 2);
+}
+
+#[test]
+fn stdatomic_header_ir_orders_and_fences() {
+    let ir = crate::compile_to_ir(
+        "#include <stdatomic.h>\n         atomic_int x;\n         int main(void) {\n             atomic_store_explicit(&x, 1, memory_order_relaxed);\n             int v = atomic_load_explicit(&x, memory_order_acquire);\n             v += (int)atomic_fetch_add_explicit(&x, 2, memory_order_release);\n             atomic_thread_fence(memory_order_seq_cst);\n             atomic_signal_fence(memory_order_acq_rel);\n             return v;\n         }\n",
+        "atomic.c",
+    )
+    .unwrap();
+    assert!(ir.contains("store atomic i32"), "{ir}");
+    assert!(ir.contains("monotonic"), "{ir}");
+    assert!(ir.contains("acquire"), "{ir}");
+    assert!(ir.contains("atomicrmw") && ir.contains("release"), "{ir}");
+    assert!(ir.contains("fence seq_cst"), "{ir}");
+    assert!(ir.contains("syncscope(\"singlethread\")"), "{ir}");
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn stdatomic_header_ops() {
+    let src = r#"
+#include <stdatomic.h>
+int main(void) {
+    atomic_int x;
+    atomic_init(&x, 10);
+    atomic_store(&x, 4);
+    int v = atomic_load(&x);
+    int e = 4;
+    if (!atomic_compare_exchange_strong(&x, &e, 7))
+        return 1;
+    int old = atomic_exchange(&x, 1);
+    old += atomic_fetch_add(&x, 3);
+    old += atomic_fetch_or(&x, 8);
+    old += atomic_fetch_and(&x, 15);
+    old += atomic_fetch_xor(&x, 1);
+    atomic_flag f = ATOMIC_FLAG_INIT;
+    int set = atomic_flag_test_and_set(&f);
+    atomic_flag_clear(&f);
+    int set2 = atomic_flag_test_and_set_explicit(&f, memory_order_relaxed);
+    return (v == 4 && old == 36 && set == 0 && set2 == 0 && atomic_load(&x) == 13) ? 0 : 1;
+}
+"#;
+    let ir = crate::compile_to_ir(src, "atomic.c").unwrap();
+    assert!(ir.contains("cmpxchg"), "{ir}");
+    assert_eq!(run_binary(&ir).0, 0);
 }

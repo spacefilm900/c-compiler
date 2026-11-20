@@ -506,11 +506,12 @@ pub(super) fn push_compiler(dirs: &mut Vec<PathBuf>, path: PathBuf) {
 /// The headers the compiler provides (`include/`). A candidate counts as
 /// its header tree only when it has all of them, so a project's own
 /// `include/` with a `stddef.h` is not mistaken for it.
-const COMPILER_HEADERS: [&str; 9] = [
+const COMPILER_HEADERS: [&str; 10] = [
     "float.h",
     "iso646.h",
     "limits.h",
     "stdalign.h",
+    "stdatomic.h",
     "stdarg.h",
     "stdbool.h",
     "stddef.h",
