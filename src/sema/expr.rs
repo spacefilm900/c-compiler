@@ -156,12 +156,12 @@ impl Sema<'_> {
                 default = Some(index);
                 continue;
             };
-            if assoc_ty.is_func() || !assoc_ty.is_complete() {
+            if assoc_ty.is_func() || !assoc_ty.is_complete() || assoc_ty.is_variably_modified() {
                 return self.err(
                     assoc.line,
                     assoc.column,
                     format!(
-                        "type '{}' in generic association is not a complete object type",
+                        "type '{}' in generic association is not a complete object type other than a variably modified type",
                         assoc_ty.display()
                     ),
                 );
@@ -224,7 +224,7 @@ impl Sema<'_> {
         if decl.ty.is_func() {
             return self.err(line, column, "compound literal has function type");
         }
-        let unknown_array = matches!(decl.ty.peel(), CType::Array(_, None));
+        let unknown_array = matches!(decl.ty.peel(), CType::Array(_, ArrayLen::Incomplete));
         if !decl.ty.is_complete() && !unknown_array {
             return self.err(
                 line,
@@ -963,9 +963,9 @@ impl Sema<'_> {
         Ok(())
     }
 
-    /// `sizeof` does not evaluate its operand. The result type is
-    /// `unsigned long`, which is `size_t` on this LP64 target. `void` is
-    /// incomplete.
+    /// `sizeof` does not evaluate its operand unless the type is a VLA
+    /// (C11 6.5.3.4p2). The result type is `unsigned long`, which is
+    /// `size_t` on this LP64 target. `void` is incomplete.
     pub(super) fn check_sizeof(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
         if let Expr::Sizeof {
             operand,
@@ -977,9 +977,13 @@ impl Sema<'_> {
             let line = *line;
             let column = *column;
             let sized = match operand {
-                SizeofOperand::Type(ty) => ty.clone(),
+                SizeofOperand::Type(ty) => {
+                    self.check_vla_sizes(ty, line, column)?;
+                    ty.clone()
+                }
                 SizeofOperand::Expr(inner) => {
-                    // Not evaluated (C11 6.5.3.4p2): only the type is kept.
+                    // C11 6.5.3.4p2: the operand is evaluated only when its
+                    // type is a VLA. Otherwise only the type is used.
                     let saved = self.begin_unevaluated();
                     let checked = self.check_expr(inner);
                     self.end_unevaluated(saved);
@@ -987,10 +991,14 @@ impl Sema<'_> {
                     if is_bitfield(inner) {
                         return self.err(line, column, "sizeof applied to a bit-field");
                     }
-                    inner.ty().expect("sizeof operand is typed")
+                    let sized = inner.ty().expect("sizeof operand is typed");
+                    if sized.is_vla() {
+                        self.check_expr(inner)?;
+                    }
+                    sized
                 }
             };
-            if sized.size().is_none() {
+            if !sized.is_complete() {
                 return self.err(
                     line,
                     column,

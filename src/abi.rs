@@ -14,7 +14,7 @@
 //! exactly one pointer). A memory aggregate is a `byval` parameter or an
 //! `sret` return slot.
 
-use crate::ast::{align_up, CType, FloatKind};
+use crate::ast::{align_up, ArrayLen, CType, FloatKind};
 use crate::target::{Abi, Target};
 
 /// Why an aggregate cannot be lowered yet.
@@ -542,7 +542,7 @@ fn collect_leaves(ty: &CType, base: u64, inherited: bool, out: &mut Vec<Leaf>) {
                 spans,
             });
         }
-        CType::Array(elem, Some(len)) => {
+        CType::Array(elem, ArrayLen::Const(len)) => {
             let Some(elem_size) = elem.size() else {
                 return;
             };
@@ -590,7 +590,7 @@ fn collect_leaves(ty: &CType, base: u64, inherited: bool, out: &mut Vec<Leaf>) {
                 collect_leaves(&field.ty, base + field.offset, inherited, out);
             }
         }
-        CType::Void | CType::Func(_) | CType::Array(_, None) | CType::Qualified(_, _) => {}
+        CType::Void | CType::Func(_) | CType::Array(_, _) | CType::Qualified(_, _) => {}
     }
 }
 

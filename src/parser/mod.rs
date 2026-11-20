@@ -73,6 +73,9 @@ pub fn parse_with(
         fn_labels: HashMap::new(),
         var_attrs: HashMap::new(),
         stmt_expr_depth: 0,
+        param_depth: 0,
+        vla_next: 0,
+        vla_sizes: Vec::new(),
     }
     .parse_translation_unit()
 }
@@ -120,6 +123,11 @@ struct Parser<'a> {
     var_attrs: HashMap<String, VarAttrs>,
     /// Statement expressions being parsed, innermost last.
     stmt_expr_depth: usize,
+    /// Parameter lists being parsed, so `[*]` can be recognized as
+    /// prototype-scope VLA notation (C11 6.7.6.2p4).
+    param_depth: usize,
+    vla_next: u32,
+    vla_sizes: Vec<VlaBound>,
 }
 
 /// One GNU attribute, `name` or `name(args)` inside `__attribute__((...))`
@@ -213,6 +221,7 @@ impl Parser<'_> {
             fn_attrs: std::mem::take(&mut self.fn_attrs),
             var_attrs: std::mem::take(&mut self.var_attrs),
             warnings: std::mem::take(&mut self.warnings),
+            vla_sizes: std::mem::take(&mut self.vla_sizes),
         })
     }
 
@@ -617,6 +626,8 @@ struct NamedDecl {
     symbol: Option<String>,
     /// GNU attributes in and after the declarator.
     attrs: Vec<Attr>,
+    /// This declarator allocated one or more VLA size identifiers.
+    eval_vla: bool,
 }
 
 impl NamedDecl {
@@ -651,8 +662,16 @@ enum RawDecl {
     Named(String, usize, usize),
     Abstract(usize, usize),
     Pointer(Quals, Box<RawDecl>),
-    Array(Box<RawDecl>, Option<u64>),
+    Array(Box<RawDecl>, ArrayBound),
     Func(Box<RawDecl>, ParsedParams),
+}
+
+/// The size in an array declarator: omitted (`[]`), a star (`[*]`), or
+/// an expression that is later folded or treated as a VLA size.
+enum ArrayBound {
+    Unspecified,
+    Star,
+    Expr(Expr),
 }
 
 struct ParsedParams {

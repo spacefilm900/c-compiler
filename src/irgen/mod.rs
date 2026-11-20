@@ -44,11 +44,13 @@ mod inline_builtins;
 mod module;
 mod stmt;
 mod vaarg;
+mod vla;
 use access::*;
 use call::*;
 use consts::*;
 use expr::*;
 use module::*;
+use vla::*;
 
 /// Render the checked unit as a textual LLVM IR module.
 ///
@@ -172,6 +174,18 @@ struct Gen {
     /// placeholder operand, so callers need not check; `render_function`
     /// then returns this instead of the function's IR.
     ice: Option<Ice>,
+    /// Typed VLA size expressions for this translation unit.
+    vla_bounds: std::collections::HashMap<VlaId, Expr>,
+    vla_counts: std::collections::HashMap<VlaId, String>,
+    vla_bytes: std::collections::HashMap<VlaId, String>,
+    /// `llvm.stacksave` values for open VLA object scopes, innermost last.
+    vla_saves: Vec<String>,
+    /// Number of open VLA object scopes at each C label in this function.
+    label_vla_depths: std::collections::HashMap<String, usize>,
+    /// VLA scope depth at each `break` target.
+    break_vla: Vec<usize>,
+    /// VLA scope depth at each `continue` target.
+    continue_vla: Vec<usize>,
 }
 
 /// One store of an automatic aggregate initializer, evaluated and waiting
@@ -212,6 +226,13 @@ impl Gen {
             switch_ranges: Vec::new(),
             pos: (0, 0),
             ice: None,
+            vla_bounds: std::collections::HashMap::new(),
+            vla_counts: std::collections::HashMap::new(),
+            vla_bytes: std::collections::HashMap::new(),
+            vla_saves: Vec::new(),
+            label_vla_depths: std::collections::HashMap::new(),
+            break_vla: Vec::new(),
+            continue_vla: Vec::new(),
         }
     }
 }

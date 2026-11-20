@@ -914,6 +914,9 @@ pub struct VarDecl {
     /// `_Thread_local` (C11 6.7.1). Block-scope thread-local objects also
     /// have `static` or `extern` storage.
     pub thread_local: bool,
+    /// This declarator introduced a VLA size expression, which must be
+    /// evaluated each time the declaration is reached (C11 6.7.6.2p5).
+    pub eval_vla: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -926,6 +929,14 @@ pub struct Param {
     pub column: usize,
     pub slot: String,
     pub arg_reg: String,
+    /// The unadjusted type used `[*]` (C11 6.7.6.2p4). After adjustment the
+    /// outermost array is a pointer, so this records notation that would
+    /// otherwise be lost. Only legal in a function prototype, not a definition.
+    pub star_array: bool,
+    /// Type before array/function adjustment, so VLA size expressions on a
+    /// parameter (C11 6.7.6.3 / 6.9.1) are still evaluated on entry after
+    /// the parameter itself has become a pointer.
+    pub unadjusted: CType,
 }
 
 #[derive(Debug, Clone)]
@@ -1294,4 +1305,15 @@ pub struct TranslationUnit {
     pub var_attrs: std::collections::HashMap<String, VarAttrs>,
     /// Warnings from parsing (unknown attributes, for example).
     pub warnings: Vec<crate::diag::Warning>,
+    /// Size expressions for VLA types, in the order they were parsed.
+    /// Each [`VlaId`] in a type refers to one of these.
+    pub vla_sizes: Vec<VlaBound>,
+}
+
+/// One VLA size expression, evaluated once when the declarator, typedef,
+/// or type name that created [`VlaBound::id`] is reached.
+#[derive(Debug, Clone)]
+pub struct VlaBound {
+    pub id: VlaId,
+    pub expr: Expr,
 }

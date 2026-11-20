@@ -390,7 +390,7 @@ pub(super) fn assemble(ty: &CType, stores: &[(u64, ConstInit)], base: u64) -> Co
         }
         return ConstInit::Aggregate(items);
     }
-    let CType::Array(elem, Some(len)) = ty else {
+    let CType::Array(elem, ArrayLen::Const(len)) = ty else {
         return ConstInit::Zero;
     };
     let elem_size = elem.size().unwrap_or(0);

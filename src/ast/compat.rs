@@ -32,8 +32,9 @@ pub(super) fn render_type(ty: &CType, name: &str) -> String {
         CType::Pointer(inner) => render_type(inner, &star_decl(inner, Quals::default(), name)),
         CType::Array(elem, len) => {
             let bracket = match len {
-                Some(n) => format!("[{n}]"),
-                None => "[]".to_string(),
+                ArrayLen::Const(n) => format!("[{n}]"),
+                ArrayLen::Incomplete => "[]".to_string(),
+                ArrayLen::Vla(_) | ArrayLen::Star => "[*]".to_string(),
             };
             render_type(elem, &format!("{name}{bracket}"))
         }
@@ -207,6 +208,28 @@ pub fn gnu_pointer_sign_or_qual_mix(dest: &CType, src: &CType) -> bool {
     }
 }
 
+/// Array lengths are compatible when they are not both integer constant
+/// expressions of unequal value (C11 6.7.6.2p6). A missing, `*`, or
+/// variable size does not make the types incompatible.
+fn array_lens_compatible(left: ArrayLen, right: ArrayLen) -> bool {
+    match (left, right) {
+        (ArrayLen::Const(a), ArrayLen::Const(b)) => a == b,
+        _ => true,
+    }
+}
+
+/// Composite array length of two compatible array types (C11 6.2.7p3).
+/// A known constant size wins; otherwise a specified VLA size; otherwise
+/// `[*]`; otherwise an incomplete array.
+fn composite_array_len(left: ArrayLen, right: ArrayLen) -> ArrayLen {
+    match (left, right) {
+        (ArrayLen::Const(n), _) | (_, ArrayLen::Const(n)) => ArrayLen::Const(n),
+        (ArrayLen::Vla(id), _) | (_, ArrayLen::Vla(id)) => ArrayLen::Vla(id),
+        (ArrayLen::Star, _) | (_, ArrayLen::Star) => ArrayLen::Star,
+        (ArrayLen::Incomplete, ArrayLen::Incomplete) => ArrayLen::Incomplete,
+    }
+}
+
 /// Two types are compatible (C11 6.2.7, 6.7.6, 6.7.3).
 ///
 /// Qualifiers must match at every level. Arrays are compatible when their
@@ -225,7 +248,7 @@ pub fn compatible(left: &CType, right: &CType) -> bool {
         (CType::Pointer(a), CType::Pointer(b)) => compatible(a, b),
         (CType::Func(a), CType::Func(b)) => compatible_funcs(a, b),
         (CType::Array(a, la), CType::Array(b, lb)) => {
-            (la.is_none() || lb.is_none() || la == lb) && compatible(a, b)
+            array_lens_compatible(*la, *lb) && compatible(a, b)
         }
         (CType::Struct(a), CType::Struct(b)) => a == b,
         _ => false,
@@ -328,7 +351,9 @@ pub fn composite(left: &CType, right: &CType) -> CType {
                 proto.prototype,
             )
         }
-        (CType::Array(a, la), CType::Array(b, lb)) => CType::array(composite(a, b), la.or(*lb)),
+        (CType::Array(a, la), CType::Array(b, lb)) => {
+            CType::array_of(composite(a, b), composite_array_len(*la, *lb))
+        }
         (CType::Pointer(a), CType::Pointer(b)) => CType::pointer(composite(a, b)),
         _ => left.peel().clone(),
     };

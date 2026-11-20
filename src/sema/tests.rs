@@ -1886,3 +1886,22 @@ fn kr_definition_compatible_with_promoted_prototype() {
             || sema_err("int f(int); int f() { return 0; }").contains("conflicting")
     );
 }
+
+#[test]
+fn vla_constraints_and_jumps() {
+    sema_ok("void f(int n) { int a[n]; a[0] = 1; }");
+    sema_ok("void f(int n) { int a[n]; goto L; L: a[0] = 1; }");
+    sema_ok("void f(int n) { goto L; { int a[n]; } L: ; }");
+    assert!(
+        sema_err("void f(int n) { goto L; int a[n]; L: a[0] = 1; }").contains("variably modified")
+    );
+    assert!(
+        sema_err("void f(int n, int x) { switch (x) { int a[n]; case 0: a[0] = 1; } }")
+            .contains("variably modified")
+    );
+    assert!(
+        sema_err("void f(int n) { int x = _Generic(0, int[n]: 1, default: 0); }")
+            .contains("variably modified")
+    );
+    sema_ok("void f(int n) { int a[n]; switch (n) { case 1: a[0] = 1; } }");
+}

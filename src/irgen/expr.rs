@@ -218,17 +218,25 @@ impl Gen {
         }
     }
 
-    /// `sizeof` that reached code generation: its operand's size as a
-    /// `size_t` constant.
+    /// `sizeof` that reached code generation: a `size_t` constant, or a
+    /// runtime value when the operand has a variable length array type.
     fn gen_sizeof(&mut self, whole: &Expr, operand: &SizeofOperand) -> String {
-        let size = match operand {
-            SizeofOperand::Type(ty) => ty.size(),
-            SizeofOperand::Expr(inner) => inner.ty().expect("typed").size(),
+        let ty = match operand {
+            SizeofOperand::Type(ty) => ty.clone(),
+            SizeofOperand::Expr(inner) => {
+                if inner.ty().is_some_and(|ty| ty.is_vla()) {
+                    let _ = self.gen_expr(inner);
+                }
+                inner.ty().expect("typed")
+            }
         };
-        let Some(size) = size else {
-            return self.ice_in(whole, "sizeof of an incomplete type");
-        };
-        TypeName::size_t().format_bits(u128::from(size))
+        if !ty.is_vla() {
+            let Some(size) = ty.size() else {
+                return self.ice_in(whole, "sizeof of an incomplete type");
+            };
+            return TypeName::size_t().format_bits(u128::from(size));
+        }
+        self.gen_sizeof_value(&ty)
     }
 
     /// Emit a statement expression's block up to its last expression
@@ -445,17 +453,22 @@ impl Gen {
             self.emit(&format!("  {tmp} = sub i64 0, {idx}"));
             idx = tmp;
         }
-        let Some(elem) = ptr_expr
-            .ty()
-            .as_ref()
-            .and_then(CType::pointee)
-            .map(CType::ir_type)
-        else {
+        let Some(pointee) = ptr_expr.ty().and_then(|ty| ty.pointee().cloned()) else {
             return self.ice_in(
                 ptr_expr,
                 "pointer arithmetic on an operand that is not a pointer",
             );
         };
+        if pointee.is_vla() {
+            return self.gen_vla_gep(&ptr, &idx, &pointee, self.unaligned.contains(&ptr));
+        }
+        if pointee.size().is_none() {
+            return self.ice_in(
+                ptr_expr,
+                "pointer arithmetic on an operand that is not a pointer",
+            );
+        }
+        let elem = pointee.ir_type();
         let tmp = self.fresh();
         self.emit(&format!(
             "  {tmp} = getelementptr inbounds {elem}, ptr {ptr}, i64 {idx}"
@@ -475,12 +488,16 @@ impl Gen {
         self.emit(&format!("  {right_int} = ptrtoint ptr {right_val} to i64"));
         let diff = self.fresh();
         self.emit(&format!("  {diff} = sub i64 {left_int}, {right_int}"));
-        let Some(size) = left
-            .ty()
-            .as_ref()
-            .and_then(CType::pointee)
-            .and_then(CType::size)
-        else {
+        let Some(pointee) = left.ty().and_then(|ty| ty.pointee().cloned()) else {
+            return self.ice_in(left, "pointer subtraction with an incomplete pointee type");
+        };
+        if pointee.is_vla() {
+            let size = self.runtime_size(&pointee);
+            let tmp = self.fresh();
+            self.emit(&format!("  {tmp} = sdiv i64 {diff}, {size}"));
+            return tmp;
+        }
+        let Some(size) = pointee.size() else {
             return self.ice_in(left, "pointer subtraction with an incomplete pointee type");
         };
         if size == 1 {
@@ -573,17 +590,23 @@ impl Gen {
         } else {
             self.load(&dest, &addr)
         };
-        if let Some(elem) = dest.pointee().map(CType::ir_type) {
+        if let Some(pointee) = dest.pointee() {
             let mut idx = self.extend_i64(&rhs, &rhs_ty);
             if op == BinOp::Sub {
                 let tmp = self.fresh();
                 self.emit(&format!("  {tmp} = sub i64 0, {idx}"));
                 idx = tmp;
             }
-            let updated = self.fresh();
-            self.emit(&format!(
-                "  {updated} = getelementptr inbounds {elem}, ptr {old}, i64 {idx}"
-            ));
+            let updated = if pointee.size().is_none() {
+                self.gen_vla_gep(&old, &idx, pointee, self.unaligned.contains(&old))
+            } else {
+                let elem = pointee.ir_type();
+                let updated = self.fresh();
+                self.emit(&format!(
+                    "  {updated} = getelementptr inbounds {elem}, ptr {old}, i64 {idx}"
+                ));
+                updated
+            };
             self.store(&dest, &updated, &addr);
             return updated;
         }
@@ -663,12 +686,18 @@ impl Gen {
             };
             return if op.is_prefix() { written } else { old };
         }
-        if let Some(elem) = dest.pointee().map(CType::ir_type) {
+        if let Some(pointee) = dest.pointee() {
             let step = if op.is_increment() { "1" } else { "-1" };
-            let updated = self.fresh();
-            self.emit(&format!(
-                "  {updated} = getelementptr inbounds {elem}, ptr {old}, i64 {step}"
-            ));
+            let updated = if pointee.size().is_none() {
+                self.gen_vla_gep(&old, step, pointee, self.unaligned.contains(&old))
+            } else {
+                let elem = pointee.ir_type();
+                let updated = self.fresh();
+                self.emit(&format!(
+                    "  {updated} = getelementptr inbounds {elem}, ptr {old}, i64 {step}"
+                ));
+                updated
+            };
             self.store(&dest, &updated, &addr);
             return if op.is_prefix() { updated } else { old };
         }

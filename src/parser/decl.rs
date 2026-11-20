@@ -31,6 +31,13 @@ impl Parser<'_> {
                     "parameter name omitted in function definition",
                 ));
             }
+            if param.star_array || type_has_star_array(&param.ty) {
+                return Err(self.error_at(
+                    param.line,
+                    param.column,
+                    "star array notation is only allowed in a function prototype",
+                ));
+            }
         }
         let mut params = params;
         let kr_def = !prototype && !params.is_empty();
@@ -119,16 +126,25 @@ impl Parser<'_> {
         declarator: NamedDecl,
     ) -> Result<TopDecl, Diagnostic> {
         if declarator.is_function() {
-            let ty = decl_kind_type(&declarator.kind);
             let DeclKind::Function {
                 ret,
-                params,
+                mut params,
                 prototype,
                 variadic,
             } = declarator.kind
             else {
                 unreachable!("function declarator");
             };
+            for param in &mut params {
+                star_out_vla_types(&mut param.ty);
+            }
+            let mut ty = decl_kind_type(&DeclKind::Function {
+                ret: ret.clone(),
+                params: params.clone(),
+                prototype,
+                variadic,
+            });
+            star_out_vla_types(&mut ty);
             self.reject_identifier_list_decl(
                 prototype,
                 &params,
@@ -189,6 +205,13 @@ impl Parser<'_> {
                 "void variables are not supported",
             ));
         }
+        self.reject_vm_decl(
+            &ty,
+            specs.storage,
+            specs.thread_local,
+            declarator.line,
+            declarator.column,
+        )?;
         // The identifier's scope starts after its declarator (C11 6.2.1p7),
         // so the initializer already sees it.
         self.bind_ordinary(
@@ -253,16 +276,22 @@ impl Parser<'_> {
         Ok(Vec::new())
     }
 
-    pub(super) fn parse_typedef_declarators(&mut self, specs: &Specs) -> Result<(), Diagnostic> {
+    pub(super) fn parse_typedef_declarators(
+        &mut self,
+        specs: &Specs,
+    ) -> Result<Vec<Stmt>, Diagnostic> {
         self.reject_func_spec(specs)?;
         let mut first = true;
+        let mut items = Vec::new();
         loop {
             let declarator = self.parse_named_decl(specs.ty.clone())?;
             if declarator.is_function() && self.current().kind == TokenKind::LBrace {
                 return Err(self.error("a typedef cannot have a function body"));
             }
             self.reject_typedef_identifier_list(&declarator)?;
-            self.bind_typedef_decl(specs, &declarator, first)?;
+            if let Some(decl) = self.bind_typedef_decl(specs, &declarator, first)? {
+                items.push(Stmt::Decl(decl));
+            }
             first = false;
             if self.match_kind(TokenKind::Comma) {
                 continue;
@@ -270,7 +299,7 @@ impl Parser<'_> {
             break;
         }
         self.expect_skip(TokenKind::Semi, "';'")?;
-        Ok(())
+        Ok(items)
     }
 
     pub(super) fn bind_typedef_decl(
@@ -278,7 +307,7 @@ impl Parser<'_> {
         specs: &Specs,
         declarator: &NamedDecl,
         first: bool,
-    ) -> Result<(), Diagnostic> {
+    ) -> Result<Option<VarDecl>, Diagnostic> {
         if self.current().kind == TokenKind::Assign {
             return Err(self.error("a typedef cannot have an initializer"));
         }
@@ -328,7 +357,36 @@ impl Parser<'_> {
             }
         }
         self.reject_bad_restrict(&ty, declarator.line, declarator.column)?;
-        self.bind_typedef(&declarator.name, ty, declarator.line, declarator.column)
+        self.reject_vm_decl(
+            &ty,
+            Storage::Typedef,
+            false,
+            declarator.line,
+            declarator.column,
+        )?;
+        self.bind_typedef(
+            &declarator.name,
+            ty.clone(),
+            declarator.line,
+            declarator.column,
+        )?;
+        if self.names.len() <= 1 {
+            return Ok(None);
+        }
+        Ok(Some(VarDecl {
+            name: declarator.name.clone(),
+            ty,
+            storage: Storage::Typedef,
+            init: None,
+            checked: None,
+            line: declarator.line,
+            column: declarator.column,
+            slot: String::new(),
+            align: None,
+            alignas: None,
+            thread_local: false,
+            eval_vla: declarator.eval_vla,
+        }))
     }
 
     pub(super) fn bind_typedef(
@@ -386,7 +444,7 @@ impl Parser<'_> {
     /// handles the shapes whose length does not depend on expression types,
     /// and otherwise leaves the array incomplete for `sizeof`.
     pub(super) fn bind_completed(&mut self, name: &str, ty: &CType, init: Option<&Init>) {
-        let (Some(init), CType::Array(elem, None)) = (init, ty) else {
+        let (Some(init), CType::Array(elem, ArrayLen::Incomplete)) = (init, ty) else {
             return;
         };
         let Some(len) = infer_init_len(elem, init, self.env()) else {
@@ -657,7 +715,14 @@ impl Parser<'_> {
         line: usize,
         column: usize,
     ) -> Result<(), Diagnostic> {
-        if !has_init || ty.is_complete() || matches!(ty, CType::Array(_, None)) {
+        if has_init && ty.is_vla() {
+            return Err(self.error_at(
+                line,
+                column,
+                "a variable length array cannot have an initializer",
+            ));
+        }
+        if !has_init || ty.is_complete() || ty.is_incomplete_array() {
             return Ok(());
         }
         Err(self.error_at(
@@ -695,8 +760,7 @@ impl Parser<'_> {
             return Ok(Vec::new());
         }
         if specs.storage == Storage::Typedef {
-            self.parse_typedef_declarators(&specs)?;
-            return Ok(Vec::new());
+            return self.parse_typedef_declarators(&specs);
         }
         let base = specs.ty.clone();
         let mut items = Vec::new();
@@ -735,16 +799,25 @@ impl Parser<'_> {
         specs: &Specs,
         declarator: NamedDecl,
     ) -> Result<FuncDef, Diagnostic> {
-        let ty = decl_kind_type(&declarator.kind);
         let DeclKind::Function {
             ret,
-            params,
+            mut params,
             prototype,
             variadic,
         } = declarator.kind
         else {
             unreachable!("function declarator");
         };
+        for param in &mut params {
+            star_out_vla_types(&mut param.ty);
+        }
+        let mut ty = decl_kind_type(&DeclKind::Function {
+            ret: ret.clone(),
+            params: params.clone(),
+            prototype,
+            variadic,
+        });
+        star_out_vla_types(&mut ty);
         self.reject_identifier_list_decl(prototype, &params, declarator.line, declarator.column)?;
         if self.current().kind == TokenKind::Assign {
             return Err(self.error("function declarations cannot have an initializer"));
@@ -819,6 +892,13 @@ impl Parser<'_> {
                 "void variables are not supported",
             ));
         }
+        self.reject_vm_decl(
+            &ty,
+            specs.storage,
+            specs.thread_local,
+            declarator.line,
+            declarator.column,
+        )?;
         self.bind_ordinary(
             &declarator.name,
             Some(ty.clone()),
@@ -850,6 +930,7 @@ impl Parser<'_> {
             align,
             alignas: specs.alignas,
             thread_local: specs.thread_local,
+            eval_vla: declarator.eval_vla,
         })
     }
 
@@ -932,6 +1013,7 @@ impl Parser<'_> {
                     DeclKind::Object(ty) => ty,
                     DeclKind::Function { .. } => decl_kind_type(&named.kind),
                 };
+                let unadjusted = ty.clone();
                 let ty = self.adjust_parameter(ty, named.line, named.column)?;
                 let Some(&index) = by_name.get(&named.name) else {
                     return Err(self.error_at(
@@ -948,6 +1030,7 @@ impl Parser<'_> {
                     ));
                 }
                 params[index].ty = ty;
+                params[index].unadjusted = unadjusted;
                 params[index].line = named.line;
                 params[index].column = named.column;
                 self.bind_ordinary(
@@ -998,4 +1081,40 @@ fn raisable_record<'a>(specs: &'a Specs, ty: &CType, align: u32) -> Option<&'a S
         && handle.align() < align
         && size % u64::from(align) == 0)
         .then_some(handle)
+}
+
+impl Parser<'_> {
+    /// C11 6.7.6.2p2: a variably modified identifier has no linkage and
+    /// block or function prototype scope. A VLA object cannot have static
+    /// or thread storage duration.
+    fn reject_vm_decl(
+        &self,
+        ty: &CType,
+        storage: Storage,
+        thread_local: bool,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        if !ty.is_variably_modified() {
+            return Ok(());
+        }
+        if self.names.len() <= 1 {
+            return Err(self.error_at(
+                line,
+                column,
+                "variably modified type is not allowed at file scope",
+            ));
+        }
+        if storage == Storage::Extern {
+            return Err(self.error_at(line, column, "variably modified type cannot have linkage"));
+        }
+        if ty.is_vla() && (storage == Storage::Static || thread_local) {
+            return Err(self.error_at(
+                line,
+                column,
+                "a variable length array cannot have static or thread storage duration",
+            ));
+        }
+        Ok(())
+    }
 }

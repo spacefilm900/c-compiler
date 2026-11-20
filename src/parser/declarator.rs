@@ -13,6 +13,7 @@ impl Parser<'_> {
     }
 
     pub(super) fn parse_named_decl_inner(&mut self, base: CType) -> Result<NamedDecl, Diagnostic> {
+        let vla_before = self.vla_next;
         let raw = self.parse_raw_declarator(false)?;
         let (name, line, column) = match decl_name(&raw) {
             Some(found) => found,
@@ -50,6 +51,7 @@ impl Parser<'_> {
             param_names,
             symbol,
             attrs: Vec::new(),
+            eval_vla: self.vla_next != vla_before,
         })
     }
 
@@ -92,7 +94,9 @@ impl Parser<'_> {
         // function's block scope when this declarator is a definition. The
         // map is returned either way; the caller keeps it only for a body.
         self.push_tags();
+        self.param_depth += 1;
         let parsed = self.parse_param_list_in_scope();
+        self.param_depth -= 1;
         let introduced = self.tags.last().expect("parameter scope").clone();
         let introduced_names = self.names.last().expect("parameter scope").clone();
         self.pop_tags();
@@ -187,6 +191,8 @@ impl Parser<'_> {
                 column: token.column,
                 slot: String::new(),
                 arg_reg: String::new(),
+                star_array: false,
+                unadjusted: CType::from_name(TypeName::Int),
             });
             if self.match_kind(TokenKind::Comma) {
                 continue;
@@ -218,6 +224,7 @@ impl Parser<'_> {
                 return Err(self.error(format!("expected ')', found {}", found(self.current()))));
             }
             if matches!(self.current().kind, TokenKind::Comma | TokenKind::RParen) {
+                let unadjusted = base.clone();
                 let ty = self.adjust_parameter(base, specs.line, specs.column)?;
                 return Ok(Param {
                     name: None,
@@ -226,6 +233,8 @@ impl Parser<'_> {
                     column: specs.column,
                     slot: String::new(),
                     arg_reg: String::new(),
+                    star_array: false,
+                    unadjusted,
                 });
             }
             return Err(self.error(format!(
@@ -242,6 +251,7 @@ impl Parser<'_> {
             .map(|(_, line, column)| (*line, *column))
             .unwrap_or_else(|| decl_pos(&raw));
         let ty = layer_type(self.derive(base, &raw, line, column)?);
+        let star_array = type_has_star_array(&ty);
         if type_has_identifier_list(&ty) {
             return Err(self.error_at(
                 line,
@@ -249,6 +259,7 @@ impl Parser<'_> {
                 "an identifier list in a function declarator that is not a definition shall be empty",
             ));
         }
+        let unadjusted = ty.clone();
         let ty = self.adjust_parameter(ty, line, column)?;
         if let Some((name, line, column)) = &named {
             self.bind_ordinary(name, Some(ty.clone()), *line, *column)?;
@@ -260,6 +271,8 @@ impl Parser<'_> {
             column,
             slot: String::new(),
             arg_reg: String::new(),
+            star_array,
+            unadjusted,
         })
     }
 
@@ -438,38 +451,28 @@ impl Parser<'_> {
             || unsupported(token.kind).is_some()
     }
 
-    /// `[]` is an unknown bound. Anything else must be an integer constant
-    /// greater than zero. An identifier is a variable-length array.
-    pub(super) fn parse_array_len(&mut self) -> Result<Option<u64>, Diagnostic> {
-        if self.current().kind == TokenKind::Star {
-            return Err(self.error("variable-length arrays are not supported"));
-        }
+    /// `[]` is an unknown bound. `[*]` is a prototype-scope VLA of
+    /// unspecified size (C11 6.7.6.2p4). Otherwise the bound is an
+    /// expression, later folded as a constant or treated as a VLA size.
+    pub(super) fn parse_array_len(&mut self) -> Result<ArrayBound, Diagnostic> {
         if self.current().kind == TokenKind::KwStatic {
             return Err(self.error("static array sizes are not supported"));
         }
+        if self.current().kind == TokenKind::Star && self.lookahead() == TokenKind::RBrack {
+            self.bump();
+            return Ok(ArrayBound::Star);
+        }
         if self.current().kind == TokenKind::RBrack {
-            return Ok(None);
+            return Ok(ArrayBound::Unspecified);
         }
         let expr = self.parse_assignment()?;
-        match fold_array_bound(&expr, self.env()) {
-            Ok(len) => Ok(Some(len)),
-            // GNU C allows a zero-length array (GCC manual, "Arrays of
-            // Length Zero").
-            Err(BoundErr::NonPositive)
-                if self.dialect.gnu()
-                    && eval_ice(&expr, self.env())
-                        .is_ok_and(|value| value.bits & value.ty.mask() == 0) =>
-            {
-                Ok(Some(0))
-            }
-            Err(err) => Err(self.error_at(expr.line(), expr.column(), bound_message(err))),
-        }
+        Ok(ArrayBound::Expr(expr))
     }
 
     /// Build the type by inserting each constructor next to the base, which is
     /// what makes `[]` and `()` bind tighter than `*`.
     pub(super) fn derive(
-        &self,
+        &mut self,
         base: CType,
         raw: &RawDecl,
         line: usize,
@@ -488,6 +491,8 @@ impl Parser<'_> {
                         column,
                         slot: String::new(),
                         arg_reg: String::new(),
+                        star_array: false,
+                        unadjusted: ty.clone(),
                     })
                     .collect(),
                 prototype: func.prototype,
@@ -502,7 +507,7 @@ impl Parser<'_> {
     }
 
     pub(super) fn derive_layer(
-        &self,
+        &mut self,
         base: Layer,
         raw: &RawDecl,
         line: usize,
@@ -523,7 +528,7 @@ impl Parser<'_> {
             },
             RawDecl::Array(inner, len) => match base {
                 Layer::Object(ty) => {
-                    let arr = self.make_array(ty, *len, line, column)?;
+                    let arr = self.make_array(ty, len, line, column)?;
                     self.derive_layer(Layer::Object(arr), inner, line, column)
                 }
                 Layer::Function { .. } => {
@@ -579,9 +584,9 @@ impl Parser<'_> {
     }
 
     pub(super) fn make_array(
-        &self,
+        &mut self,
         elem: CType,
-        len: Option<u64>,
+        bound: &ArrayBound,
         line: usize,
         column: usize,
     ) -> Result<CType, Diagnostic> {
@@ -592,14 +597,95 @@ impl Parser<'_> {
                 format!("array has incomplete element type '{}'", elem.display()),
             ));
         }
-        if let Some(n) = len {
-            if let Some(elem_size) = elem.size() {
-                if elem_size != 0 && n > u64::MAX / elem_size {
-                    return Err(self.error_at(line, column, "array is too large"));
+        let len = match bound {
+            ArrayBound::Unspecified => ArrayLen::Incomplete,
+            ArrayBound::Star => {
+                if self.param_depth == 0 {
+                    return Err(self.error_at(
+                        line,
+                        column,
+                        "star array notation is only allowed in a function prototype",
+                    ));
                 }
+                ArrayLen::Star
+            }
+            ArrayBound::Expr(expr) => self.array_len_from_expr(expr, &elem, line, column)?,
+        };
+        Ok(CType::array_of(elem, len))
+    }
+
+    fn array_len_from_expr(
+        &mut self,
+        expr: &Expr,
+        elem: &CType,
+        line: usize,
+        column: usize,
+    ) -> Result<ArrayLen, Diagnostic> {
+        match fold_array_bound(expr, self.env()) {
+            Ok(n) => {
+                if let Some(elem_size) = elem.size() {
+                    if elem_size != 0 && n > u64::MAX / elem_size {
+                        return Err(self.error_at(line, column, "array is too large"));
+                    }
+                }
+                Ok(ArrayLen::Const(n))
+            }
+            // GNU C allows a zero-length array (GCC manual, "Arrays of
+            // Length Zero").
+            Err(BoundErr::NonPositive)
+                if self.dialect.gnu()
+                    && eval_ice(expr, self.env())
+                        .is_ok_and(|value| value.bits & value.ty.mask() == 0) =>
+            {
+                Ok(ArrayLen::Const(0))
+            }
+            Err(BoundErr::Vla | BoundErr::NotConst) => {
+                let id = self.alloc_vla(expr.clone());
+                Ok(ArrayLen::Vla(id))
+            }
+            Err(err) => Err(self.error_at(expr.line(), expr.column(), bound_message(err))),
+        }
+    }
+
+    fn alloc_vla(&mut self, expr: Expr) -> VlaId {
+        let id = VlaId(self.vla_next);
+        self.vla_next += 1;
+        self.vla_sizes.push(VlaBound { id, expr });
+        id
+    }
+}
+
+/// Replace specified VLA sizes with `[*]` in a prototype parameter type
+/// (C11 6.7.6.2p5).
+pub(super) fn star_out_vla_types(ty: &mut CType) {
+    match ty {
+        CType::Array(elem, len) => {
+            star_out_vla_types(elem);
+            if matches!(len, ArrayLen::Vla(_)) {
+                *len = ArrayLen::Star;
             }
         }
-        Ok(CType::array(elem, len))
+        CType::Pointer(inner) | CType::Qualified(_, inner) => star_out_vla_types(inner),
+        CType::Func(func) => {
+            star_out_vla_types(&mut func.ret);
+            for param in &mut func.params {
+                star_out_vla_types(param);
+            }
+        }
+        CType::Void | CType::Int(_) | CType::Float(_) | CType::Struct(_) => {}
+    }
+}
+
+/// Whether a type uses `[*]` array notation.
+pub(super) fn type_has_star_array(ty: &CType) -> bool {
+    match ty.peel() {
+        CType::Array(_, ArrayLen::Star) => true,
+        CType::Array(elem, _) => type_has_star_array(elem),
+        CType::Pointer(inner) => type_has_star_array(inner),
+        CType::Func(func) => {
+            type_has_star_array(&func.ret) || func.params.iter().any(type_has_star_array)
+        }
+        _ => false,
     }
 }
 

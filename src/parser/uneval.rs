@@ -542,9 +542,11 @@ pub(super) fn type_only(expr: &Expr, env: Env) -> Result<CType, BoundErr> {
             type_only(select_generic(control, assocs, env)?, env)
         }
         Expr::CompoundLit { decl, .. } => match (&decl.ty, &decl.init) {
-            (CType::Array(elem, None), Some(init)) => infer_init_len(elem, init, env)
-                .map(|len| CType::array((**elem).clone(), Some(len)))
-                .ok_or(BoundErr::NotConst),
+            (CType::Array(elem, ArrayLen::Incomplete), Some(init)) => {
+                infer_init_len(elem, init, env)
+                    .map(|len| CType::array((**elem).clone(), Some(len)))
+                    .ok_or(BoundErr::NotConst)
+            }
             (ty, _) => Ok(ty.clone()),
         },
     }

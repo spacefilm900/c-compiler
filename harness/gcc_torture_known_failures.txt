@@ -22,6 +22,11 @@
 # After the required C11 features of step 12a: 1334 passed, 379 known
 # failures, 0 unexpected, 1746 executed, 144 builtins files skipped.
 # 32 old-style-decl tests and pr68532.c (alignas) now pass.
+# After variable-length arrays (step 12b): 1376 passed, 370 known failures,
+# 0 unexpected, 1746 executed, 144 builtins files skipped. Nine VLA tests
+# now pass: 20040411-1.c, 20040811-1.c, 20221006-1.c, 920929-1.c, 970217-1.c,
+# pr22061-2.c, pr43220.c, pr77767.c, vla-dealloc-1.c. 12 VLA-tagged tests
+# remain (GNU nested functions, undeclared alloca, or a VM struct member).
 20000223-1.c compile-error
 20000227-1.c compile-error
 20000314-3.c old-style-decl
@@ -57,13 +62,11 @@
 20031211-2.c compile-error
 20040223-1.c compile-error
 20040308-1.c vla
-20040411-1.c vla
 20040423-1.c vla
 20040520-1.c nested-function
 20040709-1.c builtin
 20040709-2.c compile-error
 20040709-3.c compile-error
-20040811-1.c vla
 20041019-1.c compile-error
 20041124-1.c compile-error
 20041201-1.c compile-error
@@ -94,7 +97,6 @@
 20120427-1.c compile-error
 20120427-2.c compile-error
 20180112-1.c compile-error
-20221006-1.c vla
 20230630-2.c compile-error
 20230630-3.c compile-error
 20230630-4.c compile-error
@@ -121,7 +123,6 @@
 920812-1.c compile-error
 920908-2.c compile-error
 920909-1.c compile-error
-920929-1.c vla
 921013-1.c compile-error
 921017-1.c compile-error
 921110-1.c compile-error
@@ -184,7 +185,6 @@
 960512-1.c compile-error
 960830-1.c compile-error
 961112-1.c compile-error
-970217-1.c vla
 980526-1.c compile-error
 990106-1.c compile-error
 990130-1.c compile-error
@@ -275,7 +275,6 @@ pr117432.c compile-error
 pr17133.c compile-error
 pr21173.c compile-error
 pr22061-1.c vla
-pr22061-2.c vla
 pr22061-3.c vla
 pr22061-4.c vla
 pr23135.c compile-error
@@ -297,7 +296,6 @@ pr41239.c compile-error
 pr41935.c vla
 pr42248.c complex
 pr42833.c compile-error
-pr43220.c vla
 pr43385.c compile-error
 pr43560.c compile-error
 pr44852.c asm
@@ -350,7 +348,6 @@ pr71083.c compile-error
 pr71494.c compile-error
 pr71626-1.c compile-error
 pr71626-2.c compile-error
-pr77767.c vla
 pr78438.c compile-error
 pr78726.c compile-error
 pr79354.c compile-error
@@ -398,6 +395,5 @@ struct-ini-4.c compile-error
 tstdi-1.c compile-error
 va-arg-22.c compile-error
 va-arg-pack-1.c builtin
-vla-dealloc-1.c vla
 zero-struct-1.c compile-error
 zero-struct-2.c compile-error

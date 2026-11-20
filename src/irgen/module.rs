@@ -212,8 +212,12 @@ pub(super) fn render_functions(
     for decl in &unit.decls {
         if let TopDecl::Func(func) = decl {
             if func.body.is_some() {
-                let (text, fn_needs) =
-                    render_function(func, renames, unit.fn_attrs.get(&func.symbol))?;
+                let (text, fn_needs) = render_function(
+                    func,
+                    renames,
+                    unit.fn_attrs.get(&func.symbol),
+                    &unit.vla_sizes,
+                )?;
                 needs.merge(fn_needs);
                 functions.push(text);
             }
@@ -504,6 +508,7 @@ pub(super) fn render_function(
     func: &FuncDef,
     renames: &Renames,
     attrs: Option<&FnAttrs>,
+    vla_sizes: &[VlaBound],
 ) -> Result<(String, LowerNeeds), Ice> {
     let ice = |message: &str| Ice::new(func.line, func.column, message);
     let body = func
@@ -534,6 +539,11 @@ pub(super) fn render_function(
     let mut gen = Gen::new(func.ret_type.clone(), sig.ret_agg.clone());
     gen.renames = renames.clone();
     gen.addr_labels = func.addr_labels.iter().map(|name| c_label(name)).collect();
+    gen.vla_bounds = vla_sizes
+        .iter()
+        .map(|bound| (bound.id, bound.expr.clone()))
+        .collect();
+    gen.label_vla_depths = label_vla_depths(body);
     // MSVC gives every C `inline` definition external linkage in a COMDAT
     // that the linker folds (Parser::mark_inline_definitions), so a call
     // that is not inlined still finds a body.
@@ -604,6 +614,9 @@ pub(super) fn render_function(
     for ((param, names), parts) in func.params.iter().zip(names.iter()).zip(sig.params.iter()) {
         gen.store_param(param, names, parts);
     }
+    for param in &func.params {
+        gen.force_eval_vla_sizes(&param.unadjusted);
+    }
 
     gen.pos = (func.line, func.column);
     gen.gen_compound(body)?;
@@ -639,7 +652,9 @@ pub(super) fn local_slots(compound: &Compound) -> Vec<(String, CType, u32)> {
 
 pub(super) fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, CType, u32)>) {
     match stmt {
-        Stmt::Decl(decl) if decl.storage == Storage::None => slots.push(slot_of(decl)),
+        Stmt::Decl(decl) if decl.storage == Storage::None && !decl.ty.is_vla() => {
+            slots.push(slot_of(decl))
+        }
         Stmt::Decl(_) | Stmt::FuncDecl(_) => {}
         Stmt::Compound(compound) => {
             for item in &compound.items {
@@ -663,7 +678,7 @@ pub(super) fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, CType, u32)>) 
         Stmt::For { init, body, .. } => {
             if let ForInit::Decl(decls) = init {
                 for decl in decls {
-                    if decl.storage == Storage::None {
+                    if decl.storage == Storage::None && !decl.ty.is_vla() {
                         slots.push(slot_of(decl));
                     }
                 }

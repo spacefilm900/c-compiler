@@ -394,7 +394,7 @@ impl Parser<'_> {
                         "cannot determine the type of this '__alignof__' operand",
                     )
                 })?;
-                if ty.size().is_none() || ty.is_void() || ty.is_func() {
+                if !ty.is_complete() || ty.is_void() || ty.is_func() {
                     return Err(self.error_at(
                         line,
                         column,
@@ -420,7 +420,7 @@ impl Parser<'_> {
                 "invalid application of '_Alignof' to a function type",
             ));
         }
-        if ty.size().is_none() || ty.is_void() {
+        if !ty.is_complete() || ty.is_void() {
             return Err(self.error_at(
                 line,
                 column,
@@ -470,6 +470,7 @@ impl Parser<'_> {
                 align: None,
                 alignas: None,
                 thread_local: false,
+                eval_vla: false,
             }),
             line,
             column,

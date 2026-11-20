@@ -343,7 +343,7 @@ fn utf8_literals_pass_through() {
 
 #[test]
 fn conditional_feature_macros() {
-    let text = pp("#if __STDC_NO_ATOMICS__ && __STDC_NO_COMPLEX__ && __STDC_NO_THREADS__ && __STDC_NO_VLA__ && __STDC_UTF_16__ && __STDC_UTF_32__\nint ok;\n#endif\n");
+    let text = pp("#if __STDC_NO_ATOMICS__ && __STDC_NO_COMPLEX__ && __STDC_NO_THREADS__ && !defined(__STDC_NO_VLA__) && __STDC_UTF_16__ && __STDC_UTF_32__\nint ok;\n#endif\n");
     assert_eq!(squash(&text), "int ok;");
 }
 

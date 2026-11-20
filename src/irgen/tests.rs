@@ -1514,3 +1514,27 @@ fn kr_definition_runtime_matches_promotions() {
     let ir = crate::compile_to_ir(source, "kr-run.c").unwrap();
     assert_eq!(run_binary(&ir).0, 0, "{ir}");
 }
+
+#[test]
+fn vla_emits_stacksave_and_runtime_sizeof() {
+    let ir = crate::compile_to_ir(
+        "int f(int n) { char b[n + 3]; return (int)sizeof b; }\n",
+        "vla.c",
+    )
+    .unwrap();
+    assert!(ir.contains("llvm.stacksave"), "{ir}");
+    assert!(ir.contains("llvm.stackrestore"), "{ir}");
+    assert!(ir.contains("alloca i8, i64"), "{ir}");
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn vla_fsize3_matches_the_standard_example() {
+    let src =
+        "int f(int n) { char b[n + 3]; return (int)sizeof b; }\nint main(void) { return f(10); }\n";
+    let ir = crate::compile_to_ir(src, "vla.c").unwrap();
+    assert_eq!(run_binary(&ir).0, 13);
+}

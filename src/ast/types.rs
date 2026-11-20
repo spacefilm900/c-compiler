@@ -435,13 +435,52 @@ impl StrEnc {
 /// (C11 6.7.3p9), so an array is never wrapped in [`CType::Qualified`].
 /// `const int *` is a pointer to a qualified `int`. `int * const` is a
 /// qualified pointer. `const struct S` is a qualified struct.
+/// Length of an array type (C11 6.7.6.2).
+///
+/// `int a[]` is incomplete. `int a[10]` has a known constant size. A
+/// variable length array has a runtime size, identified by a [`VlaId`]
+/// assigned when the size expression is seen. `int a[*]` is a prototype
+/// scope VLA of unspecified size, and is nonetheless a complete type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrayLen {
+    Incomplete,
+    Const(u64),
+    Vla(VlaId),
+    Star,
+}
+
+impl ArrayLen {
+    pub fn from_const(len: Option<u64>) -> Self {
+        match len {
+            Some(n) => ArrayLen::Const(n),
+            None => ArrayLen::Incomplete,
+        }
+    }
+
+    pub fn const_len(self) -> Option<u64> {
+        match self {
+            ArrayLen::Const(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// A size that is not an integer constant expression (C11 6.7.6.2p4).
+    pub fn is_variable(self) -> bool {
+        matches!(self, ArrayLen::Vla(_) | ArrayLen::Star)
+    }
+}
+
+/// Identifies one evaluation of a VLA size expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VlaId(pub u32);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CType {
     Void,
     Int(TypeName),
     Float(FloatKind),
     Pointer(Box<CType>),
-    Array(Box<CType>, Option<u64>),
+    Array(Box<CType>, ArrayLen),
     Struct(StructRef),
     Func(Box<FuncTy>),
     Qualified(Quals, Box<CType>),
@@ -465,6 +504,10 @@ impl CType {
     }
 
     pub fn array(elem: CType, len: Option<u64>) -> Self {
+        CType::array_of(elem, ArrayLen::from_const(len))
+    }
+
+    pub fn array_of(elem: CType, len: ArrayLen) -> Self {
         CType::Array(Box::new(elem), len)
     }
 
@@ -513,7 +556,7 @@ impl CType {
             return self;
         }
         match self {
-            CType::Array(elem, len) => CType::array(elem.with_quals(extra), len),
+            CType::Array(elem, len) => CType::array_of(elem.with_quals(extra), len),
             CType::Qualified(existing, inner) => CType::Qualified(existing.merge(extra), inner),
             other => CType::Qualified(extra, Box::new(other)),
         }
@@ -728,8 +771,40 @@ impl CType {
 
     pub fn array_len(&self) -> Option<u64> {
         match self.peel() {
-            CType::Array(_, len) => *len,
+            CType::Array(_, len) => len.const_len(),
             _ => None,
+        }
+    }
+
+    pub fn array_size(&self) -> Option<ArrayLen> {
+        match self.peel() {
+            CType::Array(_, len) => Some(*len),
+            _ => None,
+        }
+    }
+
+    /// A variable length array type (C11 6.7.6.2p4): the size is not an
+    /// integer constant expression, or the element type does not have a
+    /// known constant size.
+    pub fn is_incomplete_array(&self) -> bool {
+        matches!(self.peel(), CType::Array(_, ArrayLen::Incomplete))
+    }
+
+    pub fn is_vla(&self) -> bool {
+        match self.peel() {
+            CType::Array(_, ArrayLen::Vla(_) | ArrayLen::Star) => true,
+            CType::Array(elem, ArrayLen::Const(_)) => elem.is_vla(),
+            _ => false,
+        }
+    }
+
+    /// A variably modified type (C11 6.7.6p3): a VLA type, or a type
+    /// derived from one by pointer or array construction.
+    pub fn is_variably_modified(&self) -> bool {
+        match self.peel() {
+            CType::Array(elem, len) => len.is_variable() || elem.is_variably_modified(),
+            CType::Pointer(inner) => inner.is_variably_modified(),
+            _ => false,
         }
     }
 
@@ -737,8 +812,9 @@ impl CType {
         match self.peel() {
             CType::Void | CType::Func(_) => false,
             CType::Int(_) | CType::Float(_) | CType::Pointer(_) => true,
-            CType::Array(elem, Some(_)) => elem.is_complete(),
-            CType::Array(_, None) => false,
+            // A VLA, including `[*]`, is a complete type (C11 6.7.6.2p4).
+            CType::Array(_, ArrayLen::Incomplete) => false,
+            CType::Array(elem, _) => elem.is_complete(),
             CType::Struct(handle) => handle.is_complete(),
             CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
         }
@@ -751,8 +827,10 @@ impl CType {
             CType::Int(ty) => Some(ty.size()),
             CType::Float(kind) => Some(kind.size()),
             CType::Pointer(_) => Some(8),
-            CType::Array(elem, Some(len)) => elem.size().map(|elem| elem.saturating_mul(*len)),
-            CType::Array(_, None) => None,
+            CType::Array(elem, ArrayLen::Const(len)) => {
+                elem.size().map(|elem| elem.saturating_mul(*len))
+            }
+            CType::Array(_, _) => None,
             CType::Struct(handle) => handle.size(),
             CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
         }
@@ -805,7 +883,7 @@ impl CType {
             CType::Pointer(_) => "ptr".to_string(),
             CType::Func(_) => "void".to_string(),
             CType::Array(elem, len) => {
-                let n = len.unwrap_or(0);
+                let n = len.const_len().unwrap_or(0);
                 format!("[{n} x {}]", elem.ir_type())
             }
             CType::Struct(handle) => format!("%{}", handle.ir_name()),

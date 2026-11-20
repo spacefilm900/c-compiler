@@ -33,7 +33,7 @@ pub(super) enum BoundErr {
 
 pub(super) fn bound_message(err: BoundErr) -> &'static str {
     match err {
-        BoundErr::Vla => "variable-length arrays are not supported",
+        BoundErr::Vla => "array size is not an integer constant",
         BoundErr::Incomplete => "invalid application of 'sizeof' to an incomplete type",
         BoundErr::NonPositive => "array size must be positive",
         BoundErr::TooBig => "array is too large",
@@ -129,6 +129,9 @@ pub(super) fn eval_ice(expr: &Expr, env: Env) -> Result<BVal, BoundErr> {
             };
             if ty.is_func() {
                 return Err(BoundErr::SizeofFunction);
+            }
+            if ty.is_vla() {
+                return Err(BoundErr::Vla);
             }
             let size = ty.size().ok_or(BoundErr::Incomplete)?;
             Ok(BVal {
