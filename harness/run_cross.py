@@ -325,15 +325,18 @@ def test_both(tc, src, work):
 def test_cross(tc, def_src, use_src, work):
     name = def_src.name[: -len("_def.c")]
     base = work / name
-    objs = {}
+    ours = {}
     for role, src in (("def", def_src), ("use", use_src)):
         o, err = build_ours(tc, src, work / f"{name}_{role}", "c11")
         if err:
             return f"{role}: {err}"
+        ours[role] = o
+    objs = {}
+    for role, src in (("def", def_src), ("use", use_src)):
         r, err = build_ref(tc, src, work / f"{name}_{role}", "c11")
         if err:
             return f"{role}: {err}"
-        objs[role] = (o, r)
+        objs[role] = (ours[role], r)
     expected_bin = base.with_suffix(".refbin")
     rc, _, e = tc.link([objs["def"][1], objs["use"][1]], expected_bin)
     if rc != 0:
