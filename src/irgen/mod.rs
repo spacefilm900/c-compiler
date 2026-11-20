@@ -182,6 +182,9 @@ struct Gen {
     /// reach a use of the size along a path that does not go through the
     /// declaration that stored the SSA value.
     vla_byte_slots: std::collections::HashMap<VlaId, String>,
+    /// Entry-block pointer slots for VLA objects, used when a computed
+    /// goto can reach a use without passing through the dynamic alloca.
+    vla_ptr_slots: std::collections::HashSet<String>,
     /// `llvm.stacksave` values for open VLA object scopes, innermost last.
     vla_saves: Vec<String>,
     /// Entry-block slots holding those saves so a computed-goto trampoline
@@ -243,6 +246,7 @@ impl Gen {
             vla_counts: std::collections::HashMap::new(),
             vla_bytes: std::collections::HashMap::new(),
             vla_byte_slots: std::collections::HashMap::new(),
+            vla_ptr_slots: std::collections::HashSet::new(),
             vla_saves: Vec::new(),
             vla_slots: Vec::new(),
             vla_depth_slot: None,

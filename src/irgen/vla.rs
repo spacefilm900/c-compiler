@@ -103,10 +103,43 @@ impl Gen {
         self.enter_vla_scope();
         let bytes = self.runtime_size(&decl.ty);
         let align = decl.ty.align().max(decl.align.unwrap_or(0));
+        if self.addr_label_names.is_empty() {
+            self.emit(&format!(
+                "  {} = alloca i8, i64 {bytes}, align {align}",
+                decl.slot
+            ));
+            return;
+        }
+        // The dynamic alloca does not dominate a computed-goto path that
+        // lists a later label, so the object address lives in an entry
+        // slot and uses load it.
+        self.ensure_vla_ptr_slot(&decl.slot);
+        let storage = self.fresh();
         self.emit(&format!(
-            "  {} = alloca i8, i64 {bytes}, align {align}",
-            decl.slot
+            "  {storage} = alloca i8, i64 {bytes}, align {align}"
         ));
+        self.emit(&format!("  store ptr {storage}, ptr {}", decl.slot));
+    }
+
+    fn ensure_vla_ptr_slot(&mut self, slot: &str) {
+        if !self.vla_ptr_slots.insert(slot.to_string()) {
+            return;
+        }
+        let line = format!("  {slot} = alloca ptr, align 8");
+        self.lines.insert(self.alloca_at, line);
+        self.alloca_at += 1;
+    }
+
+    /// Address of a variable. A VLA object whose alloca may not dominate
+    /// every use is loaded from its entry-block pointer slot.
+    pub(super) fn object_addr(&mut self, slot: &str) -> String {
+        let slot = self.var_slot(slot);
+        if !self.vla_ptr_slots.contains(&slot) {
+            return slot;
+        }
+        let ptr = self.fresh();
+        self.emit(&format!("  {ptr} = load ptr, ptr {slot}"));
+        ptr
     }
 
     pub(super) fn declare_stack_intrinsics(&mut self) {
@@ -256,20 +289,23 @@ fn walk_vla_bound_exprs(
     depths: &mut std::collections::HashMap<String, usize>,
     max_depth: &mut usize,
     sizes: &[VlaBound],
+    seen: &mut std::collections::HashSet<VlaId>,
 ) {
     match ty.peel() {
         CType::Array(elem, ArrayLen::Vla(id)) => {
-            walk_vla_bound_exprs(elem, depth, depths, max_depth, sizes);
-            if let Some(bound) = sizes.iter().find(|bound| bound.id == *id) {
-                walk_label_depths_expr(&bound.expr, depth, depths, max_depth, sizes);
+            walk_vla_bound_exprs(elem, depth, depths, max_depth, sizes, seen);
+            if seen.insert(*id) {
+                if let Some(bound) = sizes.iter().find(|bound| bound.id == *id) {
+                    walk_label_depths_expr(&bound.expr, depth, depths, max_depth, sizes, seen);
+                }
             }
         }
-        CType::Array(elem, _) => walk_vla_bound_exprs(elem, depth, depths, max_depth, sizes),
-        CType::Pointer(inner) => walk_vla_bound_exprs(inner, depth, depths, max_depth, sizes),
+        CType::Array(elem, _) => walk_vla_bound_exprs(elem, depth, depths, max_depth, sizes, seen),
+        CType::Pointer(inner) => walk_vla_bound_exprs(inner, depth, depths, max_depth, sizes, seen),
         CType::Func(func) => {
-            walk_vla_bound_exprs(&func.ret, depth, depths, max_depth, sizes);
+            walk_vla_bound_exprs(&func.ret, depth, depths, max_depth, sizes, seen);
             for param in &func.params {
-                walk_vla_bound_exprs(param, depth, depths, max_depth, sizes);
+                walk_vla_bound_exprs(param, depth, depths, max_depth, sizes, seen);
             }
         }
         _ => {}
@@ -295,8 +331,16 @@ pub(super) fn label_vla_depths(
     let mut depths = std::collections::HashMap::new();
     let mut depth = 0usize;
     let mut max_depth = 0usize;
+    let mut seen = std::collections::HashSet::new();
     for item in &body.items {
-        walk_label_depths(item, &mut depth, &mut depths, &mut max_depth, vla_sizes);
+        walk_label_depths(
+            item,
+            &mut depth,
+            &mut depths,
+            &mut max_depth,
+            vla_sizes,
+            &mut seen,
+        );
     }
     (depths, max_depth)
 }
@@ -307,13 +351,14 @@ fn walk_label_depths(
     depths: &mut std::collections::HashMap<String, usize>,
     max_depth: &mut usize,
     sizes: &[VlaBound],
+    seen: &mut std::collections::HashSet<VlaId>,
 ) {
     match stmt {
         Stmt::Decl(decl) => {
             if let Some(init) = decl.init.as_ref() {
-                walk_label_depths_init(init, depth, depths, max_depth, sizes);
+                walk_label_depths_init(init, depth, depths, max_depth, sizes, seen);
             }
-            walk_vla_bound_exprs(&decl.ty, depth, depths, max_depth, sizes);
+            walk_vla_bound_exprs(&decl.ty, depth, depths, max_depth, sizes, seen);
             if is_vla_object(decl) {
                 bump_vla_depth(depth, max_depth, 1);
             }
@@ -321,13 +366,13 @@ fn walk_label_depths(
         Stmt::Compound(compound) => {
             let before = *depth;
             for item in &compound.items {
-                walk_label_depths(item, depth, depths, max_depth, sizes);
+                walk_label_depths(item, depth, depths, max_depth, sizes, seen);
             }
             *depth = before;
         }
         Stmt::Label { name, stmt, .. } => {
             depths.insert(name.clone(), *depth);
-            walk_label_depths(stmt, depth, depths, max_depth, sizes);
+            walk_label_depths(stmt, depth, depths, max_depth, sizes, seen);
         }
         Stmt::If {
             cond,
@@ -335,23 +380,23 @@ fn walk_label_depths(
             else_stmt,
             ..
         } => {
-            walk_label_depths_expr(cond, depth, depths, max_depth, sizes);
-            walk_label_depths(then_stmt, depth, depths, max_depth, sizes);
+            walk_label_depths_expr(cond, depth, depths, max_depth, sizes, seen);
+            walk_label_depths(then_stmt, depth, depths, max_depth, sizes, seen);
             if let Some(else_stmt) = else_stmt {
-                walk_label_depths(else_stmt, depth, depths, max_depth, sizes);
+                walk_label_depths(else_stmt, depth, depths, max_depth, sizes, seen);
             }
         }
         Stmt::While { cond, body, .. } => {
-            walk_label_depths_expr(cond, depth, depths, max_depth, sizes);
-            walk_label_depths(body, depth, depths, max_depth, sizes);
+            walk_label_depths_expr(cond, depth, depths, max_depth, sizes, seen);
+            walk_label_depths(body, depth, depths, max_depth, sizes, seen);
         }
         Stmt::Do { body, cond, .. } => {
-            walk_label_depths(body, depth, depths, max_depth, sizes);
-            walk_label_depths_expr(cond, depth, depths, max_depth, sizes);
+            walk_label_depths(body, depth, depths, max_depth, sizes, seen);
+            walk_label_depths_expr(cond, depth, depths, max_depth, sizes, seen);
         }
         Stmt::Switch { cond, body, .. } => {
-            walk_label_depths_expr(cond, depth, depths, max_depth, sizes);
-            walk_label_depths(body, depth, depths, max_depth, sizes);
+            walk_label_depths_expr(cond, depth, depths, max_depth, sizes, seen);
+            walk_label_depths(body, depth, depths, max_depth, sizes, seen);
         }
         Stmt::Case {
             expr,
@@ -359,14 +404,14 @@ fn walk_label_depths(
             stmt: body,
             ..
         } => {
-            walk_label_depths_expr(expr, depth, depths, max_depth, sizes);
+            walk_label_depths_expr(expr, depth, depths, max_depth, sizes, seen);
             if let Some(high) = high {
-                walk_label_depths_expr(high, depth, depths, max_depth, sizes);
+                walk_label_depths_expr(high, depth, depths, max_depth, sizes, seen);
             }
-            walk_label_depths(body, depth, depths, max_depth, sizes);
+            walk_label_depths(body, depth, depths, max_depth, sizes, seen);
         }
         Stmt::Default { stmt: body, .. } => {
-            walk_label_depths(body, depth, depths, max_depth, sizes)
+            walk_label_depths(body, depth, depths, max_depth, sizes, seen)
         }
         Stmt::For {
             init,
@@ -380,9 +425,9 @@ fn walk_label_depths(
                     let mut added = 0;
                     for decl in decls {
                         if let Some(init) = decl.init.as_ref() {
-                            walk_label_depths_init(init, depth, depths, max_depth, sizes);
+                            walk_label_depths_init(init, depth, depths, max_depth, sizes, seen);
                         }
-                        walk_vla_bound_exprs(&decl.ty, depth, depths, max_depth, sizes);
+                        walk_vla_bound_exprs(&decl.ty, depth, depths, max_depth, sizes, seen);
                         if is_vla_object(decl) {
                             bump_vla_depth(depth, max_depth, 1);
                             added += 1;
@@ -391,18 +436,18 @@ fn walk_label_depths(
                     added
                 }
                 ForInit::Expr(expr) => {
-                    walk_label_depths_expr(expr, depth, depths, max_depth, sizes);
+                    walk_label_depths_expr(expr, depth, depths, max_depth, sizes, seen);
                     0
                 }
                 ForInit::Empty => 0,
             };
             if let Some(cond) = cond {
-                walk_label_depths_expr(cond, depth, depths, max_depth, sizes);
+                walk_label_depths_expr(cond, depth, depths, max_depth, sizes, seen);
             }
             if let Some(step) = step {
-                walk_label_depths_expr(step, depth, depths, max_depth, sizes);
+                walk_label_depths_expr(step, depth, depths, max_depth, sizes, seen);
             }
-            walk_label_depths(body, depth, depths, max_depth, sizes);
+            walk_label_depths(body, depth, depths, max_depth, sizes, seen);
             *depth -= added;
         }
         Stmt::Return {
@@ -411,10 +456,10 @@ fn walk_label_depths(
         | Stmt::Expr {
             expr: Some(expr), ..
         } => {
-            walk_label_depths_expr(expr, depth, depths, max_depth, sizes);
+            walk_label_depths_expr(expr, depth, depths, max_depth, sizes, seen);
         }
         Stmt::GotoPtr { expr, .. } => {
-            walk_label_depths_expr(expr, depth, depths, max_depth, sizes);
+            walk_label_depths_expr(expr, depth, depths, max_depth, sizes, seen);
         }
         _ => {}
     }
@@ -426,12 +471,13 @@ fn walk_label_depths_init(
     depths: &mut std::collections::HashMap<String, usize>,
     max_depth: &mut usize,
     sizes: &[VlaBound],
+    seen: &mut std::collections::HashSet<VlaId>,
 ) {
     match init {
-        Init::Expr(expr) => walk_label_depths_expr(expr, depth, depths, max_depth, sizes),
+        Init::Expr(expr) => walk_label_depths_expr(expr, depth, depths, max_depth, sizes, seen),
         Init::List { items, .. } => {
             for item in items {
-                walk_label_depths_init(item, depth, depths, max_depth, sizes);
+                walk_label_depths_init(item, depth, depths, max_depth, sizes, seen);
             }
         }
         Init::Designated {
@@ -439,10 +485,10 @@ fn walk_label_depths_init(
         } => {
             for designator in designators {
                 if let Designator::Index { expr, .. } = designator {
-                    walk_label_depths_expr(expr, depth, depths, max_depth, sizes);
+                    walk_label_depths_expr(expr, depth, depths, max_depth, sizes, seen);
                 }
             }
-            walk_label_depths_init(init, depth, depths, max_depth, sizes);
+            walk_label_depths_init(init, depth, depths, max_depth, sizes, seen);
         }
     }
 }
@@ -455,12 +501,13 @@ fn walk_label_depths_expr(
     depths: &mut std::collections::HashMap<String, usize>,
     max_depth: &mut usize,
     sizes: &[VlaBound],
+    seen: &mut std::collections::HashSet<VlaId>,
 ) {
     match expr {
         Expr::StmtExpr { body, .. } => {
             let before = *depth;
             for item in &body.items {
-                walk_label_depths(item, depth, depths, max_depth, sizes);
+                walk_label_depths(item, depth, depths, max_depth, sizes, seen);
             }
             *depth = before;
         }
@@ -481,28 +528,31 @@ fn walk_label_depths_expr(
             index: right,
             ..
         } => {
-            walk_label_depths_expr(left, depth, depths, max_depth, sizes);
-            walk_label_depths_expr(right, depth, depths, max_depth, sizes);
+            walk_label_depths_expr(left, depth, depths, max_depth, sizes, seen);
+            walk_label_depths_expr(right, depth, depths, max_depth, sizes, seen);
         }
         Expr::Unary { expr, .. }
         | Expr::IncDec { target: expr, .. }
-        | Expr::Cast { expr, .. }
         | Expr::Decay { expr, .. }
         | Expr::Member { base: expr, .. } => {
-            walk_label_depths_expr(expr, depth, depths, max_depth, sizes);
+            walk_label_depths_expr(expr, depth, depths, max_depth, sizes, seen);
+        }
+        Expr::Cast { ty_name, expr, .. } => {
+            walk_vla_bound_exprs(ty_name, depth, depths, max_depth, sizes, seen);
+            walk_label_depths_expr(expr, depth, depths, max_depth, sizes, seen);
         }
         Expr::VaArg { ap, .. } => {
-            walk_label_depths_expr(ap, depth, depths, max_depth, sizes);
+            walk_label_depths_expr(ap, depth, depths, max_depth, sizes, seen);
         }
         Expr::VaOp { args, .. } => {
             for arg in args {
-                walk_label_depths_expr(arg, depth, depths, max_depth, sizes);
+                walk_label_depths_expr(arg, depth, depths, max_depth, sizes, seen);
             }
         }
         Expr::Call { callee, args, .. } => {
-            walk_label_depths_expr(callee, depth, depths, max_depth, sizes);
+            walk_label_depths_expr(callee, depth, depths, max_depth, sizes, seen);
             for arg in args {
-                walk_label_depths_expr(arg, depth, depths, max_depth, sizes);
+                walk_label_depths_expr(arg, depth, depths, max_depth, sizes, seen);
             }
         }
         Expr::Cond {
@@ -511,31 +561,36 @@ fn walk_label_depths_expr(
             else_expr,
             ..
         } => {
-            walk_label_depths_expr(cond, depth, depths, max_depth, sizes);
-            walk_label_depths_expr(then_expr, depth, depths, max_depth, sizes);
-            walk_label_depths_expr(else_expr, depth, depths, max_depth, sizes);
+            walk_label_depths_expr(cond, depth, depths, max_depth, sizes, seen);
+            walk_label_depths_expr(then_expr, depth, depths, max_depth, sizes, seen);
+            walk_label_depths_expr(else_expr, depth, depths, max_depth, sizes, seen);
         }
         Expr::CondShort {
             cond, else_expr, ..
         } => {
-            walk_label_depths_expr(cond, depth, depths, max_depth, sizes);
-            walk_label_depths_expr(else_expr, depth, depths, max_depth, sizes);
+            walk_label_depths_expr(cond, depth, depths, max_depth, sizes, seen);
+            walk_label_depths_expr(else_expr, depth, depths, max_depth, sizes, seen);
         }
-        Expr::Sizeof {
-            operand: SizeofOperand::Expr(expr),
-            ..
-        } => walk_label_depths_expr(expr, depth, depths, max_depth, sizes),
+        Expr::Sizeof { operand, .. } => match operand {
+            SizeofOperand::Expr(expr) => {
+                walk_label_depths_expr(expr, depth, depths, max_depth, sizes, seen);
+            }
+            SizeofOperand::Type(ty) => {
+                walk_vla_bound_exprs(ty, depth, depths, max_depth, sizes, seen);
+            }
+        },
         Expr::Generic {
             control, assocs, ..
         } => {
-            walk_label_depths_expr(control, depth, depths, max_depth, sizes);
+            walk_label_depths_expr(control, depth, depths, max_depth, sizes, seen);
             for assoc in assocs {
-                walk_label_depths_expr(&assoc.expr, depth, depths, max_depth, sizes);
+                walk_label_depths_expr(&assoc.expr, depth, depths, max_depth, sizes, seen);
             }
         }
         Expr::CompoundLit { decl, .. } => {
+            walk_vla_bound_exprs(&decl.ty, depth, depths, max_depth, sizes, seen);
             if let Some(init) = decl.init.as_ref() {
-                walk_label_depths_init(init, depth, depths, max_depth, sizes);
+                walk_label_depths_init(init, depth, depths, max_depth, sizes, seen);
             }
         }
         _ => {}

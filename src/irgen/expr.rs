@@ -30,12 +30,12 @@ impl Gen {
                 ))
             }
             Expr::Var { resolved, ty, .. } => {
-                let slot = &self.var_slot(&resolved.as_ref().expect("resolved variable").slot);
+                let slot = self.object_addr(&resolved.as_ref().expect("resolved variable").slot);
                 let ty = ty.clone().expect("typed variable");
                 if ty.is_array() || ty.is_func() {
-                    Some(slot.clone())
+                    Some(slot)
                 } else {
-                    Some(self.load(&ty, slot))
+                    Some(self.load(&ty, &slot))
                 }
             }
             Expr::Unary {
@@ -336,7 +336,7 @@ impl Gen {
     pub(super) fn gen_addr(&mut self, expr: &Expr) -> String {
         match expr {
             Expr::Var { resolved, .. } => {
-                self.var_slot(&resolved.as_ref().expect("resolved variable").slot)
+                self.object_addr(&resolved.as_ref().expect("resolved variable").slot)
             }
             Expr::Unary {
                 op: UnaryOp::Deref,
