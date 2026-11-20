@@ -583,6 +583,9 @@ impl Gen {
 
     pub(super) fn gen_compound_assign(&mut self, op: BinOp, target: &Expr, value: &Expr) -> String {
         let dest = target.ty().expect("lvalue type");
+        if dest.is_atomic() {
+            return self.gen_atomic_compound(op, target, value);
+        }
         let rhs_ty = value.ty().expect("typed");
         // The right-hand side is evaluated before the lvalue is loaded. The
         // address is still computed only once.
@@ -667,6 +670,9 @@ impl Gen {
 
     pub(super) fn gen_incdec(&mut self, op: IncOp, target: &Expr) -> String {
         let dest = target.ty().expect("lvalue type");
+        if dest.is_atomic() {
+            return self.gen_atomic_incdec(op, target);
+        }
         let addr = self.gen_addr(target);
         let old = if bit_info(target).is_some() {
             self.load_bitfield_at(&addr, target)

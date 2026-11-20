@@ -26,6 +26,7 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Warning};
 use crate::dialect::Dialect;
 
+mod atomic;
 mod call;
 mod consteval;
 mod convert;

@@ -560,6 +560,18 @@ impl CType {
         self.quals().is_atomic
     }
 
+    /// Sizes this compiler lowers with lock-free LLVM atomics, on every
+    /// supported target (x86-64, AArch64, and 64-bit Windows).
+    pub fn is_lock_free_atomic_size(size: u64) -> bool {
+        matches!(size, 1 | 2 | 4 | 8 | 16)
+    }
+
+    /// Whether an atomic type of this shape can be lowered. Non-atomic
+    /// types are not asked this question.
+    pub fn atomic_is_lock_free(&self) -> bool {
+        self.size().is_some_and(CType::is_lock_free_atomic_size)
+    }
+
     /// Drop `_Atomic` from the type itself, keeping other qualifiers.
     /// Lvalue conversion also drops `const` / `volatile` / `restrict`
     /// (C11 6.3.2.1p2); that is [`CType::unqualified`].

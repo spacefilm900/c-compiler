@@ -37,6 +37,7 @@ use crate::ast::*;
 use crate::diag::Diagnostic;
 
 mod access;
+mod atomic;
 mod call;
 mod consts;
 mod expr;

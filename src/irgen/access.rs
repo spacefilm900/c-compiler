@@ -7,6 +7,10 @@ impl Gen {
     /// Byte copy of a struct, including padding. `llvm.memmove` allows the
     /// source and destination to be the same object.
     pub(super) fn copy_struct(&mut self, ty: &CType, src: &str, dest: &str, src_volatile: bool) {
+        if ty.is_atomic() {
+            self.atomic_copy(ty, src, dest, false, src_volatile);
+            return;
+        }
         let size = ty.size().expect("complete struct");
         self.needs_memmove = true;
         // A volatile source or destination is one access. LLVM may drop a
@@ -39,11 +43,16 @@ impl Gen {
             Expr::Assign { target, value, .. } => {
                 // The right-hand side is evaluated before the destination is
                 // stored, matching scalar assignment.
-                let src_volatile = value.ty().is_some_and(|ty| ty.is_volatile());
+                let src_ty = value.ty().expect("typed");
+                let src_volatile = src_ty.is_volatile();
                 let src = self.record_ptr(value);
                 let dest = self.gen_addr(target);
                 let ty = target.ty().expect("struct assignment");
-                self.copy_struct(&ty, &src, &dest, src_volatile);
+                if ty.is_atomic() || src_ty.is_atomic() {
+                    self.atomic_copy(&ty, &src, &dest, src_ty.is_atomic(), src_volatile);
+                } else {
+                    self.copy_struct(&ty, &src, &dest, src_volatile);
+                }
                 dest
             }
             Expr::Call { .. } => self.materialize_call(expr),
@@ -271,6 +280,10 @@ impl Gen {
     }
 
     pub(super) fn store(&mut self, ty: &CType, value: &str, slot: &str) {
+        if ty.is_atomic() {
+            self.atomic_store(ty, value, slot);
+            return;
+        }
         let align = self.access_align(ty, slot);
         self.emit(&format!(
             "  store{} {} {value}, ptr {slot}, align {align}",
@@ -280,6 +293,9 @@ impl Gen {
     }
 
     pub(super) fn load(&mut self, ty: &CType, slot: &str) -> String {
+        if ty.is_atomic() {
+            return self.atomic_load(ty, slot);
+        }
         let tmp = self.fresh();
         let align = self.access_align(ty, slot);
         self.emit(&format!(

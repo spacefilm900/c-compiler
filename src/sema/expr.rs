@@ -750,7 +750,7 @@ impl Sema<'_> {
             self.decay(value)?;
             let dest = target.ty().expect("lvalue type");
             self.can_assign(&dest, value)?;
-            dest
+            dest.unqualified()
         } else {
             unreachable!("assignment");
         };
@@ -825,7 +825,7 @@ impl Sema<'_> {
             } else {
                 self.require_integer(value)?;
             }
-            dest
+            dest.unqualified()
         } else {
             unreachable!("compound assignment");
         };
@@ -855,7 +855,7 @@ impl Sema<'_> {
             if dest.is_pointer() {
                 self.require_complete_pointee(&dest, line, column)?;
             }
-            dest
+            dest.unqualified()
         } else {
             unreachable!("increment");
         };

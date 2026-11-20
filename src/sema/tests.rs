@@ -1921,3 +1921,21 @@ fn vla_constraints_and_jumps() {
     sema_ok("void f(int n) { (int (*)[n]){0}; }");
     assert!(sema_err("void f(void) { (int (*)[1.0]){0}; }").contains("integer"));
 }
+
+#[test]
+fn atomic_types_and_lock_free_sizes() {
+    crate::compile_to_ir(
+        "_Atomic int x; int main(void) { x = 1; return x; }\n",
+        "t.c",
+    )
+    .unwrap();
+    crate::compile_to_ir(
+        "_Atomic(int *) p; int main(void) { p = 0; return p == 0; }\n",
+        "t.c",
+    )
+    .unwrap();
+    let err = sema_err("struct Big { char a[32]; }; _Atomic struct Big x;\n");
+    assert!(err.contains("not lock-free"), "{err}");
+    let err = sema_err("_Atomic int a[3]; struct S { char a[3]; }; _Atomic struct S x;\n");
+    assert!(err.contains("not lock-free"), "{err}");
+}

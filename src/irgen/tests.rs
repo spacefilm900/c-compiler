@@ -1726,3 +1726,54 @@ fn computed_goto_vla_object_address_is_valid_llvm() {
     let ir = gnu_ir(src);
     assert_eq!(run_binary(&ir).0, 7);
 }
+
+#[test]
+fn atomic_load_store_ir_is_seq_cst() {
+    let ir = crate::compile_to_ir(
+        "_Atomic int x; int main(void) { x = 7; return x; }\n",
+        "atomic.c",
+    )
+    .unwrap();
+    assert!(ir.contains("store atomic i32"), "{ir}");
+    assert!(ir.contains("load atomic i32"), "{ir}");
+    assert!(ir.contains("seq_cst"), "{ir}");
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn atomic_load_store_and_rmw() {
+    let src = r#"
+_Atomic int x;
+int main(void) {
+    x = 10;
+    x += 3;
+    ++x;
+    x--;
+    return x;
+}
+"#;
+    let ir = crate::compile_to_ir(src, "atomic.c").unwrap();
+    assert!(ir.contains("cmpxchg"), "{ir}");
+    assert_eq!(run_binary(&ir).0, 13);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn atomic_pointer_and_postfix() {
+    let src = r#"
+int main(void) {
+    int a[4] = {1, 2, 3, 4};
+    _Atomic(int *) p = a;
+    int *old = p++;
+    return old[0] + p[0];
+}
+"#;
+    let ir = crate::compile_to_ir(src, "atomic.c").unwrap();
+    assert_eq!(run_binary(&ir).0, 1 + 2);
+}
