@@ -17,7 +17,9 @@ Harness tests from 119 onward in tests/*.c do not use preprocessor
 directives or headers. tests/hosted/*.c may include system headers such
 as <math.h> and are run the same way as tests/*.c.
 tests/posix/*.c need POSIX threads (`-pthread`) and are run only by
-this native harness, not by the Windows Wine stand-in.
+this native harness, not by the Windows Wine stand-in. On macOS the
+harness runs tests/posix/darwin/*.c instead, so each fixture can use
+the platform's `pthread_t` without preprocessor directives in the test.
 
 tests/xabi/*_def.c is linked with the matching *_use.c in both directions:
 this compiler's IR with a Clang object, and the reverse. Both must match
@@ -204,7 +206,11 @@ def test_cross(def_src, use_src, tmp):
 def main():
     tests = sorted((ROOT / "tests").glob("*.c"))
     hosted = sorted((ROOT / "tests" / "hosted").glob("*.c"))
-    posix = sorted((ROOT / "tests" / "posix").glob("*.c"))
+    posix_root = ROOT / "tests" / "posix"
+    if sys.platform == "darwin":
+        posix = sorted((posix_root / "darwin").glob("*.c"))
+    else:
+        posix = sorted(posix_root.glob("*.c"))
     crosses = sorted((ROOT / "tests" / "xabi").glob("*_def.c"))
     gnu = sorted((ROOT / "tests" / "gnu").glob("*.c"))
     both = sorted((ROOT / "tests" / "gnu" / "both").glob("*.c"))
@@ -243,7 +249,7 @@ def main():
         for t in hosted:
             print(f"FAIL {t.parent.name}/{t.name}: " + "; ".join(problems))
         for t in posix:
-            print(f"FAIL posix/{t.name}: " + "; ".join(problems))
+            print(f"FAIL {t.relative_to(ROOT / 'tests').as_posix()}: " + "; ".join(problems))
         for t in crosses + gnu:
             print(f"FAIL {t.parent.name}/{t.name}: " + "; ".join(problems))
         for t in both:
@@ -275,7 +281,7 @@ def main():
         for t in hosted:
             report(f"{t.parent.relative_to(ROOT / 'tests').as_posix()}/{t.name}", test(t, tmp))
         for t in posix:
-            report(f"posix/{t.name}", test(t, tmp, link=["-lm", "-pthread"]))
+            report(f"{t.relative_to(ROOT / 'tests').as_posix()}", test(t, tmp, link=["-lm", "-pthread"]))
         for t in crosses:
             use = t.with_name(t.name[: -len("_def.c")] + "_use.c")
             label = f"{t.parent.relative_to(ROOT / 'tests').as_posix()}/{t.name[: -len('_def.c')]}"

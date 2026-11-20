@@ -1,11 +1,11 @@
 /* _Thread_local with multiple threads: each thread has a distinct object
-   (C11 6.2.4p4). The POSIX thread functions are declared here rather than
-   by including <pthread.h>, because glibc's header uses a GNU `aligned`
-   typedef whose size is not a multiple of its alignment, which this
-   compiler does not accept. `pthread_t` is a pointer-sized unsigned long
-   on the LP64 hosts that run this test. The native Linux/macOS harness
-   links with `-pthread`; the Windows Wine stand-in does not run this
-   directory. */
+   (C11 6.2.4p4). Linux fixture: `pthread_t` is `unsigned long` in glibc.
+   The POSIX thread functions are declared here rather than by including
+   <pthread.h>, because glibc's header uses a GNU `aligned` typedef whose
+   size is not a multiple of its alignment, which this compiler does not
+   accept. The macOS fixture is tests/posix/darwin/01_tls_threads.c. The
+   native harness links with `-pthread`; the Windows Wine stand-in does
+   not run this directory. */
 
 typedef unsigned long pthread_t;
 
