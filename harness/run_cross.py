@@ -251,6 +251,11 @@ def test(tc, src, work, std="c11"):
     rc, _, e = tc.link([mine], a)
     if rc != 0:
         return f"ours link failed ({rc}): {short(e)}"
+    b = base.with_suffix(".refbin")
+    if not oracle_err:
+        rc, _, e = tc.link([ref], b)
+        if rc != 0:
+            oracle_err = f"oracle link failed ({rc}): {short(e)}"
     if oracle_err:
         # An oracle-only known failure must not hide a link or run failure
         # of this compiler. Run our binary and require a successful exit,
@@ -263,13 +268,14 @@ def test(tc, src, work, std="c11"):
         if got[0] != 0:
             return f"ours run failed (exit {got[0]}, expected 0)"
         return oracle_err
-    b = base.with_suffix(".refbin")
-    rc, _, e = tc.link([ref], b)
-    if rc != 0:
-        return f"oracle link failed ({rc}): {short(e)}"
     got, exp = tc.execute(a), tc.execute(b)
-    err = not_run(got, "ours") or not_run(exp, "oracle")
+    err = not_run(got, "ours")
     if err:
+        return err
+    err = not_run(exp, "oracle")
+    if err:
+        if got[0] != 0:
+            return f"ours run failed (exit {got[0]}, expected 0)"
         return err
     if got != exp:
         return mismatch(got, exp)

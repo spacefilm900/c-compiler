@@ -922,6 +922,12 @@ impl Parser<'_> {
                 if self.current().kind == TokenKind::Assign {
                     return Err(self.error("a parameter declaration cannot have an initializer"));
                 }
+                if let DeclKind::Function {
+                    prototype, params, ..
+                } = &named.kind
+                {
+                    self.reject_identifier_list_decl(*prototype, params, named.line, named.column)?;
+                }
                 let ty = match named.kind {
                     DeclKind::Object(ty) => ty,
                     DeclKind::Function { .. } => decl_kind_type(&named.kind),

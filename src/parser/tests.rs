@@ -1560,6 +1560,8 @@ fn kr_definitions_parse_and_reject_bad_lists() {
             || parse_err("typedef int F(x);").contains("must be a definition")
     );
     let _ = parsed("typedef int F(int);\n");
+    assert!(parse_err("int f(g) int g(x); { return 0; }").contains("identifier list"));
+    assert!(parsed("int f(g) int g(int); { return 0; }\n").contains("func int f"));
     assert!(parse_err("int f(x) auto int x; { return x; }").contains("may only use the 'register'"));
     assert!(
         parsed("int f(a) enum { Value = 7 } a; { return a; }\nint Value;\n").contains("func int f")
