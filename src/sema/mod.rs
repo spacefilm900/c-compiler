@@ -151,6 +151,13 @@ enum GlobalState {
 struct GlobalInfo {
     linkage: Linkage,
     state: GlobalState,
+    thread_local: bool,
+    /// `_Alignas` on a declaration of this object, if any.
+    alignas: Option<u32>,
+    /// Whether a definition (including a tentative definition) has been seen.
+    defined: bool,
+    /// `_Alignas` on the definition, if a definition has been seen.
+    def_alignas: Option<u32>,
 }
 
 #[derive(Clone)]

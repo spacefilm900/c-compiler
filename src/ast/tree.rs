@@ -906,9 +906,14 @@ pub struct VarDecl {
     pub line: usize,
     pub column: usize,
     pub slot: String,
-    /// Alignment from a GNU `aligned` attribute, when it is stricter than
-    /// the type's own.
+    /// Alignment from `_Alignas` or a GNU `aligned` attribute, when it is
+    /// stricter than the type's own.
     pub align: Option<u32>,
+    /// `_Alignas` on this declaration, if any (C11 6.7.5), for redeclarations.
+    pub alignas: Option<u32>,
+    /// `_Thread_local` (C11 6.7.1). Block-scope thread-local objects also
+    /// have `static` or `extern` storage.
+    pub thread_local: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1085,6 +1090,9 @@ pub struct FuncDef {
     /// no prototype (C11 6.7.6.3p14). A definition written `f()` has no
     /// parameters, and its type still has no prototype.
     pub prototype: bool,
+    /// This is a definition whose declarator used an identifier list
+    /// (C11 6.9.1). The LLVM signature uses default argument promotions.
+    pub kr_def: bool,
     /// `None` is a declaration. `Some` is a definition.
     pub body: Option<Compound>,
     pub storage: Storage,
@@ -1111,6 +1119,10 @@ pub struct GlobalDecl {
     pub init: Option<Init>,
     pub line: usize,
     pub column: usize,
+    /// Combined `_Alignas` on this declaration, if any (C11 6.7.5).
+    pub alignas: Option<u32>,
+    /// `_Thread_local` (C11 6.7.1).
+    pub thread_local: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1201,7 +1213,7 @@ impl FnAttrs {
 /// Variable Attributes").
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VarAttrs {
-    /// `aligned(N)`: the object is at least this aligned.
+    /// `aligned(N)` or `_Alignas`: the object is at least this aligned.
     pub align: Option<u32>,
     pub section: Option<String>,
     pub weak: bool,
@@ -1209,6 +1221,8 @@ pub struct VarAttrs {
     /// Microsoft `__declspec(selectany)`: the definition goes in a COMDAT
     /// (`weak_odr`), so every unit may define it and the linker keeps one.
     pub selectany: bool,
+    /// LLVM `thread_local` (C11 `_Thread_local`).
+    pub thread_local: bool,
 }
 
 impl VarAttrs {
@@ -1222,6 +1236,7 @@ impl VarAttrs {
         self.weak |= other.weak;
         self.used |= other.used;
         self.selectany |= other.selectany;
+        self.thread_local |= other.thread_local;
     }
 }
 

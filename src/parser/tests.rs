@@ -342,7 +342,23 @@ fn syntax_errors_name_the_problem() {
     assert!(parse_err("int a = _Alignof(1);").contains("parenthesized type name"));
     assert!(parse_err("struct Q; int a = _Alignof(struct Q);").contains("incomplete type"));
     assert!(parse_err("int a = _Alignof(int(void));").contains("function type"));
-    assert!(parse_err("_Alignas(8) int a;").contains("alignment specifiers"));
+    assert!(parsed("_Alignas(8) int a;\n").contains("global int a"));
+    assert!(parse_err("_Alignas(3) int a;").contains("not a valid alignment"));
+    assert!(parse_err("_Alignas(2) int a;").contains("less than the alignment"));
+    assert!(parse_err("typedef _Alignas(8) int T;").contains("not allowed on a typedef"));
+    assert!(parse_err("_Alignas(8) int f(void);").contains("not allowed on a function"));
+    assert!(parse_err("int f(_Alignas(8) int a);").contains("not allowed on a parameter"));
+    assert!(
+        parse_err("struct S { _Alignas(8) int x : 3; };").contains("not allowed on a bit-field")
+    );
+    assert!(parse_err("register _Alignas(16) int a;").contains("not allowed on a register"));
+    assert!(parsed("_Thread_local int x;\n").contains("global int x"));
+    assert!(parse_err("_Thread_local int f(void);").contains("not allowed on a function"));
+    assert!(parse_err("int main(void) { _Thread_local int x; }")
+        .contains("requires 'static' or 'extern'"));
+    assert!(parse_err("_Thread_local typedef int T;").contains("multiple storage-class"));
+    assert!(parse_err("struct S { _Thread_local int x; };")
+        .contains("not allowed on a struct or union member"));
     // sizeof in integer constant expressions (C11 6.6p6, 6.5.3.4p1).
     assert!(parsed("int a[4]; int b[sizeof a / sizeof a[0]];\n").contains("global int [4] b"));
     assert!(parse_err("int x[sizeof x];").contains("undeclared identifier"));
@@ -378,7 +394,7 @@ fn syntax_errors_name_the_problem() {
     );
     assert!(parse_err("int main(void) { return a ? b; }").contains("expected ':'"));
     assert!(parsed("int add();\n").contains("add"));
-    assert!(parse_err("int add(a, b);").contains("old-style function declarations"));
+    assert!(parse_err("int add(a, b);").contains("must be a definition"));
     assert!(parsed("void f(__builtin_va_list);\nvoid g(__builtin_va_list, int);\n").contains("g"));
     assert!(
         parse_err("int main(void) { int inner(void) { return 1; } }").contains("nested functions")
@@ -412,7 +428,7 @@ fn syntax_errors_name_the_problem() {
         parse_err("int main(void) { for (int f(void); ; ) return 0; }")
             .contains("function declaration is not allowed in a for loop")
     );
-    assert!(parse_err("int main(void) { int f(a); }").contains("old-style function"));
+    assert!(parse_err("int main(void) { int f(a); }").contains("must be a definition"));
     assert!(parse_err("int main(void) { do { } while (0) return 0; }").contains("expected ';'"));
     assert!(parse_err("int main(void) { do { }; while (0); }").contains("expected 'while'"));
     assert!(parse_err("short long x;").contains("invalid combination of type specifiers"));
@@ -1520,4 +1536,21 @@ fn gnu_enum_list_rules() {
         .unwrap_err()
         .contains("must be an integer type"));
     parse_gnu("enum F : int { B }; enum F f; int g(void) { return sizeof(enum F); }").unwrap();
+}
+
+#[test]
+fn kr_definitions_parse_and_reject_bad_lists() {
+    assert!(parsed("int add(a, b) int a; int b; { return a + b; }\n").contains("func int add"));
+    assert!(parsed("int add(a, b) int a, b; { return a + b; }\n").contains("func int add"));
+    assert!(parsed("int inc(x) register int x; { return x + 1; }\n").contains("func int inc"));
+    assert!(parse_err("int f(a) { return a; }").contains("was not declared"));
+    assert!(parse_err("int f(a, a) int a; { return a; }").contains("redefinition of parameter"));
+    assert!(parse_err("int f(a) int a; int a; { return a; }").contains("redefinition of parameter"));
+    assert!(parse_err("int f(a) int b; { return 0; }").contains("is not a parameter"));
+    assert!(
+        parse_err("int f(a) static int a; { return a; }").contains("may only use the 'register'")
+    );
+    assert!(parse_err("int f(a) int a = 1; { return a; }").contains("initializer"));
+    assert!(parse_err("int (*p)(a, b);")
+        .contains("identifier list in a function declarator that is not a definition"));
 }

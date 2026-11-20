@@ -468,6 +468,7 @@ impl Parser<'_> {
                             return Err(self.error(format!("duplicate member '{name}'")));
                         }
                     }
+                    extras.push(self.member_attrs(&specs, &[], &ty, false)?);
                     fields.push(StructField {
                         name: String::new(),
                         ty,
@@ -475,7 +476,6 @@ impl Parser<'_> {
                         bit_offset: 0,
                         bit_width: None,
                     });
-                    extras.push(self.member_attrs(&specs.attrs, &[])?);
                     self.bump();
                     continue;
                 }
@@ -494,7 +494,7 @@ impl Parser<'_> {
                         bit_offset: 0,
                         bit_width: Some(width),
                     });
-                    extras.push(self.member_attrs(&specs.attrs, &attrs)?);
+                    extras.push(self.member_attrs(&specs, &attrs, &specs.ty, true)?);
                 } else {
                     let named = self.parse_named_decl(specs.ty.clone())?;
                     let DeclKind::Object(ty) = named.kind else {
@@ -536,6 +536,7 @@ impl Parser<'_> {
                             format!("duplicate member '{}'", named.name),
                         ));
                     }
+                    extras.push(self.member_attrs(&specs, &member_attrs, &ty, width.is_some())?);
                     fields.push(StructField {
                         name: named.name,
                         ty,
@@ -543,7 +544,6 @@ impl Parser<'_> {
                         bit_offset: 0,
                         bit_width: width,
                     });
-                    extras.push(self.member_attrs(&specs.attrs, &member_attrs)?);
                 }
                 if self.match_kind(TokenKind::Comma) {
                     if matches!(
@@ -563,12 +563,24 @@ impl Parser<'_> {
 
     pub(super) fn member_attrs(
         &self,
-        spec_attrs: &[Attr],
+        specs: &Specs,
         attrs: &[Attr],
+        ty: &CType,
+        is_bitfield: bool,
     ) -> Result<MemberAttrs, Diagnostic> {
-        let all: Vec<Attr> = spec_attrs.iter().chain(attrs).cloned().collect();
+        let all: Vec<Attr> = specs.attrs.iter().chain(attrs).cloned().collect();
+        if is_bitfield {
+            if let Some((line, column)) = specs.alignas_at {
+                return Err(self.error_at(
+                    line,
+                    column,
+                    "alignment specifiers are not allowed on a bit-field",
+                ));
+            }
+        }
+        let align = self.object_align(specs, ty, &all, false, false, is_bitfield)?;
         Ok(MemberAttrs {
-            align: self.attrs_align(&all)?,
+            align,
             packed: all.iter().any(|attr| attr.name == "packed"),
         })
     }
@@ -674,9 +686,14 @@ impl Parser<'_> {
     pub(super) fn finish_tag_only(&mut self, specs: &Specs) -> Result<(), Diagnostic> {
         self.reject_func_spec(specs)?;
         if specs.introduced_tag || specs.ty.unqualified().is_record() {
-            if specs.storage != Storage::None {
+            if specs.storage != Storage::None || specs.thread_local {
                 return Err(self.error(
                     "storage class on a tag declaration with no declarator is not supported",
+                ));
+            }
+            if specs.alignas_at.is_some() {
+                return Err(self.error(
+                    "alignment specifiers on a tag declaration with no declarator are not supported",
                 ));
             }
             if let Some(tag) = &specs.forward_tag {

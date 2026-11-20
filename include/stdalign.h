@@ -1,5 +1,4 @@
-/* Compiler-provided <stdalign.h> (C11 7.15). `alignas` names _Alignas,
- * which this compiler does not support yet; using it is diagnosed. */
+/* Compiler-provided <stdalign.h> (C11 7.15). */
 #ifndef _STDALIGN_H
 #define _STDALIGN_H
 #define alignas _Alignas

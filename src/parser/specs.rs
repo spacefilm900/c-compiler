@@ -72,6 +72,9 @@ impl Parser<'_> {
             TokenKind::KwRegister | TokenKind::KwAuto => {
                 self.note_storage(flags, Storage::None, &token, where_)?;
                 flags.plain_storage = true;
+                if token.kind == TokenKind::KwRegister {
+                    flags.register = true;
+                }
             }
             TokenKind::KwBool => {
                 self.bump();
@@ -89,6 +92,12 @@ impl Parser<'_> {
             }
             TokenKind::KwEnum => {
                 self.note_enum(flags)?;
+            }
+            TokenKind::KwAlignas => {
+                self.parse_alignas(flags, where_)?;
+            }
+            TokenKind::KwThreadLocal => {
+                self.note_thread_local(flags, &token, where_)?;
             }
             TokenKind::Ident => return self.parse_spec_ident(flags, &token, where_),
             kind => return self.parse_spec_other(kind),
@@ -209,6 +218,11 @@ impl Parser<'_> {
             line: flags.line,
             column: flags.column,
             attrs: Vec::new(),
+            alignas: flags.alignas,
+            alignas_at: flags.alignas_at,
+            thread_local: flags.thread_local,
+            thread_local_at: flags.thread_local_at,
+            register: flags.register,
         })
     }
 
@@ -237,13 +251,16 @@ impl Parser<'_> {
         }
         self.bump();
         if storage == Storage::None {
-            if flags.storage != Storage::None || flags.plain_storage {
+            if flags.storage != Storage::None || flags.plain_storage || flags.thread_local {
                 return Err(self.error("multiple storage-class specifiers"));
             }
             flags.plain_storage = true;
             return Ok(());
         }
         if flags.storage != Storage::None || flags.plain_storage {
+            return Err(self.error("multiple storage-class specifiers"));
+        }
+        if storage == Storage::Typedef && flags.thread_local {
             return Err(self.error("multiple storage-class specifiers"));
         }
         flags.storage = storage;
@@ -711,6 +728,222 @@ impl Parser<'_> {
         if flags.unsigned {
             return Ok(TypeName::UInt);
         }
+
         Ok(TypeName::Int)
+    }
+
+    /// `_Alignas ( type-name )` or `_Alignas ( constant-expression )`
+    /// (C11 6.7.5). A specifier of 0 has no effect. Multiple specifiers
+    /// combine as the strictest one.
+    fn parse_alignas(
+        &mut self,
+        flags: &mut SpecFlags,
+        where_: SpecPlace,
+    ) -> Result<(), Diagnostic> {
+        let keyword = self.advance();
+        if where_ == SpecPlace::TypeName {
+            return Err(self.error_at(
+                keyword.line,
+                keyword.column,
+                "alignment specifiers are not allowed in a type name",
+            ));
+        }
+        if where_ == SpecPlace::Parameter {
+            return Err(self.error_at(
+                keyword.line,
+                keyword.column,
+                "alignment specifiers are not allowed on a parameter",
+            ));
+        }
+        if self.current().kind != TokenKind::LParen {
+            return Err(
+                self.error("_Alignas requires a parenthesized type name or integer constant")
+            );
+        }
+        let value = if self.lookahead_is_type() {
+            self.bump();
+            let ty = self.parse_type_name()?;
+            self.expect_skip(TokenKind::RParen, "')'")?;
+            if ty.is_func() {
+                return Err(self.error_at(
+                    keyword.line,
+                    keyword.column,
+                    "invalid application of '_Alignas' to a function type",
+                ));
+            }
+            if ty.size().is_none() || ty.is_void() {
+                return Err(self.error_at(
+                    keyword.line,
+                    keyword.column,
+                    "invalid application of '_Alignas' to an incomplete type",
+                ));
+            }
+            u64::from(ty.member_align())
+        } else {
+            self.bump();
+            let expr = self.parse_assignment()?;
+            self.expect_skip(TokenKind::RParen, "')'")?;
+            let value = eval_ice(&expr, self.env()).map_err(|_| {
+                self.error_at(
+                    keyword.line,
+                    keyword.column,
+                    "requested alignment is not an integer constant",
+                )
+            })?;
+            if value.ty.is_signed() {
+                let signed = sign_extend(value.bits, value.ty.width());
+                if signed < 0 {
+                    return Err(self.error_at(
+                        keyword.line,
+                        keyword.column,
+                        "requested alignment is not a valid alignment",
+                    ));
+                }
+                u64::try_from(signed).unwrap_or(u64::MAX)
+            } else {
+                u64::try_from(value.bits & value.ty.mask()).unwrap_or(u64::MAX)
+            }
+        };
+        // C11 6.7.5p4: a specifier of 0 has no effect.
+        if value == 0 {
+            if flags.alignas_at.is_none() {
+                flags.alignas_at = Some((keyword.line, keyword.column));
+            }
+            return Ok(());
+        }
+        // C11 6.2.8p4: a valid alignment is a nonnegative power of two.
+        // Extended alignments up to 2^28 are accepted, as for GNU `aligned`.
+        if !value.is_power_of_two() || value > (1 << 28) {
+            return Err(self.error_at(
+                keyword.line,
+                keyword.column,
+                "requested alignment is not a valid alignment",
+            ));
+        }
+        let value = value as u32;
+        flags.alignas = Some(flags.alignas.map_or(value, |old| old.max(value)));
+        if flags.alignas_at.is_none() {
+            flags.alignas_at = Some((keyword.line, keyword.column));
+        }
+        Ok(())
+    }
+
+    /// `_Thread_local`, alone or with `static` or `extern` (C11 6.7.1p2).
+    fn note_thread_local(
+        &mut self,
+        flags: &mut SpecFlags,
+        token: &Token,
+        where_: SpecPlace,
+    ) -> Result<(), Diagnostic> {
+        if where_ != SpecPlace::Declaration {
+            let message = match where_ {
+                SpecPlace::Parameter => "'_Thread_local' is not allowed on a parameter",
+                SpecPlace::Member => "'_Thread_local' is not allowed on a struct or union member",
+                SpecPlace::TypeName | SpecPlace::Declaration => {
+                    "'_Thread_local' is not allowed in this type name"
+                }
+            };
+            return Err(self.error_at(token.line, token.column, message));
+        }
+        if flags.thread_local {
+            return Err(self.error("duplicate '_Thread_local'"));
+        }
+        if flags.storage == Storage::Typedef || flags.plain_storage {
+            return Err(self.error("multiple storage-class specifiers"));
+        }
+        self.bump();
+        flags.thread_local = true;
+        flags.thread_local_at = Some((token.line, token.column));
+        Ok(())
+    }
+
+    /// The object's `_Alignas` requirement after C11 6.7.5 constraints.
+    /// `attrs` may add a GNU `aligned` that is combined with it.
+    pub(super) fn object_align(
+        &self,
+        specs: &Specs,
+        ty: &CType,
+        attrs: &[Attr],
+        is_function: bool,
+        is_typedef: bool,
+        is_bitfield: bool,
+    ) -> Result<Option<u32>, Diagnostic> {
+        if let Some((line, column)) = specs.alignas_at {
+            if is_typedef {
+                return Err(self.error_at(
+                    line,
+                    column,
+                    "alignment specifiers are not allowed on a typedef",
+                ));
+            }
+            if is_function {
+                return Err(self.error_at(
+                    line,
+                    column,
+                    "alignment specifiers are not allowed on a function",
+                ));
+            }
+            if is_bitfield {
+                return Err(self.error_at(
+                    line,
+                    column,
+                    "alignment specifiers are not allowed on a bit-field",
+                ));
+            }
+            if specs.register {
+                return Err(self.error_at(
+                    line,
+                    column,
+                    "alignment specifiers are not allowed on a register object",
+                ));
+            }
+            if let Some(requested) = specs.alignas {
+                // C11 6.7.5p4: not less strict than the type's alignment.
+                // The type alignment is `_Alignof(T)` (array elements, no
+                // large-array ABI boost). An incomplete type has no known
+                // alignment yet; only a power-of-two check has been made.
+                let natural = if ty.is_complete() || ty.is_array() {
+                    Some(ty.member_align())
+                } else {
+                    None
+                };
+                if let Some(natural) = natural {
+                    if requested < natural {
+                        return Err(self.error_at(
+                            line,
+                            column,
+                            format!(
+                                "requested alignment {requested} is less than the alignment of '{}'",
+                                ty.display()
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        let gnu = self.attrs_align(attrs)?;
+        Ok(match (specs.alignas, gnu) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        })
+    }
+
+    /// `_Thread_local` is only for objects, not functions or typedefs
+    /// (C11 6.7.1p4, 6.7.1p2).
+    pub(super) fn reject_thread_local_on(
+        &self,
+        specs: &Specs,
+        what: &str,
+    ) -> Result<(), Diagnostic> {
+        if let Some((line, column)) = specs.thread_local_at {
+            return Err(self.error_at(
+                line,
+                column,
+                format!("'_Thread_local' is not allowed on {what}"),
+            ));
+        }
+        Ok(())
     }
 }

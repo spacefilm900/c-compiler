@@ -247,7 +247,7 @@ impl Parser<'_> {
         if specs.storage == Storage::Typedef {
             return self.finish_typedefs(specs, first);
         }
-        if first.is_function() && self.current().kind == TokenKind::LBrace {
+        if self.is_function_definition(&first) {
             let ty = decl_kind_type(&first.kind);
             self.bind_ordinary(&first.name, Some(ty), first.line, first.column)?;
             return Ok(vec![self.finish_definition(specs, first)?]);
@@ -277,6 +277,25 @@ impl Parser<'_> {
         matches!(self.lookup_name(name), Some(NameBinding::Typedef(_)))
     }
 
+    /// A function declarator followed by `{`, or by a K&R declaration list
+    /// and then `{` (C11 6.9.1).
+    fn is_function_definition(&self, decl: &NamedDecl) -> bool {
+        if !decl.is_function() {
+            return false;
+        }
+        if self.current().kind == TokenKind::LBrace {
+            return true;
+        }
+        matches!(
+            &decl.kind,
+            DeclKind::Function {
+                prototype: false,
+                params,
+                ..
+            } if !params.is_empty()
+        ) && self.starts_declaration()
+    }
+
     fn starts_declaration(&self) -> bool {
         if self.at_type_specifier(self.current()) {
             return true;
@@ -290,6 +309,8 @@ impl Parser<'_> {
                 | TokenKind::KwRegister
                 | TokenKind::KwAuto
                 | TokenKind::KwNoreturn
+                | TokenKind::KwAlignas
+                | TokenKind::KwThreadLocal
         ) || self.spec_word(&[
             "__extension__",
             "__inline",
@@ -484,6 +505,15 @@ struct Specs {
     column: usize,
     /// GNU attributes among the specifiers. They apply to every declarator.
     attrs: Vec<Attr>,
+    /// Combined `_Alignas` requirement, after dropping a specifier of 0
+    /// (C11 6.7.5p6). `None` means no alignment specifier was given.
+    alignas: Option<u32>,
+    alignas_at: Option<(usize, usize)>,
+    /// `_Thread_local` (C11 6.7.1), which may appear with `static` or `extern`.
+    thread_local: bool,
+    thread_local_at: Option<(usize, usize)>,
+    /// `register`, which forbids `_Alignas` (C11 6.7.5p2).
+    register: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -530,6 +560,12 @@ struct SpecFlags {
     enum_base: Option<TypeName>,
     line: usize,
     column: usize,
+    /// Combined `_Alignas` (0 is dropped).
+    alignas: Option<u32>,
+    alignas_at: Option<(usize, usize)>,
+    thread_local: bool,
+    thread_local_at: Option<(usize, usize)>,
+    register: bool,
 }
 
 impl SpecFlags {
@@ -662,11 +698,9 @@ fn found(token: &Token) -> String {
 
 fn unsupported(kind: TokenKind) -> Option<&'static str> {
     Some(match kind {
-        TokenKind::KwAlignas => "alignment specifiers are not supported",
         TokenKind::KwAtomic => "atomic types are not supported",
         TokenKind::KwComplex | TokenKind::KwImaginary => "complex types are not supported",
         TokenKind::KwNoreturn => "_Noreturn is not supported",
-        TokenKind::KwThreadLocal => "thread-local storage is not supported",
         _ => return None,
     })
 }

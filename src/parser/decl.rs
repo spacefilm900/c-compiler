@@ -32,6 +32,15 @@ impl Parser<'_> {
                 ));
             }
         }
+        let mut params = params;
+        let kr_def = !prototype && !params.is_empty();
+        if kr_def {
+            self.parse_kr_declaration_list(&mut params)?;
+        } else if !prototype && self.starts_declaration() {
+            return Err(self.error(
+                "a declaration list is not allowed after a function declarator with no identifier list",
+            ));
+        }
         self.push_tags();
         for (name, entry) in declarator.param_tags {
             self.tags
@@ -44,6 +53,12 @@ impl Parser<'_> {
                 .last_mut()
                 .expect("function scope")
                 .insert(name, binding);
+        }
+        if kr_def {
+            for param in &params {
+                let name = param.name.as_ref().expect("named K&R parameter");
+                self.bind_ordinary(name, Some(param.ty.clone()), param.line, param.column)?;
+            }
         }
         // C11 6.4.2.2: static const char __func__[] = "function-name";
         {
@@ -75,12 +90,21 @@ impl Parser<'_> {
         let body = self.parse_compound_scoped(false)?;
         self.pop_tags();
 
+        self.reject_thread_local_on(&specs, "a function")?;
+        if let Some((line, column)) = specs.alignas_at {
+            return Err(self.error_at(
+                line,
+                column,
+                "alignment specifiers are not allowed on a function",
+            ));
+        }
         Ok(TopDecl::Func(FuncDef {
             ret_type: ret,
             name: declarator.name,
             params,
             variadic,
             prototype,
+            kr_def,
             body: Some(body),
             storage: specs.storage,
             linkage: Linkage::External,
@@ -107,6 +131,12 @@ impl Parser<'_> {
             else {
                 unreachable!("function declarator");
             };
+            self.reject_identifier_list_decl(
+                prototype,
+                &params,
+                declarator.line,
+                declarator.column,
+            )?;
             if self.current().kind == TokenKind::Assign {
                 return Err(self.error("function declarations cannot have an initializer"));
             }
@@ -119,12 +149,21 @@ impl Parser<'_> {
                 declarator.line,
                 declarator.column,
             )?;
+            self.reject_thread_local_on(specs, "a function")?;
+            if let Some((line, column)) = specs.alignas_at {
+                return Err(self.error_at(
+                    line,
+                    column,
+                    "alignment specifiers are not allowed on a function",
+                ));
+            }
             return Ok(TopDecl::Func(FuncDef {
                 ret_type: ret,
                 name: declarator.name,
                 params,
                 variadic,
                 prototype,
+                kr_def: false,
                 body: None,
                 storage: specs.storage,
                 linkage: Linkage::External,
@@ -145,11 +184,6 @@ impl Parser<'_> {
             .cloned()
             .collect();
         let ty = self.apply_mode(ty, &attrs)?;
-        let var_attrs = self.var_attrs_of(&attrs)?;
-        self.var_attrs
-            .entry(declarator.name.clone())
-            .or_default()
-            .merge(&var_attrs);
         if ty.is_void() {
             return Err(self.error_at(
                 declarator.line,
@@ -181,6 +215,14 @@ impl Parser<'_> {
         )?;
         self.bind_completed(&declarator.name, &ty, init.as_ref());
         self.reject_bad_restrict(&ty, declarator.line, declarator.column)?;
+        let align = self.object_align(specs, &ty, &attrs, false, false, false)?;
+        let mut var_attrs = self.var_attrs_of(&attrs)?;
+        var_attrs.align = align;
+        var_attrs.thread_local = specs.thread_local;
+        self.var_attrs
+            .entry(declarator.name.clone())
+            .or_default()
+            .merge(&var_attrs);
         Ok(TopDecl::Global(GlobalDecl {
             name: declarator.name,
             ty,
@@ -188,6 +230,8 @@ impl Parser<'_> {
             init,
             line: declarator.line,
             column: declarator.column,
+            alignas: specs.alignas,
+            thread_local: specs.thread_local,
         }))
     }
 
@@ -236,6 +280,14 @@ impl Parser<'_> {
     ) -> Result<(), Diagnostic> {
         if self.current().kind == TokenKind::Assign {
             return Err(self.error("a typedef cannot have an initializer"));
+        }
+        self.reject_thread_local_on(specs, "a typedef")?;
+        if let Some((line, column)) = specs.alignas_at {
+            return Err(self.error_at(
+                line,
+                column,
+                "alignment specifiers are not allowed on a typedef",
+            ));
         }
         let ty = match &declarator.kind {
             DeclKind::Object(ty) => ty.clone(),
@@ -692,6 +744,7 @@ impl Parser<'_> {
         else {
             unreachable!("function declarator");
         };
+        self.reject_identifier_list_decl(prototype, &params, declarator.line, declarator.column)?;
         if self.current().kind == TokenKind::Assign {
             return Err(self.error("function declarations cannot have an initializer"));
         }
@@ -706,12 +759,21 @@ impl Parser<'_> {
             declarator.line,
             declarator.column,
         )?;
+        self.reject_thread_local_on(specs, "a function")?;
+        if let Some((line, column)) = specs.alignas_at {
+            return Err(self.error_at(
+                line,
+                column,
+                "alignment specifiers are not allowed on a function",
+            ));
+        }
         Ok(FuncDef {
             ret_type: ret,
             name: declarator.name,
             params,
             variadic,
             prototype,
+            kr_def: false,
             body: None,
             storage: specs.storage,
             linkage: Linkage::External,
@@ -738,7 +800,17 @@ impl Parser<'_> {
             .cloned()
             .collect();
         let ty = self.apply_mode(ty, &attrs)?;
-        let align = self.attrs_align(&attrs)?;
+        let align = self.object_align(specs, &ty, &attrs, false, false, false)?;
+        if specs.thread_local && specs.storage == Storage::None {
+            let (line, column) = specs
+                .thread_local_at
+                .unwrap_or((declarator.line, declarator.column));
+            return Err(self.error_at(
+                line,
+                column,
+                "block-scope '_Thread_local' requires 'static' or 'extern'",
+            ));
+        }
         if ty.is_void() {
             return Err(self.error_at(
                 declarator.line,
@@ -775,7 +847,108 @@ impl Parser<'_> {
             column: declarator.column,
             slot: String::new(),
             align,
+            alignas: specs.alignas,
+            thread_local: specs.thread_local,
         })
+    }
+
+    fn reject_identifier_list_decl(
+        &self,
+        prototype: bool,
+        params: &[Param],
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        if !prototype && !params.is_empty() {
+            return Err(self.error_at(
+                line,
+                column,
+                "a function declaration with an identifier list must be a definition",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Declaration list of a K&R definition (C11 6.9.1p6).
+    fn parse_kr_declaration_list(&mut self, params: &mut [Param]) -> Result<(), Diagnostic> {
+        let mut by_name = HashMap::new();
+        for (index, param) in params.iter().enumerate() {
+            let name = param.name.as_ref().expect("named K&R parameter").clone();
+            by_name.insert(name, index);
+        }
+        let mut declared = HashSet::new();
+        while !matches!(self.current().kind, TokenKind::LBrace | TokenKind::Eof) {
+            if !self.starts_declaration() {
+                return Err(self.error("expected a parameter declaration or '{'"));
+            }
+            let specs = self.parse_specs(SpecPlace::Declaration)?;
+            self.reject_func_spec(&specs)?;
+            self.reject_thread_local_on(&specs, "a parameter")?;
+            if let Some((line, column)) = specs.alignas_at {
+                return Err(self.error_at(
+                    line,
+                    column,
+                    "alignment specifiers are not allowed on a parameter",
+                ));
+            }
+            if specs.storage != Storage::None {
+                return Err(self.error(
+                    "a parameter declaration may only use the 'register' storage-class specifier",
+                ));
+            }
+            if self.current().kind == TokenKind::Semi {
+                return Err(self.error(
+                    "each declaration in a parameter declaration list shall have a declarator",
+                ));
+            }
+            loop {
+                let named = self.parse_named_decl(specs.ty.clone())?;
+                if self.current().kind == TokenKind::Assign {
+                    return Err(self.error("a parameter declaration cannot have an initializer"));
+                }
+                let ty = match named.kind {
+                    DeclKind::Object(ty) => ty,
+                    DeclKind::Function { .. } => decl_kind_type(&named.kind),
+                };
+                let ty = self.adjust_parameter(ty, named.line, named.column)?;
+                let Some(&index) = by_name.get(&named.name) else {
+                    return Err(self.error_at(
+                        named.line,
+                        named.column,
+                        format!("'{}' is not a parameter", named.name),
+                    ));
+                };
+                if !declared.insert(named.name.clone()) {
+                    return Err(self.error_at(
+                        named.line,
+                        named.column,
+                        format!("redefinition of parameter '{}'", named.name),
+                    ));
+                }
+                params[index].ty = ty;
+                params[index].line = named.line;
+                params[index].column = named.column;
+                if self.match_kind(TokenKind::Comma) {
+                    continue;
+                }
+                break;
+            }
+            self.expect_skip(TokenKind::Semi, "';'")?;
+        }
+        if self.current().kind != TokenKind::LBrace {
+            return Err(self.error("expected '{'"));
+        }
+        for param in params.iter() {
+            let name = param.name.as_ref().expect("named K&R parameter");
+            if !declared.contains(name) {
+                return Err(self.error_at(
+                    param.line,
+                    param.column,
+                    format!("parameter '{name}' was not declared"),
+                ));
+            }
+        }
+        Ok(())
     }
 }
 

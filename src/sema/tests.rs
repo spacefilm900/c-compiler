@@ -1819,3 +1819,44 @@ fn bit_positions_past_two_to_the_32_stay_in_place() {
     super::image::pack_bits(&mut bytes, 9, 3, 0b101);
     assert_eq!(bytes[1], 0b1010);
 }
+
+#[test]
+fn alignas_and_thread_local_redeclarations() {
+    sema_ok("_Alignas(16) int x; int x;");
+    sema_ok("_Alignas(16) int x; _Alignas(16) int x;");
+    sema_ok("extern int x; _Alignas(8) int x;");
+    assert!(sema_err("int x; _Alignas(16) int x;").contains("alignment specifier"));
+    assert!(sema_err("_Alignas(8) int x; _Alignas(16) int x;").contains("conflicting alignment"));
+    sema_ok("_Thread_local int t; extern _Thread_local int t;");
+    sema_ok("_Thread_local static int t; _Thread_local static int t;");
+    assert!(sema_err("_Thread_local int t; int t;")
+        .contains("'_Thread_local' must be present on every declaration"));
+    assert!(sema_err("int t; _Thread_local int t;")
+        .contains("'_Thread_local' must be present on every declaration"));
+    sema_ok("int main(void) { static _Thread_local int x; return x; }");
+    sema_ok("extern _Thread_local int t; int main(void) { extern _Thread_local int t; return t; }");
+    assert!(
+        sema_err("extern _Thread_local int t; int main(void) { extern int t; return t; }")
+            .contains("'_Thread_local' must be present on every declaration")
+    );
+}
+
+#[test]
+fn kr_definition_compatible_with_promoted_prototype() {
+    sema_ok("int f(int); int f(c) char c; { return c; }");
+    sema_ok("int f(c) char c; { return c; } int f(int);");
+    sema_ok("void f(double); void f(x) float x; { }");
+    assert!(
+        sema_err("void f(float); void f(x) float x; { }").contains("incompatible")
+            || sema_err("void f(float); void f(x) float x; { }").contains("conflicting")
+    );
+    assert!(
+        sema_err("int f(int, int); int f(a) int a; { return a; }").contains("incompatible")
+            || sema_err("int f(int, int); int f(a) int a; { return a; }").contains("conflicting")
+    );
+    sema_ok("int f(); int f(a) int a; { return a; }");
+    assert!(
+        sema_err("int f(int); int f() { return 0; }").contains("incompatible")
+            || sema_err("int f(int); int f() { return 0; }").contains("conflicting")
+    );
+}
