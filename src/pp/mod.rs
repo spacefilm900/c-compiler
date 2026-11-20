@@ -489,7 +489,6 @@ impl Processor {
             ("__STDC_NO_ATOMICS__", "1"),
             ("__STDC_NO_COMPLEX__", "1"),
             ("__STDC_NO_THREADS__", "1"),
-            ("__STDC_NO_VLA__", "1"),
             ("__STRICT_ANSI__", "1"),
             ("__CHAR_BIT__", "8"),
             ("__SIZEOF_SHORT__", "2"),

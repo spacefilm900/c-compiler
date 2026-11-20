@@ -324,7 +324,8 @@ fn syntax_errors_name_the_problem() {
     assert!(parse_err("int main(void { return 0; }").contains("expected ')'"));
     assert!(parse_err("struct S { int x: 0; };").contains("zero width"));
     assert!(parse_err("int a[n];").contains("undeclared identifier"));
-    assert!(parse_err("int n; int a[n];").contains("variable-length arrays are not supported"));
+    assert!(parse_err("int n; int a[n];")
+        .contains("variably modified type is not allowed at file scope"));
     assert!(parse_err("int a[0];").contains("array size must be positive"));
     // _Static_assert (C11 6.7.10) and _Alignof (6.5.3.4).
     assert!(parsed("_Static_assert(sizeof(int) == 4, \"ok\");\n").is_empty());
@@ -362,7 +363,8 @@ fn syntax_errors_name_the_problem() {
     // sizeof in integer constant expressions (C11 6.6p6, 6.5.3.4p1).
     assert!(parsed("int a[4]; int b[sizeof a / sizeof a[0]];\n").contains("global int [4] b"));
     assert!(parse_err("int x[sizeof x];").contains("undeclared identifier"));
-    assert!(parse_err("int n; int a[sizeof n * n];").contains("variable-length arrays"));
+    assert!(parse_err("int n; int a[sizeof n * n];")
+        .contains("variably modified type is not allowed at file scope"));
     assert!(parse_err("int f(void); int a[sizeof f];").contains("to a function type"));
     assert!(parse_err("struct S { int b : 3; } s; int a[sizeof s.b];").contains("bit-field"));
     assert!(parse_err("enum { E = sizeof(struct Q) };").contains("incomplete type"));
@@ -1570,4 +1572,40 @@ fn kr_definitions_parse_and_reject_bad_lists() {
         parsed("int f(a, b) int a; int (*b)[sizeof a]; { return sizeof *b; }\n")
             .contains("func int f")
     );
+}
+
+#[test]
+fn variable_length_arrays_parse_and_reject_constraints() {
+    let simple = parsed("void f(int n) { int a[n]; }\n");
+    assert!(simple.contains("decl int [*] a"), "{simple}");
+    let multi = parsed("void f(int n) { int a[n][n]; int (*p)[n]; }\n");
+    assert!(multi.contains("decl int [*][*] a"), "{multi}");
+    assert!(multi.contains("decl int (*)[*] p"), "{multi}");
+    let proto = parsed("void f(int n, int a[n][n]);\n");
+    assert!(proto.contains("param int (*)[*] a"), "{proto}");
+    let proto_star = parsed("void f(int n, int a[*][*]);\n");
+    assert!(proto_star.contains("param int (*)[*] a"), "{proto_star}");
+    let typdef = parsed("void f(int n) { typedef int T[n]; T x; }\n");
+    assert!(typdef.contains("decl int [*] T"), "{typdef}");
+    assert!(typdef.contains("decl int [*] x"), "{typdef}");
+    assert!(parse_err("int n; int a[n];").contains("file scope"));
+    assert!(parse_err("int n; extern int (*p)[n];").contains("file scope"));
+    assert!(parse_err("void f(int n) { static int a[n]; }").contains("static or thread"));
+    assert!(parse_err("void f(int n) { extern int a[n]; }").contains("linkage"));
+    assert!(parse_err("void f(int n) { extern int (*p)[n]; }").contains("linkage"));
+    assert!(parse_err("void f(int n) { int a[n] = {0}; }").contains("initializer"));
+    assert!(parse_err("void f(int n) { struct S { int a[n]; }; }").contains("member"));
+    assert!(parse_err("void f(int n) { struct S { int (*p)[n]; }; }").contains("member"));
+    assert!(parse_err("void f(int a[*]) { }").contains("star array notation"));
+    assert!(parse_err("int a[*];").contains("star array notation"));
+    // `[*]` in a nested prototype is allowed on a definition (C11 6.7.6.2p4).
+    let _ = parsed("void f(void (*cb)(int a[2][*])) { }\n");
+    assert!(
+        parse_err("void f(int n) { typedef int T[n]; typedef int T[n]; }").contains("redefined")
+    );
+    assert!(parse_err("void f(int n) { (int[n]){0}; }").contains("compound literal"));
+    assert!(parse_err("int n; int (*f(void))[n];").contains("variably modified return type"));
+    assert!(parse_err("int n; typedef int (*F(void))[n];").contains("file scope"));
+    assert!(parse_err("void f(void) { (void)_Alignof(int[1.0]); }").contains("integer type"));
+    let _ = parsed("void f(int n) { typedef int T[n]; { double n; (void)_Alignof(T); } }\n");
 }

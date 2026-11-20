@@ -391,6 +391,9 @@ impl Sema<'_> {
             let Some(name) = param.name.clone() else {
                 continue;
             };
+            // The parameter is not in scope in its own declarator (C11 6.2.1p7),
+            // so the bound is checked before the current name is inserted.
+            self.check_vla_sizes(&param.unadjusted, param.line, param.column)?;
             self.insert(Symbol::Var(VarSym {
                 name,
                 slot: param.slot.clone(),
@@ -408,6 +411,7 @@ impl Sema<'_> {
         self.variadic_fn = func.variadic;
         self.last_param = func.params.last().and_then(|param| param.name.clone());
         self.check_compound(body, false)?;
+        self.check_vm_jumps(body)?;
         self.pop();
         self.fn_name.clear();
         self.current_func.clear();
@@ -656,13 +660,14 @@ impl Sema<'_> {
             Storage::Extern => self.declare_block_extern(decl),
             Storage::Static => self.declare_static_local(decl),
             Storage::None => self.declare_auto(decl),
-            Storage::Typedef => unreachable!("a typedef is not a variable declaration"),
+            Storage::Typedef => self.check_typedef(decl),
         }
     }
 
     /// An automatic local. A second declaration in the same scope is an error
     /// whether or not the earlier one has linkage (C11 6.7p3).
     pub(super) fn declare_auto(&mut self, decl: &mut VarDecl) -> Result<(), Diagnostic> {
+        self.check_vla_sizes(&decl.ty, decl.line, decl.column)?;
         if let Some(existing) = self.lookup_local(&decl.name).cloned() {
             let message = match existing {
                 Symbol::Func(_) => {
@@ -715,6 +720,7 @@ impl Sema<'_> {
                 format!("redefinition of '{}'", decl.name),
             );
         }
+        self.check_vla_sizes(&decl.ty, decl.line, decl.column)?;
         let symbol = self.fresh_static_name(&decl.name);
         let slot = format!("@{symbol}");
         decl.slot = slot.clone();
@@ -1145,6 +1151,10 @@ impl Sema<'_> {
             Some(Symbol::Func(func)) => func.file_visible = true,
             None => {}
         }
+    }
+
+    pub(super) fn check_typedef(&mut self, decl: &mut VarDecl) -> Result<(), Diagnostic> {
+        self.check_vla_sizes(&decl.ty, decl.line, decl.column)
     }
 }
 

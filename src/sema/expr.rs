@@ -69,9 +69,11 @@ impl Sema<'_> {
                 if !self.labels.contains_key(name.as_str()) {
                     return self.err(*line, *column, self.missing_label(name));
                 }
-                // An unevaluated `sizeof` operand emits no code, so its
-                // label address is no destination of a computed `goto`.
-                if self.unevaluated_depth == 0 && !self.addr_labels.contains(name) {
+                // Record even inside `sizeof`: a VLA operand is evaluated
+                // (C11 6.5.3.4p2) and `end_unevaluated` is skipped for it,
+                // so the address must stay in `addr_labels`. A non-VLA
+                // `sizeof` still rolls the list back.
+                if !self.addr_labels.contains(name) {
                     self.addr_labels.push(name.clone());
                 }
                 *func = Some(self.current_symbol.clone());
@@ -156,12 +158,12 @@ impl Sema<'_> {
                 default = Some(index);
                 continue;
             };
-            if assoc_ty.is_func() || !assoc_ty.is_complete() {
+            if assoc_ty.is_func() || !assoc_ty.is_complete() || assoc_ty.is_variably_modified() {
                 return self.err(
                     assoc.line,
                     assoc.column,
                     format!(
-                        "type '{}' in generic association is not a complete object type",
+                        "type '{}' in generic association is not a complete object type other than a variably modified type",
                         assoc_ty.display()
                     ),
                 );
@@ -224,7 +226,15 @@ impl Sema<'_> {
         if decl.ty.is_func() {
             return self.err(line, column, "compound literal has function type");
         }
-        let unknown_array = matches!(decl.ty.peel(), CType::Array(_, None));
+        if decl.ty.is_vla() {
+            return self.err(
+                line,
+                column,
+                "a variable length array cannot be a compound literal type",
+            );
+        }
+        self.check_vla_sizes(&decl.ty, line, column)?;
+        let unknown_array = matches!(decl.ty.peel(), CType::Array(_, ArrayLen::Incomplete));
         if !decl.ty.is_complete() && !unknown_array {
             return self.err(
                 line,
@@ -963,9 +973,9 @@ impl Sema<'_> {
         Ok(())
     }
 
-    /// `sizeof` does not evaluate its operand. The result type is
-    /// `unsigned long`, which is `size_t` on this LP64 target. `void` is
-    /// incomplete.
+    /// `sizeof` does not evaluate its operand unless the type is a VLA
+    /// (C11 6.5.3.4p2). The result type is `unsigned long`, which is
+    /// `size_t` on this LP64 target. `void` is incomplete.
     pub(super) fn check_sizeof(&mut self, expr: &mut Expr) -> Result<(), Diagnostic> {
         if let Expr::Sizeof {
             operand,
@@ -977,12 +987,25 @@ impl Sema<'_> {
             let line = *line;
             let column = *column;
             let sized = match operand {
-                SizeofOperand::Type(ty) => ty.clone(),
+                SizeofOperand::Type(ty) => {
+                    self.check_vla_sizes(ty, line, column)?;
+                    ty.clone()
+                }
                 SizeofOperand::Expr(inner) => {
-                    // Not evaluated (C11 6.5.3.4p2): only the type is kept.
+                    // C11 6.5.3.4p2: the operand is evaluated only when its
+                    // type is a VLA. Otherwise only the type is used.
                     let saved = self.begin_unevaluated();
                     let checked = self.check_expr(inner);
-                    self.end_unevaluated(saved);
+                    if checked.is_err()
+                        || is_bitfield(inner)
+                        || !inner.ty().is_some_and(|ty| ty.is_vla())
+                    {
+                        self.end_unevaluated(saved);
+                    } else {
+                        // C11 6.5.3.4p2: a VLA operand is evaluated, so
+                        // string literals and other recordings stay.
+                        self.unevaluated_depth -= 1;
+                    }
                     checked?;
                     if is_bitfield(inner) {
                         return self.err(line, column, "sizeof applied to a bit-field");
@@ -990,7 +1013,7 @@ impl Sema<'_> {
                     inner.ty().expect("sizeof operand is typed")
                 }
             };
-            if sized.size().is_none() {
+            if !sized.is_complete() {
                 return self.err(
                     line,
                     column,
@@ -1014,6 +1037,7 @@ impl Sema<'_> {
             let ty_name = ty_name.clone();
             let line = *line;
             let column = *column;
+            self.check_vla_sizes(&ty_name, line, column)?;
             self.check_expr(inner)?;
             self.decay(inner)?;
             if ty_name.is_array() {

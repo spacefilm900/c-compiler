@@ -512,6 +512,13 @@ impl Parser<'_> {
                     let more = self.parse_attributes_into()?;
                     let member_attrs: Vec<Attr> = named.attrs.iter().cloned().chain(more).collect();
                     let ty = self.apply_mode(ty, &member_attrs)?;
+                    if ty.is_variably_modified() {
+                        return Err(self.error_at(
+                            named.line,
+                            named.column,
+                            "a structure or union member cannot have a variably modified type",
+                        ));
+                    }
                     // An incomplete array may be a flexible array member. The
                     // constraint (last member, another named member, not a
                     // union) is checked once the member list is finished.

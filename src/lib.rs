@@ -452,10 +452,13 @@ mod tests {
             "int f(int i) { static const void *const t[] = { &&a, &&b }; goto *t[i]; a: return 1; b: return 2; }",
         )
         .ir;
-        assert!(ir.contains("blockaddress(@f, %C.a)"), "{ir}");
-        assert!(ir.contains("blockaddress(@f, %C.b)"), "{ir}");
+        assert!(ir.contains("blockaddress(@f, %C.a.via_ptr)"), "{ir}");
+        assert!(ir.contains("blockaddress(@f, %C.b.via_ptr)"), "{ir}");
         assert!(ir.contains("indirectbr ptr"), "{ir}");
-        assert!(ir.contains("[label %C.a, label %C.b]"), "{ir}");
+        assert!(
+            ir.contains("[label %C.a.via_ptr, label %C.b.via_ptr]"),
+            "{ir}"
+        );
         // A label address only inside `sizeof` is not evaluated, so it is
         // not a destination of the computed `goto`.
         let ir = gnu_ok("void f(void *p) { (void)sizeof(&&x); goto *p; x:; }").ir;

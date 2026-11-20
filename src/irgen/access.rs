@@ -80,6 +80,7 @@ impl Gen {
             }
             Expr::StmtExpr { body, ty, .. } => {
                 let ty = ty.clone().expect("typed statement expression");
+                let depth = self.vla_depth();
                 let Some(last) = self.gen_stmt_expr_body(body) else {
                     return self.ice_in(
                         expr,
@@ -92,6 +93,7 @@ impl Gen {
                 // The block's objects end with it; the value is a copy.
                 let tmp = self.entry_alloca(&ty);
                 self.copy_struct(&ty, &src, &tmp, volatile);
+                self.leave_vla_to(depth);
                 tmp
             }
             _ => self.ice_in(expr, "struct or union expression has no address"),

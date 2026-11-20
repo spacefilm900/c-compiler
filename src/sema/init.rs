@@ -44,7 +44,7 @@ impl Sema<'_> {
         column: usize,
     ) -> Result<(CType, Vec<ElemStore>), Diagnostic> {
         let mut ty = ty.clone();
-        if let CType::Array(elem, None) = &ty {
+        if let CType::Array(elem, ArrayLen::Incomplete) = &ty {
             let elem = (**elem).clone();
             if let Some((bytes, enc)) = string_payload(init) {
                 if string_elem_ok(&elem, enc) {
@@ -286,7 +286,7 @@ impl Sema<'_> {
         if ty.is_record() {
             return self.fill_struct(ty, init, base, stores, line, column);
         }
-        let CType::Array(elem, Some(len)) = ty else {
+        let CType::Array(elem, ArrayLen::Const(len)) = ty else {
             return self.err(line, column, "array initializer must be a brace list");
         };
         let Init::List {
@@ -376,7 +376,7 @@ impl Sema<'_> {
             }
             return Ok(());
         }
-        let CType::Array(elem, Some(len)) = ty else {
+        let CType::Array(elem, ArrayLen::Const(len)) = ty else {
             return self.err(line, column, "array initializer must be a brace list");
         };
         let elem_size = elem.size().expect("complete array element");
@@ -1447,7 +1447,7 @@ pub(super) fn init_children(ty: &CType, union_all: bool) -> Vec<InitChild> {
             })
             .collect();
     }
-    if let CType::Array(elem, Some(len)) = ty.unqualified() {
+    if let CType::Array(elem, ArrayLen::Const(len)) = ty.unqualified() {
         let step = elem.size().unwrap_or(0);
         return (0..len)
             .map(|index| InitChild {

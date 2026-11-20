@@ -34,6 +34,7 @@ mod expr;
 mod image;
 mod init;
 mod stmt;
+mod vla;
 use consteval::*;
 use decl::*;
 use expr::*;
@@ -122,6 +123,12 @@ pub fn analyze_dialect(
                     .map(|message| (symbol.clone(), message))
             })
             .collect(),
+        vla_bounds: unit
+            .vla_sizes
+            .iter()
+            .map(|bound| (bound.id, bound.expr.clone()))
+            .collect(),
+        vla_checked: HashSet::new(),
     };
     for decl in &mut unit.decls {
         match decl {
@@ -135,6 +142,20 @@ pub fn analyze_dialect(
         }
     }
     sema.finish(unit)?;
+    let integers: HashMap<VlaId, bool> = unit
+        .vla_sizes
+        .iter()
+        .map(|bound| (bound.id, bound.integer))
+        .collect();
+    unit.vla_sizes = sema
+        .vla_bounds
+        .into_iter()
+        .map(|(id, expr)| VlaBound {
+            id,
+            expr,
+            integer: integers.get(&id).copied().unwrap_or(false),
+        })
+        .collect();
     Ok(sema.warnings.into_inner())
 }
 
@@ -248,6 +269,10 @@ struct Sema<'t> {
     library_calls: std::collections::BTreeMap<String, crate::builtins::LibSig>,
     /// Functions declared `deprecated`, by symbol, with the message.
     deprecated: HashMap<String, String>,
+    /// Size expressions for VLA types in this translation unit.
+    vla_bounds: HashMap<VlaId, Expr>,
+    /// VLA size expressions already type-checked.
+    vla_checked: HashSet<VlaId>,
     filename: String,
     dialect: Dialect,
     /// Warnings for accepted GNU extensions, in the order they were found.

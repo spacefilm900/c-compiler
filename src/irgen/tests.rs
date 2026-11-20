@@ -1514,3 +1514,215 @@ fn kr_definition_runtime_matches_promotions() {
     let ir = crate::compile_to_ir(source, "kr-run.c").unwrap();
     assert_eq!(run_binary(&ir).0, 0, "{ir}");
 }
+
+#[test]
+fn vla_emits_stacksave_and_runtime_sizeof() {
+    let ir = crate::compile_to_ir(
+        "int f(int n) { char b[n + 3]; return (int)sizeof b; }\n",
+        "vla.c",
+    )
+    .unwrap();
+    assert!(ir.contains("llvm.stacksave"), "{ir}");
+    assert!(ir.contains("llvm.stackrestore"), "{ir}");
+    assert!(ir.contains("alloca i8, i64"), "{ir}");
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn vla_fsize3_matches_the_standard_example() {
+    let src =
+        "int f(int n) { char b[n + 3]; return (int)sizeof b; }\nint main(void) { return f(10); }\n";
+    let ir = crate::compile_to_ir(src, "vla.c").unwrap();
+    assert_eq!(run_binary(&ir).0, 13);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn vla_inherited_bound_is_not_re_evaluated() {
+    let td = "typedef";
+    let src = format!(
+        "int main(void) {{ int n = 2, m = 3; {td} int T[n++]; T a[m++]; return n + m + (int)(sizeof(T) / sizeof(int)) + (int)(sizeof(a) / sizeof(int)); }}\n"
+    );
+    let ir = crate::compile_to_ir(&src, "vla.c").unwrap();
+    assert_eq!(run_binary(&ir).0, 15);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn vla_cast_evaluates_the_bound_before_the_operand() {
+    let src = "int main(void) { int n = 3; (void)(int (*)[n++])0; return n; }\n";
+    let ir = crate::compile_to_ir(src, "vla.c").unwrap();
+    assert_eq!(run_binary(&ir).0, 4);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn vla_struct_return_survives_stackrestore() {
+    let src = "struct S { int x, y; }; struct S f(int n) { struct S a[n]; a[0].x = 1; a[0].y = 2; return a[0]; } int main(void) { struct S s = f(4); return s.x + s.y; }\n";
+    let ir = crate::compile_to_ir(src, "vla.c").unwrap();
+    assert_eq!(run_binary(&ir).0, 3);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn computed_goto_keeps_a_vla_in_scope_at_its_destination() {
+    let src = "int main(void) { int n = 2; int a[n]; a[0] = 7; void *p = &&L; goto *p; L: return a[0]; }\n";
+    let ir = crate::compile_dialect(
+        src,
+        "vla.c",
+        &crate::PpOptions::default(),
+        crate::Dialect::Gnu11,
+    )
+    .unwrap()
+    .ir;
+    assert_eq!(run_binary(&ir).0, 7);
+}
+
+fn gnu_ir(src: &str) -> String {
+    crate::compile_dialect(
+        src,
+        "vla.c",
+        &crate::PpOptions::default(),
+        crate::Dialect::Gnu11,
+    )
+    .unwrap()
+    .ir
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn computed_goto_out_of_a_vla_reuses_the_stack() {
+    let src = "int main(void) { int n = 256; int count = 1000000; void *p = &&again; again: if (count-- == 0) return 0; { char buf[n]; buf[0] = 1; (void)buf[0]; goto *p; } }\n";
+    let ir = gnu_ir(src);
+    assert_eq!(run_binary(&ir).0, 0);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn sizeof_vla_keeps_a_label_address_in_its_operand() {
+    let src = "int sink(void *p) { (void)p; return 0; } int main(void) { int n = 2; int a[n]; a[0] = 3; return (int)sizeof *(sink(&&L), &a); L: return 0; }\n";
+    let ir = gnu_ir(src);
+    assert!(ir.contains("%C.L.via_ptr"), "{ir}");
+    assert_eq!(run_binary(&ir).0, 8);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn statement_expression_goto_keeps_an_outer_vla() {
+    let src = "int main(void) { int n = 2; int a[n]; a[0] = 5; int x; ({ goto L; L: x = a[0]; }); return x; }\n";
+    let ir = gnu_ir(src);
+    assert_eq!(run_binary(&ir).0, 5);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn nested_prototype_vla_bound_is_not_evaluated_on_definition_entry() {
+    let src = "int hits; void outer(void (*cb)(int a[1][++hits])) { (void)cb; } void cb(int a[1][1]) { (void)a; } int main(void) { hits = 0; outer(cb); return hits; }\n";
+    let ir = crate::compile_to_ir(src, "vla.c").unwrap();
+    assert_eq!(run_binary(&ir).0, 0);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn computed_goto_sizeof_vla_is_valid_llvm() {
+    let src = "int f(int n) { void *p = &&B; goto *p; B:; int a[n]; p = &&A; goto *p; A: return (int)sizeof a; } int main(void) { return f(3); }\n";
+    let ir = gnu_ir(src);
+    assert_eq!(run_binary(&ir).0, 12);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn for_init_label_after_a_vla_keeps_the_array() {
+    let src = "int main(void) { int n = 2; for (int a[n], i = ({ goto L; L:; 0; }); ; ) { a[0] = 7; return a[0]; } }\n";
+    let ir = gnu_ir(src);
+    assert_eq!(run_binary(&ir).0, 7);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn computed_goto_into_a_later_label_still_verifies() {
+    let src =
+        "int main(void) { void *p = &&A; goto *p; int n = 2; int a[n]; a[0] = 1; A: return 0; }\n";
+    let ir = gnu_ir(src);
+    assert_eq!(run_binary(&ir).0, 0);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn label_in_a_vla_bound_does_not_free_an_earlier_array() {
+    let src = "int f(int n) { int a[n]; a[0] = 7; int b[({ void *p = &&L; goto *p; L:; n; })]; b[0] = 9; return a[0]; } int main(void) { return f(4); }\n";
+    let ir = gnu_ir(src);
+    assert_eq!(run_binary(&ir).0, 7);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn typedef_vla_bound_label_is_not_overwritten() {
+    let src = "int main(void) { int n = 1024; int count = 10000; typedef char T[({ L:; 1; })]; again: if (count-- == 0) return 0; { char a[n]; a[0] = 1; T b; b[0] = 1; (void)a[0]; (void)b[0]; void *p = &&L; goto *p; } }\n";
+    let ir = gnu_ir(src);
+    assert_eq!(run_binary(&ir).0, 0);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn sizeof_type_vla_bound_label_keeps_an_earlier_array() {
+    let src = "int f(int n) { int a[n]; a[0] = 7; (void)sizeof(int[({ void *p = &&L; goto *p; L:; n; })]); return a[0]; } int main(void) { return f(4); }\n";
+    let ir = gnu_ir(src);
+    assert_eq!(run_binary(&ir).0, 7);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn computed_goto_vla_object_address_is_valid_llvm() {
+    let src = "int f(int n) { void *p = &&B; goto *p; B:; int a[n]; a[0] = 7; p = &&A; goto *p; A: return a[0]; } int main(void) { return f(3); }\n";
+    let ir = gnu_ir(src);
+    assert_eq!(run_binary(&ir).0, 7);
+}

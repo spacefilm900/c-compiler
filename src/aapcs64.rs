@@ -29,7 +29,7 @@
 //! goes on the stack. So there is no register counting here.
 
 use crate::abi::{AbiFail, AggAbi, AggUse, FnSig, Part, PartKind};
-use crate::ast::{CType, FloatKind};
+use crate::ast::{ArrayLen, CType, FloatKind};
 
 /// Classify a struct or union for AAPCS64.
 pub fn classify(ty: &CType, use_as: AggUse) -> Result<AggAbi, AbiFail> {
@@ -162,7 +162,7 @@ type LeafMemo = std::collections::HashMap<usize, Option<Leaves>>;
 fn float_leaves(ty: &CType, base: u64, out: &mut Leaves, memo: &mut LeafMemo) -> bool {
     match ty.peel() {
         CType::Float(kind) => add_leaf(out, base, kind_ir(*kind)),
-        CType::Array(elem, Some(len)) => {
+        CType::Array(elem, ArrayLen::Const(len)) => {
             let Some(elem_size) = elem.size() else {
                 return false;
             };

@@ -44,11 +44,13 @@ mod inline_builtins;
 mod module;
 mod stmt;
 mod vaarg;
+mod vla;
 use access::*;
 use call::*;
 use consts::*;
 use expr::*;
 use module::*;
+use vla::*;
 
 /// Render the checked unit as a textual LLVM IR module.
 ///
@@ -172,6 +174,34 @@ struct Gen {
     /// placeholder operand, so callers need not check; `render_function`
     /// then returns this instead of the function's IR.
     ice: Option<Ice>,
+    /// Typed VLA size expressions for this translation unit.
+    vla_bounds: std::collections::HashMap<VlaId, Expr>,
+    vla_counts: std::collections::HashMap<VlaId, String>,
+    vla_bytes: std::collections::HashMap<VlaId, String>,
+    /// Entry-block slots for `vla_bytes`, used when a computed goto can
+    /// reach a use of the size along a path that does not go through the
+    /// declaration that stored the SSA value.
+    vla_byte_slots: std::collections::HashMap<VlaId, String>,
+    /// Entry-block pointer slots for VLA objects, used when a computed
+    /// goto can reach a use without passing through the dynamic alloca.
+    vla_ptr_slots: std::collections::HashSet<String>,
+    /// `llvm.stacksave` values for open VLA object scopes, innermost last.
+    vla_saves: Vec<String>,
+    /// Entry-block slots holding those saves so a computed-goto trampoline
+    /// at the end of the function can restore a depth that did not exist
+    /// when the destination label was emitted.
+    vla_slots: Vec<String>,
+    /// Entry-block slot holding the current VLA depth (i32).
+    vla_depth_slot: Option<String>,
+    /// C names of labels whose address this function takes, in the order
+    /// `addr_labels` lists their trampoline blocks.
+    addr_label_names: Vec<String>,
+    /// Number of open VLA object scopes at each C label in this function.
+    label_vla_depths: std::collections::HashMap<String, usize>,
+    /// VLA scope depth at each `break` target.
+    break_vla: Vec<usize>,
+    /// VLA scope depth at each `continue` target.
+    continue_vla: Vec<usize>,
 }
 
 /// One store of an automatic aggregate initializer, evaluated and waiting
@@ -212,6 +242,18 @@ impl Gen {
             switch_ranges: Vec::new(),
             pos: (0, 0),
             ice: None,
+            vla_bounds: std::collections::HashMap::new(),
+            vla_counts: std::collections::HashMap::new(),
+            vla_bytes: std::collections::HashMap::new(),
+            vla_byte_slots: std::collections::HashMap::new(),
+            vla_ptr_slots: std::collections::HashSet::new(),
+            vla_saves: Vec::new(),
+            vla_slots: Vec::new(),
+            vla_depth_slot: None,
+            addr_label_names: Vec::new(),
+            label_vla_depths: std::collections::HashMap::new(),
+            break_vla: Vec::new(),
+            continue_vla: Vec::new(),
         }
     }
 }
@@ -349,6 +391,10 @@ fn vol_attr(ty: &CType) -> &'static str {
 
 fn c_label(name: &str) -> String {
     format!("C.{name}")
+}
+
+fn c_label_via_ptr(name: &str) -> String {
+    format!("{}.via_ptr", c_label(name))
 }
 
 /// `@name` when `name` matches LLVM's unquoted identifier pattern, otherwise

@@ -4,8 +4,13 @@ use super::*;
 
 impl Gen {
     pub(super) fn gen_compound(&mut self, compound: &Compound) -> Result<(), Ice> {
+        let depth = self.vla_depth();
         for item in &compound.items {
             self.gen_stmt(item)?;
+        }
+        if self.vla_depth() > depth {
+            self.ensure_block();
+            self.leave_vla_to(depth);
         }
         Ok(())
     }
@@ -27,11 +32,21 @@ impl Gen {
                     if self.ret_ty.unqualified().is_record() {
                         let src_volatile = expr.ty().is_some_and(|ty| ty.is_volatile());
                         let src = self.record_ptr(expr);
-                        self.emit_record_return(&src, src_volatile);
+                        if self.vla_depth() > 0 {
+                            let ret = self.ret_ty.unqualified();
+                            let tmp = self.entry_alloca(&ret);
+                            self.copy_struct(&ret, &src, &tmp, src_volatile);
+                            self.restore_vla_to(0);
+                            self.emit_record_return(&tmp, false);
+                        } else {
+                            self.restore_vla_to(0);
+                            self.emit_record_return(&src, src_volatile);
+                        }
                     } else {
                         let value = self.gen_val(expr);
                         let value =
                             self.convert(&value, &expr.ty().expect("typed"), &self.ret_ty.clone());
+                        self.restore_vla_to(0);
                         if self.ret_agg.is_some() {
                             // Windows x64: a scalar returned in memory or as
                             // `<2 x i64>` goes through a slot.
@@ -43,6 +58,7 @@ impl Gen {
                         }
                     }
                 } else {
+                    self.restore_vla_to(0);
                     self.emit("  ret void");
                 }
                 self.terminated = true;
@@ -90,6 +106,8 @@ impl Gen {
             }
             Stmt::Goto { name, .. } => {
                 self.ensure_block();
+                let depth = self.label_vla_depths.get(name).copied().unwrap_or(0);
+                self.restore_vla_to(depth);
                 self.br(&c_label(name));
             }
             Stmt::GotoPtr { expr, .. } => {
@@ -97,6 +115,9 @@ impl Gen {
                 // function takes (LLVM LangRef, `indirectbr`).
                 self.ensure_block();
                 let target = self.gen_val(expr);
+                // Each address-taken label has a trampoline that restores
+                // to that label's VLA depth. Restoring here would free
+                // storage still in scope at a destination after a VLA.
                 let dests: Vec<String> = self
                     .addr_labels
                     .iter()
@@ -113,6 +134,8 @@ impl Gen {
                 let Some(end) = self.breaks.last().cloned() else {
                     return Err(self.fail("'break' is not inside a loop or switch"));
                 };
+                let depth = self.break_vla.last().copied().unwrap_or(0);
+                self.restore_vla_to(depth);
                 self.br(&end);
             }
             Stmt::Continue { .. } => {
@@ -120,6 +143,8 @@ impl Gen {
                 let Some(cont) = self.continues.last().cloned() else {
                     return Err(self.fail("'continue' is not inside a loop"));
                 };
+                let depth = self.continue_vla.last().copied().unwrap_or(0);
+                self.restore_vla_to(depth);
                 self.br(&cont);
             }
         }
@@ -127,6 +152,18 @@ impl Gen {
     }
 
     pub(super) fn gen_decl(&mut self, decl: &VarDecl) {
+        if let Some(from) = decl.vla_from {
+            self.force_eval_vla_sizes_from(&decl.ty, from);
+        } else if decl.ty.is_variably_modified() {
+            self.eval_vla_sizes(&decl.ty);
+        }
+        if decl.storage == Storage::Typedef {
+            return;
+        }
+        if decl.storage == Storage::None && decl.ty.is_vla() {
+            self.emit_vla_alloca(decl);
+            return;
+        }
         let Some(checked) = &decl.checked else {
             return;
         };
@@ -251,11 +288,15 @@ impl Gen {
         let cond = self.gen_cond(cond);
         self.br_cond(&cond, &body_label, &end_label);
         self.start(body_label);
+        self.continue_vla.push(self.vla_depth());
         self.continues.push(cond_label.clone());
+        self.break_vla.push(self.vla_depth());
         self.breaks.push(end_label.clone());
         self.gen_stmt(body)?;
         self.breaks.pop();
+        self.break_vla.pop();
         self.continues.pop();
+        self.continue_vla.pop();
         if !self.terminated {
             self.br(&cond_label);
         }
@@ -272,11 +313,15 @@ impl Gen {
         let end_label = self.label();
         self.br(&body_label);
         self.start(body_label.clone());
+        self.continue_vla.push(self.vla_depth());
         self.continues.push(cond_label.clone());
+        self.break_vla.push(self.vla_depth());
         self.breaks.push(end_label.clone());
         self.gen_stmt(body)?;
         self.breaks.pop();
+        self.break_vla.pop();
         self.continues.pop();
+        self.continue_vla.pop();
         if !self.terminated {
             self.br(&cond_label);
         }
@@ -295,6 +340,7 @@ impl Gen {
         body: &Stmt,
     ) -> Result<(), Ice> {
         self.ensure_block();
+        let for_depth = self.vla_depth();
         match init {
             ForInit::Empty => {}
             ForInit::Decl(decls) => {
@@ -319,11 +365,16 @@ impl Gen {
             self.br(&body_label);
         }
         self.start(body_label);
+        // `continue` keeps for-init VLA objects; `break` leaves their scope.
+        self.continue_vla.push(self.vla_depth());
         self.continues.push(step_label.clone());
+        self.break_vla.push(for_depth);
         self.breaks.push(end_label.clone());
         self.gen_stmt(body)?;
         self.breaks.pop();
+        self.break_vla.pop();
         self.continues.pop();
+        self.continue_vla.pop();
         if !self.terminated {
             self.br(&step_label);
         }
@@ -333,6 +384,7 @@ impl Gen {
         }
         self.br(&cond_label);
         self.start(end_label);
+        self.leave_vla_to(for_depth);
         Ok(())
     }
 
@@ -416,6 +468,7 @@ impl Gen {
         let saved_labels = std::mem::replace(&mut self.switch_labels, labels);
         let saved_at = self.switch_at;
         self.switch_at = 0;
+        self.break_vla.push(self.vla_depth());
         self.breaks.push(end_label.clone());
 
         let entry = self.label();
@@ -425,6 +478,7 @@ impl Gen {
             return Err(self.fail("a case label of this switch was not emitted"));
         }
         self.breaks.pop();
+        self.break_vla.pop();
         if !self.terminated {
             self.br(&end_label);
         }

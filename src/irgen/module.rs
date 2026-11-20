@@ -212,8 +212,12 @@ pub(super) fn render_functions(
     for decl in &unit.decls {
         if let TopDecl::Func(func) = decl {
             if func.body.is_some() {
-                let (text, fn_needs) =
-                    render_function(func, renames, unit.fn_attrs.get(&func.symbol))?;
+                let (text, fn_needs) = render_function(
+                    func,
+                    renames,
+                    unit.fn_attrs.get(&func.symbol),
+                    &unit.vla_sizes,
+                )?;
                 needs.merge(fn_needs);
                 functions.push(text);
             }
@@ -504,6 +508,7 @@ pub(super) fn render_function(
     func: &FuncDef,
     renames: &Renames,
     attrs: Option<&FnAttrs>,
+    vla_sizes: &[VlaBound],
 ) -> Result<(String, LowerNeeds), Ice> {
     let ice = |message: &str| Ice::new(func.line, func.column, message);
     let body = func
@@ -533,7 +538,18 @@ pub(super) fn render_function(
         .collect();
     let mut gen = Gen::new(func.ret_type.clone(), sig.ret_agg.clone());
     gen.renames = renames.clone();
-    gen.addr_labels = func.addr_labels.iter().map(|name| c_label(name)).collect();
+    gen.addr_label_names = func.addr_labels.clone();
+    gen.addr_labels = func
+        .addr_labels
+        .iter()
+        .map(|name| c_label_via_ptr(name))
+        .collect();
+    gen.vla_bounds = vla_sizes
+        .iter()
+        .map(|bound| (bound.id, bound.expr.clone()))
+        .collect();
+    let (depths, max_vla_depth) = label_vla_depths(body, vla_sizes);
+    gen.label_vla_depths = depths;
     // MSVC gives every C `inline` definition external linkage in a COMDAT
     // that the linker folds (Parser::mark_inline_definitions), so a call
     // that is not inlined still finds a body.
@@ -582,6 +598,31 @@ pub(super) fn render_function(
             ty.ir_type()
         ));
     }
+    // Computed goto may land on a label emitted before a later VLA was
+    // saved, so stacksave results live in entry-block slots that every
+    // trampoline can load.
+    if max_vla_depth > 0 && !func.addr_labels.is_empty() {
+        gen.declare_stack_intrinsics();
+        for index in 0..max_vla_depth {
+            let slot = format!("%vla.save.{index}");
+            gen.emit(&format!("  {slot} = alloca ptr, align 8"));
+            gen.vla_slots.push(slot);
+        }
+        gen.vla_depth_slot = Some("%vla.cur".to_string());
+        gen.emit("  %vla.cur = alloca i32, align 4");
+        gen.emit("  store i32 0, ptr %vla.cur");
+    }
+    // A computed goto can list a label after a VLA as a destination of an
+    // earlier `indirectbr`, so the SSA size at the declaration would not
+    // dominate that use. Entry-block slots do.
+    if !func.addr_labels.is_empty() {
+        for bound in vla_sizes {
+            let slot = format!("%vla.bytes.{}", bound.id.0);
+            gen.emit(&format!("  {slot} = alloca i64, align 8"));
+            gen.emit(&format!("  store i64 0, ptr {slot}"));
+            gen.vla_byte_slots.insert(bound.id, slot);
+        }
+    }
     // Temps allocated while the body is emitted are inserted here, still in
     // the entry block, so a call inside a loop does not grow the stack.
     gen.alloca_at = gen.lines.len();
@@ -604,12 +645,16 @@ pub(super) fn render_function(
     for ((param, names), parts) in func.params.iter().zip(names.iter()).zip(sig.params.iter()) {
         gen.store_param(param, names, parts);
     }
+    for param in &func.params {
+        gen.force_eval_vla_sizes(&param.unadjusted);
+    }
 
     gen.pos = (func.line, func.column);
     gen.gen_compound(body)?;
     if !gen.terminated {
         gen.emit_implicit_return();
     }
+    gen.emit_addr_label_trampolines();
     if let Some(ice) = gen.ice.take() {
         return Err(ice);
     }
@@ -639,7 +684,9 @@ pub(super) fn local_slots(compound: &Compound) -> Vec<(String, CType, u32)> {
 
 pub(super) fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, CType, u32)>) {
     match stmt {
-        Stmt::Decl(decl) if decl.storage == Storage::None => slots.push(slot_of(decl)),
+        Stmt::Decl(decl) if decl.storage == Storage::None && !decl.ty.is_vla() => {
+            slots.push(slot_of(decl))
+        }
         Stmt::Decl(_) | Stmt::FuncDecl(_) => {}
         Stmt::Compound(compound) => {
             for item in &compound.items {
@@ -663,7 +710,7 @@ pub(super) fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, CType, u32)>) 
         Stmt::For { init, body, .. } => {
             if let ForInit::Decl(decls) = init {
                 for decl in decls {
-                    if decl.storage == Storage::None {
+                    if decl.storage == Storage::None && !decl.ty.is_vla() {
                         slots.push(slot_of(decl));
                     }
                 }
