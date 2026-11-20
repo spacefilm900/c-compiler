@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Line and function coverage with cargo-llvm-cov, in two layers:
 #   1. the Rust unit tests (`cargo test`), and
-#   2. the same plus an instrumented build/hcc driven by the external
+#   2. the same plus an instrumented hcc (Cargo debug build) driven by the external
 #      suites named in SUITES (default: the main differential suite and WACC).
 # Writes OUT/unit.lcov (unit tests) and OUT/suites.lcov (the instrumented
 # compiler under the suites), then prints per-file summaries of non-test code
@@ -28,9 +28,9 @@ source <(cargo llvm-cov show-env --export-prefix)
 # show-env may use a different target directory from the run above; clear
 # its old profiles so an earlier run's suites do not leak into this report.
 cargo llvm-cov clean --workspace
-cargo build --bin compiler
-BIN="$CARGO_LLVM_COV_TARGET_DIR/debug/compiler"
-[ -x "$BIN" ] || BIN="$(dirname "$CARGO_LLVM_COV_TARGET_DIR")/debug/compiler"
+cargo build --bin hcc
+BIN="$CARGO_LLVM_COV_TARGET_DIR/debug/hcc"
+[ -x "$BIN" ] || BIN="$(dirname "$CARGO_LLVM_COV_TARGET_DIR")/debug/hcc"
 echo "instrumented compiler: $BIN"
 # A suite may report test failures (coverage is still valid), but it must
 # reach its final summary line; otherwise the measurement is incomplete.

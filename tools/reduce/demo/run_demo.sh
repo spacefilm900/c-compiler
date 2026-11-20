@@ -27,7 +27,7 @@ if [ -z "${OLD_COMPILER:-}" ]; then
         git -C "$ROOT" worktree add --detach "$tree" 0cab101
     fi
     (cd "$tree" && cargo build --release --quiet)
-    OLD_COMPILER="$tree/target/release/hcc"
+    OLD_COMPILER="$tree/target/release/compiler"
 fi
 NEW_COMPILER="${NEW_COMPILER:-$ROOT/build/hcc}"
 for compiler in "$OLD_COMPILER" "$NEW_COMPILER"; do
