@@ -873,7 +873,7 @@ Lock-free sizes are 1, 2, 4, 8, and 16 bytes on every supported target, includin
 
 `tests/156_atomic.c`, `tests/hosted/07_stdatomic.c`, and `tests/posix/02_atomic.c` (Darwin fixture `tests/posix/darwin/02_atomic.c`).
 
-Local results on rustc 1.85.1 and Clang 19.1.7: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **286 passed**, `make` produced `build/hcc`, `python3 harness/run_tests.py` **203/203 passed**, `python3 harness/run_gcc_torture.py` **1376 passed, 370 known failures, 0 unexpected, 1746 executed, 144 builtins files skipped** (same as after step 12b; no listed torture test started passing).
+Local results on rustc 1.85.1 and Clang 19.1.7: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **287 passed**, `make` produced `build/hcc`, `python3 harness/run_tests.py` **203/203 passed**, `python3 harness/run_gcc_torture.py` **1376 passed, 370 known failures, 0 unexpected, 1746 executed, 144 builtins files skipped** (same as after step 12b; no listed torture test started passing).
 
 ## Next actions
 

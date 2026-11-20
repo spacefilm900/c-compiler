@@ -1794,6 +1794,35 @@ fn stdatomic_header_ir_orders_and_fences() {
 }
 
 #[test]
+fn atomic_load_used_as_variadic_arg_is_materialized() {
+    // A `load atomic` result passed directly to printf was mis-lowered
+    // for the Apple arm64 stand-in. The value must be an ordinary load.
+    let apple = crate::PpOptions {
+        target: crate::Target::Arm64Apple {
+            macos_major: 11,
+            macos_minor: 0,
+        },
+        ..crate::PpOptions::default()
+    };
+    let ir = crate::compile_with(
+        "int printf(const char *, ...);\n         int main(void) {\n             _Atomic int x;\n             x = 7;\n             return printf(\"%d\\n\", x);\n         }\n",
+        "atomic.c",
+        &apple,
+    )
+    .unwrap();
+    let call = ir
+        .lines()
+        .find(|line| line.contains("call") && line.contains("@printf"))
+        .unwrap_or("");
+    assert!(call.contains("i32 %"), "{ir}");
+    assert!(!call.contains("load atomic"), "{ir}");
+    assert!(
+        ir.contains("load atomic") && ir.contains("= load i32, ptr"),
+        "{ir}"
+    );
+}
+
+#[test]
 #[cfg_attr(
     not(all(target_os = "linux", target_arch = "x86_64")),
     ignore = "builds and runs x86_64 Linux code"

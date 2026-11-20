@@ -306,21 +306,40 @@ impl Gen {
     }
 
     fn bits_to_value(&mut self, bits: &str, mem: &str, ty: &CType) -> String {
-        if mem == ty.ir_type() {
-            return bits.to_string();
+        let val = if mem == ty.ir_type() {
+            bits.to_string()
+        } else {
+            let tmp = self.entry_alloca_ir(mem, ty.align());
+            self.emit(&format!(
+                "  store {mem} {bits}, ptr {tmp}, align {}",
+                ty.align()
+            ));
+            let val = self.fresh();
+            self.emit(&format!(
+                "  {val} = load {}, ptr {tmp}, align {}",
+                ty.ir_type(),
+                ty.align()
+            ));
+            val
+        };
+        // Copy the value through a non-atomic slot so a later use is an
+        // ordinary load. Passing a `load atomic` result directly as a
+        // variadic argument can be mis-lowered by LLVM's
+        // arm64-apple-darwin-elf backend (the Apple calling-convention
+        // stand-in), which then prints a stale stack word instead of the
+        // loaded value.
+        self.materialize_scalar(&ty.unqualified(), &val)
+    }
+
+    /// Store `value` to a fresh slot of non-atomic type `ty` and load it
+    /// back as an ordinary value.
+    fn materialize_scalar(&mut self, ty: &CType, value: &str) -> String {
+        if ty.is_record() {
+            return value.to_string();
         }
-        let tmp = self.entry_alloca_ir(mem, ty.align());
-        self.emit(&format!(
-            "  store {mem} {bits}, ptr {tmp}, align {}",
-            ty.align()
-        ));
-        let val = self.fresh();
-        self.emit(&format!(
-            "  {val} = load {}, ptr {tmp}, align {}",
-            ty.ir_type(),
-            ty.align()
-        ));
-        val
+        let slot = self.entry_alloca(ty);
+        self.store(ty, value, &slot);
+        self.load(ty, &slot)
     }
 
     fn value_to_bits(&mut self, value: &str, ty: &CType, mem: &str) -> String {
@@ -371,7 +390,11 @@ impl Gen {
         let bin = int_inst(op, dest_i);
         let new = self.fresh();
         self.emit(&format!("  {new} = {bin} {mem} {old}, {rhs_c}"));
-        Some((old, new))
+        let dest = dest.unqualified();
+        Some((
+            self.materialize_scalar(&dest, &old),
+            self.materialize_scalar(&dest, &new),
+        ))
     }
 
     /// Lower a `__hcc_atomic_*` builtin. `None` is a void result.
