@@ -415,9 +415,7 @@ impl Parser<'_> {
                     self.bump();
                 }
                 TokenKind::KwAtomic => {
-                    if quals.is_atomic {
-                        return Err(self.error("duplicate '_Atomic' qualifier"));
-                    }
+                    // C11 6.7.3p5: a repeated qualifier behaves as if it appeared once.
                     quals.is_atomic = true;
                     self.bump();
                 }

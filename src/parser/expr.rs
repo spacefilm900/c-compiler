@@ -531,6 +531,7 @@ impl Parser<'_> {
         let specs = self.parse_specs(SpecPlace::TypeName)?;
         let base = specs.ty.clone();
         if !self.starts_raw_declarator() {
+            self.reject_bad_atomic(&base, specs.line, specs.column)?;
             return Ok(base);
         }
         let raw = self.parse_raw_declarator(true)?;
@@ -540,6 +541,7 @@ impl Parser<'_> {
         let (line, column) = decl_pos(&raw);
         let ty = layer_type(self.derive(base, &raw, line, column)?);
         self.reject_flexible_array(&ty, line, column)?;
+        self.reject_bad_atomic(&ty, line, column)?;
         Ok(ty)
     }
 

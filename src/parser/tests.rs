@@ -1639,11 +1639,11 @@ fn atomic_type_qualifier_and_specifier() {
         "{}",
         parse_err("struct S { _Atomic int x : 3; };")
     );
-    assert!(
-        parse_err("_Atomic _Atomic int x;").contains("duplicate '_Atomic' qualifier"),
-        "{}",
-        parse_err("_Atomic _Atomic int x;")
-    );
+    let repeated = parsed("_Atomic _Atomic int x; int * _Atomic _Atomic p;\n");
+    assert!(repeated.contains("x"), "{repeated}");
+    assert!(repeated.contains("p"), "{repeated}");
+    let shadow = parsed("typedef int T; void f(void) { _Atomic(int) T; }\n");
+    assert!(shadow.contains("T"), "{shadow}");
 }
 
 #[test]
@@ -1657,5 +1657,10 @@ fn atomic_pointer_and_array_element() {
         parse_err("typedef int F(void); _Atomic F x;").contains("function type"),
         "{}",
         parse_err("typedef int F(void); _Atomic F x;")
+    );
+    assert!(
+        parse_err("typedef int F(void); int k = sizeof(_Atomic F *);").contains("function type"),
+        "{}",
+        parse_err("typedef int F(void); int k = sizeof(_Atomic F *);")
     );
 }

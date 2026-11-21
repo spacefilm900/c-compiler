@@ -101,6 +101,25 @@ impl Parser<'_> {
         let packed = attrs.iter().any(|attr| attr.name == "packed");
         let record_align = self.attrs_align(&attrs)?;
         let spec = attributed_layout_spec(&natural_spec, &member_attrs, packed);
+        for (field, member) in fields.iter().zip(&spec) {
+            if field.ty.is_atomic() {
+                let need = field.ty.size().unwrap_or(0);
+                if (member.align as u64) < need {
+                    let name = if field.name.is_empty() {
+                        "member".to_string()
+                    } else {
+                        format!("member '{}'", field.name)
+                    };
+                    return Err(self.error_at(
+                        line,
+                        column,
+                        format!(
+                            "atomic {name} is not aligned to its size ({need} bytes);                              this compiler only supports lock-free atomics"
+                        ),
+                    ));
+                }
+            }
+        }
         let union_layout = kind == RecordKind::Union;
         let too_large = || self.error_at(line, column, format!("{word} '{label}' is too large"));
         let natural = layout_members(&natural_spec, union_layout).ok_or_else(too_large)?;

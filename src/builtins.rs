@@ -526,6 +526,7 @@ pub enum AtomicOp {
     Init,
     Load,
     Store,
+    FlagClear,
     Exchange,
     CompareExchange,
     FetchAdd,
@@ -544,6 +545,7 @@ impl AtomicOp {
             "__hcc_atomic_init" => AtomicOp::Init,
             "__hcc_atomic_load" => AtomicOp::Load,
             "__hcc_atomic_store" => AtomicOp::Store,
+            "__hcc_atomic_flag_clear" => AtomicOp::FlagClear,
             "__hcc_atomic_exchange" => AtomicOp::Exchange,
             "__hcc_atomic_compare_exchange" => AtomicOp::CompareExchange,
             "__hcc_atomic_fetch_add" => AtomicOp::FetchAdd,
@@ -561,7 +563,7 @@ impl AtomicOp {
     /// Number of arguments the builtin takes.
     pub fn arity(self) -> usize {
         match self {
-            AtomicOp::Init | AtomicOp::Load => 2,
+            AtomicOp::Init | AtomicOp::Load | AtomicOp::FlagClear => 2,
             AtomicOp::Store
             | AtomicOp::Exchange
             | AtomicOp::FetchAdd

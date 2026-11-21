@@ -886,10 +886,11 @@ impl CType {
     /// The System V AMD64 ABI gives an array of 16 bytes or more an alignment
     /// of at least 16. Smaller arrays use the element alignment. AAPCS64 and
     /// Apple's arm64 rules have no such boost: an array is aligned as its
-    /// element. Pointers are 8-byte aligned. Qualifiers do not change the
-    /// alignment.
+    /// element. Pointers are 8-byte aligned. `const` and `volatile` do not
+    /// change the alignment. An `_Atomic` type is aligned to at least its
+    /// size so a lock-free LLVM atomic access is well defined.
     pub fn align(&self) -> u32 {
-        match self.peel() {
+        let align = match self.peel() {
             CType::Void | CType::Func(_) => 1,
             CType::Int(ty) => ty.align(),
             CType::Float(kind) => kind.align(),
@@ -905,7 +906,15 @@ impl CType {
             }
             CType::Struct(handle) => handle.align(),
             CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
+        };
+        if self.is_atomic() {
+            if let Some(size) = self.size() {
+                if size > 0 && size <= u32::MAX as u64 {
+                    return align.max(size as u32);
+                }
+            }
         }
+        align
     }
 
     /// Alignment of this type when it is a field.
@@ -916,7 +925,9 @@ impl CType {
     pub fn member_align(&self) -> u32 {
         match self.peel() {
             CType::Array(elem, _) => elem.member_align(),
-            other => other.align(),
+            // Use `self.align()` so an `_Atomic` type keeps its size
+            // alignment; `peel()` would drop that qualifier.
+            _ => self.align(),
         }
     }
 

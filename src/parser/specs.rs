@@ -570,9 +570,8 @@ impl Parser<'_> {
         flags: &mut SpecFlags,
         token: &Token,
     ) -> Result<(), Diagnostic> {
-        if flags.quals.is_atomic {
-            return Err(self.error_at(token.line, token.column, "duplicate '_Atomic' qualifier"));
-        }
+        // C11 6.7.3p5: a repeated qualifier behaves as if it appeared once.
+        let _ = token;
         flags.quals.is_atomic = true;
         Ok(())
     }

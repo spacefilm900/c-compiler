@@ -598,7 +598,11 @@ impl SpecFlags {
     /// Whether the list already has a type specifier, so a typedef name or
     /// another type word cannot start one.
     fn has_type_specifier(&self) -> bool {
-        self.has_tagged_type() || self.bool_ty || self.float_ty.is_some() || self.has_scalar()
+        self.has_tagged_type()
+            || self.bool_ty
+            || self.float_ty.is_some()
+            || self.has_scalar()
+            || self.atomic_spec.is_some()
     }
 
     /// A struct, union, enum, typedef name or other complete type specifier

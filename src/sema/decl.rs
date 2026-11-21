@@ -310,6 +310,15 @@ impl Sema<'_> {
                 );
             }
         }
+        // Diagnose an unsupported atomic parameter in a prototype as well
+        // as in a definition. A prototype may use an incomplete type.
+        for param in &func.params {
+            if func.body.is_some() {
+                self.check_atomic_types(&param.ty, param.line, param.column)?;
+            } else {
+                self.check_atomic_types_allowing(&param.ty, param.line, param.column, true)?;
+            }
+        }
         // Top-level parameter qualifiers are not part of the function type
         // (C11 6.7.6.3p15). Pointee qualifiers stay, so `const char *` and
         // `char *` are different types.

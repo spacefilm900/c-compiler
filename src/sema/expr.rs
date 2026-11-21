@@ -234,6 +234,7 @@ impl Sema<'_> {
             );
         }
         self.check_vla_sizes(&decl.ty, line, column)?;
+        self.check_atomic_types(&decl.ty, line, column)?;
         let unknown_array = matches!(decl.ty.peel(), CType::Array(_, ArrayLen::Incomplete));
         if !decl.ty.is_complete() && !unknown_array {
             return self.err(

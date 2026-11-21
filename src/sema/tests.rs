@@ -1943,6 +1943,28 @@ fn atomic_types_and_lock_free_sizes() {
     assert!(err.contains("not lock-free"), "{err}");
     let err = sema_err("_Atomic int a[3]; struct S { char a[3]; }; _Atomic struct S x;\n");
     assert!(err.contains("not lock-free"), "{err}");
+    let err = sema_err("struct Big { char a[24]; }; _Atomic(struct Big) **p;\n");
+    assert!(err.contains("not lock-free"), "{err}");
+    let err = sema_err("struct Big { char a[24]; }; void f(void) { (_Atomic(struct Big)){0}; }\n");
+    assert!(err.contains("not lock-free"), "{err}");
+    let err = sema_err("struct Big { char a[24]; }; void f(_Atomic struct Big x);\n");
+    assert!(err.contains("not lock-free"), "{err}");
+    crate::compile_to_ir("struct Inc; void f(_Atomic struct Inc *p);\n", "t.c").unwrap();
+    let align = crate::compile_to_ir(
+        "struct S { char b[8]; }; int main(void) { return _Alignof(_Atomic struct S); }\n",
+        "t.c",
+    )
+    .unwrap();
+    assert!(align.contains("i64 8"), "{align}");
+    let err = sema_dialect(
+        "struct __attribute__((packed)) W { char c; _Atomic int x; };\n",
+        crate::Dialect::Gnu11,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("not aligned") || err.contains("lock-free"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -1973,4 +1995,23 @@ fn stdatomic_header_and_constraints() {
     .unwrap_err()
     .to_string();
     assert!(err.contains("stronger"), "{err}");
+    crate::compile_to_ir(
+        "#include <stdatomic.h>\natomic_flag f; int main(void) { atomic_flag_clear_explicit(&f, memory_order_consume); return 0; }\n",
+        "t.c",
+    )
+    .unwrap();
+    let err = crate::compile_to_ir(
+        "#include <stdatomic.h>\natomic_flag f; int main(void) { atomic_flag_clear_explicit(&f, memory_order_acquire); return 0; }\n",
+        "t.c",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("not valid"), "{err}");
+    let err = crate::compile_to_ir(
+        "#include <stdatomic.h>\natomic_int x, e; int main(void) { return atomic_compare_exchange_strong(&x, &e, 1); }\n",
+        "t.c",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("non-atomic"), "{err}");
 }

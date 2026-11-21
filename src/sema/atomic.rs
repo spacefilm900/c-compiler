@@ -14,14 +14,27 @@ impl Sema<'_> {
         line: usize,
         column: usize,
     ) -> Result<(), Diagnostic> {
-        if let Some(message) = bad_atomic(ty, &mut HashSet::new()) {
+        self.check_atomic_types_allowing(ty, line, column, false)
+    }
+
+    /// Like [`Self::check_atomic_types`], but an incomplete atomic type is
+    /// allowed. A prototype may name an incomplete type (C11 6.7.6.3p12);
+    /// a known size that is not lock-free is still diagnosed.
+    pub(super) fn check_atomic_types_allowing(
+        &self,
+        ty: &CType,
+        line: usize,
+        column: usize,
+        allow_incomplete: bool,
+    ) -> Result<(), Diagnostic> {
+        if let Some(message) = bad_atomic(ty, &mut HashSet::new(), allow_incomplete) {
             return self.err(line, column, message);
         }
         Ok(())
     }
 }
 
-fn bad_atomic(ty: &CType, seen: &mut HashSet<u32>) -> Option<String> {
+fn bad_atomic(ty: &CType, seen: &mut HashSet<u32>, allow_incomplete: bool) -> Option<String> {
     if ty.is_atomic() {
         match ty.size() {
             Some(size) if CType::is_lock_free_atomic_size(size) => {}
@@ -33,32 +46,31 @@ fn bad_atomic(ty: &CType, seen: &mut HashSet<u32>) -> Option<String> {
                     ty.display()
                 ));
             }
+            None if allow_incomplete => {}
             None => {
                 return Some(format!("atomic type '{}' is incomplete", ty.display()));
             }
         }
     }
-    // Do not walk through pointers: a struct may point at itself. A pointer
-    // to a non-lock-free atomic type is still diagnosed. Record types are
-    // memoized so a nest of unions (union U { union V x, y; }) stays linear.
+    // Recurse through pointers and arrays. Record types are memoized so a
+    // self-referential struct, and a nest of unions, stays linear.
     match ty.peel() {
-        CType::Pointer(inner) => {
-            if inner.is_atomic() {
-                bad_atomic(inner, seen)
-            } else {
-                None
-            }
-        }
-        CType::Array(inner, _) => bad_atomic(inner, seen),
-        CType::Func(func) => bad_atomic(&func.ret, seen)
-            .or_else(|| func.params.iter().find_map(|param| bad_atomic(param, seen))),
+        CType::Pointer(inner) => bad_atomic(inner, seen, allow_incomplete),
+        CType::Array(inner, _) => bad_atomic(inner, seen, allow_incomplete),
+        CType::Func(func) => bad_atomic(&func.ret, seen, allow_incomplete).or_else(|| {
+            func.params
+                .iter()
+                .find_map(|param| bad_atomic(param, seen, allow_incomplete))
+        }),
         CType::Struct(handle) => {
             if !seen.insert(handle.id()) {
                 return None;
             }
-            handle
-                .fields_ref()
-                .and_then(|fields| fields.iter().find_map(|field| bad_atomic(&field.ty, seen)))
+            handle.fields_ref().and_then(|fields| {
+                fields
+                    .iter()
+                    .find_map(|field| bad_atomic(&field.ty, seen, allow_incomplete))
+            })
         }
         _ => None,
     }
@@ -143,6 +155,19 @@ impl Sema<'_> {
                 check_named_order(self, &args[2], name, OrderUse::Store)?;
                 CType::Void
             }
+            AtomicOp::FlagClear => {
+                let obj = atomic_object_ty(self, &args[0], name)?;
+                if obj.is_const() {
+                    return self.err(
+                        args[0].line(),
+                        args[0].column(),
+                        format!("argument of {name} must be a pointer to a non-const atomic type"),
+                    );
+                }
+                require_order_ty(self, &args[1])?;
+                check_named_order(self, &args[1], name, OrderUse::FlagClear)?;
+                CType::Void
+            }
             AtomicOp::Exchange => {
                 let obj = atomic_object_ty(self, &args[0], name)?;
                 if obj.is_const() {
@@ -181,6 +206,13 @@ impl Sema<'_> {
                         args[1].line(),
                         args[1].column(),
                         format!("expected-value argument of {name} must be a pointer to a non-const type"),
+                    );
+                }
+                if expected.is_atomic() {
+                    return self.err(
+                        args[1].line(),
+                        args[1].column(),
+                        format!("expected-value argument of {name} must be a pointer to a non-atomic type"),
                     );
                 }
                 if !compatible(&expected.unqualified(), &dest) {
@@ -288,6 +320,7 @@ impl Sema<'_> {
 enum OrderUse {
     Load,
     Store,
+    FlagClear,
     Rmw,
     Fence,
 }
@@ -327,6 +360,8 @@ fn check_named_order(
     let ok = match use_ {
         OrderUse::Load => matches!(code, 0 | 1 | 2 | 5),
         OrderUse::Store => matches!(code, 0 | 3 | 5),
+        // C11 7.17.8.2: flag clear forbids acquire and acq_rel, not consume.
+        OrderUse::FlagClear => matches!(code, 0 | 1 | 3 | 5),
         OrderUse::Rmw | OrderUse::Fence => true,
     };
     if !ok {
