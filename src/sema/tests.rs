@@ -2072,3 +2072,62 @@ fn stdatomic_header_and_constraints() {
     .to_string();
     assert!(err.contains("non-atomic"), "{err}");
 }
+
+#[test]
+fn bitfield_with_overaligned_member_is_accepted() {
+    // C11 6.7.2.1 and 6.7.5: a bit-field may sit next to an _Alignas
+    // member. Extra alignment inserts padding after the bit-field unit;
+    // the bit-field itself stays at its natural offset. A GNU packed
+    // record that would move packing remains unsupported.
+    let unit = analyzed(
+        "\
+struct Inner { unsigned int b : 3; _Alignas(16) int value; };
+struct Outer { char lead; struct Inner inner; char tail; };
+",
+    );
+    let inner = unit
+        .structs
+        .iter()
+        .find(|handle| handle.tag() == "Inner")
+        .expect("struct Inner");
+    assert_eq!(inner.align(), 16);
+    assert_eq!(inner.size(), Some(32));
+    let ifields = inner.fields().expect("complete");
+    assert_eq!(ifields[0].name, "b");
+    assert_eq!(ifields[0].offset, 0);
+    assert_eq!(ifields[0].bit_width, Some(3));
+    assert_eq!(ifields[1].name, "value");
+    assert_eq!(ifields[1].offset, 16);
+    let outer = unit
+        .structs
+        .iter()
+        .find(|handle| handle.tag() == "Outer")
+        .expect("struct Outer");
+    assert_eq!(outer.align(), 16);
+    assert_eq!(outer.size(), Some(64));
+    let ofields = outer.fields().expect("complete");
+    assert_eq!(ofields[0].offset, 0);
+    assert_eq!(ofields[1].name, "inner");
+    assert_eq!(ofields[1].offset, 16);
+    assert_eq!(ofields[2].name, "tail");
+    assert_eq!(ofields[2].offset, 48);
+
+    sema_ok("struct I { unsigned int b : 3; _Alignas(8) int v; };");
+    sema_ok("struct I { unsigned int b : 3; _Alignas(32) int v; };");
+    sema_ok("struct I { unsigned int b : 3; _Alignas(64) int v; };");
+    assert!(
+        sema_err("struct __attribute__((packed)) S { char c; int b : 3; };")
+            .contains("bit-fields in a packed or aligned")
+    );
+    // A trailing zero-width field is only an alignment marker, not a
+    // storage unit. It may sit at the end of the record.
+    let unit =
+        analyzed("struct S { unsigned int b : 3; _Alignas(8) int v[2]; unsigned int : 0; };");
+    let s = unit
+        .structs
+        .iter()
+        .find(|handle| handle.tag() == "S")
+        .expect("struct S");
+    assert_eq!(s.align(), 8);
+    assert_eq!(s.size(), Some(16));
+}

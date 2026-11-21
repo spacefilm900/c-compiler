@@ -140,12 +140,26 @@ impl Parser<'_> {
                 .any(|field| field.bit_width.is_some_and(|w| w > 0))
         {
             // A bit-field is read through its declared type's storage unit.
-            // That only matches GCC when packing moved nothing and every
-            // unit stays inside the record.
-            let fits = places.iter().zip(&fields).all(|(place, field)| {
-                field.bit_width.is_none() || place.offset + field.ty.size().unwrap_or(0) <= size
-            });
-            if places != natural.0 || !fits {
+            // That only matches GCC when a bit-field did not move and every
+            // unit stays inside the record. Extra alignment (_Alignas or
+            // aligned(N)) only inserts padding after an unmoved unit; it
+            // must not be rejected as if the record were packed.
+            let fits = places
+                .iter()
+                .zip(&fields)
+                .all(|(place, field)| match field.bit_width {
+                    Some(width) if width > 0 => place.offset + field.ty.size().unwrap_or(0) <= size,
+                    _ => true,
+                });
+            let bitfield_moved =
+                places
+                    .iter()
+                    .zip(&natural.0)
+                    .zip(&fields)
+                    .any(|((place, nat), field)| {
+                        field.bit_width.is_some_and(|w| w > 0) && place != nat
+                    });
+            if bitfield_moved || !fits {
                 return Err(self.error_at(
                     line,
                     column,
