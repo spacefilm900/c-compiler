@@ -157,6 +157,8 @@ def test(src, tmp, std="c11", link=None, extra_srcs=None, oracle_flags=None):
         return f"this compiler's program did not complete ({reason})"
     if got != exp:
         return f"mismatch: got exit={got[0]} out={got[1][:100]!r}, expected exit={exp[0]} out={exp[1][:100]!r}"
+    if uses_c11_threads(src) and got[0] != 0:
+        return f"ours run failed (exit {got[0]}, expected 0)"
     return None
 
 def test_gnu(src, tmp):

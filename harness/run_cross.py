@@ -253,7 +253,8 @@ def uses_c11_threads(src):
 
 
 def linux_sysroot_has_threads_h():
-    return (INCLUDE / "threads.h").is_file()
+    # The AArch64 cross sysroot, and /usr/include on a native AArch64 host.
+    return (INCLUDE / "threads.h").is_file() or Path("/usr/include/threads.h").is_file()
 
 
 def needs_threads_runtime(tc, src):
@@ -317,6 +318,8 @@ def test(tc, src, work, std="c11"):
         return err
     if got != exp:
         return mismatch(got, exp)
+    if uses_c11_threads(src) and got[0] != 0:
+        return f"ours run failed (exit {got[0]}, expected 0)"
     return None
 
 
