@@ -2115,6 +2115,8 @@ struct Outer { char lead; struct Inner inner; char tail; };
     sema_ok("struct I { unsigned int b : 3; _Alignas(8) int v; };");
     sema_ok("struct I { unsigned int b : 3; _Alignas(32) int v; };");
     sema_ok("struct I { unsigned int b : 3; _Alignas(64) int v; };");
-    assert!(sema_err("struct __attribute__((packed)) S { char c; int b : 3; };")
-        .contains("bit-fields in a packed or aligned"));
+    assert!(
+        sema_err("struct __attribute__((packed)) S { char c; int b : 3; };")
+            .contains("bit-fields in a packed or aligned")
+    );
 }
