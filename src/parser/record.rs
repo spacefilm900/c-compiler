@@ -100,7 +100,7 @@ impl Parser<'_> {
         let natural_spec = natural_layout_spec(&fields);
         let packed = attrs.iter().any(|attr| attr.name == "packed");
         let record_align = self.attrs_align(&attrs)?;
-        let spec = attributed_layout_spec(&natural_spec, &member_attrs, packed);
+        let spec = attributed_layout_spec(&natural_spec, &member_attrs, packed, true);
         let union_layout = kind == RecordKind::Union;
         let too_large = || self.error_at(line, column, format!("{word} '{label}' is too large"));
         let natural = layout_members(&natural_spec, union_layout).ok_or_else(too_large)?;
@@ -108,8 +108,10 @@ impl Parser<'_> {
         // bit-field may start after padding inserted by an over-aligned
         // ordinary member; that is not the same as packed bit-field
         // movement, which is compared against this layout below.
+        // Honour _Alignas / aligned(N) but ignore member packed, so
+        // packing-induced bit-field movement is still detected.
         let unpacked = layout_members(
-            &attributed_layout_spec(&natural_spec, &member_attrs, false),
+            &attributed_layout_spec(&natural_spec, &member_attrs, false, false),
             union_layout,
         )
         .ok_or_else(too_large)?;
@@ -1091,12 +1093,13 @@ fn attributed_layout_spec(
     natural: &[LayoutMember],
     member_attrs: &[MemberAttrs],
     packed: bool,
+    honour_member_packed: bool,
 ) -> Vec<LayoutMember> {
     natural
         .iter()
         .zip(member_attrs)
         .map(|(member, extra)| {
-            let base = if packed || extra.packed {
+            let base = if packed || (honour_member_packed && extra.packed) {
                 1
             } else {
                 member.align
