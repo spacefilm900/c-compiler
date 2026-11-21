@@ -263,8 +263,18 @@ def uses_c11_threads(src):
 
 
 def linux_sysroot_has_threads_h():
-    # The AArch64 cross sysroot, and /usr/include on a native AArch64 host.
-    return (INCLUDE / "threads.h").is_file() or Path("/usr/include/threads.h").is_file()
+    """Whether the AArch64 Linux headers this run searches include threads.h.
+
+    On a cross host, that is AARCH64_INCLUDE and the
+    /usr/aarch64-linux-gnu/include directory hcc uses. The host's
+    /usr/include is not consulted there; it can have the header while the
+    target sysroot does not. On a native AArch64 host, hcc also searches
+    /usr/include.
+    """
+    dirs = [INCLUDE, Path("/usr/aarch64-linux-gnu/include")]
+    if os.uname().machine == "aarch64":
+        dirs.extend((Path("/usr/include"), Path("/usr/include/aarch64-linux-gnu")))
+    return any((d / "threads.h").is_file() for d in dirs)
 
 
 def needs_threads_runtime(tc, src):
