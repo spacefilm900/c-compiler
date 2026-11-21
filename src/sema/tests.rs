@@ -2201,4 +2201,10 @@ struct Outer { char lead; struct Inner inner; char tail; };
         sema_err("struct __attribute__((packed)) S { char c; int b : 3; };")
             .contains("bit-fields in a packed or aligned")
     );
+    // A member-level packed attribute can also move a later bit-field.
+    // _Alignas padding must not hide that movement.
+    assert!(
+        sema_err("struct S { char c; int x __attribute__((packed)); unsigned int b : 5; _Alignas(16) int tail; };")
+            .contains("bit-fields in a packed or aligned")
+    );
 }
