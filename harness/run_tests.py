@@ -17,8 +17,10 @@ Harness tests from 119 onward in tests/*.c do not use preprocessor
 directives or headers. tests/hosted/*.c may include system headers such
 as <math.h> and are run the same way as tests/*.c.
 tests/hosted/08_threads.c uses <threads.h> and is linked with `-pthread`.
-On macOS, which has no C library <threads.h>, the harness also compiles
-and links lib/threads.c and points the Clang oracle at include/.
+On macOS, and on Linux when the C library has no <threads.h>, the harness
+also compiles and links lib/threads.c and points the Clang oracle at
+include/ for the test file only (not for lib/threads.c, which would
+otherwise pick up this compiler's <stdatomic.h>).
 tests/posix/*.c need POSIX threads (`-pthread`) and are run only by
 this native harness, not by the Windows Wine stand-in. On macOS the
 harness runs tests/posix/darwin/*.c instead, so each fixture can use
@@ -121,6 +123,13 @@ def uses_c11_threads(src):
     return src.name == "08_threads.c"
 
 
+def native_needs_threads_shim():
+    """macOS has no C library <threads.h>; some Linux C libraries also lack it."""
+    if sys.platform == "darwin":
+        return True
+    return not Path("/usr/include/threads.h").is_file()
+
+
 def test(src, tmp, std="c11", link=None, extra_srcs=None, oracle_flags=None):
     name = src.stem
     ll, a, b = tmp / f"{name}.ll", tmp / f"{name}.mine", tmp / f"{name}.ref"
@@ -142,8 +151,18 @@ def test(src, tmp, std="c11", link=None, extra_srcs=None, oracle_flags=None):
     rc, _, err = run([CLANG, "-w", str(ll), *extra_lls, "-o", str(a)] + extras)
     if rc != 0:
         return f"clang rejected IR ({rc}): {err.decode(errors='replace').strip()[:300]}"
+    oracle_extra_objs = []
+    for i, es in enumerate(extra_srcs):
+        # Do not pass oracle_flags here: -I include/ would shadow the host
+        # <stdatomic.h> when compiling lib/threads.c.
+        ob = tmp / f"{name}.extra{i}.ref.o"
+        rc, _, err = run([CLANG, "-w", f"-std={std}", "-c", str(es), "-o", str(ob)])
+        if rc != 0:
+            return (f"oracle compile failed on {es.name} ({rc}): "
+                    + err.decode(errors="replace").strip()[:300])
+        oracle_extra_objs.append(str(ob))
     rc, _, err = run(
-        [CLANG, "-w", f"-std={std}", str(src), *[str(x) for x in extra_srcs], "-o", str(b)]
+        [CLANG, "-w", f"-std={std}", str(src), *oracle_extra_objs, "-o", str(b)]
         + extras + oracle_flags
     )
     if rc != 0:
@@ -306,7 +325,7 @@ def main():
         for t in hosted:
             label = f"{t.parent.relative_to(ROOT / 'tests').as_posix()}/{t.name}"
             if uses_c11_threads(t):
-                extra = [THREADS_RUNTIME] if sys.platform == "darwin" else []
+                extra = [THREADS_RUNTIME] if native_needs_threads_shim() else []
                 flags = ["-I", str(ROOT / "include")] if extra else []
                 report(label, test(t, tmp, link=["-lm", "-pthread"],
                                    extra_srcs=extra, oracle_flags=flags))

@@ -106,7 +106,7 @@ int main(void) {
     if (thrd_join(tb, &rb) != thrd_success) {
         return 1;
     }
-    if (ra + rb != 5 || (ra != 2 && ra != 3) || (rb != 2 && rb != 3) || ra == rb) {
+    if (ra != 2 || rb != 3) {
         return 1;
     }
 
@@ -151,5 +151,6 @@ int main(void) {
 
     printf("%d %d %d %d %d %d %d\n", once_count, ra + rb, rec_ok, timed_ok,
            sleep_ok, eq, yield_ok && TSS_DTOR_ITERATIONS > 0);
-    return 0;
+    return !(once_count == 1 && rec_ok && timed_ok && sleep_ok && eq
+             && yield_ok && TSS_DTOR_ITERATIONS > 0);
 }
