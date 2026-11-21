@@ -463,7 +463,7 @@ impl Gen {
             );
         };
         if pointee.is_vla() {
-            return self.gen_vla_gep(&ptr, &idx, &pointee, self.unaligned.contains(&ptr));
+            return self.gen_vla_gep(&ptr, &idx, &pointee, self.unaligned.contains(&ptr), true);
         }
         if pointee.size().is_none() {
             return self.ice_in(
@@ -604,7 +604,7 @@ impl Gen {
                 idx = tmp;
             }
             let updated = if pointee.size().is_none() {
-                self.gen_vla_gep(&old, &idx, pointee, self.unaligned.contains(&old))
+                self.gen_vla_gep(&old, &idx, pointee, self.unaligned.contains(&old), true)
             } else {
                 let elem = pointee.ir_type();
                 let updated = self.fresh();
@@ -698,7 +698,7 @@ impl Gen {
         if let Some(pointee) = dest.pointee() {
             let step = if op.is_increment() { "1" } else { "-1" };
             let updated = if pointee.size().is_none() {
-                self.gen_vla_gep(&old, step, pointee, self.unaligned.contains(&old))
+                self.gen_vla_gep(&old, step, pointee, self.unaligned.contains(&old), true)
             } else {
                 let elem = pointee.ir_type();
                 let updated = self.fresh();

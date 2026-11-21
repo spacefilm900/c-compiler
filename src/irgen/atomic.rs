@@ -275,6 +275,36 @@ impl Gen {
         (old, new)
     }
 
+    /// Scaled pointer offset for atomic `+=`/`-=` and fetch-add/sub.
+    /// `inbounds` is true for language arithmetic on a VLA pointee and
+    /// false for the fetch builtins, which C11 7.17.7.5 defines as
+    /// integer arithmetic on `uintptr_t`.
+    fn atomic_ptr_offset(
+        &mut self,
+        op: BinOp,
+        pointee: &CType,
+        old: &str,
+        rhs_ty: &CType,
+        rhs: &str,
+        inbounds: bool,
+    ) -> String {
+        let mut idx = self.extend_i64(rhs, rhs_ty);
+        if op == BinOp::Sub {
+            let tmp = self.fresh();
+            self.emit(&format!("  {tmp} = sub i64 0, {idx}"));
+            idx = tmp;
+        }
+        if pointee.size().is_none() {
+            return self.gen_vla_gep(old, &idx, pointee, self.unaligned.contains(old), inbounds);
+        }
+        let elem = pointee.ir_type();
+        let updated = self.fresh();
+        self.emit(&format!(
+            "  {updated} = getelementptr {elem}, ptr {old}, i64 {idx}"
+        ));
+        updated
+    }
+
     /// `new = old op val` converted back to `dest`'s type, matching
     /// ordinary compound assignment.
     fn atomic_apply_op(
@@ -287,21 +317,7 @@ impl Gen {
         at: &Expr,
     ) -> String {
         if let Some(pointee) = dest.pointee() {
-            let mut idx = self.extend_i64(rhs, rhs_ty);
-            if op == BinOp::Sub {
-                let tmp = self.fresh();
-                self.emit(&format!("  {tmp} = sub i64 0, {idx}"));
-                idx = tmp;
-            }
-            if pointee.size().is_none() {
-                return self.gen_vla_gep(old, &idx, pointee, self.unaligned.contains(old));
-            }
-            let elem = pointee.ir_type();
-            let updated = self.fresh();
-            self.emit(&format!(
-                "  {updated} = getelementptr {elem}, ptr {old}, i64 {idx}"
-            ));
-            return updated;
+            return self.atomic_ptr_offset(op, pointee, old, rhs_ty, rhs, true);
         }
         if dest.is_float() || rhs_ty.is_float() {
             let common = common_real(dest, rhs_ty);
@@ -665,7 +681,10 @@ impl Gen {
                 order,
                 load_order_for(order),
                 false,
-                |gen, old| gen.atomic_apply_op(bin, &dest, old, &rhs_ty, &rhs, &args[0]),
+                |gen, old| {
+                    let pointee = dest.pointee().expect("pointer dest");
+                    gen.atomic_ptr_offset(bin, pointee, old, &rhs_ty, &rhs, false)
+                },
             );
             return old;
         }
@@ -681,7 +700,10 @@ impl Gen {
             order,
             load_order_for(order),
             false,
-            |gen, old| gen.atomic_apply_op(bin, &dest, old, &rhs_ty, &rhs, &args[0]),
+            |gen, old| {
+                let pointee = dest.pointee().expect("pointer dest");
+                gen.atomic_ptr_offset(bin, pointee, old, &rhs_ty, &rhs, false)
+            },
         );
         old
     }

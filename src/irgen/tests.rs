@@ -1912,6 +1912,30 @@ fn atomic_fetch_add_pointer_is_not_inbounds() {
 }
 
 #[test]
+fn atomic_fetch_add_sub_pointer_to_vla_is_not_inbounds() {
+    let ir = crate::compile_to_ir(
+        r#"#include <stdatomic.h>
+void f(int n) {
+    typedef int A[n];
+    _Atomic(A *) p;
+    (void)atomic_fetch_add(&p, 2);
+    (void)atomic_fetch_sub(&p, 1);
+}
+"#,
+        "atomic.c",
+    )
+    .unwrap();
+    let geps: Vec<&str> = ir.lines().filter(|l| l.contains("getelementptr")).collect();
+    assert!(
+        geps.len() >= 2,
+        "expected fetch-add and fetch-sub GEPs in {ir}"
+    );
+    for gep in &geps {
+        assert!(!gep.contains("inbounds"), "{gep}\n{ir}");
+    }
+}
+
+#[test]
 fn atomic_order_cast_and_side_effects() {
     let ir = crate::compile_to_ir(
         r#"#include <stdatomic.h>

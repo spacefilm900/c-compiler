@@ -262,20 +262,27 @@ impl Gen {
     }
 
     /// GEP when the pointee may be a VLA (runtime element size).
+    /// `inbounds` is true for ordinary language pointer arithmetic and
+    /// false for atomic fetch-add/sub, which C11 7.17.7.5 defines as
+    /// integer arithmetic on `uintptr_t`.
     pub(super) fn gen_vla_gep(
         &mut self,
         ptr: &str,
         idx: &str,
         pointee: &CType,
         unaligned: bool,
+        inbounds: bool,
     ) -> String {
         let size = self.runtime_size(pointee);
         let offs = self.fresh();
         self.emit(&format!("  {offs} = mul i64 {idx}, {size}"));
         let tmp = self.fresh();
-        self.emit(&format!(
-            "  {tmp} = getelementptr inbounds i8, ptr {ptr}, i64 {offs}"
-        ));
+        let inst = if inbounds {
+            "getelementptr inbounds"
+        } else {
+            "getelementptr"
+        };
+        self.emit(&format!("  {tmp} = {inst} i8, ptr {ptr}, i64 {offs}"));
         if unaligned {
             self.unaligned.insert(tmp.clone());
         }
