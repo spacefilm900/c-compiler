@@ -115,8 +115,20 @@ impl Gen {
     ) {
         let size = ty.size().expect("complete");
         let mem = atomic_int_ir(size).expect("lock-free atomic size");
-        let src_align = self.access_align(ty, src);
-        let dest_align = self.access_align(ty, dest);
+        // A non-atomic operand may have a weaker alignment than `ty` when
+        // `ty` is the atomic destination (for example `_Atomic struct S x = s`).
+        let src_ty = if src_atomic {
+            ty.clone()
+        } else {
+            ty.non_atomic()
+        };
+        let dest_ty = if dest_atomic {
+            ty.clone()
+        } else {
+            ty.non_atomic()
+        };
+        let src_align = self.access_align(&src_ty, src);
+        let dest_align = self.access_align(&dest_ty, dest);
         if src_atomic && (src_align as u64) < size {
             self.ice("atomic object is not aligned to its size");
         }

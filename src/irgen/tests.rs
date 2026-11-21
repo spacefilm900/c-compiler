@@ -1878,6 +1878,26 @@ fn atomic_record_init_uses_seq_cst_load() {
 }
 
 #[test]
+fn atomic_record_init_from_plain_uses_source_align() {
+    let ir = crate::compile_to_ir(
+        "struct S { int a, b; }; void f(void) { struct S s = {1, 2}; _Atomic struct S x = s; (void)x; }\n",
+        "atomic.c",
+    )
+    .unwrap();
+    let load = ir
+        .lines()
+        .find(|l| l.contains("load i64") && !l.contains("atomic"))
+        .unwrap_or_else(|| panic!("plain source load in {ir}"));
+    assert!(load.contains("align 4"), "{load}\n{ir}");
+    assert!(!load.contains("align 8"), "{load}\n{ir}");
+    let store = ir
+        .lines()
+        .find(|l| l.contains("store atomic"))
+        .unwrap_or_else(|| panic!("atomic store in {ir}"));
+    assert!(store.contains("align 8"), "{store}\n{ir}");
+}
+
+#[test]
 fn atomic_fetch_add_pointer_is_not_inbounds() {
     let ir = crate::compile_to_ir(
         "#include <stdatomic.h>\nint a[1]; int main(void) { _Atomic(int *) p = a; (void)atomic_fetch_add(&p, 2); return 0; }\n",
