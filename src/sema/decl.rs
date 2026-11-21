@@ -310,14 +310,18 @@ impl Sema<'_> {
                 );
             }
         }
-        // Diagnose an unsupported atomic parameter in a prototype as well
-        // as in a definition. A prototype may use an incomplete type.
+        // Diagnose an unsupported atomic parameter or return type in a
+        // prototype as well as in a definition. A prototype may use an
+        // incomplete type.
+        let allow_incomplete = func.body.is_none();
+        self.check_atomic_types_allowing(&func.ret_type, func.line, func.column, allow_incomplete)?;
         for param in &func.params {
-            if func.body.is_some() {
-                self.check_atomic_types(&param.ty, param.line, param.column)?;
-            } else {
-                self.check_atomic_types_allowing(&param.ty, param.line, param.column, true)?;
-            }
+            self.check_atomic_types_allowing(
+                &param.ty,
+                param.line,
+                param.column,
+                allow_incomplete,
+            )?;
         }
         // Top-level parameter qualifiers are not part of the function type
         // (C11 6.7.6.3p15). Pointee qualifiers stay, so `const char *` and
@@ -909,6 +913,10 @@ impl Sema<'_> {
                 param.column,
                 format!("redefinition of parameter '{name}'"),
             );
+        }
+        self.check_atomic_types_allowing(&func.ret_type, func.line, func.column, true)?;
+        for param in &func.params {
+            self.check_atomic_types_allowing(&param.ty, param.line, param.column, true)?;
         }
         let params: Vec<CType> = func
             .params

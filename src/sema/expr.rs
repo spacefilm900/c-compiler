@@ -990,6 +990,7 @@ impl Sema<'_> {
             let sized = match operand {
                 SizeofOperand::Type(ty) => {
                     self.check_vla_sizes(ty, line, column)?;
+                    self.check_atomic_types_allowing(ty, line, column, true)?;
                     ty.clone()
                 }
                 SizeofOperand::Expr(inner) => {

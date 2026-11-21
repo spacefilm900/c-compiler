@@ -1965,6 +1965,47 @@ fn atomic_types_and_lock_free_sizes() {
         err.contains("not aligned") || err.contains("lock-free"),
         "{err}"
     );
+    crate::compile_dialect(
+        "struct __attribute__((packed, aligned(4))) S { _Atomic int x; };\n",
+        "t.c",
+        &crate::PpOptions::default(),
+        crate::Dialect::Gnu11,
+    )
+    .unwrap();
+    let err = sema_dialect(
+        "struct __attribute__((packed, aligned(4))) S { char c; _Atomic int x; };\n",
+        crate::Dialect::Gnu11,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("not aligned") || err.contains("lock-free"),
+        "{err}"
+    );
+    let err = sema_err("struct Big { char a[24]; }; _Atomic(struct Big) *f(void);\n");
+    assert!(err.contains("not lock-free"), "{err}");
+    crate::compile_to_ir("struct Inc; _Atomic struct Inc *f(void);\n", "t.c").unwrap();
+    let err = sema_err("struct Big { char a[24]; }; int n = sizeof(_Atomic(struct Big));\n");
+    assert!(err.contains("not lock-free"), "{err}");
+    let err = crate::compile_to_ir(
+        "#include <stdatomic.h>\nstruct S; int main(void) { _Atomic(struct S *) p; (void)atomic_fetch_add(&p, 1); }\n",
+        "t.c",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("complete object type") || err.contains("incomplete"),
+        "{err}"
+    );
+    let err = crate::compile_to_ir(
+        "_Atomic(int *) p; void f(void) { __hcc_atomic_flag_clear(&p, 0); }\n",
+        "t.c",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("unsigned char") || err.contains("atomic_flag"),
+        "{err}"
+    );
 }
 
 #[test]

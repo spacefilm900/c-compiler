@@ -415,9 +415,16 @@ impl Parser<'_> {
                     self.bump();
                 }
                 TokenKind::KwAtomic => {
-                    // C11 6.7.3p5: a repeated qualifier behaves as if it appeared once.
-                    quals.is_atomic = true;
+                    // C11 6.7.2.4p4: `_Atomic (` is a type specifier, not a
+                    // qualifier. C11 6.7.3p5: a repeated qualifier behaves
+                    // as if it appeared once.
                     self.bump();
+                    if self.current().kind == TokenKind::LParen {
+                        return Err(self.error(
+                            "'_Atomic' followed by '(' is a type specifier, not a qualifier",
+                        ));
+                    }
+                    quals.is_atomic = true;
                 }
                 TokenKind::KwRestrict => {
                     if quals.is_restrict {

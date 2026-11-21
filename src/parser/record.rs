@@ -101,25 +101,6 @@ impl Parser<'_> {
         let packed = attrs.iter().any(|attr| attr.name == "packed");
         let record_align = self.attrs_align(&attrs)?;
         let spec = attributed_layout_spec(&natural_spec, &member_attrs, packed);
-        for (field, member) in fields.iter().zip(&spec) {
-            if field.ty.is_atomic() {
-                let need = field.ty.size().unwrap_or(0);
-                if (member.align as u64) < need {
-                    let name = if field.name.is_empty() {
-                        "member".to_string()
-                    } else {
-                        format!("member '{}'", field.name)
-                    };
-                    return Err(self.error_at(
-                        line,
-                        column,
-                        format!(
-                            "atomic {name} is not aligned to its size ({need} bytes);                              this compiler only supports lock-free atomics"
-                        ),
-                    ));
-                }
-            }
-        }
         let union_layout = kind == RecordKind::Union;
         let too_large = || self.error_at(line, column, format!("{word} '{label}' is too large"));
         let natural = layout_members(&natural_spec, union_layout).ok_or_else(too_large)?;
@@ -129,6 +110,28 @@ impl Parser<'_> {
         if let Some(extra) = record_align {
             align = align.max(extra);
             size = size.div_ceil(u64::from(align)) * u64::from(align);
+        }
+        for (field, place) in fields.iter().zip(&places) {
+            if field.ty.is_atomic() {
+                let need = field.ty.size().unwrap_or(0);
+                // A member at offset `off` in a record of alignment `align`
+                // is guaranteed only `gcd(align, off)` alignment.
+                let guaranteed = gcd_u64(u64::from(align), place.offset);
+                if guaranteed < need {
+                    let name = if field.name.is_empty() {
+                        "member".to_string()
+                    } else {
+                        format!("member '{}'", field.name)
+                    };
+                    return Err(self.error_at(
+                        line,
+                        column,
+                        format!(
+                            "atomic {name} is not aligned to its size ({need} bytes); this compiler only supports lock-free atomics"
+                        ),
+                    ));
+                }
+            }
         }
         let irregular = places != natural.0 || size != natural.1 || align != natural.2;
         if irregular
@@ -1070,4 +1073,11 @@ fn attributed_layout_spec(
             }
         })
         .collect()
+}
+
+fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
 }

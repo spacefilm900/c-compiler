@@ -1642,6 +1642,13 @@ fn atomic_type_qualifier_and_specifier() {
     let repeated = parsed("_Atomic _Atomic int x; int * _Atomic _Atomic p;\n");
     assert!(repeated.contains("x"), "{repeated}");
     assert!(repeated.contains("p"), "{repeated}");
+    // Repeated qualifiers are the same type as a single qualifier (C11 6.7.3p5).
+    assert_eq!(parsed("_Atomic int x; int * _Atomic p;\n"), repeated);
+    assert!(
+        parse_err("int * _Atomic (p);").contains("type specifier"),
+        "{}",
+        parse_err("int * _Atomic (p);")
+    );
     let shadow = parsed("typedef int T; void f(void) { _Atomic(int) T; }\n");
     assert!(shadow.contains("T"), "{shadow}");
 }

@@ -164,6 +164,14 @@ impl Sema<'_> {
                         format!("argument of {name} must be a pointer to a non-const atomic type"),
                     );
                 }
+                // <stdatomic.h> stores the flag as `_Atomic unsigned char`.
+                if obj.unqualified().as_integer() != Some(TypeName::UChar) {
+                    return self.err(
+                        args[0].line(),
+                        args[0].column(),
+                        format!("argument of {name} must be a pointer to _Atomic unsigned char"),
+                    );
+                }
                 require_order_ty(self, &args[1])?;
                 check_named_order(self, &args[1], name, OrderUse::FlagClear)?;
                 CType::Void
@@ -256,6 +264,14 @@ impl Sema<'_> {
                     );
                 }
                 let operand = if dest.is_pointer() {
+                    let pointee = dest.pointee().expect("pointer dest");
+                    if pointee.size().is_none() && !pointee.is_vla() {
+                        return self.err(
+                            args[0].line(),
+                            args[0].column(),
+                            format!("{name} requires a pointer to a complete object type"),
+                        );
+                    }
                     CType::from_name(TypeName::ptrdiff_t())
                 } else if dest.is_integer() {
                     dest.clone()
