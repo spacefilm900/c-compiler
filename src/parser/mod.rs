@@ -333,7 +333,8 @@ impl Parser<'_> {
         is_type_specifier(token.kind)
             || matches!(
                 token.kind,
-                TokenKind::KwConst
+                TokenKind::KwAtomic
+                    | TokenKind::KwConst
                     | TokenKind::KwVolatile
                     | TokenKind::KwRestrict
                     | TokenKind::KwStruct
@@ -572,6 +573,8 @@ struct SpecFlags {
     enum_base: Option<TypeName>,
     line: usize,
     column: usize,
+    /// `_Atomic ( type-name )` (C11 6.7.2.4). The type is already atomic.
+    atomic_spec: Option<CType>,
     /// Combined `_Alignas` (0 is dropped).
     alignas: Option<u32>,
     alignas_at: Option<(usize, usize)>,
@@ -595,7 +598,11 @@ impl SpecFlags {
     /// Whether the list already has a type specifier, so a typedef name or
     /// another type word cannot start one.
     fn has_type_specifier(&self) -> bool {
-        self.has_tagged_type() || self.bool_ty || self.float_ty.is_some() || self.has_scalar()
+        self.has_tagged_type()
+            || self.bool_ty
+            || self.float_ty.is_some()
+            || self.has_scalar()
+            || self.atomic_spec.is_some()
     }
 
     /// A struct, union, enum, typedef name or other complete type specifier
@@ -720,7 +727,6 @@ fn found(token: &Token) -> String {
 
 fn unsupported(kind: TokenKind) -> Option<&'static str> {
     Some(match kind {
-        TokenKind::KwAtomic => "atomic types are not supported",
         TokenKind::KwComplex | TokenKind::KwImaginary => "complex types are not supported",
         TokenKind::KwNoreturn => "_Noreturn is not supported",
         _ => return None,

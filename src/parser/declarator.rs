@@ -290,6 +290,7 @@ impl Parser<'_> {
             other => other,
         };
         self.reject_bad_restrict(&ty, line, column)?;
+        self.reject_bad_atomic(&ty, line, column)?;
         match ty {
             CType::Void => Err(self.error_at(line, column, "parameter has incomplete type 'void'")),
             // A prototype may name an incomplete struct or union (C11 6.7.6.3).
@@ -412,6 +413,18 @@ impl Parser<'_> {
                         quals.is_volatile = true;
                     }
                     self.bump();
+                }
+                TokenKind::KwAtomic => {
+                    // C11 6.7.2.4p4: `_Atomic (` is a type specifier, not a
+                    // qualifier. C11 6.7.3p5: a repeated qualifier behaves
+                    // as if it appeared once.
+                    self.bump();
+                    if self.current().kind == TokenKind::LParen {
+                        return Err(self.error(
+                            "'_Atomic' followed by '(' is a type specifier, not a qualifier",
+                        ));
+                    }
+                    quals.is_atomic = true;
                 }
                 TokenKind::KwRestrict => {
                     if quals.is_restrict {
@@ -551,6 +564,7 @@ impl Parser<'_> {
                     // type: `int restrict f(void)` is a constraint violation
                     // wherever the declarator appears.
                     self.reject_bad_restrict(&ret, line, column)?;
+                    self.reject_bad_atomic(&ret, line, column)?;
                     if !params.prototype && !params.params.is_empty() {
                         // C11 6.7.6.3p3: an identifier list on a declarator
                         // that is not a function definition shall be empty.

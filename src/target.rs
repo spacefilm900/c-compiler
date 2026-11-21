@@ -439,6 +439,15 @@ impl Target {
             _ => "",
         }
     }
+
+    /// Whether 16-byte lock-free atomics need the `cx16` x86-64 feature
+    /// (`cmpxchg16b`). Without it, LLVM emits `__atomic_*_16` libcalls.
+    pub fn needs_cx16(self) -> bool {
+        matches!(
+            self,
+            Target::X86_64Linux | Target::X86_64Apple { .. } | Target::X86_64Windows { .. }
+        )
+    }
 }
 
 /// A Windows OS and environment, after the vendor (`pc`, `w64`) is

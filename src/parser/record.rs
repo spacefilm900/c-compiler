@@ -111,6 +111,28 @@ impl Parser<'_> {
             align = align.max(extra);
             size = size.div_ceil(u64::from(align)) * u64::from(align);
         }
+        for (field, place) in fields.iter().zip(&places) {
+            if field.ty.is_atomic() {
+                let need = field.ty.size().unwrap_or(0);
+                // A member at offset `off` in a record of alignment `align`
+                // is guaranteed only `gcd(align, off)` alignment.
+                let guaranteed = gcd_u64(u64::from(align), place.offset);
+                if guaranteed < need {
+                    let name = if field.name.is_empty() {
+                        "member".to_string()
+                    } else {
+                        format!("member '{}'", field.name)
+                    };
+                    return Err(self.error_at(
+                        line,
+                        column,
+                        format!(
+                            "atomic {name} is not aligned to its size ({need} bytes); this compiler only supports lock-free atomics"
+                        ),
+                    ));
+                }
+            }
+        }
         let irregular = places != natural.0 || size != natural.1 || align != natural.2;
         if irregular
             && fields
@@ -616,6 +638,13 @@ impl Parser<'_> {
     /// the width of the declared type. `_Bool` is one bit wide.
     pub(super) fn parse_bit_width(&mut self, ty: &CType, named: bool) -> Result<u32, Diagnostic> {
         let colon = self.advance();
+        if ty.is_atomic() {
+            return Err(self.error_at(
+                colon.line,
+                colon.column,
+                "bit-field cannot have an atomic type",
+            ));
+        }
         let Some(integer) = ty.unqualified().as_integer() else {
             return Err(self.error_at(
                 colon.line,
@@ -1044,4 +1073,11 @@ fn attributed_layout_spec(
             }
         })
         .collect()
+}
+
+fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
 }

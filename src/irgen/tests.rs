@@ -1726,3 +1726,403 @@ fn computed_goto_vla_object_address_is_valid_llvm() {
     let ir = gnu_ir(src);
     assert_eq!(run_binary(&ir).0, 7);
 }
+
+#[test]
+fn atomic_load_store_ir_is_seq_cst() {
+    let ir = crate::compile_to_ir(
+        "_Atomic int x; int main(void) { x = 7; return x; }\n",
+        "atomic.c",
+    )
+    .unwrap();
+    assert!(ir.contains("store atomic i32"), "{ir}");
+    assert!(ir.contains("load atomic i32"), "{ir}");
+    assert!(ir.contains("seq_cst"), "{ir}");
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn atomic_load_store_and_rmw() {
+    let src = r#"
+_Atomic int x;
+int main(void) {
+    x = 10;
+    x += 3;
+    ++x;
+    x--;
+    return x;
+}
+"#;
+    let ir = crate::compile_to_ir(src, "atomic.c").unwrap();
+    assert!(ir.contains("atomicrmw"), "{ir}");
+    assert_eq!(run_binary(&ir).0, 13);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn atomic_pointer_and_postfix() {
+    let src = r#"
+int main(void) {
+    int a[4] = {1, 2, 3, 4};
+    _Atomic(int *) p = a;
+    int *old = p++;
+    return old[0] + p[0];
+}
+"#;
+    let ir = crate::compile_to_ir(src, "atomic.c").unwrap();
+    assert_eq!(run_binary(&ir).0, 1 + 2);
+}
+
+#[test]
+fn stdatomic_header_ir_orders_and_fences() {
+    let ir = crate::compile_to_ir(
+        "#include <stdatomic.h>\n         atomic_int x;\n         int main(void) {\n             atomic_store_explicit(&x, 1, memory_order_relaxed);\n             int v = atomic_load_explicit(&x, memory_order_acquire);\n             v += (int)atomic_fetch_add_explicit(&x, 2, memory_order_release);\n             atomic_thread_fence(memory_order_seq_cst);\n             atomic_signal_fence(memory_order_acq_rel);\n             return v;\n         }\n",
+        "atomic.c",
+    )
+    .unwrap();
+    let store = ir
+        .lines()
+        .find(|l| l.contains("store atomic i32"))
+        .expect("store");
+    let load = ir
+        .lines()
+        .find(|l| l.contains("load atomic i32"))
+        .expect("load");
+    let rmw = ir.lines().find(|l| l.contains("atomicrmw")).expect("rmw");
+    let sig = ir
+        .lines()
+        .find(|l| l.contains("syncscope(\"singlethread\")"))
+        .expect("signal fence");
+    assert!(store.contains("monotonic"), "{store}");
+    assert!(load.contains("acquire"), "{load}");
+    assert!(rmw.contains("release"), "{rmw}");
+    assert!(ir.contains("fence seq_cst"), "{ir}");
+    assert!(sig.contains("acq_rel"), "{sig}");
+}
+
+#[test]
+fn atomic_load_used_as_variadic_arg_is_materialized() {
+    // A `load atomic` result passed directly to printf was mis-lowered
+    // for the Apple arm64 stand-in. The value must be an ordinary load.
+    let apple = crate::PpOptions {
+        target: crate::Target::Arm64Apple {
+            macos_major: 11,
+            macos_minor: 0,
+        },
+        ..crate::PpOptions::default()
+    };
+    let ir = crate::compile_with(
+        "int printf(const char *, ...);\n         int main(void) {\n             _Atomic int x;\n             x = 7;\n             return printf(\"%d\\n\", x);\n         }\n",
+        "atomic.c",
+        &apple,
+    )
+    .unwrap();
+    let call = ir
+        .lines()
+        .find(|line| line.contains("call") && line.contains("@printf"))
+        .unwrap_or("");
+    assert!(call.contains("i32 %"), "{ir}");
+    assert!(!call.contains("load atomic"), "{ir}");
+    assert!(
+        ir.contains("load atomic") && ir.contains("= load i32, ptr"),
+        "{ir}"
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn stdatomic_header_ops() {
+    let src = r#"
+#include <stdatomic.h>
+int main(void) {
+    atomic_int x;
+    atomic_init(&x, 10);
+    atomic_store(&x, 4);
+    int v = atomic_load(&x);
+    int e = 4;
+    if (!atomic_compare_exchange_strong(&x, &e, 7))
+        return 1;
+    int old = atomic_exchange(&x, 1);
+    old += atomic_fetch_add(&x, 3);
+    old += atomic_fetch_or(&x, 8);
+    old += atomic_fetch_and(&x, 15);
+    old += atomic_fetch_xor(&x, 1);
+    atomic_flag f = ATOMIC_FLAG_INIT;
+    int set = atomic_flag_test_and_set(&f);
+    atomic_flag_clear(&f);
+    int set2 = atomic_flag_test_and_set_explicit(&f, memory_order_relaxed);
+    return (v == 4 && old == 36 && set == 0 && set2 == 0 && atomic_load(&x) == 13) ? 0 : 1;
+}
+"#;
+    let ir = crate::compile_to_ir(src, "atomic.c").unwrap();
+    assert!(ir.contains("cmpxchg"), "{ir}");
+    assert_eq!(run_binary(&ir).0, 0);
+}
+
+#[test]
+fn atomic_record_init_uses_seq_cst_load() {
+    let ir = crate::compile_to_ir(
+        "struct S { int n; int m; }; _Atomic struct S x; int main(void) { struct S y = x; return y.n; }\n",
+        "atomic.c",
+    )
+    .unwrap();
+    assert!(ir.contains("load atomic"), "{ir}");
+}
+
+#[test]
+fn atomic_record_init_from_plain_uses_source_align() {
+    let ir = crate::compile_to_ir(
+        "struct S { int a, b; }; void f(void) { struct S s = {1, 2}; _Atomic struct S x = s; (void)x; }\n",
+        "atomic.c",
+    )
+    .unwrap();
+    let load = ir
+        .lines()
+        .find(|l| l.contains("load i64") && !l.contains("atomic"))
+        .unwrap_or_else(|| panic!("plain source load in {ir}"));
+    assert!(load.contains("align 4"), "{load}\n{ir}");
+    assert!(!load.contains("align 8"), "{load}\n{ir}");
+    let store = ir
+        .lines()
+        .find(|l| l.contains("store atomic"))
+        .unwrap_or_else(|| panic!("atomic store in {ir}"));
+    assert!(store.contains("align 8"), "{store}\n{ir}");
+}
+
+#[test]
+fn atomic_fetch_add_pointer_is_not_inbounds() {
+    let ir = crate::compile_to_ir(
+        "#include <stdatomic.h>\nint a[1]; int main(void) { _Atomic(int *) p = a; (void)atomic_fetch_add(&p, 2); return 0; }\n",
+        "atomic.c",
+    )
+    .unwrap();
+    let gep = ir
+        .lines()
+        .find(|l| l.contains("getelementptr"))
+        .unwrap_or_else(|| panic!("gep in {ir}"));
+    assert!(!gep.contains("inbounds"), "{gep}");
+}
+
+#[test]
+fn atomic_fetch_add_sub_pointer_to_vla_is_not_inbounds() {
+    let ir = crate::compile_to_ir(
+        r#"#include <stdatomic.h>
+void f(int n) {
+    typedef int A[n];
+    _Atomic(A *) p;
+    (void)atomic_fetch_add(&p, 2);
+    (void)atomic_fetch_sub(&p, 1);
+}
+"#,
+        "atomic.c",
+    )
+    .unwrap();
+    let geps: Vec<&str> = ir.lines().filter(|l| l.contains("getelementptr")).collect();
+    assert!(
+        geps.len() >= 2,
+        "expected fetch-add and fetch-sub GEPs in {ir}"
+    );
+    for gep in &geps {
+        assert!(!gep.contains("inbounds"), "{gep}\n{ir}");
+    }
+}
+
+#[test]
+fn atomic_order_cast_and_side_effects() {
+    let ir = crate::compile_to_ir(
+        r#"#include <stdatomic.h>
+int main(void) {
+    atomic_int x = 0;
+    int count = 0;
+    (void)atomic_load_explicit(&x, (memory_order)(_Bool)3);
+    atomic_store_explicit(&x, 7, (count++, memory_order_relaxed));
+    atomic_int a[2];
+    atomic_int *p = a;
+    (void)atomic_is_lock_free(p++);
+    return count == 1 && p == a + 1;
+}
+"#,
+        "atomic.c",
+    )
+    .unwrap();
+    let load = ir
+        .lines()
+        .find(|l| l.contains("load atomic"))
+        .expect("load");
+    // (_Bool)3 is 1, consume, lowered as acquire.
+    assert!(load.contains("acquire"), "{load}");
+    // Non-constant order is seq_cst, but the comma must still be evaluated.
+    assert!(ir.contains("store atomic"), "{ir}");
+}
+
+#[test]
+fn atomic_flag_clear_consume_is_relaxed() {
+    let ir = crate::compile_to_ir(
+        "#include <stdatomic.h>\nint main(void) { atomic_flag f = ATOMIC_FLAG_INIT; atomic_flag_clear_explicit(&f, memory_order_consume); return 0; }\n",
+        "atomic.c",
+    )
+    .unwrap();
+    assert!(
+        ir.lines()
+            .any(|l| l.contains("store atomic") && l.contains("monotonic")),
+        "{ir}"
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn atomic_int128_links_without_libatomic() {
+    let ir = crate::compile_to_ir(
+        "_Atomic __int128 x; int main(void) { x = 1; return (int)x; }\n",
+        "atomic.c",
+    )
+    .unwrap();
+    assert!(
+        ir.contains("target-features") && ir.contains("+cx16"),
+        "{ir}"
+    );
+    assert!(!ir.contains("__atomic_"), "{ir}");
+    assert_eq!(run_binary(&ir).0, 1);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn atomic_order_side_effects_run() {
+    let src = r#"
+#include <stdatomic.h>
+int main(void) {
+    atomic_int x = 0;
+    int count = 0;
+    atomic_store_explicit(&x, 7, (count++, memory_order_relaxed));
+    atomic_int a[2];
+    atomic_int *p = a;
+    (void)atomic_is_lock_free(p++);
+    return (count == 1 && p == a + 1 && atomic_load(&x) == 7) ? 0 : 1;
+}
+"#;
+    let ir = crate::compile_to_ir(src, "atomic.c").unwrap();
+    assert_eq!(run_binary(&ir).0, 0);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn atomic_fetch_add_converts_a_floating_operand() {
+    let src = r#"
+#include <stdatomic.h>
+int main(void) {
+    atomic_int x = 4;
+    int old = atomic_fetch_add(&x, 1.5);
+    return (old == 4 && atomic_load(&x) == 5) ? 0 : 1;
+}
+"#;
+    let ir = crate::compile_to_ir(src, "atomic.c").unwrap();
+    assert!(ir.contains("fptosi"), "{ir}");
+    assert_eq!(run_binary(&ir).0, 0);
+}
+
+#[test]
+fn atomic_computed_memory_orders_are_folded() {
+    let ir = crate::compile_to_ir(
+        r#"#include <stdatomic.h>
+int main(void) {
+    atomic_flag f = ATOMIC_FLAG_INIT;
+    atomic_flag_clear_explicit(&f, (memory_order)(1 + 0));
+    atomic_thread_fence((memory_order)(0 + 0));
+    return 0;
+}
+"#,
+        "atomic.c",
+    )
+    .unwrap();
+    assert!(
+        ir.lines()
+            .any(|l| l.contains("store atomic") && l.contains("monotonic")),
+        "{ir}"
+    );
+    assert!(
+        !ir.lines().any(|l| l.trim_start().starts_with("fence")),
+        "{ir}"
+    );
+}
+
+#[test]
+fn cx16_attr_precedes_section_and_comdat() {
+    let section_ir = crate::compile_dialect(
+        "void f(void) __attribute__((section(\".text\")));\nvoid f(void) { _Atomic __int128 x; x = 1; }\n",
+        "atomic.c",
+        &crate::PpOptions::default(),
+        crate::Dialect::Gnu11,
+    )
+    .unwrap()
+    .ir;
+    let def = section_ir
+        .lines()
+        .find(|l| l.starts_with("define") && l.contains("@f"))
+        .unwrap_or_else(|| panic!("define f in {section_ir}"));
+    let feat = def.find("\"target-features\"=\"+cx16\"").expect(def);
+    let section = def.find(" section ").expect(def);
+    assert!(feat < section, "{def}");
+
+    let msvc = crate::PpOptions {
+        target: crate::Target::X86_64Windows { msvc: true },
+        ..crate::PpOptions::default()
+    };
+    let comdat_ir = crate::compile_dialect(
+        "inline void f(void) { _Atomic __int128 x; x = 1; }\n",
+        "atomic.c",
+        &msvc,
+        crate::Dialect::C11,
+    )
+    .unwrap()
+    .ir;
+    let def = comdat_ir
+        .lines()
+        .find(|l| l.starts_with("define") && l.contains("@f"))
+        .unwrap_or_else(|| panic!("define f in {comdat_ir}"));
+    let feat = def.find("\"target-features\"=\"+cx16\"").expect(def);
+    let comdat = def.find(" comdat").expect(def);
+    assert!(feat < comdat, "{def}");
+
+    let agg_ir = crate::compile_dialect(
+        r#"
+struct Pair { long a, b; };
+_Atomic __int128 x;
+struct Pair f(void) __attribute__((section(".text")));
+struct Pair f(void) {
+    x = 1;
+    struct Pair p = {1, 2};
+    return p;
+}
+"#,
+        "atomic.c",
+        &crate::PpOptions::default(),
+        crate::Dialect::Gnu11,
+    )
+    .unwrap()
+    .ir;
+    let def = agg_ir
+        .lines()
+        .find(|l| l.starts_with("define") && l.contains("@f"))
+        .unwrap_or_else(|| panic!("define f in {agg_ir}"));
+    let ret = def.find("{ i64, i64 }").expect(def);
+    let feat = def.find("\"target-features\"=\"+cx16\"").expect(def);
+    let section = def.find(" section ").expect(def);
+    assert!(ret < feat && feat < section, "{def}");
+}

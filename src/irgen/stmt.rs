@@ -31,7 +31,7 @@ impl Gen {
                 if let Some(expr) = expr {
                     if self.ret_ty.unqualified().is_record() {
                         let src_volatile = expr.ty().is_some_and(|ty| ty.is_volatile());
-                        let src = self.record_ptr(expr);
+                        let src = self.record_value_ptr(expr);
                         if self.vla_depth() > 0 {
                             let ret = self.ret_ty.unqualified();
                             let tmp = self.entry_alloca(&ret);
@@ -170,7 +170,7 @@ impl Gen {
         match checked {
             CheckedInit::Scalar(init) => {
                 if decl.ty.is_record() {
-                    let src = self.record_ptr(init);
+                    let src = self.record_value_ptr(init);
                     let src_volatile = init.ty().is_some_and(|ty| ty.is_volatile());
                     self.copy_struct(&decl.ty, &src, &decl.slot, src_volatile);
                     return;
@@ -197,7 +197,7 @@ impl Gen {
                         continue;
                     }
                     if store.ty.is_record() {
-                        let mut src = self.record_ptr(&store.expr);
+                        let mut src = self.record_value_ptr(&store.expr);
                         let mut src_volatile = store.expr.ty().is_some_and(|ty| ty.is_volatile());
                         if stores.len() > 1 {
                             // The source may be an object that a later

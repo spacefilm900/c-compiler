@@ -46,6 +46,7 @@ impl Sema<'_> {
                 format!("variable '{name}' has incomplete type '{}'", ty.display()),
             );
         }
+        self.check_atomic_types(&ty, decl.line, decl.column)?;
         if prebound {
             self.set_global_type(&name, ty.clone());
         } else {
@@ -309,6 +310,19 @@ impl Sema<'_> {
                 );
             }
         }
+        // Diagnose an unsupported atomic parameter or return type in a
+        // prototype as well as in a definition. A prototype may use an
+        // incomplete type.
+        let allow_incomplete = func.body.is_none();
+        self.check_atomic_types_allowing(&func.ret_type, func.line, func.column, allow_incomplete)?;
+        for param in &func.params {
+            self.check_atomic_types_allowing(
+                &param.ty,
+                param.line,
+                param.column,
+                allow_incomplete,
+            )?;
+        }
         // Top-level parameter qualifiers are not part of the function type
         // (C11 6.7.6.3p15). Pointee qualifiers stay, so `const char *` and
         // `char *` are different types.
@@ -394,6 +408,7 @@ impl Sema<'_> {
             // The parameter is not in scope in its own declarator (C11 6.2.1p7),
             // so the bound is checked before the current name is inserted.
             self.check_vla_sizes(&param.unadjusted, param.line, param.column)?;
+            self.check_atomic_types(&param.ty, param.line, param.column)?;
             self.insert(Symbol::Var(VarSym {
                 name,
                 slot: param.slot.clone(),
@@ -668,6 +683,7 @@ impl Sema<'_> {
     /// whether or not the earlier one has linkage (C11 6.7p3).
     pub(super) fn declare_auto(&mut self, decl: &mut VarDecl) -> Result<(), Diagnostic> {
         self.check_vla_sizes(&decl.ty, decl.line, decl.column)?;
+        self.check_atomic_types(&decl.ty, decl.line, decl.column)?;
         if let Some(existing) = self.lookup_local(&decl.name).cloned() {
             let message = match existing {
                 Symbol::Func(_) => {
@@ -713,6 +729,7 @@ impl Sema<'_> {
     /// object, and the initializer is required to be constant (C11 6.7.9).
     /// The object is initialized once, before startup, not on each entry.
     pub(super) fn declare_static_local(&mut self, decl: &mut VarDecl) -> Result<(), Diagnostic> {
+        self.check_atomic_types(&decl.ty, decl.line, decl.column)?;
         if self.lookup_local(&decl.name).is_some() {
             return self.err(
                 decl.line,
@@ -782,6 +799,7 @@ impl Sema<'_> {
     /// cannot mix linkage and no linkage (C11 6.7p3). An initializer is
     /// forbidden (C11 6.7.9p5).
     pub(super) fn declare_block_extern(&mut self, decl: &mut VarDecl) -> Result<(), Diagnostic> {
+        self.check_atomic_types(&decl.ty, decl.line, decl.column)?;
         if decl.init.is_some() {
             return self.err(
                 decl.line,
@@ -895,6 +913,10 @@ impl Sema<'_> {
                 param.column,
                 format!("redefinition of parameter '{name}'"),
             );
+        }
+        self.check_atomic_types_allowing(&func.ret_type, func.line, func.column, true)?;
+        for param in &func.params {
+            self.check_atomic_types_allowing(&param.ty, param.line, param.column, true)?;
         }
         let params: Vec<CType> = func
             .params
@@ -1154,6 +1176,7 @@ impl Sema<'_> {
     }
 
     pub(super) fn check_typedef(&mut self, decl: &mut VarDecl) -> Result<(), Diagnostic> {
+        self.check_atomic_types(&decl.ty, decl.line, decl.column)?;
         self.check_vla_sizes(&decl.ty, decl.line, decl.column)
     }
 }

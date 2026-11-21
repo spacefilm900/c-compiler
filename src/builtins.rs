@@ -519,6 +519,64 @@ pub fn library(name: &str) -> Option<LibSig> {
     None
 }
 
+/// An inlined atomic builtin used by <stdatomic.h>. These names are this
+/// compiler's own; they are not GCC or Clang builtins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtomicOp {
+    Init,
+    Load,
+    Store,
+    FlagClear,
+    Exchange,
+    CompareExchange,
+    FetchAdd,
+    FetchSub,
+    FetchOr,
+    FetchXor,
+    FetchAnd,
+    IsLockFree,
+    ThreadFence,
+    SignalFence,
+}
+
+impl AtomicOp {
+    pub fn from_name(name: &str) -> Option<AtomicOp> {
+        Some(match name {
+            "__hcc_atomic_init" => AtomicOp::Init,
+            "__hcc_atomic_load" => AtomicOp::Load,
+            "__hcc_atomic_store" => AtomicOp::Store,
+            "__hcc_atomic_flag_clear" => AtomicOp::FlagClear,
+            "__hcc_atomic_exchange" => AtomicOp::Exchange,
+            "__hcc_atomic_compare_exchange" => AtomicOp::CompareExchange,
+            "__hcc_atomic_fetch_add" => AtomicOp::FetchAdd,
+            "__hcc_atomic_fetch_sub" => AtomicOp::FetchSub,
+            "__hcc_atomic_fetch_or" => AtomicOp::FetchOr,
+            "__hcc_atomic_fetch_xor" => AtomicOp::FetchXor,
+            "__hcc_atomic_fetch_and" => AtomicOp::FetchAnd,
+            "__hcc_atomic_is_lock_free" => AtomicOp::IsLockFree,
+            "__hcc_atomic_thread_fence" => AtomicOp::ThreadFence,
+            "__hcc_atomic_signal_fence" => AtomicOp::SignalFence,
+            _ => return None,
+        })
+    }
+
+    /// Number of arguments the builtin takes.
+    pub fn arity(self) -> usize {
+        match self {
+            AtomicOp::Init | AtomicOp::Load | AtomicOp::FlagClear => 2,
+            AtomicOp::Store
+            | AtomicOp::Exchange
+            | AtomicOp::FetchAdd
+            | AtomicOp::FetchSub
+            | AtomicOp::FetchOr
+            | AtomicOp::FetchXor
+            | AtomicOp::FetchAnd => 3,
+            AtomicOp::CompareExchange => 6,
+            AtomicOp::IsLockFree | AtomicOp::ThreadFence | AtomicOp::SignalFence => 1,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -45,6 +45,14 @@ impl Parser<'_> {
                 self.bump();
                 self.note_type(flags, &token)?;
             }
+            TokenKind::KwAtomic => {
+                if self.lookahead() == TokenKind::LParen {
+                    self.parse_atomic_specifier(flags, &token)?;
+                } else {
+                    self.bump();
+                    self.note_atomic(flags, &token)?;
+                }
+            }
             TokenKind::KwConst | TokenKind::KwVolatile => {
                 self.bump();
                 self.note_qualifier(flags, &token)?;
@@ -557,6 +565,81 @@ impl Parser<'_> {
         Ok(())
     }
 
+    pub(super) fn note_atomic(
+        &self,
+        flags: &mut SpecFlags,
+        token: &Token,
+    ) -> Result<(), Diagnostic> {
+        // C11 6.7.3p5: a repeated qualifier behaves as if it appeared once.
+        let _ = token;
+        flags.quals.is_atomic = true;
+        Ok(())
+    }
+
+    /// `_Atomic ( type-name )` (C11 6.7.2.4). The type name shall not be
+    /// an array, a function, an atomic type, or a qualified type.
+    fn parse_atomic_specifier(
+        &mut self,
+        flags: &mut SpecFlags,
+        token: &Token,
+    ) -> Result<(), Diagnostic> {
+        if flags.atomic_spec.is_some()
+            || flags.has_scalar()
+            || flags.bool_ty
+            || flags.float_ty.is_some()
+            || flags.struct_ty.is_some()
+            || flags.enum_ty
+            || flags.enum_base.is_some()
+            || flags.int128
+        {
+            return Err(self.error_at(
+                token.line,
+                token.column,
+                "invalid combination of type specifiers",
+            ));
+        }
+        self.bump(); // _Atomic
+        self.expect_skip(TokenKind::LParen, "'('")?;
+        let ty = self.parse_type_name()?;
+        self.expect_skip(TokenKind::RParen, "')'")?;
+        if ty.is_array() {
+            return Err(self.error_at(
+                token.line,
+                token.column,
+                "atomic type name cannot be an array type",
+            ));
+        }
+        if ty.is_func() {
+            return Err(self.error_at(
+                token.line,
+                token.column,
+                "atomic type name cannot be a function type",
+            ));
+        }
+        if ty.is_atomic() {
+            return Err(self.error_at(
+                token.line,
+                token.column,
+                "atomic type name cannot be an atomic type",
+            ));
+        }
+        if !ty.quals().is_empty() {
+            return Err(self.error_at(
+                token.line,
+                token.column,
+                "atomic type name cannot be a qualified type",
+            ));
+        }
+        flags.any = true;
+        flags.line = token.line;
+        flags.column = token.column;
+        flags.atomic_spec = Some(ty.with_quals(Quals {
+            is_atomic: true,
+            ..Quals::default()
+        }));
+        Ok(())
+    }
+
     pub(super) fn note_type(&self, flags: &mut SpecFlags, token: &Token) -> Result<(), Diagnostic> {
         if flags.has_tagged_type()
             || flags.bool_ty
@@ -638,6 +721,19 @@ impl Parser<'_> {
                 "invalid combination of type specifiers",
             )
         };
+        if let Some(ty) = &flags.atomic_spec {
+            if flags.has_scalar()
+                || flags.bool_ty
+                || flags.float_ty.is_some()
+                || flags.struct_ty.is_some()
+                || flags.enum_ty
+                || flags.enum_base.is_some()
+                || flags.int128
+            {
+                return Err(bad());
+            }
+            return Ok(ty.clone());
+        }
         if let Some(ty) = &flags.struct_ty {
             if flags.has_scalar() || flags.bool_ty || flags.float_ty.is_some() {
                 return Err(bad());

@@ -242,23 +242,27 @@ impl TypeName {
     }
 }
 
-/// `const`, `volatile`, and `restrict` on one type (C11 6.7.3).
+/// `const`, `volatile`, `restrict`, and `_Atomic` on one type (C11 6.7.3).
 ///
 /// The same qualifier twice in one specifier or qualifier list is a
 /// diagnostic. Qualifiers from different lists combine: `const int * const`.
 /// `restrict` is part of the type for compatibility and assignment. It does
 /// not change the IR. It is only meaningful on a pointer; the parser rejects
-/// it on any other type.
+/// it on any other type. `_Atomic` shall not modify an array or function
+/// type (C11 6.7.3p3). The size and alignment of an atomic type need not
+/// match the unqualified type (C11 6.2.5); this compiler uses the same
+/// size and alignment as the non-atomic type for lock-free widths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Quals {
     pub is_const: bool,
     pub is_volatile: bool,
     pub is_restrict: bool,
+    pub is_atomic: bool,
 }
 
 impl Quals {
     pub fn is_empty(self) -> bool {
-        !self.is_const && !self.is_volatile && !self.is_restrict
+        !self.is_const && !self.is_volatile && !self.is_restrict && !self.is_atomic
     }
 
     /// `self` has every qualifier `other` has.
@@ -266,6 +270,7 @@ impl Quals {
         (!other.is_const || self.is_const)
             && (!other.is_volatile || self.is_volatile)
             && (!other.is_restrict || self.is_restrict)
+            && (!other.is_atomic || self.is_atomic)
     }
 
     pub fn merge(self, other: Self) -> Self {
@@ -273,6 +278,7 @@ impl Quals {
             is_const: self.is_const || other.is_const,
             is_volatile: self.is_volatile || other.is_volatile,
             is_restrict: self.is_restrict || other.is_restrict,
+            is_atomic: self.is_atomic || other.is_atomic,
         }
     }
 }
@@ -548,6 +554,42 @@ impl CType {
 
     pub fn is_const(&self) -> bool {
         self.quals().is_const
+    }
+
+    pub fn is_atomic(&self) -> bool {
+        self.quals().is_atomic
+    }
+
+    /// Sizes this compiler lowers with lock-free LLVM atomics, on every
+    /// supported target (x86-64, AArch64, and 64-bit Windows).
+    pub fn is_lock_free_atomic_size(size: u64) -> bool {
+        matches!(size, 1 | 2 | 4 | 8 | 16)
+    }
+
+    /// Whether an atomic type of this shape can be lowered. Non-atomic
+    /// types are not asked this question.
+    pub fn atomic_is_lock_free(&self) -> bool {
+        self.size().is_some_and(CType::is_lock_free_atomic_size)
+    }
+
+    /// Drop `_Atomic` from the type itself, keeping other qualifiers.
+    /// Lvalue conversion also drops `const` / `volatile` / `restrict`
+    /// (C11 6.3.2.1p2); that is [`CType::unqualified`].
+    pub fn non_atomic(&self) -> CType {
+        match self {
+            CType::Qualified(quals, inner) if quals.is_atomic => {
+                let quals = Quals {
+                    is_atomic: false,
+                    ..*quals
+                };
+                if quals.is_empty() {
+                    (**inner).clone()
+                } else {
+                    CType::Qualified(quals, inner.clone())
+                }
+            }
+            other => other.clone(),
+        }
     }
 
     /// Add qualifiers. An array passes them to its element type (C11 6.7.3p9).
@@ -844,10 +886,11 @@ impl CType {
     /// The System V AMD64 ABI gives an array of 16 bytes or more an alignment
     /// of at least 16. Smaller arrays use the element alignment. AAPCS64 and
     /// Apple's arm64 rules have no such boost: an array is aligned as its
-    /// element. Pointers are 8-byte aligned. Qualifiers do not change the
-    /// alignment.
+    /// element. Pointers are 8-byte aligned. `const` and `volatile` do not
+    /// change the alignment. An `_Atomic` type is aligned to at least its
+    /// size so a lock-free LLVM atomic access is well defined.
     pub fn align(&self) -> u32 {
-        match self.peel() {
+        let align = match self.peel() {
             CType::Void | CType::Func(_) => 1,
             CType::Int(ty) => ty.align(),
             CType::Float(kind) => kind.align(),
@@ -863,7 +906,15 @@ impl CType {
             }
             CType::Struct(handle) => handle.align(),
             CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
+        };
+        if self.is_atomic() {
+            if let Some(size) = self.size() {
+                if size > 0 && size <= u32::MAX as u64 {
+                    return align.max(size as u32);
+                }
+            }
         }
+        align
     }
 
     /// Alignment of this type when it is a field.
@@ -874,7 +925,9 @@ impl CType {
     pub fn member_align(&self) -> u32 {
         match self.peel() {
             CType::Array(elem, _) => elem.member_align(),
-            other => other.align(),
+            // Use `self.align()` so an `_Atomic` type keeps its size
+            // alignment; `peel()` would drop that qualifier.
+            _ => self.align(),
         }
     }
 

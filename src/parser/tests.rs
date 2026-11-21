@@ -1609,3 +1609,65 @@ fn variable_length_arrays_parse_and_reject_constraints() {
     assert!(parse_err("void f(void) { (void)_Alignof(int[1.0]); }").contains("integer type"));
     let _ = parsed("void f(int n) { typedef int T[n]; { double n; (void)_Alignof(T); } }\n");
 }
+
+#[test]
+fn atomic_type_qualifier_and_specifier() {
+    let ast = parsed("_Atomic int x; _Atomic(int) y; const _Atomic volatile int z;\n");
+    assert!(ast.contains("x"), "{ast}");
+    assert!(
+        parse_err("_Atomic(const int) x;").contains("qualified type"),
+        "{}",
+        parse_err("_Atomic(const int) x;")
+    );
+    assert!(
+        parse_err("typedef int A[3]; _Atomic(A) x;").contains("array type"),
+        "{}",
+        parse_err("typedef int A[3]; _Atomic(A) x;")
+    );
+    assert!(
+        parse_err("typedef int F(void); _Atomic(F) x;").contains("function type"),
+        "{}",
+        parse_err("typedef int F(void); _Atomic(F) x;")
+    );
+    assert!(
+        parse_err("typedef _Atomic int Ai; _Atomic(Ai) x;").contains("atomic type"),
+        "{}",
+        parse_err("typedef _Atomic int Ai; _Atomic(Ai) x;")
+    );
+    assert!(
+        parse_err("struct S { _Atomic int x : 3; };").contains("atomic type"),
+        "{}",
+        parse_err("struct S { _Atomic int x : 3; };")
+    );
+    let repeated = parsed("_Atomic _Atomic int x; int * _Atomic _Atomic p;\n");
+    assert!(repeated.contains("x"), "{repeated}");
+    assert!(repeated.contains("p"), "{repeated}");
+    // Repeated qualifiers are the same type as a single qualifier (C11 6.7.3p5).
+    assert_eq!(parsed("_Atomic int x; int * _Atomic p;\n"), repeated);
+    assert!(
+        parse_err("int * _Atomic (p);").contains("type specifier"),
+        "{}",
+        parse_err("int * _Atomic (p);")
+    );
+    let shadow = parsed("typedef int T; void f(void) { _Atomic(int) T; }\n");
+    assert!(shadow.contains("T"), "{shadow}");
+}
+
+#[test]
+fn atomic_pointer_and_array_element() {
+    // `_Atomic int a[3]` is an array of atomic int (C11 6.7.3p9), not an
+    // atomic array. `_Atomic(int *)` is an atomic pointer.
+    assert!(parsed("_Atomic int a[3];\n").contains("a"));
+    assert!(parsed("_Atomic(int *) p;\n").contains("p"));
+    assert!(parsed("typedef int F(void); F *_Atomic p;\n").contains("p"));
+    assert!(
+        parse_err("typedef int F(void); _Atomic F x;").contains("function type"),
+        "{}",
+        parse_err("typedef int F(void); _Atomic F x;")
+    );
+    assert!(
+        parse_err("typedef int F(void); int k = sizeof(_Atomic F *);").contains("function type"),
+        "{}",
+        parse_err("typedef int F(void); int k = sizeof(_Atomic F *);")
+    );
+}

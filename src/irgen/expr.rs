@@ -14,7 +14,7 @@ impl Gen {
         // A struct or union value is the address of its object representation.
         // Copies use `llvm.memmove`, so padding bytes are kept.
         if expr.ty().is_some_and(|ty| ty.is_record()) {
-            return Some(self.record_ptr(expr));
+            return Some(self.record_value_ptr(expr));
         }
         match expr {
             Expr::Int { bits, value_ty, .. } => Some(value_ty.format_bits(u128::from(*bits))),
@@ -463,7 +463,7 @@ impl Gen {
             );
         };
         if pointee.is_vla() {
-            return self.gen_vla_gep(&ptr, &idx, &pointee, self.unaligned.contains(&ptr));
+            return self.gen_vla_gep(&ptr, &idx, &pointee, self.unaligned.contains(&ptr), true);
         }
         if pointee.size().is_none() {
             return self.ice_in(
@@ -583,6 +583,9 @@ impl Gen {
 
     pub(super) fn gen_compound_assign(&mut self, op: BinOp, target: &Expr, value: &Expr) -> String {
         let dest = target.ty().expect("lvalue type");
+        if dest.is_atomic() {
+            return self.gen_atomic_compound(op, target, value);
+        }
         let rhs_ty = value.ty().expect("typed");
         // The right-hand side is evaluated before the lvalue is loaded. The
         // address is still computed only once.
@@ -601,7 +604,7 @@ impl Gen {
                 idx = tmp;
             }
             let updated = if pointee.size().is_none() {
-                self.gen_vla_gep(&old, &idx, pointee, self.unaligned.contains(&old))
+                self.gen_vla_gep(&old, &idx, pointee, self.unaligned.contains(&old), true)
             } else {
                 let elem = pointee.ir_type();
                 let updated = self.fresh();
@@ -667,6 +670,9 @@ impl Gen {
 
     pub(super) fn gen_incdec(&mut self, op: IncOp, target: &Expr) -> String {
         let dest = target.ty().expect("lvalue type");
+        if dest.is_atomic() {
+            return self.gen_atomic_incdec(op, target);
+        }
         let addr = self.gen_addr(target);
         let old = if bit_info(target).is_some() {
             self.load_bitfield_at(&addr, target)
@@ -692,7 +698,7 @@ impl Gen {
         if let Some(pointee) = dest.pointee() {
             let step = if op.is_increment() { "1" } else { "-1" };
             let updated = if pointee.size().is_none() {
-                self.gen_vla_gep(&old, step, pointee, self.unaligned.contains(&old))
+                self.gen_vla_gep(&old, step, pointee, self.unaligned.contains(&old), true)
             } else {
                 let elem = pointee.ir_type();
                 let updated = self.fresh();

@@ -715,6 +715,7 @@ pub(super) fn special_token(tok: &PpToken) -> PpToken {
 pub(super) fn is_implemented_builtin(name: &str) -> bool {
     crate::builtins::Inline::from_name(name).is_some()
         || crate::builtins::library(name).is_some()
+        || crate::builtins::AtomicOp::from_name(name).is_some()
         || crate::float::FpFormatBuiltin::from_name(name).is_some()
         || matches!(
             name,

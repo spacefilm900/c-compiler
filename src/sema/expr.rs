@@ -234,6 +234,7 @@ impl Sema<'_> {
             );
         }
         self.check_vla_sizes(&decl.ty, line, column)?;
+        self.check_atomic_types(&decl.ty, line, column)?;
         let unknown_array = matches!(decl.ty.peel(), CType::Array(_, ArrayLen::Incomplete));
         if !decl.ty.is_complete() && !unknown_array {
             return self.err(
@@ -750,7 +751,7 @@ impl Sema<'_> {
             self.decay(value)?;
             let dest = target.ty().expect("lvalue type");
             self.can_assign(&dest, value)?;
-            dest
+            dest.unqualified()
         } else {
             unreachable!("assignment");
         };
@@ -825,7 +826,7 @@ impl Sema<'_> {
             } else {
                 self.require_integer(value)?;
             }
-            dest
+            dest.unqualified()
         } else {
             unreachable!("compound assignment");
         };
@@ -855,7 +856,7 @@ impl Sema<'_> {
             if dest.is_pointer() {
                 self.require_complete_pointee(&dest, line, column)?;
             }
-            dest
+            dest.unqualified()
         } else {
             unreachable!("increment");
         };
@@ -989,6 +990,7 @@ impl Sema<'_> {
             let sized = match operand {
                 SizeofOperand::Type(ty) => {
                     self.check_vla_sizes(ty, line, column)?;
+                    self.check_atomic_types_allowing(ty, line, column, true)?;
                     ty.clone()
                 }
                 SizeofOperand::Expr(inner) => {
@@ -1038,6 +1040,7 @@ impl Sema<'_> {
             let line = *line;
             let column = *column;
             self.check_vla_sizes(&ty_name, line, column)?;
+            self.check_atomic_types_allowing(&ty_name, line, column, true)?;
             self.check_expr(inner)?;
             self.decay(inner)?;
             if ty_name.is_array() {

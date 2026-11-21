@@ -242,6 +242,7 @@ impl Parser<'_> {
         )?;
         self.bind_completed(&declarator.name, &ty, init.as_ref());
         self.reject_bad_restrict(&ty, declarator.line, declarator.column)?;
+        self.reject_bad_atomic(&ty, declarator.line, declarator.column)?;
         let align = self.object_align(specs, &ty, &attrs, false, false, false)?;
         let mut var_attrs = self.var_attrs_of(&attrs)?;
         var_attrs.align = align;
@@ -363,6 +364,7 @@ impl Parser<'_> {
             }
         }
         self.reject_bad_restrict(&ty, declarator.line, declarator.column)?;
+        self.reject_bad_atomic(&ty, declarator.line, declarator.column)?;
         self.reject_vm_decl(
             &ty,
             Storage::Typedef,
@@ -506,6 +508,40 @@ impl Parser<'_> {
                         return Some("restrict requires a pointer to an object type");
                     }
                     Some(_) => {}
+                }
+            }
+            match ty.peel() {
+                CType::Pointer(inner) | CType::Array(inner, _) => walk(inner),
+                CType::Func(func) => walk(&func.ret).or_else(|| func.params.iter().find_map(walk)),
+                _ => None,
+            }
+        }
+        match walk(ty) {
+            Some(message) => Err(self.error_at(line, column, message)),
+            None => Ok(()),
+        }
+    }
+
+    /// `_Atomic` shall not modify an array or function type (C11 6.7.3p3,
+    /// 6.7.3p9). Qualifiers on an array apply to the element instead, which
+    /// `CType::with_quals` already does; this walk catches a typedef of a
+    /// function type written `_Atomic F`.
+    pub(super) fn reject_bad_atomic(
+        &self,
+        ty: &CType,
+        line: usize,
+        column: usize,
+    ) -> Result<(), Diagnostic> {
+        fn walk(ty: &CType) -> Option<&'static str> {
+            if ty.quals().is_atomic {
+                match ty.unqualified() {
+                    CType::Array(_, _) => {
+                        return Some("the _Atomic qualifier cannot modify an array type")
+                    }
+                    CType::Func(_) => {
+                        return Some("the _Atomic qualifier cannot modify a function type")
+                    }
+                    _ => {}
                 }
             }
             match ty.peel() {
@@ -935,6 +971,7 @@ impl Parser<'_> {
             declarator.column,
         )?;
         self.reject_bad_restrict(&ty, declarator.line, declarator.column)?;
+        self.reject_bad_atomic(&ty, declarator.line, declarator.column)?;
         self.bind_completed(&declarator.name, &ty, init.as_ref());
         Ok(VarDecl {
             name: declarator.name,

@@ -118,6 +118,10 @@ impl Sema<'_> {
                     let name = name.clone();
                     return Some(self.check_inline_builtin(expr, &name, inline));
                 }
+                if let Some(op) = crate::builtins::AtomicOp::from_name(name) {
+                    let name = name.clone();
+                    return Some(self.check_atomic_builtin(expr, &name, op));
+                }
                 if self.lookup(name).is_none() {
                     if let Some(sig) = crate::builtins::library(name) {
                         return Some(self.check_library_builtin(expr, sig));

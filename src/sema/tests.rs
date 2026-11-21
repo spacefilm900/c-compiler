@@ -1921,3 +1921,154 @@ fn vla_constraints_and_jumps() {
     sema_ok("void f(int n) { (int (*)[n]){0}; }");
     assert!(sema_err("void f(void) { (int (*)[1.0]){0}; }").contains("integer"));
 }
+
+#[test]
+fn atomic_types_and_lock_free_sizes() {
+    crate::compile_to_ir(
+        "struct Node { struct Node *next; int v; } n; int main(void) { return 0; }\n",
+        "t.c",
+    )
+    .unwrap();
+    crate::compile_to_ir(
+        "_Atomic int x; int main(void) { x = 1; return x; }\n",
+        "t.c",
+    )
+    .unwrap();
+    crate::compile_to_ir(
+        "_Atomic(int *) p; int main(void) { p = 0; return p == 0; }\n",
+        "t.c",
+    )
+    .unwrap();
+    let err = sema_err("struct Big { char a[32]; }; _Atomic struct Big x;\n");
+    assert!(err.contains("not lock-free"), "{err}");
+    let err = sema_err("_Atomic int a[3]; struct S { char a[3]; }; _Atomic struct S x;\n");
+    assert!(err.contains("not lock-free"), "{err}");
+    let err = sema_err("struct Big { char a[24]; }; _Atomic(struct Big) **p;\n");
+    assert!(err.contains("not lock-free"), "{err}");
+    let err = sema_err("struct Big { char a[24]; }; void f(void) { (_Atomic(struct Big)){0}; }\n");
+    assert!(err.contains("not lock-free"), "{err}");
+    let err = sema_err("struct Big { char a[24]; }; void f(_Atomic struct Big x);\n");
+    assert!(err.contains("not lock-free"), "{err}");
+    crate::compile_to_ir("struct Inc; void f(_Atomic struct Inc *p);\n", "t.c").unwrap();
+    let align = crate::compile_to_ir(
+        "struct S { char b[8]; }; int main(void) { return _Alignof(_Atomic struct S); }\n",
+        "t.c",
+    )
+    .unwrap();
+    assert!(align.contains("i64 8"), "{align}");
+    let err = sema_dialect(
+        "struct __attribute__((packed)) W { char c; _Atomic int x; };\n",
+        crate::Dialect::Gnu11,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("not aligned") || err.contains("lock-free"),
+        "{err}"
+    );
+    crate::compile_dialect(
+        "struct __attribute__((packed, aligned(4))) S { _Atomic int x; };\n",
+        "t.c",
+        &crate::PpOptions::default(),
+        crate::Dialect::Gnu11,
+    )
+    .unwrap();
+    let err = sema_dialect(
+        "struct __attribute__((packed, aligned(4))) S { char c; _Atomic int x; };\n",
+        crate::Dialect::Gnu11,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("not aligned") || err.contains("lock-free"),
+        "{err}"
+    );
+    let err = sema_err("struct Big { char a[24]; }; _Atomic(struct Big) *f(void);\n");
+    assert!(err.contains("not lock-free"), "{err}");
+    crate::compile_to_ir("struct Inc; _Atomic struct Inc *f(void);\n", "t.c").unwrap();
+    let err = sema_err("struct Big { char a[24]; }; int n = sizeof(_Atomic(struct Big));\n");
+    assert!(err.contains("not lock-free"), "{err}");
+    let err = crate::compile_to_ir(
+        "#include <stdatomic.h>\nstruct S; int main(void) { _Atomic(struct S *) p; (void)atomic_fetch_add(&p, 1); }\n",
+        "t.c",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("complete object type") || err.contains("incomplete"),
+        "{err}"
+    );
+    let err = crate::compile_to_ir(
+        "_Atomic(int *) p; void f(void) { __hcc_atomic_flag_clear(&p, 0); }\n",
+        "t.c",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("unsigned char") || err.contains("atomic_flag"),
+        "{err}"
+    );
+    let err = crate::compile_to_ir(
+        "_Atomic int x; int f(void) { return __hcc_atomic_load(&x, 18446744073709551615ULL); }\n",
+        "t.c",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("invalid memory_order"), "{err}");
+    let err = sema_err(
+        "struct Big { char a[24]; }; void *p; void f(void) { (void)(_Atomic(struct Big) *)p; }\n",
+    );
+    assert!(err.contains("not lock-free"), "{err}");
+    crate::compile_to_ir(
+        "struct Inc; void *p; void f(void) { (void)(_Atomic struct Inc *)p; }\n",
+        "t.c",
+    )
+    .unwrap();
+}
+
+#[test]
+fn stdatomic_header_and_constraints() {
+    crate::compile_to_ir(
+        "#include <stdatomic.h>\n         atomic_int x;\n         int main(void) {\n             atomic_init(&x, 1);\n             atomic_store(&x, 2);\n             int v = atomic_load(&x);\n             v += atomic_fetch_add(&x, 3);\n             int e = 5;\n             atomic_compare_exchange_strong(&x, &e, 9);\n             atomic_thread_fence(memory_order_seq_cst);\n             atomic_signal_fence(memory_order_acquire);\n             atomic_flag f = ATOMIC_FLAG_INIT;\n             (void)atomic_flag_test_and_set(&f);\n             atomic_flag_clear(&f);\n             return v + atomic_is_lock_free(&x);\n         }\n",
+        "t.c",
+    )
+    .unwrap();
+    let err = crate::compile_to_ir(
+        "#include <stdatomic.h>\nint x; int main(void) { return atomic_load(&x); }\n",
+        "t.c",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("atomic type"), "{err}");
+    let err = crate::compile_to_ir(
+        "#include <stdatomic.h>\natomic_int x; int main(void) { atomic_store_explicit(&x, 1, memory_order_acquire); }\n",
+        "t.c",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("not valid"), "{err}");
+    let err = crate::compile_to_ir(
+        "#include <stdatomic.h>\natomic_int x; int e; int main(void) {\n         atomic_compare_exchange_strong_explicit(&x, &e, 1, memory_order_relaxed, memory_order_acquire); }\n",
+        "t.c",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("stronger"), "{err}");
+    crate::compile_to_ir(
+        "#include <stdatomic.h>\natomic_flag f; int main(void) { atomic_flag_clear_explicit(&f, memory_order_consume); return 0; }\n",
+        "t.c",
+    )
+    .unwrap();
+    let err = crate::compile_to_ir(
+        "#include <stdatomic.h>\natomic_flag f; int main(void) { atomic_flag_clear_explicit(&f, memory_order_acquire); return 0; }\n",
+        "t.c",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("not valid"), "{err}");
+    let err = crate::compile_to_ir(
+        "#include <stdatomic.h>\natomic_int x, e; int main(void) { return atomic_compare_exchange_strong(&x, &e, 1); }\n",
+        "t.c",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("non-atomic"), "{err}");
+}
