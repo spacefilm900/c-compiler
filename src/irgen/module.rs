@@ -512,9 +512,14 @@ fn apply_cx16_attr(line: &str) -> String {
     if line.contains(ATTR) {
         return line.to_string();
     }
-    if let Some(idx) = line.find(" {") {
-        format!("{} {ATTR}{}", &line[..idx], &line[idx..])
-    } else if let Some(idx) = line.find(" comdat") {
+    // LLVM function attributes come before `section` and `comdat`.
+    let mut idx = None;
+    for needle in [" section", " comdat", " {"] {
+        if let Some(found) = line.find(needle) {
+            idx = Some(idx.map_or(found, |cur: usize| cur.min(found)));
+        }
+    }
+    if let Some(idx) = idx {
         format!("{} {ATTR}{}", &line[..idx], &line[idx..])
     } else {
         line.to_string()

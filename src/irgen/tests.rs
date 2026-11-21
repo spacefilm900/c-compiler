@@ -2017,3 +2017,86 @@ int main(void) {
     let ir = crate::compile_to_ir(src, "atomic.c").unwrap();
     assert_eq!(run_binary(&ir).0, 0);
 }
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn atomic_fetch_add_converts_a_floating_operand() {
+    let src = r#"
+#include <stdatomic.h>
+int main(void) {
+    atomic_int x = 4;
+    int old = atomic_fetch_add(&x, 1.5);
+    return (old == 4 && atomic_load(&x) == 5) ? 0 : 1;
+}
+"#;
+    let ir = crate::compile_to_ir(src, "atomic.c").unwrap();
+    assert!(ir.contains("fptosi"), "{ir}");
+    assert_eq!(run_binary(&ir).0, 0);
+}
+
+#[test]
+fn atomic_computed_memory_orders_are_folded() {
+    let ir = crate::compile_to_ir(
+        r#"#include <stdatomic.h>
+int main(void) {
+    atomic_flag f = ATOMIC_FLAG_INIT;
+    atomic_flag_clear_explicit(&f, (memory_order)(1 + 0));
+    atomic_thread_fence((memory_order)(0 + 0));
+    return 0;
+}
+"#,
+        "atomic.c",
+    )
+    .unwrap();
+    assert!(
+        ir.lines()
+            .any(|l| l.contains("store atomic") && l.contains("monotonic")),
+        "{ir}"
+    );
+    assert!(
+        !ir.lines().any(|l| l.trim_start().starts_with("fence")),
+        "{ir}"
+    );
+}
+
+#[test]
+fn cx16_attr_precedes_section_and_comdat() {
+    let section_ir = crate::compile_dialect(
+        "void f(void) __attribute__((section(\".text\")));\nvoid f(void) { _Atomic __int128 x; x = 1; }\n",
+        "atomic.c",
+        &crate::PpOptions::default(),
+        crate::Dialect::Gnu11,
+    )
+    .unwrap()
+    .ir;
+    let def = section_ir
+        .lines()
+        .find(|l| l.starts_with("define") && l.contains("@f"))
+        .unwrap_or_else(|| panic!("define f in {section_ir}"));
+    let feat = def.find("\"target-features\"=\"+cx16\"").expect(def);
+    let section = def.find(" section ").expect(def);
+    assert!(feat < section, "{def}");
+
+    let msvc = crate::PpOptions {
+        target: crate::Target::X86_64Windows { msvc: true },
+        ..crate::PpOptions::default()
+    };
+    let comdat_ir = crate::compile_dialect(
+        "inline void f(void) { _Atomic __int128 x; x = 1; }\n",
+        "atomic.c",
+        &msvc,
+        crate::Dialect::C11,
+    )
+    .unwrap()
+    .ir;
+    let def = comdat_ir
+        .lines()
+        .find(|l| l.starts_with("define") && l.contains("@f"))
+        .unwrap_or_else(|| panic!("define f in {comdat_ir}"));
+    let feat = def.find("\"target-features\"=\"+cx16\"").expect(def);
+    let comdat = def.find(" comdat").expect(def);
+    assert!(feat < comdat, "{def}");
+}

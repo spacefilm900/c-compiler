@@ -671,9 +671,18 @@ impl Gen {
             AtomicOp::FetchAnd => BinOp::BitAnd,
             _ => BinOp::Add,
         };
+        let rhs = self.gen_val(&args[1]);
+        let src_ty = args[1].ty().expect("typed");
+        // C11 7.17.7.5 converts the operand to the non-atomic destination
+        // type (or to `ptrdiff_t` for a pointer).
+        let (rhs, rhs_ty) = if dest.is_pointer() {
+            (rhs, src_ty)
+        } else {
+            let dest_plain = dest.non_atomic();
+            let rhs = self.convert(&rhs, &src_ty, &dest_plain);
+            (rhs, dest_plain)
+        };
         if dest.is_pointer() {
-            let rhs = self.gen_val(&args[1]);
-            let rhs_ty = args[1].ty().expect("typed");
             let (old, _) = self.atomic_rmw_loop_orders(
                 &obj,
                 &addr,
@@ -688,8 +697,6 @@ impl Gen {
             );
             return old;
         }
-        let rhs = self.gen_val(&args[1]);
-        let rhs_ty = args[1].ty().expect("typed");
         if let Some((old, _)) = self.try_integer_atomicrmw(bin, &obj, &addr, &rhs_ty, &rhs, order) {
             return old;
         }
@@ -700,10 +707,7 @@ impl Gen {
             order,
             load_order_for(order),
             false,
-            |gen, old| {
-                let pointee = dest.pointee().expect("pointer dest");
-                gen.atomic_ptr_offset(bin, pointee, old, &rhs_ty, &rhs, false)
-            },
+            |gen, old| gen.atomic_apply_op(bin, &dest, old, &rhs_ty, &rhs, &args[0]),
         );
         old
     }
@@ -751,50 +755,7 @@ fn emit_fence(gen: &mut Gen, args: &[Expr], signal: bool) {
 }
 
 fn fold_order_code(expr: &Expr) -> Option<i64> {
-    match expr {
-        Expr::Int { bits, value_ty, .. } => {
-            let width = value_ty.width();
-            if value_ty.is_signed() {
-                let shift = 128 - width;
-                Some((((*bits as u128) << shift) as i128 >> shift) as i64)
-            } else if *bits <= i64::MAX as u64 {
-                Some(*bits as i64)
-            } else {
-                None
-            }
-        }
-        Expr::Cast { expr, ty_name, .. } => {
-            let value = fold_order_code(expr)?;
-            convert_order_const(value, ty_name)
-        }
-        Expr::Unary {
-            op: UnaryOp::Plus,
-            expr,
-            ..
-        } => fold_order_code(expr),
-        _ => None,
-    }
-}
-
-fn convert_order_const(value: i64, ty: &CType) -> Option<i64> {
-    let ty = ty.unqualified();
-    let Some(int) = ty.as_integer() else {
-        return Some(value);
-    };
-    if int == TypeName::Bool {
-        return Some(if value != 0 { 1 } else { 0 });
-    }
-    let width = int.width();
-    if width == 0 || width >= 64 {
-        return Some(value);
-    }
-    if int.is_signed() {
-        let shift = 64 - width;
-        Some((value << shift) >> shift)
-    } else {
-        let mask = (1i64 << width) - 1;
-        Some(value & mask)
-    }
+    crate::sema::const_i64(expr)
 }
 
 fn order_from_expr(expr: &Expr) -> i64 {

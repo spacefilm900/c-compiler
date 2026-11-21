@@ -42,6 +42,11 @@ use expr::*;
 use image::*;
 use init::*;
 
+/// Integer constant value of `expr`, when the semantic evaluator can fold it.
+pub(crate) fn const_i64(expr: &Expr) -> Option<i64> {
+    const_index(expr).ok()
+}
+
 pub fn analyze(unit: &mut TranslationUnit, filename: &str) -> Result<(), Diagnostic> {
     analyze_tokens(unit, filename, &[])
 }
