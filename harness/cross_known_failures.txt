@@ -7,6 +7,7 @@
 # compiler on that test stays unexpected.
 arm64-apple-macos 112_longdouble.c # test dumps 10 bytes of a long double; on Apple arm64 long double is the 8-byte double, so bytes 8-9 are outside the object
 arm64-apple-macos gnu/both/01_attributes.c # test uses the ELF section name ".data.custom"; Mach-O needs "segment,section", so the Clang oracle rejects it
+arm64-apple-macos hosted/08_threads.c # the stand-in retargets Apple IR to ELF and links glibc pthread; the pthreads shim and thread_local storage fault there (exit -11). Native macOS is the real check.
 x86_64-apple-macos gnu/both/01_attributes.c # test uses the ELF section name ".data.custom"; Mach-O needs "segment,section", so the Clang oracle rejects it
 x86_64-apple-macos hosted/05_tgmath.c oracle # Linux Clang cannot compile the Intel Mac sysroot <tgmath.h> ("Unsupported combination of types")
 x86_64-w64-windows-gnu 44_globals.c # test assumes LP64: `1ul << 40` shifts a 32-bit unsigned long by more than its width (undefined; Clang only warns)
