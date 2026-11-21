@@ -31,14 +31,14 @@ int __hcc_threads_runtime_unused;
 
 struct hcc_tss_key {
     int used;
-    unsigned long long gen;
+    unsigned gen;
     tss_dtor_t dtor;
 };
 
 static struct hcc_tss_key hcc_tss_keys[HCC_TSS_MAX];
 static _Atomic int hcc_tss_init_lock;
 static thread_local void *hcc_tss_values[HCC_TSS_MAX];
-static thread_local unsigned long long hcc_tss_gen[HCC_TSS_MAX];
+static thread_local unsigned hcc_tss_gen[HCC_TSS_MAX];
 static thread_local int hcc_tss_bound;
 static _Atomic int hcc_live_threads = 1;
 
@@ -192,15 +192,6 @@ static void hcc_gate_unlock(mtx_t *mtx) {
     atomic_store_explicit(&mtx->_gate, 0, memory_order_release);
 }
 
-static int hcc_gate_trylock(mtx_t *mtx) {
-    int expected = 0;
-    return atomic_compare_exchange_strong_explicit(
-               &mtx->_gate, &expected, 1,
-               memory_order_acquire, memory_order_relaxed)
-        ? 0
-        : 1;
-}
-
 static void hcc_run_tss_dtors(void) {
     int i, k;
     if (!hcc_tss_bound) {
@@ -211,7 +202,7 @@ static void hcc_run_tss_dtors(void) {
         for (k = 0; k < HCC_TSS_MAX; k++) {
             void *val;
             tss_dtor_t dtor;
-            unsigned long long gen;
+            unsigned gen;
             hcc_tss_lock();
             if (!hcc_tss_keys[k].used) {
                 hcc_tss_unlock();
@@ -532,14 +523,8 @@ void mtx_destroy(mtx_t *mtx) {
     (void)mtx;
 }
 
-static int hcc_mtx_try_own(mtx_t *mtx, unsigned long long self, int try_gate) {
-    if (try_gate) {
-        if (hcc_gate_trylock(mtx) != 0) {
-            return thrd_busy;
-        }
-    } else {
-        hcc_gate_lock(mtx);
-    }
+static int hcc_mtx_try_own(mtx_t *mtx, unsigned long long self) {
+    hcc_gate_lock(mtx);
     if ((mtx->_type & mtx_recursive) && mtx->_count > 0 && mtx->_owner == self) {
         mtx->_count++;
         hcc_gate_unlock(mtx);
@@ -549,14 +534,7 @@ static int hcc_mtx_try_own(mtx_t *mtx, unsigned long long self, int try_gate) {
     if (hcc_trylock_inner(mtx) != 0) {
         return thrd_busy;
     }
-    if (try_gate) {
-        if (hcc_gate_trylock(mtx) != 0) {
-            hcc_unlock_inner(mtx);
-            return thrd_busy;
-        }
-    } else {
-        hcc_gate_lock(mtx);
-    }
+    hcc_gate_lock(mtx);
     mtx->_owner = self;
     mtx->_count = 1;
     hcc_gate_unlock(mtx);
@@ -570,7 +548,7 @@ static int hcc_mtx_acquire(mtx_t *mtx, int try_only) {
         return thrd_error;
     }
     for (;;) {
-        r = hcc_mtx_try_own(mtx, self, try_only);
+        r = hcc_mtx_try_own(mtx, self);
         if (r == thrd_success) {
             return thrd_success;
         }
@@ -616,7 +594,7 @@ int mtx_timedlock(mtx_t *restrict mtx, const struct timespec *restrict ts) {
                 return thrd_timedout;
             }
         }
-        r = hcc_mtx_try_own(mtx, self, 1);
+        r = hcc_mtx_try_own(mtx, self);
         if (r == thrd_success) {
             return thrd_success;
         }
@@ -943,14 +921,8 @@ void mtx_destroy(mtx_t *mtx) {
     }
 }
 
-static int hcc_mtx_try_own(mtx_t *mtx, unsigned long long self, int try_gate) {
-    if (try_gate) {
-        if (hcc_gate_trylock(mtx) != 0) {
-            return thrd_busy;
-        }
-    } else {
-        hcc_gate_lock(mtx);
-    }
+static int hcc_mtx_try_own(mtx_t *mtx, unsigned long long self) {
+    hcc_gate_lock(mtx);
     if ((mtx->_type & mtx_recursive) && mtx->_count > 0 && mtx->_owner == self) {
         mtx->_count++;
         hcc_gate_unlock(mtx);
@@ -960,14 +932,7 @@ static int hcc_mtx_try_own(mtx_t *mtx, unsigned long long self, int try_gate) {
     if (hcc_trylock_inner(mtx) != 0) {
         return thrd_busy;
     }
-    if (try_gate) {
-        if (hcc_gate_trylock(mtx) != 0) {
-            hcc_unlock_inner(mtx);
-            return thrd_busy;
-        }
-    } else {
-        hcc_gate_lock(mtx);
-    }
+    hcc_gate_lock(mtx);
     mtx->_owner = self;
     mtx->_count = 1;
     hcc_gate_unlock(mtx);
@@ -981,7 +946,7 @@ static int hcc_mtx_acquire(mtx_t *mtx, int try_only) {
         return thrd_error;
     }
     for (;;) {
-        r = hcc_mtx_try_own(mtx, self, try_only);
+        r = hcc_mtx_try_own(mtx, self);
         if (r == thrd_success) {
             return thrd_success;
         }
@@ -1026,7 +991,7 @@ int mtx_timedlock(mtx_t *restrict mtx, const struct timespec *restrict ts) {
                 return thrd_timedout;
             }
         }
-        r = hcc_mtx_try_own(mtx, self, 1);
+        r = hcc_mtx_try_own(mtx, self);
         if (r == thrd_success) {
             return thrd_success;
         }
@@ -1178,6 +1143,9 @@ int tss_create(tss_t *key, tss_dtor_t dtor) {
     hcc_tss_lock();
     for (i = 0; i < HCC_TSS_MAX; i++) {
         if (!hcc_tss_keys[i].used) {
+            if (hcc_tss_keys[i].gen == 0xffffffffu) {
+                continue;
+            }
             hcc_tss_keys[i].used = 1;
             hcc_tss_keys[i].gen++;
             if (hcc_tss_keys[i].gen == 0) {
@@ -1200,12 +1168,14 @@ void tss_delete(tss_t key) {
     hcc_tss_lock();
     hcc_tss_keys[key].used = 0;
     hcc_tss_keys[key].dtor = 0;
-    hcc_tss_keys[key].gen++;
+    if (hcc_tss_keys[key].gen != 0xffffffffu) {
+        hcc_tss_keys[key].gen++;
+    }
     hcc_tss_unlock();
 }
 
 void *tss_get(tss_t key) {
-    unsigned long long gen;
+    unsigned gen;
     if (key >= (tss_t)HCC_TSS_MAX) {
         return 0;
     }
@@ -1223,7 +1193,7 @@ void *tss_get(tss_t key) {
 }
 
 int tss_set(tss_t key, void *val) {
-    unsigned long long gen;
+    unsigned gen;
     if (key >= (tss_t)HCC_TSS_MAX) {
         return thrd_error;
     }
