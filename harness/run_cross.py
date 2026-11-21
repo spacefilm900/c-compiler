@@ -33,8 +33,16 @@ in both IR files to a small Apple-convention stdio shim
 (harness/arm64/apple_stdio_shim.c) that formats each conversion through
 fixed-argument helpers compiled for Linux (harness/arm64/linux_fmt_helpers.c).
 long double is double on Apple arm64, so glibc's long double functions do
-not match; harness/cross_known_failures.txt lists what that excludes. What
-this proxy cannot show — Mach-O linking, the macOS SDK headers, and the
+not match; harness/cross_known_failures.txt lists what that excludes. The
+same proxy cannot use Darwin thread-local storage against glibc: clang
+--target=arm64-apple-darwin-elf emits a two-relocation R_AARCH64_TLSDESC
+sequence that GNU ld does not relax on a static glibc link, and the
+linked code then treats a TLS offset as an absolute address (SIGSEGV).
+IR is therefore compiled with -femulated-tls, so accesses become
+__emutls_get_address (from the AArch64 libgcc already on the static link
+line) while Apple's calling convention is unchanged. A real Mac uses
+native Darwin TLS; this flag is only for the ELF stand-in. What this
+proxy also cannot show — Mach-O linking, the macOS SDK headers, and the
 macOS C library — needs a real Mac.
 
 x86_64-apple-macos is also a proxy, described in harness/intel_mac_proxy.py:
@@ -163,15 +171,16 @@ class Toolchain:
             cmd.append(f"-std={std}")
         return run(cmd + [str(src), "-o", str(ll)])
 
-    def oracle_obj(self, src, obj, std):
+    def oracle_obj(self, src, obj, std, extra=()):
         """Clang's object for one translation unit."""
+        extra = list(extra)
         if self.windows:
             return run([CLANG, "-target", self.target, *win.clang_flags(self.target), "-w",
-                        f"-std={std}", "-c", str(src), "-o", str(obj)])
+                        f"-std={std}", *extra, "-c", str(src), "-o", str(obj)])
         if self.intel:
             ll = obj.with_suffix(".clang.ll")
             rc, out, err = run([CLANG, "-target", intel.CLANG_TRIPLE, "-isysroot", str(self.sysroot),
-                                *intel.CLANG_FLAGS, "-w", f"-std={std}", "-S", "-emit-llvm",
+                                *intel.CLANG_FLAGS, "-w", f"-std={std}", *extra, "-S", "-emit-llvm",
                                 str(src), "-o", str(ll)])
             if rc != 0:
                 return rc, out, err
@@ -179,12 +188,12 @@ class Toolchain:
         if self.apple:
             ll = obj.with_suffix(".clang.ll")
             rc, out, err = run([CLANG, "-target", APPLE_TRIPLE, "-isysroot", str(self.sysroot),
-                                *CLANG_APPLE_FIXUPS, "-w", f"-std={std}", "-S", "-emit-llvm",
+                                *CLANG_APPLE_FIXUPS, "-w", f"-std={std}", *extra, "-S", "-emit-llvm",
                                 str(src), "-o", str(ll)])
             if rc != 0:
                 return rc, out, err
             return self.ll_obj(ll, obj)
-        return run(LINK + ["-w", f"-std={std}", "-c", str(src), "-o", str(obj)])
+        return run(LINK + ["-w", f"-std={std}", *extra, "-c", str(src), "-o", str(obj)])
 
     def ll_obj(self, ll, obj):
         """Object file for an IR file from either compiler."""
@@ -202,17 +211,22 @@ class Toolchain:
             text = ll.read_text(errors="replace")
             renamed = ll.with_suffix(".proxy.ll")
             renamed.write_text(SHIMMED.sub(lambda m: "@__apple_" + m.group(1), text))
-            return run([CLANG, f"--target={PROXY_TRIPLE}", "-w", "-c", str(renamed), "-o", str(obj)])
+            # Darwin TLS relocs are not statically linkable against glibc; see
+            # the module docstring. -femulated-tls keeps Apple CC.
+            return run([CLANG, f"--target={PROXY_TRIPLE}", "-femulated-tls", "-w", "-c", str(renamed), "-o", str(obj)])
         return run(LINK + ["-w", "-c", str(ll), "-o", str(obj)])
 
-    def link(self, objs, out):
+    def link(self, objs, out, pthread=False):
         if self.windows:
             # The MSVC linker reports on standard output.
             rc, so, se = run(win.link_command(objs, f"{out}.exe", self.target))
             return rc, so, win.link_messages(so, se)
+        libs = ["-lm"]
+        if pthread:
+            libs.append("-pthread")
         if self.intel:
-            return run([CLANG, *[str(o) for o in objs], "-lm", "-o", str(out)])
-        return run(LINK + [str(o) for o in objs] + self.shims + ["-lm", "-o", str(out)])
+            return run([CLANG, *[str(o) for o in objs], *libs, "-o", str(out)])
+        return run(LINK + [str(o) for o in objs] + self.shims + libs + ["-o", str(out)])
 
     def execute(self, binary):
         if self.windows:
@@ -233,27 +247,72 @@ def build_ours(tc, src, base, std, extra=()):
     return obj, None
 
 
-def build_ref(tc, src, base, std):
+def build_ref(tc, src, base, std, extra=()):
     obj = base.with_suffix(".ref.o")
-    rc, _, err = tc.oracle_obj(src, obj, std)
+    rc, _, err = tc.oracle_obj(src, obj, std, extra)
     if rc != 0:
         return None, f"oracle compile failed ({rc}): {short(err)}"
     return obj, None
 
 
+THREADS_RUNTIME = ROOT / "lib" / "threads.c"
+
+
+def uses_c11_threads(src):
+    return Path(src).name == "08_threads.c"
+
+
+def linux_sysroot_has_threads_h():
+    """Whether the AArch64 Linux headers this run searches include threads.h.
+
+    On a cross host, that is AARCH64_INCLUDE and the
+    /usr/aarch64-linux-gnu/include directory hcc uses. The host's
+    /usr/include is not consulted there; it can have the header while the
+    target sysroot does not. On a native AArch64 host, hcc also searches
+    /usr/include.
+    """
+    dirs = [INCLUDE, Path("/usr/aarch64-linux-gnu/include")]
+    if os.uname().machine == "aarch64":
+        dirs.extend((Path("/usr/include"), Path("/usr/include/aarch64-linux-gnu")))
+    return any((d / "threads.h").is_file() for d in dirs)
+
+
+def needs_threads_runtime(tc, src):
+    if not uses_c11_threads(src):
+        return False
+    if tc.windows or tc.apple or tc.intel:
+        return True
+    return not linux_sysroot_has_threads_h()
+
+
 def test(tc, src, work, std="c11"):
     base = work / f"{src.stem}.{std}"
+    inc = ("-I", str(ROOT / "include")) if needs_threads_runtime(tc, src) else ()
     mine, err = build_ours(tc, src, base, std)
     if err:
         return err
-    ref, oracle_err = build_ref(tc, src, base, std)
+    ours_objs = [mine]
+    if needs_threads_runtime(tc, src):
+        rt, err = build_ours(tc, THREADS_RUNTIME, work / f"{src.stem}.rt.{std}", std)
+        if err:
+            return f"threads runtime: {err}"
+        ours_objs.append(rt)
+    ref, oracle_err = build_ref(tc, src, base, std, inc)
+    ref_objs = [ref] if ref else []
+    if not oracle_err and needs_threads_runtime(tc, src):
+        rto, oerr = build_ref(tc, THREADS_RUNTIME, work / f"{src.stem}.rtref.{std}", std)
+        if oerr:
+            oracle_err = oerr
+        else:
+            ref_objs.append(rto)
+    pthread = uses_c11_threads(src) and not tc.windows
     a = base.with_suffix(".mine")
-    rc, _, e = tc.link([mine], a)
+    rc, _, e = tc.link(ours_objs, a, pthread=pthread)
     if rc != 0:
         return f"ours link failed ({rc}): {short(e)}"
     b = base.with_suffix(".refbin")
     if not oracle_err:
-        rc, _, e = tc.link([ref], b)
+        rc, _, e = tc.link(ref_objs, b, pthread=pthread)
         if rc != 0:
             oracle_err = f"oracle link failed ({rc}): {short(e)}"
     if oracle_err:
@@ -279,6 +338,8 @@ def test(tc, src, work, std="c11"):
         return err
     if got != exp:
         return mismatch(got, exp)
+    if uses_c11_threads(src) and got[0] != 0:
+        return f"ours run failed (exit {got[0]}, expected 0)"
     return None
 
 

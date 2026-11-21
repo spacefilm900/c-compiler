@@ -96,10 +96,11 @@ On the CI Mac, `harness/macos/sdk_headers.sh` includes 26 C11 headers and
 8 POSIX ones (`unistd.h`, `fcntl.h`, `dirent.h`, `sys/types.h`,
 `sys/stat.h`, `sys/time.h`, `sys/wait.h`, `pthread.h`) one at a time, in
 both `-std=c11` and `-std=gnu11`. All compile except `<tgmath.h>` and
-`<uchar.h>`. `<complex.h>` and `<threads.h>` are not
-checked: this compiler has no complex types or C11 threads (it
-defines `__STDC_NO_COMPLEX__` and
-`__STDC_NO_THREADS__`). `<stdatomic.h>` is provided by this compiler.
+`<uchar.h>`. `<complex.h>` is not
+checked: this compiler has no complex types (it defines
+`__STDC_NO_COMPLEX__`). `<stdatomic.h>` and `<threads.h>` are provided
+by this compiler. macOS has no C library `<threads.h>`, so a program
+must compile and link `lib/threads.c` and pass `-pthread`.
 
 - **`<tgmath.h>` and `<complex.h>`** fail: this compiler has no complex
   types (it defines `__STDC_NO_COMPLEX__`), and Apple's `<tgmath.h>`

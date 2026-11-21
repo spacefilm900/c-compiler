@@ -487,7 +487,6 @@ impl Processor {
             ("__STDC_UTF_32__", "1"),
             // C11 6.10.8.3: features this implementation does not provide.
             ("__STDC_NO_COMPLEX__", "1"),
-            ("__STDC_NO_THREADS__", "1"),
             ("__STRICT_ANSI__", "1"),
             ("__CHAR_BIT__", "8"),
             ("__SIZEOF_SHORT__", "2"),
