@@ -353,8 +353,32 @@ fn require_order_ty(sema: &Sema<'_>, expr: &Expr) -> Result<(), Diagnostic> {
     }
 }
 
-fn const_order(expr: &Expr) -> Option<i64> {
-    const_index(expr).ok()
+/// A folded `memory_order` value, a non-constant expression, or a
+/// constant that does not fit in `i64` (and so cannot be 0–5).
+fn const_order(expr: &Expr) -> Result<Option<i64>, u128> {
+    match const_index(expr) {
+        Ok(code) => Ok(Some(code)),
+        Err(ConstError::Overflow(_)) => {
+            let bits = eval_const_expr(expr)
+                .map(|value| value.bits & value.ty.mask())
+                .unwrap_or(0);
+            Err(bits)
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+fn invalid_order_err(
+    sema: &Sema<'_>,
+    expr: &Expr,
+    name: &str,
+    code: impl std::fmt::Display,
+) -> Result<(), Diagnostic> {
+    sema.err(
+        expr.line(),
+        expr.column(),
+        format!("invalid memory_order value {code} in {name}"),
+    )
 }
 
 fn check_named_order(
@@ -363,15 +387,13 @@ fn check_named_order(
     name: &str,
     use_: OrderUse,
 ) -> Result<(), Diagnostic> {
-    let Some(code) = const_order(expr) else {
-        return Ok(());
+    let code = match const_order(expr) {
+        Ok(Some(code)) => code,
+        Ok(None) => return Ok(()),
+        Err(bits) => return invalid_order_err(sema, expr, name, bits),
     };
     let Some(order) = memory_order_name(code) else {
-        return sema.err(
-            expr.line(),
-            expr.column(),
-            format!("invalid memory_order value {code} in {name}"),
-        );
+        return invalid_order_err(sema, expr, name, code);
     };
     let ok = match use_ {
         OrderUse::Load => matches!(code, 0 | 1 | 2 | 5),
@@ -407,15 +429,13 @@ fn check_cmpxchg_orders(
     name: &str,
 ) -> Result<(), Diagnostic> {
     check_named_order(sema, success, name, OrderUse::Rmw)?;
-    let Some(fail) = const_order(failure) else {
-        return Ok(());
+    let fail = match const_order(failure) {
+        Ok(Some(fail)) => fail,
+        Ok(None) => return Ok(()),
+        Err(bits) => return invalid_order_err(sema, failure, name, bits),
     };
     let Some(fail_name) = memory_order_name(fail) else {
-        return sema.err(
-            failure.line(),
-            failure.column(),
-            format!("invalid memory_order value {fail} in {name}"),
-        );
+        return invalid_order_err(sema, failure, name, fail);
     };
     // C11 7.17.7.4p2: failure is not release or acq_rel, and is no
     // stronger than success.
@@ -426,7 +446,7 @@ fn check_cmpxchg_orders(
             format!("memory_order_{fail_name} is not valid as a compare-exchange failure order"),
         );
     }
-    if let Some(succ) = const_order(success) {
+    if let Ok(Some(succ)) = const_order(success) {
         if fail > succ {
             return sema.err(
                 failure.line(),

@@ -2006,6 +2006,22 @@ fn atomic_types_and_lock_free_sizes() {
         err.contains("unsigned char") || err.contains("atomic_flag"),
         "{err}"
     );
+    let err = crate::compile_to_ir(
+        "_Atomic int x; int f(void) { return __hcc_atomic_load(&x, 18446744073709551615ULL); }\n",
+        "t.c",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("invalid memory_order"), "{err}");
+    let err = sema_err(
+        "struct Big { char a[24]; }; void *p; void f(void) { (void)(_Atomic(struct Big) *)p; }\n",
+    );
+    assert!(err.contains("not lock-free"), "{err}");
+    crate::compile_to_ir(
+        "struct Inc; void *p; void f(void) { (void)(_Atomic struct Inc *)p; }\n",
+        "t.c",
+    )
+    .unwrap();
 }
 
 #[test]

@@ -1040,6 +1040,7 @@ impl Sema<'_> {
             let line = *line;
             let column = *column;
             self.check_vla_sizes(&ty_name, line, column)?;
+            self.check_atomic_types_allowing(&ty_name, line, column, true)?;
             self.check_expr(inner)?;
             self.decay(inner)?;
             if ty_name.is_array() {
