@@ -3,8 +3,6 @@
    Enclosing structs and arrays must keep that alignment in their
    layout, sizeof, and element stride. */
 
-#include <stdint.h>
-
 int printf(const char *, ...);
 
 struct Inner {
@@ -40,16 +38,16 @@ int main(void) {
     for (int i = 0; i < 3; ++i) {
         a[i].inner.value = i + 7;
         g[i].inner.value = i + 11;
-        if ((uintptr_t)&a[i].inner.value % 32 != 0)
+        if ((unsigned long)&a[i].inner.value % 32 != 0)
             ok = 0;
-        if ((uintptr_t)&g[i].inner.value % 32 != 0)
+        if ((unsigned long)&g[i].inner.value % 32 != 0)
             ok = 0;
     }
     r.cells[0].value = 21;
     r.cells[1].value = 22;
-    if ((uintptr_t)&r.cells[0].value % 32 != 0)
+    if ((unsigned long)&r.cells[0].value % 32 != 0)
         ok = 0;
-    if ((uintptr_t)&r.cells[1].value % 32 != 0)
+    if ((unsigned long)&r.cells[1].value % 32 != 0)
         ok = 0;
     if (a[2].inner.value != 9)
         ok = 0;
@@ -57,7 +55,7 @@ int main(void) {
         ok = 0;
     if (r.cells[1].value != 22)
         ok = 0;
-    if ((uintptr_t)&a[0] % 32 != 0)
+    if ((unsigned long)&a[0] % 32 != 0)
         ok = 0;
     printf("%d %d %d %d\n", (int)sizeof(struct Outer), (int)_Alignof(struct Outer),
            (int)sizeof(struct Row), ok);
