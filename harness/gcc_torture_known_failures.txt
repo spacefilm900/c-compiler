@@ -27,6 +27,10 @@
 # now pass: 20040411-1.c, 20040811-1.c, 20221006-1.c, 920929-1.c, 970217-1.c,
 # pr22061-2.c, pr43220.c, pr77767.c, vla-dealloc-1.c. 12 VLA-tagged tests
 # remain (GNU nested functions, undeclared alloca, or a VM struct member).
+# After the v0.7 nested over-alignment fix: 1378 passed, 368 known failures,
+# 0 unexpected, 1746 executed, 144 builtins files skipped. 20010904-1.c and
+# 20010904-2.c (a 32-aligned record used as a member and as an array
+# element inside another record) now pass.
 20000223-1.c compile-error
 20000227-1.c compile-error
 20000314-3.c old-style-decl
@@ -40,8 +44,6 @@
 20010209-1.c vla
 20010605-1.c nested-function
 20010605-2.c compile-error
-20010904-1.c runtime
-20010904-2.c runtime
 20010924-1.c flexible-array
 20020107-1.c compile-error
 20020227-1.c compile-error

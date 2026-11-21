@@ -1438,6 +1438,31 @@ fn alignas_is_emitted_on_globals_allocas_and_members() {
 }
 
 #[test]
+fn nested_overaligned_record_uses_byte_offsets_and_full_size() {
+    // _Alignas(32) makes Inner irregular with alignment 32. That LLVM
+    // type is [64 x i8] (no 32-byte integer), so Outer must also be a
+    // correctly sized blob; field GEPs would place inner at offset 1
+    // and give an array stride of 66 (C11 6.2.8, 6.7.5, 6.7.2.1).
+    let source = "struct Inner { char tag; _Alignas(32) int value; };\n\
+                  struct Outer { char tag; struct Inner inner; char end; };\n\
+                  _Static_assert(_Alignof(struct Outer) == 32, \"a\");\n\
+                  _Static_assert(sizeof(struct Outer) == 128, \"s\");\n\
+                  int main(void) {\n\
+                    struct Outer a[3];\n\
+                    a[2].inner.value = 9;\n\
+                    return (int)((unsigned long)&a[2].inner.value % 32);\n\
+                  }\n";
+    let ir = crate::compile_to_ir(source, "alignas-nested.c").unwrap();
+    assert!(ir.contains("%struct.Outer = type { [ 128 x i8 ] }"), "{ir}");
+    assert!(
+        !ir.contains("%struct.Outer = type { i8, %struct.Inner, i8 }"),
+        "{ir}"
+    );
+    assert!(ir.contains("getelementptr inbounds i8"), "{ir}");
+    assert_eq!(run_binary(&ir).0, 0, "{ir}");
+}
+
+#[test]
 fn thread_local_is_emitted_on_globals_and_static_locals() {
     let source = "_Thread_local int g = 3;\n\
                   _Thread_local static int s = 4;\n\
