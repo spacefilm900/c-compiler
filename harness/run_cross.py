@@ -33,8 +33,16 @@ in both IR files to a small Apple-convention stdio shim
 (harness/arm64/apple_stdio_shim.c) that formats each conversion through
 fixed-argument helpers compiled for Linux (harness/arm64/linux_fmt_helpers.c).
 long double is double on Apple arm64, so glibc's long double functions do
-not match; harness/cross_known_failures.txt lists what that excludes. What
-this proxy cannot show — Mach-O linking, the macOS SDK headers, and the
+not match; harness/cross_known_failures.txt lists what that excludes. The
+same proxy cannot use Darwin thread-local storage against glibc: clang
+--target=arm64-apple-darwin-elf emits a two-relocation R_AARCH64_TLSDESC
+sequence that GNU ld does not relax on a static glibc link, and the
+linked code then treats a TLS offset as an absolute address (SIGSEGV).
+IR is therefore compiled with -femulated-tls, so accesses become
+__emutls_get_address (from the AArch64 libgcc already on the static link
+line) while Apple's calling convention is unchanged. A real Mac uses
+native Darwin TLS; this flag is only for the ELF stand-in. What this
+proxy also cannot show — Mach-O linking, the macOS SDK headers, and the
 macOS C library — needs a real Mac.
 
 x86_64-apple-macos is also a proxy, described in harness/intel_mac_proxy.py:
@@ -203,7 +211,9 @@ class Toolchain:
             text = ll.read_text(errors="replace")
             renamed = ll.with_suffix(".proxy.ll")
             renamed.write_text(SHIMMED.sub(lambda m: "@__apple_" + m.group(1), text))
-            return run([CLANG, f"--target={PROXY_TRIPLE}", "-w", "-c", str(renamed), "-o", str(obj)])
+            # Darwin TLS relocs are not statically linkable against glibc; see
+            # the module docstring. -femulated-tls keeps Apple CC.
+            return run([CLANG, f"--target={PROXY_TRIPLE}", "-femulated-tls", "-w", "-c", str(renamed), "-o", str(obj)])
         return run(LINK + ["-w", "-c", str(ll), "-o", str(obj)])
 
     def link(self, objs, out, pthread=False):
