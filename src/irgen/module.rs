@@ -431,37 +431,43 @@ pub(super) fn render_declare(decl: &IrFunc, attrs: Option<&FnAttrs>) -> String {
 /// "Function Attributes"), with a leading space, and the section of a
 /// definition.
 pub(super) fn fn_attr_suffix(attrs: Option<&FnAttrs>, definition: bool) -> String {
+    fn_attrs(attrs, definition, false)
+}
+
+/// Function attributes, then optional `+cx16`, then `section`. LLVM
+/// places function attributes before `section` and `comdat`.
+fn fn_attrs(attrs: Option<&FnAttrs>, definition: bool, cx16: bool) -> String {
     let target_attrs = crate::target::current().function_attrs();
-    let Some(attrs) = attrs else {
-        if definition && !target_attrs.is_empty() {
-            return format!(" {target_attrs}");
-        }
-        return String::new();
-    };
+    const CX16: &str = "\"target-features\"=\"+cx16\"";
     let mut parts = Vec::new();
-    if attrs.noreturn {
-        parts.push("noreturn".to_string());
-    }
-    if attrs.noinline {
-        parts.push("noinline".to_string());
-    } else if attrs.always_inline {
-        parts.push("alwaysinline".to_string());
-    }
-    if attrs.cold {
-        parts.push("cold".to_string());
-    } else if attrs.hot {
-        parts.push("hot".to_string());
-    }
-    if attrs.const_fn {
-        parts.push("memory(none)".to_string());
-    } else if attrs.pure {
-        parts.push("memory(read)".to_string());
+    if let Some(attrs) = attrs {
+        if attrs.noreturn {
+            parts.push("noreturn".to_string());
+        }
+        if attrs.noinline {
+            parts.push("noinline".to_string());
+        } else if attrs.always_inline {
+            parts.push("alwaysinline".to_string());
+        }
+        if attrs.cold {
+            parts.push("cold".to_string());
+        } else if attrs.hot {
+            parts.push("hot".to_string());
+        }
+        if attrs.const_fn {
+            parts.push("memory(none)".to_string());
+        } else if attrs.pure {
+            parts.push("memory(read)".to_string());
+        }
     }
     if definition && !target_attrs.is_empty() {
         parts.push(target_attrs.to_string());
     }
+    if cx16 {
+        parts.push(CX16.to_string());
+    }
     if definition {
-        if let Some(section) = &attrs.section {
+        if let Some(section) = attrs.and_then(|attrs| attrs.section.as_deref()) {
             parts.push(format!("section {}", llvm_string(section)));
         }
     }
@@ -472,8 +478,23 @@ pub(super) fn fn_attr_suffix(attrs: Option<&FnAttrs>, definition: bool) -> Strin
     }
 }
 
-/// Parameter list of a lowered signature. `names` supplies one LLVM name per
-/// C parameter; declarations pass `None`.
+fn define_header(
+    linkage: &str,
+    sig: &FnSig,
+    global: &str,
+    params: &str,
+    attrs: Option<&FnAttrs>,
+    comdat: &str,
+    cx16: bool,
+) -> String {
+    format!(
+        "define {linkage}{}{} {global}({params}){}{comdat} {{",
+        sig.ret_prefix,
+        sig.ret_type,
+        fn_attrs(attrs, true, cx16)
+    )
+}
+
 pub(super) fn sig_params(sig: &FnSig, variadic: bool, names: Option<&[Vec<String>]>) -> String {
     let mut parts = Vec::new();
     if let Some(attrs) = &sig.sret_attrs {
@@ -501,28 +522,6 @@ pub(super) fn param_ir(ty: &CType, name: Option<&str>) -> String {
         (Some(attr), None) => format!("{ir} {attr}"),
         (None, Some(name)) => format!("{ir} {name}"),
         (None, None) => ir,
-    }
-}
-
-/// Attach `+cx16` to an x86-64 function that uses a 16-byte atomic, so
-/// `clang -w output.ll -o program` selects `cmpxchg16b` instead of a
-/// libatomic call.
-fn apply_cx16_attr(line: &str) -> String {
-    const ATTR: &str = "\"target-features\"=\"+cx16\"";
-    if line.contains(ATTR) {
-        return line.to_string();
-    }
-    // LLVM function attributes come before `section` and `comdat`.
-    let mut idx = None;
-    for needle in [" section", " comdat", " {"] {
-        if let Some(found) = line.find(needle) {
-            idx = Some(idx.map_or(found, |cur: usize| cur.min(found)));
-        }
-    }
-    if let Some(idx) = idx {
-        format!("{} {ATTR}{}", &line[..idx], &line[idx..])
-    } else {
-        line.to_string()
     }
 }
 
@@ -596,11 +595,9 @@ pub(super) fn render_function(
     } else {
         ""
     };
-    gen.emit(&format!(
-        "define {linkage}{}{} {global}({params}){}{comdat} {{",
-        sig.ret_prefix,
-        sig.ret_type,
-        fn_attr_suffix(attrs, true)
+    let define_at = gen.lines.len();
+    gen.emit(&define_header(
+        linkage, &sig, &global, &params, attrs, comdat, false,
     ));
     gen.emit("entry:");
     gen.cur = "entry".to_string();
@@ -681,12 +678,7 @@ pub(super) fn render_function(
         return Err(ice);
     }
     if gen.needs_cx16 {
-        for line in &mut gen.lines {
-            if line.starts_with("define ") {
-                *line = apply_cx16_attr(line);
-                break;
-            }
-        }
+        gen.lines[define_at] = define_header(linkage, &sig, &global, &params, attrs, comdat, true);
     }
     gen.emit("}");
     Ok((

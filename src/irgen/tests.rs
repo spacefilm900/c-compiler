@@ -2099,4 +2099,30 @@ fn cx16_attr_precedes_section_and_comdat() {
     let feat = def.find("\"target-features\"=\"+cx16\"").expect(def);
     let comdat = def.find(" comdat").expect(def);
     assert!(feat < comdat, "{def}");
+
+    let agg_ir = crate::compile_dialect(
+        r#"
+struct Pair { long a, b; };
+_Atomic __int128 x;
+struct Pair f(void) __attribute__((section(".text")));
+struct Pair f(void) {
+    x = 1;
+    struct Pair p = {1, 2};
+    return p;
+}
+"#,
+        "atomic.c",
+        &crate::PpOptions::default(),
+        crate::Dialect::Gnu11,
+    )
+    .unwrap()
+    .ir;
+    let def = agg_ir
+        .lines()
+        .find(|l| l.starts_with("define") && l.contains("@f"))
+        .unwrap_or_else(|| panic!("define f in {agg_ir}"));
+    let ret = def.find("{ i64, i64 }").expect(def);
+    let feat = def.find("\"target-features\"=\"+cx16\"").expect(def);
+    let section = def.find(" section ").expect(def);
+    assert!(ret < feat && feat < section, "{def}");
 }
