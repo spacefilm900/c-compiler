@@ -354,16 +354,13 @@ pub(super) fn render_global(global: &IrGlobal, renames: &Renames) -> Result<Stri
 pub(super) fn render_struct(handle: &StructRef) -> String {
     if handle.is_union() || handle.has_bitfield() {
         let size = handle.size().unwrap_or(0);
-        let align = u64::from(handle.align().max(1));
-        let body = if align != 0 && size % align == 0 && matches!(align, 1 | 2 | 4 | 8 | 16) {
-            let elem = match align {
-                1 => "i8",
-                2 => "i16",
-                4 => "i32",
-                8 => "i64",
-                _ => "i128",
-            };
-            format!("[ {} x {elem} ]", size / align)
+        let align = handle.align();
+        let body = if align != 0 && size % u64::from(align) == 0 {
+            if let Some(elem) = crate::ast::llvm_flatten_int(align) {
+                format!("[ {} x {elem} ]", size / u64::from(align))
+            } else {
+                format!("[ {size} x i8 ]")
+            }
         } else {
             format!("[ {size} x i8 ]")
         };

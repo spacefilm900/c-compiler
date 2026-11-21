@@ -673,6 +673,26 @@ impl CType {
         self.struct_ref().is_some_and(StructRef::has_bitfield)
     }
 
+    /// True when this type, used as a member or array element, is lowered
+    /// to an LLVM type whose ABI alignment is weaker than the C alignment.
+    /// A regular enclosing struct would then get the wrong member offsets
+    /// and array stride, because LLVM pads from the element's type, not
+    /// from the C layout.
+    pub fn llvm_type_underrepresents_align(&self) -> bool {
+        if let Some(elem) = self.array_elem() {
+            return elem.llvm_type_underrepresents_align();
+        }
+        let Some(handle) = self.struct_ref() else {
+            return false;
+        };
+        if !handle.is_union() && !handle.has_bitfield() {
+            return false;
+        }
+        let align = handle.align();
+        let size = handle.size().unwrap_or(0);
+        llvm_flatten_int(align).is_none() || (align != 0 && size % u64::from(align) != 0)
+    }
+
     /// A struct with a flexible array member, or a union that contains one
     /// at any depth (C11 6.7.2.1p3). Pointers are not walked: a pointer to
     /// such a struct is an ordinary pointer.

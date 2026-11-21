@@ -159,6 +159,15 @@ impl Parser<'_> {
         if irregular {
             handle.set_irregular();
         }
+        // A flattened member whose LLVM type does not carry the C
+        // alignment (for example _Alignas(32)) would be packed at the
+        // wrong offset if this record stayed a regular LLVM struct.
+        if fields
+            .iter()
+            .any(|field| field.ty.llvm_type_underrepresents_align())
+        {
+            handle.set_irregular();
+        }
         for (field, place) in fields.iter_mut().zip(places) {
             field.offset = place.offset;
             field.bit_offset = place.bit_offset;

@@ -3,6 +3,22 @@
 
 use super::*;
 
+/// Integer type used when a union or irregular record is lowered as a
+/// single LLVM array, so that array still has the record's ABI
+/// alignment. Only 1, 2, 4, 8, and 16 have a matching integer; a
+/// wider alignment (32 and above) is lowered as `[N x i8]` and does
+/// not carry the C alignment.
+pub fn llvm_flatten_int(align: u32) -> Option<&'static str> {
+    match align {
+        1 => Some("i8"),
+        2 => Some("i16"),
+        4 => Some("i32"),
+        8 => Some("i64"),
+        16 => Some("i128"),
+        _ => None,
+    }
+}
+
 /// One field of a completed struct. `offset` is the byte offset from the
 /// start of the object, including the padding the System V AMD64 ABI inserts
 /// so the field is aligned to [`CType::member_align`].
