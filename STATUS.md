@@ -894,7 +894,7 @@ A second adversarial round (HCC_Challenge_v0.7, 65 gated cases plus one non-gati
 
 The enclosing record is now also flattened to a correctly sized byte array, and members are addressed by byte offset. After the fix the same suite is **65/65** at `-O0` and `-O2`. The non-gating probe `p += 2` on `_Atomic(int *)` is accepted and executed by this compiler and by GCC 14, and rejected by Clang 19 (the same divergence as Clang 17 in the release); it is not in the 65-case denominator (6.5.16.2, 6.5.6).
 
-Local results on rustc 1.85.1 and Clang 19.1.7: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **299 passed**, `make` produced `build/hcc`, `python3 harness/run_tests.py` **205/205 passed**. GCC torture was not rerun for this change.
+Local results on rustc 1.85.1 and Clang 19.1.7: `cargo fmt --all -- --check` clean, `cargo clippy --offline --all-targets -- -D warnings` clean, `cargo test --offline --lib` **299 passed**, `make` produced `build/hcc`, `python3 harness/run_tests.py` **205/205 passed**. The same layout fix makes GCC torture `20010904-1.c` and `20010904-2.c` pass (they check the stride of an array of structs that contain a 32-aligned member type), so the execute list is **1378 passed, 368 known failures, 0 unexpected, 1746 executed, 144 builtins files skipped** (was 1376 / 370).
 
 ## Next actions
 
