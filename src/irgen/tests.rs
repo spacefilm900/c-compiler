@@ -1785,12 +1785,24 @@ fn stdatomic_header_ir_orders_and_fences() {
         "atomic.c",
     )
     .unwrap();
-    assert!(ir.contains("store atomic i32"), "{ir}");
-    assert!(ir.contains("monotonic"), "{ir}");
-    assert!(ir.contains("acquire"), "{ir}");
-    assert!(ir.contains("atomicrmw") && ir.contains("release"), "{ir}");
+    let store = ir
+        .lines()
+        .find(|l| l.contains("store atomic i32"))
+        .expect("store");
+    let load = ir
+        .lines()
+        .find(|l| l.contains("load atomic i32"))
+        .expect("load");
+    let rmw = ir.lines().find(|l| l.contains("atomicrmw")).expect("rmw");
+    let sig = ir
+        .lines()
+        .find(|l| l.contains("syncscope(\"singlethread\")"))
+        .expect("signal fence");
+    assert!(store.contains("monotonic"), "{store}");
+    assert!(load.contains("acquire"), "{load}");
+    assert!(rmw.contains("release"), "{rmw}");
     assert!(ir.contains("fence seq_cst"), "{ir}");
-    assert!(ir.contains("syncscope(\"singlethread\")"), "{ir}");
+    assert!(sig.contains("acq_rel"), "{sig}");
 }
 
 #[test]
@@ -1852,5 +1864,112 @@ int main(void) {
 "#;
     let ir = crate::compile_to_ir(src, "atomic.c").unwrap();
     assert!(ir.contains("cmpxchg"), "{ir}");
+    assert_eq!(run_binary(&ir).0, 0);
+}
+
+#[test]
+fn atomic_record_init_uses_seq_cst_load() {
+    let ir = crate::compile_to_ir(
+        "struct S { int n; int m; }; _Atomic struct S x; int main(void) { struct S y = x; return y.n; }\n",
+        "atomic.c",
+    )
+    .unwrap();
+    assert!(ir.contains("load atomic"), "{ir}");
+}
+
+#[test]
+fn atomic_fetch_add_pointer_is_not_inbounds() {
+    let ir = crate::compile_to_ir(
+        "#include <stdatomic.h>\nint a[1]; int main(void) { _Atomic(int *) p = a; (void)atomic_fetch_add(&p, 2); return 0; }\n",
+        "atomic.c",
+    )
+    .unwrap();
+    let gep = ir
+        .lines()
+        .find(|l| l.contains("getelementptr"))
+        .unwrap_or_else(|| panic!("gep in {ir}"));
+    assert!(!gep.contains("inbounds"), "{gep}");
+}
+
+#[test]
+fn atomic_order_cast_and_side_effects() {
+    let ir = crate::compile_to_ir(
+        r#"#include <stdatomic.h>
+int main(void) {
+    atomic_int x = 0;
+    int count = 0;
+    (void)atomic_load_explicit(&x, (memory_order)(_Bool)3);
+    atomic_store_explicit(&x, 7, (count++, memory_order_relaxed));
+    atomic_int a[2];
+    atomic_int *p = a;
+    (void)atomic_is_lock_free(p++);
+    return count == 1 && p == a + 1;
+}
+"#,
+        "atomic.c",
+    )
+    .unwrap();
+    let load = ir
+        .lines()
+        .find(|l| l.contains("load atomic"))
+        .expect("load");
+    // (_Bool)3 is 1, consume, lowered as acquire.
+    assert!(load.contains("acquire"), "{load}");
+    // Non-constant order is seq_cst, but the comma must still be evaluated.
+    assert!(ir.contains("store atomic"), "{ir}");
+}
+
+#[test]
+fn atomic_flag_clear_consume_is_relaxed() {
+    let ir = crate::compile_to_ir(
+        "#include <stdatomic.h>\nint main(void) { atomic_flag f = ATOMIC_FLAG_INIT; atomic_flag_clear_explicit(&f, memory_order_consume); return 0; }\n",
+        "atomic.c",
+    )
+    .unwrap();
+    assert!(
+        ir.lines()
+            .any(|l| l.contains("store atomic") && l.contains("monotonic")),
+        "{ir}"
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn atomic_int128_links_without_libatomic() {
+    let ir = crate::compile_to_ir(
+        "_Atomic __int128 x; int main(void) { x = 1; return (int)x; }\n",
+        "atomic.c",
+    )
+    .unwrap();
+    assert!(
+        ir.contains("target-features") && ir.contains("+cx16"),
+        "{ir}"
+    );
+    assert!(!ir.contains("__atomic_"), "{ir}");
+    assert_eq!(run_binary(&ir).0, 1);
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn atomic_order_side_effects_run() {
+    let src = r#"
+#include <stdatomic.h>
+int main(void) {
+    atomic_int x = 0;
+    int count = 0;
+    atomic_store_explicit(&x, 7, (count++, memory_order_relaxed));
+    atomic_int a[2];
+    atomic_int *p = a;
+    (void)atomic_is_lock_free(p++);
+    return (count == 1 && p == a + 1 && atomic_load(&x) == 7) ? 0 : 1;
+}
+"#;
+    let ir = crate::compile_to_ir(src, "atomic.c").unwrap();
     assert_eq!(run_binary(&ir).0, 0);
 }

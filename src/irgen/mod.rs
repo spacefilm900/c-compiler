@@ -154,6 +154,9 @@ struct Gen {
     needs_nan: bool,
     needs_nanf: bool,
     needs_nanl: bool,
+    /// This function uses a 16-byte atomic on x86-64, so its LLVM
+    /// definition needs `"target-features"="+cx16"`.
+    needs_cx16: bool,
     /// Index in `lines` where the next entry-block alloca is inserted.
     alloca_at: usize,
     /// Set when the C return type is a struct or union.
@@ -235,6 +238,7 @@ impl Gen {
             needs_nan: false,
             needs_nanf: false,
             needs_nanl: false,
+            needs_cx16: false,
             alloca_at: 0,
             ret_agg,
             renames: Renames::new(),

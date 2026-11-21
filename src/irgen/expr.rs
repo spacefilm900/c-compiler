@@ -14,7 +14,7 @@ impl Gen {
         // A struct or union value is the address of its object representation.
         // Copies use `llvm.memmove`, so padding bytes are kept.
         if expr.ty().is_some_and(|ty| ty.is_record()) {
-            return Some(self.record_ptr(expr));
+            return Some(self.record_value_ptr(expr));
         }
         match expr {
             Expr::Int { bits, value_ty, .. } => Some(value_ty.format_bits(u128::from(*bits))),

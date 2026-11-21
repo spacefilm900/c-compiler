@@ -173,6 +173,6 @@ typedef struct {
 #define atomic_flag_clear(obj) \
     atomic_flag_clear_explicit((obj), memory_order_seq_cst)
 #define atomic_flag_clear_explicit(obj, order) \
-    __hcc_atomic_store(&(obj)->__val, 0, (order))
+    __hcc_atomic_flag_clear(&(obj)->__val, (order))
 
 #endif

@@ -504,6 +504,23 @@ pub(super) fn param_ir(ty: &CType, name: Option<&str>) -> String {
     }
 }
 
+/// Attach `+cx16` to an x86-64 function that uses a 16-byte atomic, so
+/// `clang -w output.ll -o program` selects `cmpxchg16b` instead of a
+/// libatomic call.
+fn apply_cx16_attr(line: &str) -> String {
+    const ATTR: &str = "\"target-features\"=\"+cx16\"";
+    if line.contains(ATTR) {
+        return line.to_string();
+    }
+    if let Some(idx) = line.find(" {") {
+        format!("{} {ATTR}{}", &line[..idx], &line[idx..])
+    } else if let Some(idx) = line.find(" comdat") {
+        format!("{} {ATTR}{}", &line[..idx], &line[idx..])
+    } else {
+        line.to_string()
+    }
+}
+
 pub(super) fn render_function(
     func: &FuncDef,
     renames: &Renames,
@@ -657,6 +674,14 @@ pub(super) fn render_function(
     gen.emit_addr_label_trampolines();
     if let Some(ice) = gen.ice.take() {
         return Err(ice);
+    }
+    if gen.needs_cx16 {
+        for line in &mut gen.lines {
+            if line.starts_with("define ") {
+                *line = apply_cx16_attr(line);
+                break;
+            }
+        }
     }
     gen.emit("}");
     Ok((

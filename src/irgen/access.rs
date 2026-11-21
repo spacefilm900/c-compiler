@@ -8,7 +8,7 @@ impl Gen {
     /// source and destination to be the same object.
     pub(super) fn copy_struct(&mut self, ty: &CType, src: &str, dest: &str, src_volatile: bool) {
         if ty.is_atomic() {
-            self.atomic_copy(ty, src, dest, false, src_volatile);
+            self.atomic_copy(ty, src, dest, false, true, src_volatile);
             return;
         }
         let size = ty.size().expect("complete struct");
@@ -23,6 +23,20 @@ impl Gen {
         self.emit(&format!(
             "  call void @llvm.memmove.p0.p0.i64(ptr {dest}, ptr {src}, i64 {size}, i1 {volatile})"
         ));
+    }
+
+    /// Address of a record value. An atomic lvalue is snapshotted with a
+    /// seq_cst load into a fresh, size-aligned slot so later ABI reads
+    /// are not torn. Address-only uses go through [`Self::record_ptr`].
+    pub(super) fn record_value_ptr(&mut self, expr: &Expr) -> String {
+        if !is_atomic_object(expr) {
+            return self.record_ptr(expr);
+        }
+        let ty = expr.ty().expect("typed");
+        let src = self.record_ptr(expr);
+        let tmp = self.entry_alloca_ir(&ty.ir_type(), ty.align());
+        self.atomic_copy(&ty, &src, &tmp, true, false, ty.is_volatile());
+        tmp
     }
 
     /// Pointer to the object representation of a struct or union expression.
@@ -41,19 +55,22 @@ impl Gen {
             | Expr::CompoundLit { .. } => self.gen_addr(expr),
             Expr::VaArg { .. } => self.gen_va_record(expr),
             Expr::Assign { target, value, .. } => {
-                // The right-hand side is evaluated before the destination is
-                // stored, matching scalar assignment.
                 let src_ty = value.ty().expect("typed");
-                let src_volatile = src_ty.is_volatile();
-                let src = self.record_ptr(value);
+                let src = self.record_value_ptr(value);
+                let src_volatile = src_ty.is_volatile() && !is_atomic_object(value);
                 let dest = self.gen_addr(target);
                 let ty = target.ty().expect("struct assignment");
-                if ty.is_atomic() || src_ty.is_atomic() {
-                    self.atomic_copy(&ty, &src, &dest, src_ty.is_atomic(), src_volatile);
+                if ty.is_atomic() {
+                    // The expression value is the bytes stored, not a later
+                    // read of the atomic destination (C11 6.5.16p3).
+                    let result = self.entry_alloca_ir(&ty.ir_type(), ty.align());
+                    self.copy_struct(&ty.non_atomic(), &src, &result, src_volatile);
+                    self.atomic_copy(&ty, &result, &dest, false, true, false);
+                    result
                 } else {
                     self.copy_struct(&ty, &src, &dest, src_volatile);
+                    dest
                 }
-                dest
             }
             Expr::Call { .. } => self.materialize_call(expr),
             Expr::Cond {
@@ -72,12 +89,12 @@ impl Gen {
                 self.br_cond(&cond, &then_label, &else_label);
                 self.start(then_label);
                 let then_volatile = then_expr.ty().is_some_and(|ty| ty.is_volatile());
-                let then_src = self.record_ptr(then_expr);
+                let then_src = self.record_value_ptr(then_expr);
                 self.copy_struct(&ty, &then_src, &tmp, then_volatile);
                 self.br(&end_label);
                 self.start(else_label);
                 let else_volatile = else_expr.ty().is_some_and(|ty| ty.is_volatile());
-                let else_src = self.record_ptr(else_expr);
+                let else_src = self.record_value_ptr(else_expr);
                 self.copy_struct(&ty, &else_src, &tmp, else_volatile);
                 self.br(&end_label);
                 self.start(end_label);
@@ -97,7 +114,7 @@ impl Gen {
                     );
                 };
                 let volatile = last.ty().is_some_and(|ty| ty.is_volatile());
-                let src = self.record_ptr(last);
+                let src = self.record_value_ptr(last);
                 self.ensure_block();
                 // The block's objects end with it; the value is a copy.
                 let tmp = self.entry_alloca(&ty);
@@ -517,5 +534,21 @@ pub(super) fn width_mask_u128(bits: u32) -> u128 {
         u128::MAX
     } else {
         (1u128 << bits) - 1
+    }
+}
+
+/// Whether `expr` names an atomic object, as opposed to a temporary that
+/// already holds a value (a call, an assignment result, a conditional).
+pub(super) fn is_atomic_object(expr: &Expr) -> bool {
+    match expr {
+        Expr::Comma { right, .. } => is_atomic_object(right),
+        Expr::Var { .. }
+        | Expr::Index { .. }
+        | Expr::Unary {
+            op: UnaryOp::Deref, ..
+        }
+        | Expr::Member { .. }
+        | Expr::CompoundLit { .. } => expr.ty().is_some_and(|ty| ty.is_atomic()),
+        _ => false,
     }
 }

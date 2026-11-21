@@ -109,7 +109,7 @@ impl Gen {
             if index < resolved.params.len() {
                 let parts = &sig.params[index];
                 if parts.len() == 1 && matches!(parts[0].kind, PartKind::Byval) {
-                    let src = self.record_ptr(arg);
+                    let src = self.record_value_ptr(arg);
                     rendered.push(format_part("ptr", &parts[0].attrs, Some(&src)));
                     continue;
                 }
@@ -129,7 +129,7 @@ impl Gen {
                     .iter()
                     .any(|part| matches!(part.kind, PartKind::Piece(_)))
                 {
-                    let src = self.record_ptr(arg);
+                    let src = self.record_value_ptr(arg);
                     let align = arg.ty().expect("typed").align();
                     for part in parts {
                         let PartKind::Piece(piece) = &part.kind else {
@@ -205,7 +205,7 @@ impl Gen {
             let value = self.aapcs64_record_arg(arg, &parts[0]);
             return vec![format_part(&parts[0].ir_type, "", Some(&value))];
         }
-        let src = self.record_ptr(arg);
+        let src = self.record_value_ptr(arg);
         let agg =
             crate::abi::classify_for(&ty, crate::abi::AggUse::Param).expect("variadic aggregate");
         let parts = match agg {
@@ -341,7 +341,7 @@ impl Gen {
     /// of a fresh copy for a composite passed by reference.
     pub(super) fn aapcs64_record_arg(&mut self, arg: &Expr, part: &Part) -> String {
         let ty = arg.ty().expect("typed");
-        let src = self.record_ptr(arg);
+        let src = self.record_value_ptr(arg);
         match part.kind {
             PartKind::Coerce { size } => {
                 self.load_coerced(&src, &ty, &part.ir_type, size, ty.is_volatile())

@@ -77,6 +77,7 @@ impl Gen {
         volatile: bool,
         order: &str,
     ) -> String {
+        self.note_wide_atomic_mem(mem);
         let vol = if volatile { " volatile" } else { "" };
         let tmp = self.fresh();
         self.emit(&format!(
@@ -94,6 +95,7 @@ impl Gen {
         volatile: bool,
         order: &str,
     ) {
+        self.note_wide_atomic_mem(mem);
         let vol = if volatile { " volatile" } else { "" };
         self.emit(&format!(
             "  store atomic{vol} {mem} {value}, ptr {slot} {order}, align {align}"
@@ -108,27 +110,41 @@ impl Gen {
         src: &str,
         dest: &str,
         src_atomic: bool,
+        dest_atomic: bool,
         src_volatile: bool,
     ) {
         let size = ty.size().expect("complete");
         let mem = atomic_int_ir(size).expect("lock-free atomic size");
-        let align = ty.align();
+        let src_align = self.access_align(ty, src);
+        let dest_align = self.access_align(ty, dest);
+        if src_atomic && (src_align as u64) < size {
+            self.ice("atomic object is not aligned to its size");
+        }
+        if dest_atomic && (dest_align as u64) < size {
+            self.ice("atomic object is not aligned to its size");
+        }
         let bits = if src_atomic {
-            self.atomic_load_mem(mem, src, align, src_volatile || ty.is_volatile(), "seq_cst")
+            self.atomic_load_mem(
+                mem,
+                src,
+                src_align,
+                src_volatile || ty.is_volatile(),
+                "seq_cst",
+            )
         } else {
             let tmp = self.fresh();
             let vol = if src_volatile { " volatile" } else { "" };
             self.emit(&format!(
-                "  {tmp} = load{vol} {mem}, ptr {src}, align {align}"
+                "  {tmp} = load{vol} {mem}, ptr {src}, align {src_align}"
             ));
             tmp
         };
-        if ty.is_atomic() {
-            self.atomic_store_mem(mem, &bits, dest, align, ty.is_volatile(), "seq_cst");
+        if dest_atomic {
+            self.atomic_store_mem(mem, &bits, dest, dest_align, ty.is_volatile(), "seq_cst");
         } else {
             let vol = if ty.is_volatile() { " volatile" } else { "" };
             self.emit(&format!(
-                "  store{vol} {mem} {bits}, ptr {dest}, align {align}"
+                "  store{vol} {mem} {bits}, ptr {dest}, align {dest_align}"
             ));
         }
     }
@@ -235,6 +251,7 @@ impl Gen {
         let res = self.fresh();
         let vol = if volatile { " volatile" } else { "" };
         let weak_kw = if weak { " weak" } else { "" };
+        self.note_wide_atomic_mem(&mem);
         self.emit(&format!(
             "  {res} = cmpxchg{weak_kw}{vol} ptr {addr}, {mem} {old_bits}, {mem} {new_bits} {success} {failure}"
         ));
@@ -270,7 +287,7 @@ impl Gen {
             let elem = pointee.ir_type();
             let updated = self.fresh();
             self.emit(&format!(
-                "  {updated} = getelementptr inbounds {elem}, ptr {old}, i64 {idx}"
+                "  {updated} = getelementptr {elem}, ptr {old}, i64 {idx}"
             ));
             return updated;
         }
@@ -384,6 +401,7 @@ impl Gen {
         let mem = atomic_mem_ir(dest);
         let vol = if dest.is_volatile() { " volatile" } else { "" };
         let old = self.fresh();
+        self.note_wide_atomic_mem(&mem);
         self.emit(&format!(
             "  {old} = atomicrmw{vol} {inst} ptr {addr}, {mem} {rhs_c} {order}"
         ));
@@ -414,6 +432,7 @@ impl Gen {
                 None
             }
             AtomicOp::IsLockFree => {
+                let _ = self.gen_val(&args[0]);
                 let pointee = args[0]
                     .ty()
                     .and_then(|ty| ty.pointee().cloned())
@@ -434,24 +453,46 @@ impl Gen {
             }
             AtomicOp::Store => {
                 let (obj, addr) = atomic_obj(self, &args[0]);
-                let order = store_llvm_order(&args[2]);
+                let order = self.store_llvm_order(&args[2]);
                 let mem = atomic_mem_ir(&obj);
                 let bits = self.expr_to_atomic_bits(&args[1], &obj, &mem);
-                self.atomic_store_mem(&mem, &bits, &addr, obj.align(), obj.is_volatile(), order);
+                self.atomic_store_mem(
+                    &mem,
+                    &bits,
+                    &addr,
+                    self.access_align(&obj, &addr),
+                    obj.is_volatile(),
+                    order,
+                );
+                None
+            }
+            AtomicOp::FlagClear => {
+                let (obj, addr) = atomic_obj(self, &args[0]);
+                let order = self.flag_clear_llvm_order(&args[1]);
+                let mem = atomic_mem_ir(&obj);
+                self.atomic_store_mem(
+                    &mem,
+                    "0",
+                    &addr,
+                    self.access_align(&obj, &addr),
+                    obj.is_volatile(),
+                    order,
+                );
                 None
             }
             AtomicOp::Load => {
                 let (obj, addr) = atomic_obj(self, &args[0]);
-                let order = load_llvm_order(&args[1]);
+                let order = self.load_llvm_order(&args[1]);
                 Some(self.atomic_load_ordered(&obj, &addr, order))
             }
             AtomicOp::Exchange => {
                 let (obj, addr) = atomic_obj(self, &args[0]);
-                let order = rmw_llvm_order(&args[2]);
+                let order = self.rmw_llvm_order(&args[2]);
                 let mem = atomic_mem_ir(&obj);
                 let bits = self.expr_to_atomic_bits(&args[1], &obj, &mem);
                 let vol = if obj.is_volatile() { " volatile" } else { "" };
                 let old_bits = self.fresh();
+                self.note_wide_atomic_mem(&mem);
                 self.emit(&format!(
                     "  {old_bits} = atomicrmw{vol} xchg ptr {addr}, {mem} {bits} {order}"
                 ));
@@ -479,14 +520,21 @@ impl Gen {
         let mem = atomic_mem_ir(&obj);
         let bits = match op {
             AtomicOp::Load => {
-                let order = load_llvm_order(&args[1]);
-                self.atomic_load_mem(&mem, &addr, obj.align(), obj.is_volatile(), order)
+                let order = self.load_llvm_order(&args[1]);
+                self.atomic_load_mem(
+                    &mem,
+                    &addr,
+                    self.access_align(&obj, &addr),
+                    obj.is_volatile(),
+                    order,
+                )
             }
             AtomicOp::Exchange => {
-                let order = rmw_llvm_order(&args[2]);
+                let order = self.rmw_llvm_order(&args[2]);
                 let new_bits = self.expr_to_atomic_bits(&args[1], &obj, &mem);
                 let vol = if obj.is_volatile() { " volatile" } else { "" };
                 let old_bits = self.fresh();
+                self.note_wide_atomic_mem(&mem);
                 self.emit(&format!(
                     "  {old_bits} = atomicrmw{vol} xchg ptr {addr}, {mem} {new_bits} {order}"
                 ));
@@ -512,8 +560,8 @@ impl Gen {
         if dest_u.is_record() {
             let addr = self.record_ptr(expr);
             let src_ty = expr.ty().expect("typed");
-            let align = dest_u.align();
-            if src_ty.is_atomic() {
+            let align = self.access_align(&src_ty, &addr);
+            if is_atomic_object(expr) {
                 self.atomic_load_mem(mem, &addr, align, src_ty.is_volatile(), "seq_cst")
             } else {
                 let tmp = self.fresh();
@@ -538,8 +586,8 @@ impl Gen {
     fn gen_atomic_cmpxchg(&mut self, args: &[Expr]) -> String {
         let (obj, addr) = atomic_obj(self, &args[0]);
         let expected = self.gen_val(&args[1]);
-        let success = rmw_llvm_order(&args[3]);
-        let failure = failure_llvm_order(&args[4]);
+        let success = self.rmw_llvm_order(&args[3]);
+        let failure = self.failure_llvm_order(&args[4]);
         let weak = fold_order_code(&args[5]).unwrap_or(0) != 0;
         let mem = atomic_mem_ir(&obj);
         let desired = self.expr_to_atomic_bits(&args[2], &obj, &mem);
@@ -560,6 +608,7 @@ impl Gen {
         let vol = if obj.is_volatile() { " volatile" } else { "" };
         let weak_kw = if weak { " weak" } else { "" };
         let res = self.fresh();
+        self.note_wide_atomic_mem(&mem);
         self.emit(&format!(
             "  {res} = cmpxchg{weak_kw}{vol} ptr {addr}, {mem} {cmp}, {mem} {desired} {success} {failure}"
         ));
@@ -584,7 +633,7 @@ impl Gen {
     fn gen_atomic_fetch(&mut self, op: crate::builtins::AtomicOp, args: &[Expr]) -> String {
         use crate::builtins::AtomicOp;
         let (obj, addr) = atomic_obj(self, &args[0]);
-        let order = rmw_llvm_order(&args[2]);
+        let order = self.rmw_llvm_order(&args[2]);
         let dest = obj.unqualified();
         let bin = match op {
             AtomicOp::FetchAdd => BinOp::Add,
@@ -655,7 +704,7 @@ fn atomic_obj(gen: &mut Gen, expr: &Expr) -> (CType, String) {
 }
 
 fn emit_fence(gen: &mut Gen, args: &[Expr], signal: bool) {
-    let order = fence_llvm_order(&args[0]);
+    let order = gen.fence_llvm_order(&args[0]);
     if order.is_empty() {
         return;
     }
@@ -680,7 +729,10 @@ fn fold_order_code(expr: &Expr) -> Option<i64> {
                 None
             }
         }
-        Expr::Cast { expr, .. } => fold_order_code(expr),
+        Expr::Cast { expr, ty_name, .. } => {
+            let value = fold_order_code(expr)?;
+            convert_order_const(value, ty_name)
+        }
         Expr::Unary {
             op: UnaryOp::Plus,
             expr,
@@ -690,10 +742,78 @@ fn fold_order_code(expr: &Expr) -> Option<i64> {
     }
 }
 
+fn convert_order_const(value: i64, ty: &CType) -> Option<i64> {
+    let ty = ty.unqualified();
+    let Some(int) = ty.as_integer() else {
+        return Some(value);
+    };
+    if int == TypeName::Bool {
+        return Some(if value != 0 { 1 } else { 0 });
+    }
+    let width = int.width();
+    if width == 0 || width >= 64 {
+        return Some(value);
+    }
+    if int.is_signed() {
+        let shift = 64 - width;
+        Some((value << shift) >> shift)
+    } else {
+        let mask = (1i64 << width) - 1;
+        Some(value & mask)
+    }
+}
+
 fn order_from_expr(expr: &Expr) -> i64 {
     match fold_order_code(expr) {
         Some(code) if (0..=5).contains(&code) => code,
         _ => 5,
+    }
+}
+
+impl Gen {
+    fn note_wide_atomic_mem(&mut self, mem: &str) {
+        if mem == "i128" && crate::target::current().needs_cx16() {
+            self.needs_cx16 = true;
+        }
+    }
+
+    fn eval_memory_order(&mut self, expr: &Expr) -> i64 {
+        if fold_order_code(expr).is_none() {
+            let _ = self.gen_val(expr);
+        }
+        order_from_expr(expr)
+    }
+
+    fn load_llvm_order(&mut self, expr: &Expr) -> &'static str {
+        llvm_order(self.eval_memory_order(expr), OrderKind::Load)
+    }
+
+    fn store_llvm_order(&mut self, expr: &Expr) -> &'static str {
+        llvm_order(self.eval_memory_order(expr), OrderKind::Store)
+    }
+
+    fn rmw_llvm_order(&mut self, expr: &Expr) -> &'static str {
+        llvm_order(self.eval_memory_order(expr), OrderKind::Rmw)
+    }
+
+    fn failure_llvm_order(&mut self, expr: &Expr) -> &'static str {
+        llvm_order(self.eval_memory_order(expr), OrderKind::Load)
+    }
+
+    fn flag_clear_llvm_order(&mut self, expr: &Expr) -> &'static str {
+        // consume has no load on which to carry a dependency; use relaxed.
+        let code = self.eval_memory_order(expr);
+        llvm_order(if code == 1 { 0 } else { code }, OrderKind::Store)
+    }
+
+    fn fence_llvm_order(&mut self, expr: &Expr) -> &'static str {
+        match self.eval_memory_order(expr) {
+            0 => "",
+            1 | 2 => "acquire",
+            3 => "release",
+            4 => "acq_rel",
+            _ => "seq_cst",
+        }
     }
 }
 
@@ -717,32 +837,6 @@ enum OrderKind {
     Load,
     Store,
     Rmw,
-}
-
-fn load_llvm_order(expr: &Expr) -> &'static str {
-    llvm_order(order_from_expr(expr), OrderKind::Load)
-}
-
-fn store_llvm_order(expr: &Expr) -> &'static str {
-    llvm_order(order_from_expr(expr), OrderKind::Store)
-}
-
-fn rmw_llvm_order(expr: &Expr) -> &'static str {
-    llvm_order(order_from_expr(expr), OrderKind::Rmw)
-}
-
-fn failure_llvm_order(expr: &Expr) -> &'static str {
-    llvm_order(order_from_expr(expr), OrderKind::Load)
-}
-
-fn fence_llvm_order(expr: &Expr) -> &'static str {
-    match order_from_expr(expr) {
-        0 => "",
-        1 | 2 => "acquire",
-        3 => "release",
-        4 => "acq_rel",
-        _ => "seq_cst",
-    }
 }
 
 fn load_order_for(success: &str) -> &'static str {
