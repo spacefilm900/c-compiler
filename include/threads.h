@@ -53,6 +53,7 @@ typedef struct {
     int _type;
     int _count;
     unsigned long long _owner;
+    _Atomic int _gate;
 } mtx_t;
 
 typedef struct {

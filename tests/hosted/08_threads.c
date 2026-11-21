@@ -106,6 +106,9 @@ int main(void) {
     if (thrd_join(tb, &rb) != thrd_success) {
         return 1;
     }
+    if (ra + rb != 5 || (ra != 2 && ra != 3) || (rb != 2 && rb != 3) || ra == rb) {
+        return 1;
+    }
 
     if (mtx_lock(&mtx) != thrd_success) {
         return 1;

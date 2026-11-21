@@ -252,8 +252,16 @@ def uses_c11_threads(src):
     return Path(src).name == "08_threads.c"
 
 
+def linux_sysroot_has_threads_h():
+    return (INCLUDE / "threads.h").is_file()
+
+
 def needs_threads_runtime(tc, src):
-    return uses_c11_threads(src) and (tc.windows or tc.apple or tc.intel)
+    if not uses_c11_threads(src):
+        return False
+    if tc.windows or tc.apple or tc.intel:
+        return True
+    return not linux_sysroot_has_threads_h()
 
 
 def test(tc, src, work, std="c11"):

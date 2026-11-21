@@ -31,17 +31,33 @@ int __hcc_threads_runtime_unused;
 
 struct hcc_tss_key {
     int used;
+    unsigned gen;
     tss_dtor_t dtor;
 };
 
 static struct hcc_tss_key hcc_tss_keys[HCC_TSS_MAX];
 static _Atomic int hcc_tss_init_lock;
 static thread_local void *hcc_tss_values[HCC_TSS_MAX];
+static thread_local unsigned hcc_tss_gen[HCC_TSS_MAX];
 static thread_local int hcc_tss_bound;
+static _Atomic int hcc_live_threads = 1;
+
+#ifdef _WIN32
+#define HCC_THRD_CAP 256
+struct hcc_thrd_rec {
+    unsigned long long id;
+    void *handle;
+    int used;
+};
+
+static struct hcc_thrd_rec hcc_thrds[HCC_THRD_CAP];
+static _Atomic int hcc_thrd_lock;
+#endif
 
 struct hcc_start {
     thrd_start_t func;
     void *arg;
+    _Atomic int ready;
 };
 
 static void hcc_tss_lock(void) {
@@ -61,6 +77,106 @@ static void hcc_tss_unlock(void) {
     atomic_store_explicit(&hcc_tss_init_lock, 0, memory_order_release);
 }
 
+#ifdef _WIN32
+static void hcc_thrd_lock_enter(void) {
+    int expected;
+    for (;;) {
+        expected = 0;
+        if (atomic_compare_exchange_strong_explicit(
+                &hcc_thrd_lock, &expected, 1,
+                memory_order_acquire, memory_order_relaxed)) {
+            return;
+        }
+        thrd_yield();
+    }
+}
+
+static void hcc_thrd_lock_leave(void) {
+    atomic_store_explicit(&hcc_thrd_lock, 0, memory_order_release);
+}
+
+static int hcc_thrd_register(unsigned long long id, void *handle) {
+    int i;
+    hcc_thrd_lock_enter();
+    for (i = 0; i < HCC_THRD_CAP; i++) {
+        if (!hcc_thrds[i].used) {
+            hcc_thrds[i].used = 1;
+            hcc_thrds[i].id = id;
+            hcc_thrds[i].handle = handle;
+            hcc_thrd_lock_leave();
+            return 0;
+        }
+    }
+    hcc_thrd_lock_leave();
+    return -1;
+}
+
+static void *hcc_thrd_lookup(unsigned long long id) {
+    int i;
+    void *h = 0;
+    hcc_thrd_lock_enter();
+    for (i = 0; i < HCC_THRD_CAP; i++) {
+        if (hcc_thrds[i].used && hcc_thrds[i].id == id) {
+            h = hcc_thrds[i].handle;
+            break;
+        }
+    }
+    hcc_thrd_lock_leave();
+    return h;
+}
+
+static void *hcc_thrd_forget(unsigned long long id) {
+    int i;
+    void *h = 0;
+    hcc_thrd_lock_enter();
+    for (i = 0; i < HCC_THRD_CAP; i++) {
+        if (hcc_thrds[i].used && hcc_thrds[i].id == id) {
+            h = hcc_thrds[i].handle;
+            hcc_thrds[i].used = 0;
+            hcc_thrds[i].id = 0;
+            hcc_thrds[i].handle = 0;
+            break;
+        }
+    }
+    hcc_thrd_lock_leave();
+    return h;
+}
+
+#endif
+
+static void hcc_wait_start(struct hcc_start *s) {
+    while (atomic_load_explicit(&s->ready, memory_order_acquire) == 0) {
+        thrd_yield();
+    }
+}
+
+static void hcc_publish_start(struct hcc_start *s) {
+    atomic_store_explicit(&s->ready, 1, memory_order_release);
+}
+
+static void hcc_thread_ended(void) {
+    if (atomic_fetch_sub_explicit(&hcc_live_threads, 1, memory_order_acq_rel) == 1) {
+        exit(EXIT_SUCCESS);
+    }
+}
+
+static void hcc_gate_lock(mtx_t *mtx) {
+    int expected;
+    for (;;) {
+        expected = 0;
+        if (atomic_compare_exchange_strong_explicit(
+                &mtx->_gate, &expected, 1,
+                memory_order_acquire, memory_order_relaxed)) {
+            return;
+        }
+        thrd_yield();
+    }
+}
+
+static void hcc_gate_unlock(mtx_t *mtx) {
+    atomic_store_explicit(&mtx->_gate, 0, memory_order_release);
+}
+
 static void hcc_run_tss_dtors(void) {
     int i, k;
     if (!hcc_tss_bound) {
@@ -71,12 +187,20 @@ static void hcc_run_tss_dtors(void) {
         for (k = 0; k < HCC_TSS_MAX; k++) {
             void *val;
             tss_dtor_t dtor;
+            unsigned gen;
+            hcc_tss_lock();
             if (!hcc_tss_keys[k].used) {
+                hcc_tss_unlock();
                 continue;
             }
             dtor = hcc_tss_keys[k].dtor;
+            gen = hcc_tss_keys[k].gen;
+            hcc_tss_unlock();
+            if (dtor == 0 || hcc_tss_gen[k] != gen) {
+                continue;
+            }
             val = hcc_tss_values[k];
-            if (dtor == 0 || val == 0) {
+            if (val == 0) {
                 continue;
             }
             hcc_tss_values[k] = 0;
@@ -201,15 +325,21 @@ static void hcc_unlock_inner(mtx_t *mtx) {
     ReleaseSRWLockExclusive(hcc_mtx_lock_obj(mtx));
 }
 
+#define HCC_ERROR_TIMEOUT 1460ul
+
 static unsigned int hcc_win_start(void *p) {
     struct hcc_start *s = (struct hcc_start *)p;
-    thrd_start_t func = s->func;
-    void *arg = s->arg;
+    thrd_start_t func;
+    void *arg;
     int res;
+    hcc_wait_start(s);
+    func = s->func;
+    arg = s->arg;
     free(s);
     hcc_tss_bound = 1;
     res = func(arg);
     hcc_run_tss_dtors();
+    hcc_thread_ended();
     return (unsigned int)res;
 }
 
@@ -217,6 +347,7 @@ int thrd_create(thrd_t *thr, thrd_start_t func, void *arg) {
     struct hcc_start *s;
     hcc_handle h;
     unsigned long id;
+    unsigned long err;
     if (thr == 0 || func == 0) {
         return thrd_error;
     }
@@ -226,28 +357,37 @@ int thrd_create(thrd_t *thr, thrd_start_t func, void *arg) {
     }
     s->func = func;
     s->arg = arg;
+    atomic_store_explicit(&s->ready, 0, memory_order_relaxed);
     h = CreateThread(0, 0, hcc_win_start, s, 0, &id);
     if (h == 0) {
+        err = GetLastError();
         free(s);
-        return GetLastError() == 8ul ? thrd_nomem : thrd_error;
+        return err == 8ul ? thrd_nomem : thrd_error;
     }
+    if (hcc_thrd_register((unsigned long long)id, (void *)h) != 0) {
+        /* The worker is already running; still publish so it can start. */
+    }
+    atomic_fetch_add_explicit(&hcc_live_threads, 1, memory_order_relaxed);
     thr->_id = (unsigned long long)id;
     thr->_handle = (void *)h;
+    hcc_publish_start(s);
     return thrd_success;
 }
 
 thrd_t thrd_current(void) {
     thrd_t t;
     t._id = hcc_tid();
-    t._handle = 0;
+    t._handle = hcc_thrd_lookup(t._id);
     return t;
 }
 
 int thrd_detach(thrd_t thr) {
-    if (thr._handle == 0) {
+    void *h = thr._handle ? thr._handle : hcc_thrd_lookup(thr._id);
+    if (h == 0) {
         return thrd_error;
     }
-    return CloseHandle((hcc_handle)thr._handle) ? thrd_success : thrd_error;
+    hcc_thrd_forget(thr._id);
+    return CloseHandle((hcc_handle)h) ? thrd_success : thrd_error;
 }
 
 int thrd_equal(thrd_t thr0, thrd_t thr1) {
@@ -256,6 +396,9 @@ int thrd_equal(thrd_t thr0, thrd_t thr1) {
 
 _Noreturn void thrd_exit(int res) {
     hcc_run_tss_dtors();
+    if (atomic_fetch_sub_explicit(&hcc_live_threads, 1, memory_order_acq_rel) == 1) {
+        exit(EXIT_SUCCESS);
+    }
     ExitThread((unsigned long)(unsigned int)res);
     for (;;) {
     }
@@ -263,37 +406,54 @@ _Noreturn void thrd_exit(int res) {
 
 int thrd_join(thrd_t thr, int *res) {
     unsigned long code;
-    if (thr._handle == 0) {
+    void *h = thr._handle ? thr._handle : hcc_thrd_lookup(thr._id);
+    if (h == 0) {
         return thrd_error;
     }
-    if (WaitForSingleObject((hcc_handle)thr._handle, HCC_INFINITE) != HCC_WAIT_OBJECT_0) {
+    if (WaitForSingleObject((hcc_handle)h, HCC_INFINITE) != HCC_WAIT_OBJECT_0) {
         return thrd_error;
     }
     if (res != 0) {
-        if (!GetExitCodeThread((hcc_handle)thr._handle, &code)) {
-            CloseHandle((hcc_handle)thr._handle);
+        if (!GetExitCodeThread((hcc_handle)h, &code)) {
+            hcc_thrd_forget(thr._id);
+            CloseHandle((hcc_handle)h);
             return thrd_error;
         }
         *res = (int)code;
     }
-    return CloseHandle((hcc_handle)thr._handle) ? thrd_success : thrd_error;
+    hcc_thrd_forget(thr._id);
+    return CloseHandle((hcc_handle)h) ? thrd_success : thrd_error;
 }
 
 int thrd_sleep(const struct timespec *duration, struct timespec *remaining) {
-    unsigned long long ms;
+    struct timespec start, now, deadline;
     (void)remaining;
     if (duration == 0 || duration->tv_sec < 0 || duration->tv_nsec < 0
         || duration->tv_nsec >= 1000000000L) {
         return -2;
     }
-    ms = (unsigned long long)duration->tv_sec * 1000ull
-        + (unsigned long long)((duration->tv_nsec + 999999L) / 1000000L);
-    while (ms > 0) {
-        unsigned long chunk = ms > 0xffffffffull ? 0xfffffffful : (unsigned long)ms;
-        Sleep(chunk);
-        ms -= chunk;
+    hcc_utc_now(&start);
+    deadline.tv_sec = start.tv_sec + duration->tv_sec;
+    deadline.tv_nsec = start.tv_nsec + duration->tv_nsec;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
     }
-    return 0;
+    for (;;) {
+        unsigned long ms;
+        hcc_utc_now(&now);
+        if (hcc_timespec_le(&deadline, &now)) {
+            return 0;
+        }
+        ms = hcc_ms_until(&deadline);
+        if (ms == 0) {
+            return 0;
+        }
+        if (ms >= HCC_INFINITE) {
+            ms = HCC_INFINITE - 1;
+        }
+        Sleep(ms);
+    }
 }
 
 void thrd_yield(void) {
@@ -329,6 +489,7 @@ int mtx_init(mtx_t *mtx, int type) {
     mtx->_type = type;
     mtx->_count = 0;
     mtx->_owner = 0;
+    mtx->_gate = 0;
     return thrd_success;
 }
 
@@ -336,25 +497,47 @@ void mtx_destroy(mtx_t *mtx) {
     (void)mtx;
 }
 
+static int hcc_mtx_try_own(mtx_t *mtx, unsigned long long self) {
+    hcc_gate_lock(mtx);
+    if ((mtx->_type & mtx_recursive) && mtx->_count > 0 && mtx->_owner == self) {
+        mtx->_count++;
+        hcc_gate_unlock(mtx);
+        return thrd_success;
+    }
+    hcc_gate_unlock(mtx);
+    if (hcc_trylock_inner(mtx) != 0) {
+        return thrd_busy;
+    }
+    hcc_gate_lock(mtx);
+    mtx->_owner = self;
+    mtx->_count = 1;
+    hcc_gate_unlock(mtx);
+    return thrd_success;
+}
+
 static int hcc_mtx_acquire(mtx_t *mtx, int try_only) {
     unsigned long long self = hcc_tid();
+    int r;
     if (mtx == 0) {
         return thrd_error;
     }
-    if ((mtx->_type & mtx_recursive) && mtx->_count > 0 && mtx->_owner == self) {
-        mtx->_count++;
-        return thrd_success;
-    }
-    if (try_only) {
-        if (hcc_trylock_inner(mtx) != 0) {
+    for (;;) {
+        r = hcc_mtx_try_own(mtx, self);
+        if (r == thrd_success) {
+            return thrd_success;
+        }
+        if (try_only) {
             return thrd_busy;
         }
-    } else if (hcc_lock_inner(mtx) != 0) {
-        return thrd_error;
+        if (hcc_lock_inner(mtx) != 0) {
+            return thrd_error;
+        }
+        hcc_gate_lock(mtx);
+        mtx->_owner = self;
+        mtx->_count = 1;
+        hcc_gate_unlock(mtx);
+        return thrd_success;
     }
-    mtx->_owner = self;
-    mtx->_count = 1;
-    return thrd_success;
 }
 
 int mtx_lock(mtx_t *mtx) {
@@ -367,6 +550,7 @@ int mtx_trylock(mtx_t *mtx) {
 
 int mtx_timedlock(mtx_t *restrict mtx, const struct timespec *restrict ts) {
     unsigned long long self;
+    int first;
     if (mtx == 0 || ts == 0) {
         return thrd_error;
     }
@@ -374,32 +558,46 @@ int mtx_timedlock(mtx_t *restrict mtx, const struct timespec *restrict ts) {
         return thrd_error;
     }
     self = hcc_tid();
-    if ((mtx->_type & mtx_recursive) && mtx->_count > 0 && mtx->_owner == self) {
-        mtx->_count++;
-        return thrd_success;
-    }
+    first = 1;
     for (;;) {
         struct timespec now;
-        if (hcc_trylock_inner(mtx) == 0) {
-            mtx->_owner = self;
-            mtx->_count = 1;
+        int r;
+        if (!first) {
+            hcc_utc_now(&now);
+            if (hcc_timespec_le(ts, &now)) {
+                return thrd_timedout;
+            }
+        }
+        r = hcc_mtx_try_own(mtx, self);
+        if (r == thrd_success) {
             return thrd_success;
         }
         hcc_utc_now(&now);
         if (hcc_timespec_le(ts, &now)) {
             return thrd_timedout;
         }
+        first = 0;
         Sleep(1);
     }
 }
 
 int mtx_unlock(mtx_t *mtx) {
-    if (mtx == 0 || mtx->_count <= 0 || mtx->_owner != hcc_tid()) {
+    int last;
+    if (mtx == 0) {
+        return thrd_error;
+    }
+    hcc_gate_lock(mtx);
+    if (mtx->_count <= 0 || mtx->_owner != hcc_tid()) {
+        hcc_gate_unlock(mtx);
         return thrd_error;
     }
     mtx->_count--;
-    if (mtx->_count == 0) {
+    last = mtx->_count == 0;
+    if (last) {
         mtx->_owner = 0;
+    }
+    hcc_gate_unlock(mtx);
+    if (last) {
         hcc_unlock_inner(mtx);
     }
     return thrd_success;
@@ -441,25 +639,57 @@ static int hcc_cnd_wait(cnd_t *cond, mtx_t *mtx, const struct timespec *ts) {
     if (cond == 0 || mtx == 0) {
         return thrd_error;
     }
+    hcc_gate_lock(mtx);
     if (mtx->_count <= 0 || mtx->_owner != hcc_tid()) {
+        hcc_gate_unlock(mtx);
         return thrd_error;
     }
     count = mtx->_count;
     owner = mtx->_owner;
     mtx->_count = 0;
     mtx->_owner = 0;
-    ms = ts ? hcc_ms_until(ts) : HCC_INFINITE;
-    ok = SleepConditionVariableSRW(hcc_cnd_obj(cond), hcc_mtx_lock_obj(mtx),
-                                   ms, 0);
-    mtx->_owner = owner;
-    mtx->_count = count;
-    if (ok) {
-        return thrd_success;
+    hcc_gate_unlock(mtx);
+    for (;;) {
+        unsigned long err;
+        ms = ts ? hcc_ms_until(ts) : HCC_INFINITE;
+        if (ts && ms == 0) {
+            hcc_gate_lock(mtx);
+            mtx->_owner = owner;
+            mtx->_count = count;
+            hcc_gate_unlock(mtx);
+            return thrd_timedout;
+        }
+        if (ms >= HCC_INFINITE) {
+            ms = ts ? (HCC_INFINITE - 1) : HCC_INFINITE;
+        }
+        ok = SleepConditionVariableSRW(hcc_cnd_obj(cond), hcc_mtx_lock_obj(mtx),
+                                       ms, 0);
+        if (ok) {
+            hcc_gate_lock(mtx);
+            mtx->_owner = owner;
+            mtx->_count = count;
+            hcc_gate_unlock(mtx);
+            return thrd_success;
+        }
+        err = GetLastError();
+        if (err == HCC_ERROR_TIMEOUT) {
+            if (ts && hcc_ms_until(ts) == 0) {
+                hcc_gate_lock(mtx);
+                mtx->_owner = owner;
+                mtx->_count = count;
+                hcc_gate_unlock(mtx);
+                return thrd_timedout;
+            }
+            if (ts) {
+                continue;
+            }
+        }
+        hcc_gate_lock(mtx);
+        mtx->_owner = owner;
+        mtx->_count = count;
+        hcc_gate_unlock(mtx);
+        return thrd_error;
     }
-    if (ts && hcc_ms_until(ts) == 0) {
-        return thrd_timedout;
-    }
-    return thrd_error;
 }
 
 int cnd_wait(cnd_t *cond, mtx_t *mtx) {
@@ -475,6 +705,8 @@ int cnd_timedwait(cnd_t *restrict cond, mtx_t *restrict mtx,
 }
 
 #else /* POSIX pthreads */
+
+#include <errno.h>
 
 typedef unsigned long long hcc_thread_t;
 typedef struct {
@@ -545,13 +777,17 @@ static void hcc_unlock_inner(mtx_t *mtx) {
 
 static void *hcc_posix_start(void *p) {
     struct hcc_start *s = (struct hcc_start *)p;
-    thrd_start_t func = s->func;
-    void *arg = s->arg;
+    thrd_start_t func;
+    void *arg;
     int res;
+    hcc_wait_start(s);
+    func = s->func;
+    arg = s->arg;
     free(s);
     hcc_tss_bound = 1;
     res = func(arg);
     hcc_run_tss_dtors();
+    hcc_thread_ended();
     return (void *)(long)res;
 }
 
@@ -568,13 +804,16 @@ int thrd_create(thrd_t *thr, thrd_start_t func, void *arg) {
     }
     s->func = func;
     s->arg = arg;
+    atomic_store_explicit(&s->ready, 0, memory_order_relaxed);
     err = pthread_create(&id, 0, hcc_posix_start, s);
     if (err != 0) {
         free(s);
         return thrd_error;
     }
+    atomic_fetch_add_explicit(&hcc_live_threads, 1, memory_order_relaxed);
     thr->_id = (unsigned long long)id;
     thr->_handle = 0;
+    hcc_publish_start(s);
     return thrd_success;
 }
 
@@ -595,6 +834,9 @@ int thrd_equal(thrd_t thr0, thrd_t thr1) {
 
 _Noreturn void thrd_exit(int res) {
     hcc_run_tss_dtors();
+    if (atomic_fetch_sub_explicit(&hcc_live_threads, 1, memory_order_acq_rel) == 1) {
+        exit(EXIT_SUCCESS);
+    }
     pthread_exit((void *)(long)res);
     for (;;) {
     }
@@ -643,6 +885,7 @@ int mtx_init(mtx_t *mtx, int type) {
     mtx->_type = type;
     mtx->_count = 0;
     mtx->_owner = 0;
+    mtx->_gate = 0;
     return thrd_success;
 }
 
@@ -652,25 +895,47 @@ void mtx_destroy(mtx_t *mtx) {
     }
 }
 
+static int hcc_mtx_try_own(mtx_t *mtx, unsigned long long self) {
+    hcc_gate_lock(mtx);
+    if ((mtx->_type & mtx_recursive) && mtx->_count > 0 && mtx->_owner == self) {
+        mtx->_count++;
+        hcc_gate_unlock(mtx);
+        return thrd_success;
+    }
+    hcc_gate_unlock(mtx);
+    if (hcc_trylock_inner(mtx) != 0) {
+        return thrd_busy;
+    }
+    hcc_gate_lock(mtx);
+    mtx->_owner = self;
+    mtx->_count = 1;
+    hcc_gate_unlock(mtx);
+    return thrd_success;
+}
+
 static int hcc_mtx_acquire(mtx_t *mtx, int try_only) {
     unsigned long long self = hcc_tid();
+    int r;
     if (mtx == 0) {
         return thrd_error;
     }
-    if ((mtx->_type & mtx_recursive) && mtx->_count > 0 && mtx->_owner == self) {
-        mtx->_count++;
-        return thrd_success;
-    }
-    if (try_only) {
-        if (hcc_trylock_inner(mtx) != 0) {
+    for (;;) {
+        r = hcc_mtx_try_own(mtx, self);
+        if (r == thrd_success) {
+            return thrd_success;
+        }
+        if (try_only) {
             return thrd_busy;
         }
-    } else if (hcc_lock_inner(mtx) != 0) {
-        return thrd_error;
+        if (hcc_lock_inner(mtx) != 0) {
+            return thrd_error;
+        }
+        hcc_gate_lock(mtx);
+        mtx->_owner = self;
+        mtx->_count = 1;
+        hcc_gate_unlock(mtx);
+        return thrd_success;
     }
-    mtx->_owner = self;
-    mtx->_count = 1;
-    return thrd_success;
 }
 
 int mtx_lock(mtx_t *mtx) {
@@ -683,6 +948,7 @@ int mtx_trylock(mtx_t *mtx) {
 
 int mtx_timedlock(mtx_t *restrict mtx, const struct timespec *restrict ts) {
     unsigned long long self;
+    int first;
     if (mtx == 0 || ts == 0) {
         return thrd_error;
     }
@@ -690,20 +956,23 @@ int mtx_timedlock(mtx_t *restrict mtx, const struct timespec *restrict ts) {
         return thrd_error;
     }
     self = hcc_tid();
-    if ((mtx->_type & mtx_recursive) && mtx->_count > 0 && mtx->_owner == self) {
-        mtx->_count++;
-        return thrd_success;
-    }
+    first = 1;
     for (;;) {
         struct timespec now;
-        if (hcc_trylock_inner(mtx) == 0) {
-            mtx->_owner = self;
-            mtx->_count = 1;
+        int r;
+        if (!first) {
+            if (!hcc_utc_now(&now) || hcc_timespec_le(ts, &now)) {
+                return thrd_timedout;
+            }
+        }
+        r = hcc_mtx_try_own(mtx, self);
+        if (r == thrd_success) {
             return thrd_success;
         }
         if (!hcc_utc_now(&now) || hcc_timespec_le(ts, &now)) {
             return thrd_timedout;
         }
+        first = 0;
         {
             struct timespec sl;
             sl.tv_sec = 0;
@@ -714,12 +983,22 @@ int mtx_timedlock(mtx_t *restrict mtx, const struct timespec *restrict ts) {
 }
 
 int mtx_unlock(mtx_t *mtx) {
-    if (mtx == 0 || mtx->_count <= 0 || mtx->_owner != hcc_tid()) {
+    int last;
+    if (mtx == 0) {
+        return thrd_error;
+    }
+    hcc_gate_lock(mtx);
+    if (mtx->_count <= 0 || mtx->_owner != hcc_tid()) {
+        hcc_gate_unlock(mtx);
         return thrd_error;
     }
     mtx->_count--;
-    if (mtx->_count == 0) {
+    last = mtx->_count == 0;
+    if (last) {
         mtx->_owner = 0;
+    }
+    hcc_gate_unlock(mtx);
+    if (last) {
         hcc_unlock_inner(mtx);
     }
     return thrd_success;
@@ -762,28 +1041,30 @@ static int hcc_cnd_wait(cnd_t *cond, mtx_t *mtx, const struct timespec *ts) {
     if (cond == 0 || mtx == 0) {
         return thrd_error;
     }
+    hcc_gate_lock(mtx);
     if (mtx->_count <= 0 || mtx->_owner != hcc_tid()) {
+        hcc_gate_unlock(mtx);
         return thrd_error;
     }
     count = mtx->_count;
     owner = mtx->_owner;
     mtx->_count = 0;
     mtx->_owner = 0;
+    hcc_gate_unlock(mtx);
     if (ts == 0) {
         err = pthread_cond_wait(hcc_cnd_obj(cond), hcc_mtx_lock_obj(mtx));
     } else {
         err = pthread_cond_timedwait(hcc_cnd_obj(cond), hcc_mtx_lock_obj(mtx), ts);
     }
+    hcc_gate_lock(mtx);
     mtx->_owner = owner;
     mtx->_count = count;
+    hcc_gate_unlock(mtx);
     if (err == 0) {
         return thrd_success;
     }
-    if (ts != 0) {
-        struct timespec now;
-        if (!hcc_utc_now(&now) || hcc_timespec_le(ts, &now)) {
-            return thrd_timedout;
-        }
+    if (ts != 0 && err == ETIMEDOUT) {
+        return thrd_timedout;
     }
     return thrd_error;
 }
@@ -837,6 +1118,10 @@ int tss_create(tss_t *key, tss_dtor_t dtor) {
     for (i = 0; i < HCC_TSS_MAX; i++) {
         if (!hcc_tss_keys[i].used) {
             hcc_tss_keys[i].used = 1;
+            hcc_tss_keys[i].gen++;
+            if (hcc_tss_keys[i].gen == 0) {
+                hcc_tss_keys[i].gen = 1;
+            }
             hcc_tss_keys[i].dtor = dtor;
             hcc_tss_unlock();
             *key = (tss_t)i;
@@ -854,21 +1139,42 @@ void tss_delete(tss_t key) {
     hcc_tss_lock();
     hcc_tss_keys[key].used = 0;
     hcc_tss_keys[key].dtor = 0;
+    hcc_tss_keys[key].gen++;
     hcc_tss_unlock();
 }
 
 void *tss_get(tss_t key) {
-    if (key >= (tss_t)HCC_TSS_MAX || !hcc_tss_keys[key].used) {
+    unsigned gen;
+    if (key >= (tss_t)HCC_TSS_MAX) {
+        return 0;
+    }
+    hcc_tss_lock();
+    if (!hcc_tss_keys[key].used) {
+        hcc_tss_unlock();
+        return 0;
+    }
+    gen = hcc_tss_keys[key].gen;
+    hcc_tss_unlock();
+    if (hcc_tss_gen[key] != gen) {
         return 0;
     }
     return hcc_tss_values[key];
 }
 
 int tss_set(tss_t key, void *val) {
-    if (key >= (tss_t)HCC_TSS_MAX || !hcc_tss_keys[key].used) {
+    unsigned gen;
+    if (key >= (tss_t)HCC_TSS_MAX) {
         return thrd_error;
     }
+    hcc_tss_lock();
+    if (!hcc_tss_keys[key].used) {
+        hcc_tss_unlock();
+        return thrd_error;
+    }
+    gen = hcc_tss_keys[key].gen;
+    hcc_tss_unlock();
     hcc_tss_values[key] = val;
+    hcc_tss_gen[key] = gen;
     hcc_tss_bound = 1;
     return thrd_success;
 }
