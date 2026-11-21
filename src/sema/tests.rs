@@ -2119,4 +2119,15 @@ struct Outer { char lead; struct Inner inner; char tail; };
         sema_err("struct __attribute__((packed)) S { char c; int b : 3; };")
             .contains("bit-fields in a packed or aligned")
     );
+    // A trailing zero-width field is only an alignment marker, not a
+    // storage unit. It may sit at the end of the record.
+    let unit =
+        analyzed("struct S { unsigned int b : 3; _Alignas(8) int v[2]; unsigned int : 0; };");
+    let s = unit
+        .structs
+        .iter()
+        .find(|handle| handle.tag() == "S")
+        .expect("struct S");
+    assert_eq!(s.align(), 8);
+    assert_eq!(s.size(), Some(16));
 }

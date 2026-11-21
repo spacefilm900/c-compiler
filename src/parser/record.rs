@@ -144,9 +144,13 @@ impl Parser<'_> {
             // unit stays inside the record. Extra alignment (_Alignas or
             // aligned(N)) only inserts padding after an unmoved unit; it
             // must not be rejected as if the record were packed.
-            let fits = places.iter().zip(&fields).all(|(place, field)| {
-                field.bit_width.is_none() || place.offset + field.ty.size().unwrap_or(0) <= size
-            });
+            let fits = places
+                .iter()
+                .zip(&fields)
+                .all(|(place, field)| match field.bit_width {
+                    Some(width) if width > 0 => place.offset + field.ty.size().unwrap_or(0) <= size,
+                    _ => true,
+                });
             let bitfield_moved =
                 places
                     .iter()
