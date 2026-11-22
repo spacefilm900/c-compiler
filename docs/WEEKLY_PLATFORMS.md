@@ -32,7 +32,7 @@ going waits for it rather than cancelling it.
 | arm64 Linux native | `ubuntu-24.04-arm` | 60 min | Unit tests, the differential harness, stage dumps and 200 random calling-convention pairs. The v0.9 kit with its own runner at `-O0` and `-O2` (mixed objects with Clang and with GCC). Every case of v0.7, v0.8 and v0.9 on glibc's `<threads.h>` through `tools/platform/challenge_native.py`, against Clang at both levels with mixed hcc/Clang objects and the stress cases 100 times (the v0.7 and v0.8 runners accept only x86-64 Linux, so their GCC mixed-object checks do not run here). v0.9 thread stress: the 33 marked cases 1,000 times at each level, and the five weak-memory cases (publication, paired fences, release sequence, SC store buffering, SPSC ring) 10,000 times at `-O2`, ten times the kit protocol's minimum. The v0.9 generated campaign (100 seeds), the cross-target matrix with native execution, and the IR inventory. `lib/threads.c` forced on glibc for every kit case, with the stress cases 100 times. GCC and Clang on the v0.9 kit, for adjudication only. |
 | macOS arm64 native | `macos-15` (Apple Silicon) | 25 min | The differential harness against Apple clang (`tests/hosted/08_threads.c` with `lib/threads.c`, `tests/posix/darwin` with native Darwin TLS, and the `tests/xabi` pairs both ways), 100 random calling-convention pairs, every case of the three kits against Apple clang with `lib/threads.c` (stress cases 20 times), and ThreadSanitizer on the v0.9 kit at `-O0`. |
 | Windows x64 native | `windows-latest` | 35 min | For MSVC (real MSVC headers, linker and UCRT) and then MinGW-w64 (MSYS2): the differential harness (including `08_threads.c` with `lib/threads.c` over the Win32 API, and the `tests/xabi` pairs), 50 random calling-convention pairs with `__int128`, and every case of the three kits with `lib/threads.c` (stress cases 10 times). |
-| Sanitizers | `ubuntu-24.04` | 45 min | hcc built with overflow checks and debug assertions, run over the harness, the three kits at both levels and GCC torture, and a crash fuzzer over mutated inputs (any panic fails). Programs built by hcc under AddressSanitizer (with LeakSanitizer) and ThreadSanitizer, with glibc's `<threads.h>` and again with `lib/threads.c`, at `-O0` and `-O2`. UBSan and ASan on the Clang-built reference programs. |
+| Sanitizers | `ubuntu-24.04` | 45 min | hcc built with overflow checks and debug assertions, run over the harness, the three kits at both levels and GCC torture, and a crash fuzzer over mutated inputs (any panic fails). Programs built by hcc under AddressSanitizer (with LeakSanitizer), with glibc's `<threads.h>` and again with `lib/threads.c`, and under ThreadSanitizer with `lib/threads.c` (stress cases 20 times), at `-O0` and `-O2`. UBSan and ASan on the Clang-built reference programs. |
 
 Each job runs every check even when an earlier one fails, and fails at the
 end if any check failed. Each check is one row of a table in the run's
@@ -118,6 +118,19 @@ against the UCRT `<complex.h>`, so `hosted/05_tgmath.c` has no oracle there.
   glibc is not.
 - ThreadSanitizer needs `vm.mmap_rnd_bits=28` on the Ubuntu 24.04 runner
   kernel; the job sets it.
+- **ThreadSanitizer with glibc's `<threads.h>` is not run.** Every thread
+  started by glibc's `thrd_create` dies inside the sanitizer's runtime
+  (`ThreadSanitizer:DEADLYSIGNAL`, then "nested bug in the same thread"),
+  for a Clang-built program as much as for hcc's, while threads from
+  `pthread_create` work (LLVM 18 on the runner, LLVM 19 on a development
+  machine). Apparently glibc's `thrd_create` does not reach the sanitizer's
+  `pthread_create` interceptor. ThreadSanitizer therefore runs on
+  `lib/threads.c`, which uses `pthread_create`. The first validation run
+  did include a glibc ThreadSanitizer pass, and it "passed" only because
+  the reference crashed as well; `challenge_native.py` now treats a
+  sanitizer crash (a fatal signal, a nested bug, an internal CHECK) as a
+  blocked reference and as a control that was not detected, so that
+  cannot happen again.
 
 ### Found by the first sanitizer runs
 

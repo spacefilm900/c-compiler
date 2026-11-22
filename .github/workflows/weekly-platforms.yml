@@ -521,20 +521,19 @@ jobs:
             --title "AddressSanitizer (lib/threads.c)" --out "${RESULTS}/asan-threads-shim" || status=1
           exit "${status}"
 
-      - name: ThreadSanitizer
+      # ThreadSanitizer runs only on lib/threads.c, which starts threads
+      # with pthread_create. In the first validation run every thread that
+      # glibc's own thrd_create started died in the sanitizer's runtime
+      # (DEADLYSIGNAL, nested bug), for Clang's build as much as for hcc's,
+      # which made that run's passes meaningless; challenge_native.py now
+      # treats such a crash as a blocked reference and a failed control.
+      - name: ThreadSanitizer (lib/threads.c)
         if: success() || failure()
         run: |
-          set -uo pipefail
-          status=0
-          # shellcheck disable=SC2086
-          tools/platform/record.sh tsan python3 tools/platform/challenge_native.py ${KITS} --opt O0 --opt O2 \
-            --sanitize thread --stress-repetitions 10 \
-            --title "ThreadSanitizer (glibc threads)" --out "${RESULTS}/tsan" || status=1
           # shellcheck disable=SC2086
           tools/platform/record.sh tsan-threads-shim python3 tools/platform/challenge_native.py ${KITS} \
-            --opt O0 --opt O2 --sanitize thread --force-threads-shim --stress-repetitions 10 \
-            --title "ThreadSanitizer (lib/threads.c)" --out "${RESULTS}/tsan-threads-shim" || status=1
-          exit "${status}"
+            --opt O0 --opt O2 --sanitize thread --force-threads-shim --stress-repetitions 20 \
+            --title "ThreadSanitizer (lib/threads.c)" --out "${RESULTS}/tsan-threads-shim"
 
       # UBSan's checks are inserted by the C frontend, so they cannot be
       # added to hcc's IR; this instruments only the Clang reference, to
