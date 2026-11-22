@@ -465,8 +465,14 @@ fn object_size_is_a_constant_that_does_not_evaluate_its_operand() {
     let text = ir("char *next(void);\n\
          unsigned long a(void) { return __builtin_object_size(next(), 0); }\n\
          unsigned long b(void) { return __builtin_dynamic_object_size(next(), 3); }\n");
-    assert!(!text.contains("@next("), "operand evaluated:\n{text}");
-    assert!(function_body(&text, "@a(").contains("ret i64 -1"), "{text}");
+    assert!(
+        !text.contains("call ptr @next"),
+        "operand evaluated:\n{text}"
+    );
+    assert!(
+        function_body(&text, "@a(").contains("ret i64 18446744073709551615"),
+        "{text}"
+    );
     assert!(function_body(&text, "@b(").contains("ret i64 0"), "{text}");
 }
 

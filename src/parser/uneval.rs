@@ -194,6 +194,8 @@ fn check_uneval_call(callee: &Expr, args: &[Expr], env: Env) -> Result<(), Bound
 fn check_uneval_builtin_call(name: &str, args: &[Expr], env: Env) -> Result<bool, BoundErr> {
     if crate::builtins::Inline::from_name(name).is_some()
         || (crate::builtins::library(name).is_some() && env_lookup(env, name).is_none())
+        || crate::builtins::checked_builtin(name).is_some()
+        || crate::builtins::is_object_size_builtin(name)
     {
         for arg in args {
             check_uneval(arg, env)?;
@@ -371,7 +373,9 @@ pub(super) fn is_memory_builtin(name: &str) -> bool {
 /// The result type semantic analysis gives a supported builtin call:
 /// the floating type of `__builtin_nan*`, `__builtin_inf*`, and
 /// `__builtin_huge_val*`; `int` for `__builtin_signbit*` and the
-/// comparison builtins; `void *` for the memory builtins.
+/// comparison builtins; `void *` for the memory builtins; `size_t` for
+/// `__builtin_object_size`; and for `__builtin___NAME_chk` the type of
+/// `__builtin_NAME`.
 pub(super) fn builtin_result_type(name: &str) -> Option<CType> {
     if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
         return Some(CType::Float(fp.kind()));
@@ -381,6 +385,12 @@ pub(super) fn builtin_result_type(name: &str) -> Option<CType> {
     }
     if is_memory_builtin(name) {
         return Some(CType::pointer(CType::Void));
+    }
+    if let Some(checked) = crate::builtins::checked_builtin(name) {
+        return builtin_result_type(checked.plain);
+    }
+    if crate::builtins::is_object_size_builtin(name) {
+        return Some(CType::Int(crate::ast::TypeName::size_t()));
     }
     if let Some(inline) = crate::builtins::Inline::from_name(name) {
         return Some(inline.result_type());
