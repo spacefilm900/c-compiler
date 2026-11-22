@@ -2131,3 +2131,80 @@ struct Outer { char lead; struct Inner inner; char tail; };
     assert_eq!(s.align(), 8);
     assert_eq!(s.size(), Some(16));
 }
+
+#[test]
+fn bitfields_around_overaligned_member_are_accepted() {
+    // C11 6.7.2.1 and 6.7.5: a bit-field may precede and follow an
+    // _Alignas member. Extra alignment inserts padding after the first
+    // unit; the trailing bit-field starts a new unit after the aligned
+    // member. A GNU packed record that would move packing remains
+    // unsupported.
+    let unit = analyzed(
+        "struct Inner { unsigned int a : 3; _Alignas(16) int x; unsigned int b : 5; };
+struct Outer { char lead; struct Inner inner; char tail; };
+",
+    );
+    let inner = unit
+        .structs
+        .iter()
+        .find(|handle| handle.tag() == "Inner")
+        .expect("struct Inner");
+    assert_eq!(inner.align(), 16);
+    assert_eq!(inner.size(), Some(32));
+    let ifields = inner.fields().expect("complete");
+    assert_eq!(ifields[0].name, "a");
+    assert_eq!(ifields[0].offset, 0);
+    assert_eq!(ifields[0].bit_width, Some(3));
+    assert_eq!(ifields[1].name, "x");
+    assert_eq!(ifields[1].offset, 16);
+    assert_eq!(ifields[2].name, "b");
+    assert_eq!(ifields[2].offset, 20);
+    assert_eq!(ifields[2].bit_width, Some(5));
+    let outer = unit
+        .structs
+        .iter()
+        .find(|handle| handle.tag() == "Outer")
+        .expect("struct Outer");
+    assert_eq!(outer.align(), 16);
+    assert_eq!(outer.size(), Some(64));
+    let ofields = outer.fields().expect("complete");
+    assert_eq!(ofields[0].offset, 0);
+    assert_eq!(ofields[1].name, "inner");
+    assert_eq!(ofields[1].offset, 16);
+    assert_eq!(ofields[2].name, "tail");
+    assert_eq!(ofields[2].offset, 48);
+
+    let unit = analyzed(
+        "struct S { unsigned int a : 3; unsigned int : 0; _Alignas(8) int x; unsigned int b : 5; };",
+    );
+    let s = unit
+        .structs
+        .iter()
+        .find(|handle| handle.tag() == "S")
+        .expect("struct S");
+    assert_eq!(s.align(), 8);
+    assert_eq!(s.size(), Some(16));
+    let fields = s.fields().expect("complete");
+    let named: Vec<_> = fields.iter().filter(|f| !f.name.is_empty()).collect();
+    assert_eq!(named[0].name, "a");
+    assert_eq!(named[0].offset, 0);
+    assert_eq!(named[1].name, "x");
+    assert_eq!(named[1].offset, 8);
+    assert_eq!(named[2].name, "b");
+    assert_eq!(named[2].offset, 12);
+    assert_eq!(named[2].bit_width, Some(5));
+
+    sema_ok("struct I { unsigned int a : 3; _Alignas(8) int x; unsigned int b : 5; };");
+    sema_ok("struct I { unsigned int a : 3; _Alignas(32) int x; unsigned int b : 5; };");
+    sema_ok("struct I { unsigned int a : 3; _Alignas(64) int x; unsigned int b : 5; };");
+    assert!(
+        sema_err("struct __attribute__((packed)) S { char c; int b : 3; };")
+            .contains("bit-fields in a packed or aligned")
+    );
+    // A member-level packed attribute can also move a later bit-field.
+    // _Alignas padding must not hide that movement.
+    assert!(
+        sema_err("struct S { char c; int x __attribute__((packed)); unsigned int b : 5; _Alignas(16) int tail; };")
+            .contains("bit-fields in a packed or aligned")
+    );
+}

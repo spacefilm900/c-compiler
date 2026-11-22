@@ -100,10 +100,21 @@ impl Parser<'_> {
         let natural_spec = natural_layout_spec(&fields);
         let packed = attrs.iter().any(|attr| attr.name == "packed");
         let record_align = self.attrs_align(&attrs)?;
-        let spec = attributed_layout_spec(&natural_spec, &member_attrs, packed);
+        let spec = attributed_layout_spec(&natural_spec, &member_attrs, packed, true);
         let union_layout = kind == RecordKind::Union;
         let too_large = || self.error_at(line, column, format!("{word} '{label}' is too large"));
         let natural = layout_members(&natural_spec, union_layout).ok_or_else(too_large)?;
+        // Unpacked but still honouring _Alignas / aligned(N). A later
+        // bit-field may start after padding inserted by an over-aligned
+        // ordinary member; that is not the same as packed bit-field
+        // movement, which is compared against this layout below.
+        // Honour _Alignas / aligned(N) but ignore member packed, so
+        // packing-induced bit-field movement is still detected.
+        let unpacked = layout_members(
+            &attributed_layout_spec(&natural_spec, &member_attrs, false, false),
+            union_layout,
+        )
+        .ok_or_else(too_large)?;
         let (places, mut size, mut align) =
             layout_members(&spec, union_layout).ok_or_else(too_large)?;
         let unadjusted_align = align;
@@ -140,10 +151,12 @@ impl Parser<'_> {
                 .any(|field| field.bit_width.is_some_and(|w| w > 0))
         {
             // A bit-field is read through its declared type's storage unit.
-            // That only matches GCC when a bit-field did not move and every
-            // unit stays inside the record. Extra alignment (_Alignas or
-            // aligned(N)) only inserts padding after an unmoved unit; it
-            // must not be rejected as if the record were packed.
+            // That only matches the target ABI when packed layout would
+            // move a unit or a unit would extend past the record. Extra
+            // alignment (_Alignas or aligned(N)) may insert padding after
+            // an earlier unit and before a later one; compare against the
+            // unpacked, alignment-aware places rather than the natural
+            // (no-_Alignas) layout.
             let fits = places
                 .iter()
                 .zip(&fields)
@@ -154,10 +167,10 @@ impl Parser<'_> {
             let bitfield_moved =
                 places
                     .iter()
-                    .zip(&natural.0)
+                    .zip(&unpacked.0)
                     .zip(&fields)
-                    .any(|((place, nat), field)| {
-                        field.bit_width.is_some_and(|w| w > 0) && place != nat
+                    .any(|((place, unpack), field)| {
+                        field.bit_width.is_some_and(|w| w > 0) && place != unpack
                     });
             if bitfield_moved || !fits {
                 return Err(self.error_at(
@@ -1080,12 +1093,13 @@ fn attributed_layout_spec(
     natural: &[LayoutMember],
     member_attrs: &[MemberAttrs],
     packed: bool,
+    honour_member_packed: bool,
 ) -> Vec<LayoutMember> {
     natural
         .iter()
         .zip(member_attrs)
         .map(|(member, extra)| {
-            let base = if packed || extra.packed {
+            let base = if packed || (honour_member_packed && extra.packed) {
                 1
             } else {
                 member.align
