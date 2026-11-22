@@ -21,6 +21,12 @@ on:
   schedule:
     # Sundays 03:00 UTC.
     - cron: '0 3 * * 0'
+  # TEMPORARY, for validation on the weekly-platform-tests pull request; removed before the
+  # pull request is ready to merge. workflow_dispatch needs the file on the
+  # default branch, so this is the only way to run it before the merge.
+  pull_request:
+    paths:
+      - '.github/workflows/weekly-platforms.yml'
   workflow_dispatch:
     inputs:
       jobs:
