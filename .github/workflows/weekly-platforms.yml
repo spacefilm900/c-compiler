@@ -9,11 +9,11 @@
 # describes each job, its cost and how to read the results.
 #
 # Estimated cost per full run (private repo; GitHub's published per-minute
-# prices; billing rounds each job up to whole minutes): arm64 Linux about
-# 30 min x $0.005, macOS about 15 min x $0.062, Windows about 30 min x
-# $0.010, sanitizers about 25 min x $0.006: roughly $1.70 a run, $7.50 a
-# month at one run a week. Estimates; see docs/WEEKLY_PLATFORMS.md for the
-# measured minutes.
+# prices, Nov 2026; billing rounds each job up to whole minutes): arm64
+# Linux about 30 min x $0.005, macOS about 15 min x $0.062, Windows about
+# 30 min x $0.010, sanitizers about 25 min x $0.006: about $1.55 a run,
+# about $6.70 a month at one run a week. These are estimates; the measured
+# minutes are in docs/WEEKLY_PLATFORMS.md.
 
 name: weekly-platforms
 
@@ -48,7 +48,7 @@ env:
 jobs:
   arm64:
     name: arm64 Linux native (threads, atomics, TLS campaign and full harness)
-    if: github.event_name == 'schedule' || inputs.jobs == 'all' || inputs.jobs == 'arm64'
+    if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'arm64'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     env:
@@ -205,7 +205,7 @@ jobs:
 
   macos:
     name: macOS arm64 native (threads, TLS, atomics, ABI pairs vs Apple clang)
-    if: github.event_name == 'schedule' || inputs.jobs == 'all' || inputs.jobs == 'macos'
+    if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'macos'
     # Apple Silicon (M1). The per-merge job in macos.yml uses macos-26;
     # this one stays on the older image, so the two cover two Xcode clangs.
     runs-on: macos-15
@@ -295,7 +295,7 @@ jobs:
 
   windows:
     name: Windows x64 native (MSVC and MinGW-w64; threads, TLS, ABI pairs)
-    if: github.event_name == 'schedule' || inputs.jobs == 'all' || inputs.jobs == 'windows'
+    if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'windows'
     runs-on: windows-latest
     # Windows minutes cost twice Linux minutes.
     timeout-minutes: 35
@@ -416,7 +416,7 @@ jobs:
 
   sanitizers:
     name: Sanitizers on x86-64 Linux (hcc with checks; ASan, TSan, UBSan programs)
-    if: github.event_name == 'schedule' || inputs.jobs == 'all' || inputs.jobs == 'sanitizers'
+    if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'sanitizers'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
