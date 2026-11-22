@@ -14,7 +14,7 @@ Usage: python3 tools/quality/panic_fuzz.py --compiler build/hcc
            --corpus tests --corpus tests/external/wacc/tests
            [--mutants-per-file 20] [--stack 1] [--arg -std=gnu11]
            [--seed 1] [--jobs 8] [--timeout 5]
-           --out OUTDIR
+           --out OUTDIR [--fail-on-crash]
 Writes OUTDIR/sites.txt (src/file.rs:LINE, one per line, for
 crash_points.py --confirmed), OUTDIR/crashes.csv (site, count, smallest
 reproducer) and OUTDIR/repro/ (the smallest input per site).
@@ -55,6 +55,7 @@ def mutate(text, rng):
         return text[:s]
     return text[:s] + rng.choice(INSERTS) + " " + text[s:]
 
+RUST_PANIC_STATUS = 101
 PANIC = re.compile(r"panicked at (?:\S*/)?(src/[\w/]+\.rs):(\d+):\d+")
 
 def run(compiler, src, timeout, extra):
@@ -67,13 +68,18 @@ def run(compiler, src, timeout, extra):
         except subprocess.TimeoutExpired:
             return "timeout", None
         err = p.stderr.decode(errors="replace")
+        # A Rust panic exits with status 101 (or dies by a signal under
+        # panic=abort); a diagnostic exits with 1. The status is checked
+        # first so that a diagnostic quoting "panicked at" (an #error line,
+        # say) is not taken for a panic.
+        died = p.returncode == RUST_PANIC_STATUS or p.returncode < 0
         m = PANIC.search(err)
-        if m:
+        if died and m:
             return "panic", f"{m.group(1)}:{m.group(2)}"
-        if "panicked at" in err:
+        if died and "panicked at" in err:
             m2 = re.search(r"panicked at ([^\n]+)", err)
             return "panic", "other:" + (m2.group(1).split(":")[0] if m2 else "?")
-        if "overflowed its stack" in err:
+        if p.returncode < 0 and "overflowed its stack" in err:
             return "stackoverflow", "stack-overflow"
         if p.returncode < 0:
             return "signal", f"signal-{-p.returncode}"
@@ -91,6 +97,8 @@ def main():
     ap.add_argument("--arg", action="append", default=[], help="extra compiler argument, e.g. -std=gnu11")
     ap.add_argument("--max-bytes", type=int, default=20000, help="skip larger seed files")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--fail-on-crash", action="store_true",
+                    help="exit 1 when any crash site (not a timeout) was found")
     a = ap.parse_args()
     files = sorted({p for c in a.corpus for p in Path(c).rglob("*.c") if p.stat().st_size <= a.max_bytes})
     rng = random.Random(a.seed)
@@ -131,6 +139,7 @@ def main():
     print(f"runs {len(jobs)}, timeouts {counts.get('timeout', 0)}, distinct crash sites {len(crashes)}")
     for site in sorted(found, key=lambda s: -counts[s]):
         print(f"  {counts[site]:5}  {site}")
+    return 1 if a.fail_on_crash and crashes else 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

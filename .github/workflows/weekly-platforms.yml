@@ -1,0 +1,567 @@
+# Weekly real-platform run: native AArch64 Linux, Apple Silicon macOS,
+# 64-bit Windows, and sanitizers on x86-64 Linux. Separate from the
+# pull-request CI (ci.yml and friends), which it does not change: it never
+# runs on a pull request or a push, only on the schedule below and by hand:
+#   gh workflow run weekly-platforms.yml                    (every job)
+#   gh workflow run weekly-platforms.yml -f jobs=macos      (one job)
+#   gh workflow run weekly-platforms.yml --ref BRANCH       (another branch)
+# or Actions > weekly-platforms > Run workflow. docs/WEEKLY_PLATFORMS.md
+# describes each job, its cost and how to read the results.
+#
+# Estimated cost per full run (private repo; GitHub's published per-minute
+# prices, Nov 2026; billing rounds each job up to whole minutes), from the
+# validation runs' measured times: arm64 Linux 7 min x $0.005, macOS 3 min
+# x $0.062, Windows 13 min x $0.010, sanitizers 14 min x $0.006: about
+# $0.44 a run, about $1.90 a month at one run a week. These are estimates;
+# docs/WEEKLY_PLATFORMS.md has the details.
+
+name: weekly-platforms
+
+on:
+  schedule:
+    # Sundays 03:00 UTC.
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "Which jobs: all, arm64, macos, windows or sanitizers"
+        type: choice
+        options: ["all", "arm64", "macos", "windows", "sanitizers"]
+        default: "all"
+
+permissions:
+  contents: read
+
+# One run per ref at a time. A run started while one is going waits (it is
+# not cancelled half way, which would waste the minutes already spent);
+# GitHub keeps at most one waiting run per group.
+concurrency:
+  group: weekly-platforms-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  KITS: >-
+    --kit tests/adversarial/hcc-challenge-v0.7
+    --kit tests/adversarial/hcc-challenge-v0.8
+    --kit tests/adversarial/hcc-challenge-v0.9
+
+jobs:
+  arm64:
+    name: arm64 Linux native (threads, atomics, TLS campaign and full harness)
+    if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'arm64'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    env:
+      RESULTS: ${{ github.workspace }}/build/weekly/arm64
+      WORK: ${{ github.workspace }}/build/weekly-work
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+
+      - name: Install Clang, LLVM, make and Python (GCC is on the image)
+        run: |
+          set -euo pipefail
+          scripts/ci-apt-install.sh clang llvm make python3
+          uname -m
+          test "$(uname -m)" = aarch64
+          clang --version
+          gcc --version
+          nproc
+          mkdir -p "${RESULTS}" "${WORK}"
+          printf '# arm64 Linux native (%s)\n\n| Check | Result | Time | Last line |\n| --- | --- | --- | --- |\n' "$(git rev-parse --short HEAD)" > "${RESULTS}/summary.md"
+
+      - name: Release build
+        run: make
+
+      - name: Unit tests
+        if: success() || failure()
+        run: tools/platform/record.sh unit-tests cargo test --offline --lib
+
+      - name: Differential harness, stage dumps and random ABI pairs
+        if: success() || failure()
+        run: |
+          set -uo pipefail
+          status=0
+          tools/platform/record.sh harness python3 harness/run_tests.py || status=1
+          tools/platform/record.sh dumps python3 harness/run_dump_tests.py || status=1
+          tools/platform/record.sh abi-pairs python3 tools/abi_fuzz.py --count 200 --seed-start 1001 || status=1
+          exit "${status}"
+
+      # The v0.9 kit's own runner accepts native AArch64 Linux: every case
+      # with this compiler at -O0 and -O2, mixed objects with Clang and with
+      # GCC. The v0.7 and v0.8 runners refuse any host but x86-64 Linux
+      # ("This release runner targets native x86_64 Linux"), so those kits
+      # run through tools/platform/challenge_native.py in the next step.
+      - name: Challenge kit v0.9 (kit runner, hcc)
+        if: success() || failure()
+        run: |
+          set -uo pipefail
+          status=0
+          kit=tests/adversarial/hcc-challenge-v0.9
+          for opt in O0 O2; do
+            tools/platform/record.sh "v0.9-hcc-${opt}" python3 "${kit}/runner.py" --engine hcc \
+              --compiler "${PWD}/build/hcc" --linker clang --opt "${opt}" --jobs "$(nproc)" \
+              --out "${WORK}/v0.9-hcc-${opt}" || status=1
+            cp "${WORK}/v0.9-hcc-${opt}/results.json" "${RESULTS}/v0.9-hcc-${opt}.json" 2>/dev/null || :
+            tools/platform/record.sh "v0.9-hcc-gccabi-${opt}" python3 "${kit}/runner.py" --engine hcc \
+              --compiler "${PWD}/build/hcc" --linker clang --abi-reference gcc --opt "${opt}" \
+              --jobs "$(nproc)" --out "${WORK}/v0.9-gccabi-${opt}" || status=1
+          done
+          exit "${status}"
+
+      # Every case of v0.7-v0.9 on glibc's own <threads.h>, compared with
+      # Clang at -O0 and -O2, with mixed hcc/Clang objects for the
+      # multi-file cases and every stress case repeated.
+      - name: Challenge kits v0.7-v0.9 on glibc threads (challenge_native)
+        if: success() || failure()
+        run: |
+          # KITS is a fixed list of options; split on spaces.
+          # shellcheck disable=SC2086
+          tools/platform/record.sh challenge python3 tools/platform/challenge_native.py ${KITS} \
+            --opt O0 --opt O2 --stress-repetitions 100 \
+            --title "Challenge kits on arm64 Linux (glibc threads)" --out "${RESULTS}/challenge"
+
+      # PLATFORM_PROTOCOL.md asks for >= 100 repetitions of the 33 marked
+      # cases at -O0 and -O2, and >= 1,000 of publication (036), paired
+      # fences (039), release sequence (041), SC store buffering (042) and
+      # the SPSC ring (051) at -O2, on native weak-memory hardware. The
+      # weekly run does ten times that: 1,000 and 10,000 (about two minutes
+      # in all on the 4-core runner).
+      - name: Thread stress (v0.9, native AArch64)
+        if: success() || failure()
+        run: |
+          set -uo pipefail
+          status=0
+          kit=tests/adversarial/hcc-challenge-v0.9
+          for opt in O0 O2; do
+            tools/platform/record.sh "v0.9-stress-${opt}" python3 "${kit}/stress_threads.py" \
+              --run-dir "${WORK}/v0.9-hcc-${opt}" --out "${WORK}/v0.9-stress-${opt}" \
+              --repetitions 1000 --jobs "$(nproc)" || status=1
+          done
+          tools/platform/record.sh v0.9-stress-deep-O2 python3 "${kit}/stress_threads.py" \
+            --run-dir "${WORK}/v0.9-hcc-O2" --out "${WORK}/v0.9-stress-deep-O2" --repetitions 10000 \
+            --jobs "$(nproc)" --case HCC09-036 --case HCC09-039 --case HCC09-041 --case HCC09-042 \
+            --case HCC09-051 || status=1
+          exit "${status}"
+
+      - name: Generated campaign, target matrix and IR inventory (v0.9)
+        if: success() || failure()
+        run: |
+          set -uo pipefail
+          status=0
+          kit=tests/adversarial/hcc-challenge-v0.9
+          for opt in O0 O2; do
+            tools/platform/record.sh "v0.9-generated-${opt}" python3 "${kit}/generated_campaign.py" \
+              --engine hcc --compiler "${PWD}/build/hcc" --opt "${opt}" --seeds 100 \
+              --jobs "$(nproc)" --out "${WORK}/v0.9-gen-${opt}" || status=1
+            tools/platform/record.sh "v0.9-cross-target-${opt}" python3 "${kit}/cross_target.py" \
+              --engine hcc --compiler "${PWD}/build/hcc" --opt "${opt}" --run-native-linux \
+              --jobs "$(nproc)" --out "${WORK}/v0.9-cross-${opt}" || status=1
+          done
+          tools/platform/record.sh --info v0.9-ir-inventory-O2 python3 "${kit}/ir_inventory.py" \
+            --run-dir "${WORK}/v0.9-hcc-O2" --out "${RESULTS}/v0.9-ir-inventory-O2.json"
+          exit "${status}"
+
+      # lib/threads.c on native AArch64: the fallback runtime that macOS
+      # and Windows use, forced on glibc, built by hcc (and by Clang for the
+      # reference), with every stress case repeated.
+      - name: Fallback <threads.h> runtime on AArch64 (challenge_native --force-threads-shim)
+        if: success() || failure()
+        run: |
+          # KITS is a fixed list of options; split on spaces.
+          # shellcheck disable=SC2086
+          tools/platform/record.sh threads-shim python3 tools/platform/challenge_native.py ${KITS} \
+            --opt O0 --opt O2 --force-threads-shim --stress-repetitions 100 \
+            --title "Fallback threads runtime on arm64 Linux" --out "${RESULTS}/threads-shim"
+
+      # Another compiler's own results, kept for adjudication only.
+      - name: Reference compilers on the v0.9 kit (GCC and Clang; information only)
+        if: success() || failure()
+        run: |
+          set -uo pipefail
+          kit=tests/adversarial/hcc-challenge-v0.9
+          for engine in gcc clang; do
+            tools/platform/record.sh --info "v0.9-${engine}-O2" python3 "${kit}/runner.py" \
+              --engine "${engine}" --opt O2 --jobs "$(nproc)" --out "${WORK}/v0.9-${engine}-O2"
+          done
+          tools/platform/record.sh --info v0.9-mixed-reference python3 "${kit}/mixed_reference.py" \
+            --out "${WORK}/v0.9-mixed-reference" --jobs "$(nproc)"
+
+      - name: Summary
+        if: always()
+        run: |
+          cat "${RESULTS}/summary.md" >> "${GITHUB_STEP_SUMMARY}" || :
+          for f in "${RESULTS}/challenge/summary.md" "${RESULTS}/threads-shim/summary.md"; do
+            if [ -f "${f}" ]; then
+              cat "${f}" >> "${GITHUB_STEP_SUMMARY}"
+            fi
+          done
+          # Per-case reports of the runs that write under WORK, for the
+          # artifact: GCC ABI and reference-compiler runs included.
+          for d in "${WORK}"/v0.9-stress-* "${WORK}"/v0.9-gen-* "${WORK}"/v0.9-cross-* \
+                   "${WORK}"/v0.9-gccabi-* "${WORK}"/v0.9-gcc-O2 "${WORK}"/v0.9-clang-O2 \
+                   "${WORK}"/v0.9-mixed-reference; do
+            [ -f "${d}/results.json" ] && cp "${d}/results.json" "${RESULTS}/$(basename "${d}").json"
+          done
+          :
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: weekly-arm64-linux
+          path: build/weekly/arm64
+          if-no-files-found: warn
+
+  macos:
+    name: macOS arm64 native (threads, TLS, atomics, ABI pairs vs Apple clang)
+    if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'macos'
+    # Apple Silicon (M1). The per-merge job in macos.yml uses macos-26;
+    # this one stays on the older image, so the two cover two Xcode clangs.
+    runs-on: macos-15
+    # macOS minutes cost about ten times Linux minutes.
+    timeout-minutes: 25
+    env:
+      RESULTS: ${{ github.workspace }}/build/weekly/macos
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+
+      - name: Tools
+        run: |
+          set -euo pipefail
+          sw_vers
+          uname -m
+          sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          echo "SDKROOT=${sdk}" >> "$GITHUB_ENV"
+          echo "CLANG=/usr/bin/clang" >> "$GITHUB_ENV"
+          /usr/bin/clang --version
+          python3 --version
+          mkdir -p "${RESULTS}"
+          printf '# macOS arm64 native (%s)\n\n| Check | Result | Time | Last line |\n| --- | --- | --- | --- |\n' "$(git rev-parse --short HEAD)" > "${RESULTS}/summary.md"
+
+      - name: Build
+        run: make
+
+      # tests/hosted/08_threads.c with lib/threads.c, tests/posix/darwin
+      # (native Darwin TLS and pthreads), and the tests/xabi pairs linked
+      # both ways with Apple clang's objects.
+      - name: Differential harness with Apple clang
+        env:
+          KNOWN_FAILURES: harness/macos_known_failures.txt
+        run: tools/platform/record.sh harness python3 harness/run_tests.py
+
+      - name: Random calling-convention pairs against Apple clang
+        if: success() || failure()
+        run: tools/platform/record.sh abi-pairs python3 tools/abi_fuzz.py --count 100 --seed-start 2001
+
+      # Every case of the three kits, hcc against Apple clang, with
+      # include/threads.h and lib/threads.c (built by hcc; by Apple clang
+      # for the reference), mixed objects both ways, and the stress cases
+      # repeated.
+      - name: Challenge kits v0.7-v0.9 against Apple clang
+        if: success() || failure()
+        run: |
+          # KITS is a fixed list of options; split on spaces.
+          # shellcheck disable=SC2086
+          tools/platform/record.sh challenge python3 tools/platform/challenge_native.py ${KITS} \
+            --opt O0 --opt O2 --stress-repetitions 20 \
+            --known-failures tools/platform/known_failures_macos.txt \
+            --title "Challenge kits on macOS arm64" --out "${RESULTS}/challenge"
+
+      # ThreadSanitizer on Darwin: hcc's code and lib/threads.c built by
+      # hcc, instrumented by Apple clang, with known-positive controls.
+      - name: ThreadSanitizer on the v0.9 thread cases
+        if: success() || failure()
+        run: |
+          tools/platform/record.sh tsan python3 tools/platform/challenge_native.py \
+            --kit tests/adversarial/hcc-challenge-v0.9 --opt O0 --sanitize thread \
+            --stress-repetitions 5 --known-failures tools/platform/known_failures_macos.txt \
+            --title "ThreadSanitizer on macOS arm64" --out "${RESULTS}/tsan"
+
+      - name: Summary
+        if: always()
+        run: |
+          cat "${RESULTS}/summary.md" >> "${GITHUB_STEP_SUMMARY}" || :
+          for f in "${RESULTS}"/*/summary.md; do
+            [ -f "${f}" ] && cat "${f}" >> "${GITHUB_STEP_SUMMARY}"
+          done
+          :
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: weekly-macos-arm64
+          path: build/weekly/macos
+          if-no-files-found: warn
+
+  windows:
+    name: Windows x64 native (MSVC and MinGW-w64; threads, TLS, ABI pairs)
+    if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'windows'
+    runs-on: windows-latest
+    # Windows minutes cost twice Linux minutes.
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    env:
+      CC_UNDER_TEST: build/hcc.exe
+      PYTHONUTF8: "1"
+      RESULTS: build/weekly/windows
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+
+      - name: Tools
+        run: |
+          set -euo pipefail
+          rustc --version
+          clang --version
+          python --version
+          echo "CLANG=clang" >> "$GITHUB_ENV"
+          mkdir -p "${RESULTS}"
+          printf '# Windows x64 native (%s)\n\n| Check | Result | Time | Last line |\n| --- | --- | --- | --- |\n' "$(git rev-parse --short HEAD)" > "${RESULTS}/summary.md"
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          cargo build --release --offline
+          mkdir -p build
+          cp target/release/hcc.exe build/hcc.exe
+
+      # The Visual Studio developer environment (INCLUDE, LIB, PATH), as
+      # vcvars64.bat sets it, for every later step.
+      - name: MSVC environment
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+            if ($_ -match '^(INCLUDE|LIB|LIBPATH|PATH|VCToolsInstallDir|WindowsSdkDir|UCRTVersion)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+
+      # tests/hosted/08_threads.c with lib/threads.c over the Win32 API,
+      # the tests/xabi pairs with Clang's MSVC objects, and random pairs.
+      - name: MSVC differential harness and random ABI pairs
+        run: |
+          set -uo pipefail
+          status=0
+          tools/platform/record.sh msvc-harness python harness/run_cross.py --target x86_64-pc-windows-msvc || status=1
+          tools/platform/record.sh msvc-abi-pairs python tools/abi_fuzz.py --count 50 --int128 --seed-start 3001 \
+            --target x86_64-pc-windows-msvc || status=1
+          exit "${status}"
+
+      - name: MSVC challenge kits v0.7-v0.9
+        if: success() || failure()
+        run: |
+          # KITS is a fixed list of options; split on spaces.
+          # shellcheck disable=SC2086
+          tools/platform/record.sh msvc-challenge python tools/platform/challenge_native.py ${KITS} \
+            --target x86_64-pc-windows-msvc --opt O0 --opt O2 --stress-repetitions 10 \
+            --known-failures tools/platform/known_failures_msvc.txt \
+            --title "Challenge kits on Windows x64 (MSVC)" --out "${RESULTS}/msvc-challenge"
+
+      - name: MinGW-w64 toolchain (MSYS2)
+        if: success() || failure()
+        run: |
+          set -euo pipefail
+          /c/msys64/usr/bin/pacman -S --noconfirm --needed mingw-w64-x86_64-gcc
+          printf '%s\n' 'C:\msys64\mingw64\bin' >> "$GITHUB_PATH"
+          printf '%s\n' 'MINGW_GCC=C:\msys64\mingw64\bin\gcc.exe' >> "$GITHUB_ENV"
+          echo "MINGW_SYSROOT=C:\\msys64\\mingw64" >> "$GITHUB_ENV"
+
+      - name: MinGW-w64 differential harness and random ABI pairs
+        if: success() || failure()
+        run: |
+          set -uo pipefail
+          status=0
+          tools/platform/record.sh mingw-harness python harness/run_cross.py --target x86_64-w64-windows-gnu || status=1
+          tools/platform/record.sh mingw-abi-pairs python tools/abi_fuzz.py --count 50 --int128 --seed-start 4001 \
+            --target x86_64-w64-windows-gnu || status=1
+          exit "${status}"
+
+      - name: MinGW-w64 challenge kits v0.7-v0.9
+        if: success() || failure()
+        run: |
+          # KITS is a fixed list of options; split on spaces.
+          # shellcheck disable=SC2086
+          tools/platform/record.sh mingw-challenge python tools/platform/challenge_native.py ${KITS} \
+            --target x86_64-w64-windows-gnu --opt O0 --opt O2 --stress-repetitions 10 \
+            --known-failures tools/platform/known_failures_mingw.txt \
+            --title "Challenge kits on Windows x64 (MinGW-w64)" --out "${RESULTS}/mingw-challenge"
+
+      - name: Summary
+        if: always()
+        run: |
+          cat "${RESULTS}/summary.md" >> "${GITHUB_STEP_SUMMARY}" || :
+          for f in "${RESULTS}"/*/summary.md; do
+            [ -f "${f}" ] && cat "${f}" >> "${GITHUB_STEP_SUMMARY}"
+          done
+          :
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: weekly-windows-x64
+          path: build/weekly/windows
+          if-no-files-found: warn
+
+  sanitizers:
+    name: Sanitizers on x86-64 Linux (hcc with checks; ASan, TSan, UBSan programs)
+    if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'sanitizers'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RESULTS: ${{ github.workspace }}/build/weekly/sanitizers
+      WORK: ${{ github.workspace }}/build/weekly-work
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+
+      - name: Install Clang, LLVM, make, Python and the sanitizer runtimes
+        run: |
+          set -euo pipefail
+          scripts/ci-apt-install.sh clang llvm make python3
+          clang --version
+          major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          printf 'int main(void) { return 0; }\n' > /tmp/probe.c
+          if ! clang -fsanitize=address,undefined /tmp/probe.c -o /tmp/probe ||
+             ! clang -fsanitize=thread /tmp/probe.c -o /tmp/probe; then
+            scripts/ci-apt-install.sh "libclang-rt-${major}-dev"
+          fi
+          # ThreadSanitizer cannot map its shadow memory with the 32 bits
+          # of mmap randomisation Ubuntu 24.04 kernels use.
+          sudo sysctl -w vm.mmap_rnd_bits=28
+          mkdir -p "${RESULTS}" "${WORK}"
+          printf '# Sanitizers on x86-64 Linux (%s)\n\n| Check | Result | Time | Last line |\n| --- | --- | --- | --- |\n' "$(git rev-parse --short HEAD)" > "${RESULTS}/summary.md"
+
+      - name: Release build, and a release build with overflow checks and debug assertions
+        run: |
+          set -euo pipefail
+          make
+          CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true \
+            CARGO_TARGET_DIR=target/checked cargo build --release --offline
+          cp target/checked/release/hcc build/hcc-checked
+
+      # hcc itself. It has no unsafe code and no dependencies, so the
+      # dynamic checks that apply are Rust's own: integer overflow and
+      # debug assertions, on every input the suites give it, plus a
+      # crash fuzzer over mutated inputs (any panic fails).
+      - name: hcc with overflow checks and debug assertions
+        env:
+          CC_UNDER_TEST: ${{ github.workspace }}/build/hcc-checked
+        run: |
+          set -uo pipefail
+          status=0
+          tools/platform/record.sh checked-harness python3 harness/run_tests.py || status=1
+          for v in 0.7 0.8 0.9; do
+            for opt in O0 O2; do
+              tools/platform/record.sh "checked-v${v}-${opt}" python3 "tests/adversarial/hcc-challenge-v${v}/runner.py" \
+                --engine hcc --compiler "${CC_UNDER_TEST}" --linker clang --opt "${opt}" --jobs "$(nproc)" \
+                --out "${WORK}/checked-v${v}-${opt}" || status=1
+            done
+          done
+          tools/platform/record.sh checked-gcc-torture bash -c \
+            'scripts/fetch_gcc_torture.sh && python3 harness/run_gcc_torture.py' || status=1
+          tools/platform/record.sh checked-crash-fuzz python3 tools/quality/panic_fuzz.py \
+            --compiler "${CC_UNDER_TEST}" --corpus tests --mutants-per-file 50 --stack 3 \
+            --seed "${GITHUB_RUN_NUMBER}" --jobs "$(nproc)" --out "${RESULTS}/crash-fuzz" --fail-on-crash || status=1
+          exit "${status}"
+
+      # Programs built by hcc under AddressSanitizer and ThreadSanitizer
+      # (tools/platform/challenge_native.py adds the sanitize_* attribute
+      # to hcc's functions; known-positive controls run first). With
+      # --force-threads-shim, lib/threads.c built by hcc runs instead of
+      # glibc's <threads.h>.
+      - name: AddressSanitizer
+        if: success() || failure()
+        run: |
+          set -uo pipefail
+          status=0
+          # KITS is a fixed list of options; split on spaces.
+          # shellcheck disable=SC2086
+          tools/platform/record.sh asan python3 tools/platform/challenge_native.py ${KITS} --opt O0 --opt O2 \
+            --sanitize address --title "AddressSanitizer (glibc threads)" --out "${RESULTS}/asan" || status=1
+          # shellcheck disable=SC2086
+          tools/platform/record.sh asan-threads-shim python3 tools/platform/challenge_native.py ${KITS} \
+            --opt O0 --opt O2 --sanitize address --force-threads-shim \
+            --title "AddressSanitizer (lib/threads.c)" --out "${RESULTS}/asan-threads-shim" || status=1
+          exit "${status}"
+
+      # ThreadSanitizer runs only on lib/threads.c, which starts threads
+      # with pthread_create. In the first validation run every thread that
+      # glibc's own thrd_create started died in the sanitizer's runtime
+      # (DEADLYSIGNAL, nested bug), for Clang's build as much as for hcc's,
+      # which made that run's passes meaningless; challenge_native.py now
+      # treats such a crash as a blocked reference and a failed control.
+      - name: ThreadSanitizer (lib/threads.c)
+        if: success() || failure()
+        run: |
+          # shellcheck disable=SC2086
+          tools/platform/record.sh tsan-threads-shim python3 tools/platform/challenge_native.py ${KITS} \
+            --opt O0 --opt O2 --sanitize thread --force-threads-shim --stress-repetitions 20 \
+            --title "ThreadSanitizer (lib/threads.c)" --out "${RESULTS}/tsan-threads-shim"
+
+      # UBSan's checks are inserted by the C frontend, so they cannot be
+      # added to hcc's IR; this instruments only the Clang reference, to
+      # check the test programs themselves are free of undefined behaviour.
+      - name: UndefinedBehaviorSanitizer on the reference programs
+        if: success() || failure()
+        run: |
+          # shellcheck disable=SC2086
+          tools/platform/record.sh ubsan-reference python3 tools/platform/challenge_native.py ${KITS} \
+            --opt O0 --opt O2 --sanitize undefined \
+            --title "UBSan and ASan on the Clang-built reference" --out "${RESULTS}/ubsan-reference"
+
+      - name: Summary
+        if: always()
+        run: |
+          cat "${RESULTS}/summary.md" >> "${GITHUB_STEP_SUMMARY}" || :
+          for f in "${RESULTS}"/*/summary.md; do
+            [ -f "${f}" ] && cat "${f}" >> "${GITHUB_STEP_SUMMARY}"
+          done
+          # The checked compiler's kit reports, for the artifact.
+          for d in "${WORK}"/checked-v*; do
+            [ -f "${d}/results.json" ] && cp "${d}/results.json" "${RESULTS}/$(basename "${d}").json"
+          done
+          :
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: weekly-sanitizers
+          path: build/weekly/sanitizers
+          if-no-files-found: warn

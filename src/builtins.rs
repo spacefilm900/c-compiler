@@ -496,6 +496,66 @@ fn build(name: &str, ret: &str, params: &str, float: FloatKind) -> LibSig {
     }
 }
 
+/// An object size checking builtin, `__builtin___NAME_chk` (GCC manual,
+/// "Object Size Checking"). It takes the arguments of `NAME` with the
+/// object size, and for the formatted-output functions a flag, inserted.
+/// This compiler performs no check: the call is lowered as a call of
+/// `__builtin_NAME` with the extra arguments removed, the reduction the
+/// manual gives for an unknown object size and a zero flag. The extra
+/// arguments are still evaluated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckedBuiltin {
+    /// `__builtin_NAME`, the builtin the call becomes.
+    pub plain: &'static str,
+    /// Positions of the flag and object size arguments, in order.
+    pub extra: &'static [usize],
+    /// Number of arguments, or the minimum number when `variadic`.
+    pub arity: usize,
+    /// Whether further arguments may follow (`sprintf` and the like).
+    pub variadic: bool,
+}
+
+/// The object size checking builtin `name`, if it is one.
+pub fn checked_builtin(name: &str) -> Option<CheckedBuiltin> {
+    let base = name.strip_prefix("__builtin___")?.strip_suffix("_chk")?;
+    let (plain, extra, arity, variadic): (&'static str, &'static [usize], usize, bool) = match base
+    {
+        "memcpy" => ("__builtin_memcpy", &[3], 4, false),
+        "mempcpy" => ("__builtin_mempcpy", &[3], 4, false),
+        "memmove" => ("__builtin_memmove", &[3], 4, false),
+        "memset" => ("__builtin_memset", &[3], 4, false),
+        "strcpy" => ("__builtin_strcpy", &[2], 3, false),
+        "stpcpy" => ("__builtin_stpcpy", &[2], 3, false),
+        "strncpy" => ("__builtin_strncpy", &[3], 4, false),
+        "strcat" => ("__builtin_strcat", &[2], 3, false),
+        "strncat" => ("__builtin_strncat", &[3], 4, false),
+        "sprintf" => ("__builtin_sprintf", &[1, 2], 4, true),
+        "snprintf" => ("__builtin_snprintf", &[2, 3], 5, true),
+        "vsprintf" => ("__builtin_vsprintf", &[1, 2], 5, false),
+        "vsnprintf" => ("__builtin_vsnprintf", &[2, 3], 6, false),
+        "printf" => ("__builtin_printf", &[0], 2, true),
+        "vprintf" => ("__builtin_vprintf", &[0], 3, false),
+        "fprintf" => ("__builtin_fprintf", &[1], 3, true),
+        "vfprintf" => ("__builtin_vfprintf", &[1], 4, false),
+        _ => return None,
+    };
+    Some(CheckedBuiltin {
+        plain,
+        extra,
+        arity,
+        variadic,
+    })
+}
+
+/// `__builtin_object_size` or `__builtin_dynamic_object_size` (GCC manual,
+/// "Object Size Checking").
+pub fn is_object_size_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "__builtin_object_size" | "__builtin_dynamic_object_size"
+    )
+}
+
 /// The library function `__builtin_NAME` forwards to, if any.
 pub fn library(name: &str) -> Option<LibSig> {
     let base = name.strip_prefix("__builtin_")?;

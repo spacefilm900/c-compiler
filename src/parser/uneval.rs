@@ -200,6 +200,20 @@ fn check_uneval_builtin_call(name: &str, args: &[Expr], env: Env) -> Result<bool
         }
         return Ok(true);
     }
+    // The object size builtins: the argument count is checked here too,
+    // because a constant context keeps only the folded value.
+    let checked = crate::builtins::checked_builtin(name);
+    if checked.is_some() || crate::builtins::is_object_size_builtin(name) {
+        for arg in args {
+            check_uneval(arg, env)?;
+        }
+        let (arity, variadic) = checked.map_or((2, false), |c| (c.arity, c.variadic));
+        if (variadic && args.len() < arity) || (!variadic && args.len() != arity) {
+            return Err(BoundErr::WrongArity);
+        }
+        check_uneval_object_size_operands(checked, args, env)?;
+        return Ok(true);
+    }
     let Some(arity) = builtin_arity(name) else {
         return Ok(false);
     };
@@ -371,7 +385,9 @@ pub(super) fn is_memory_builtin(name: &str) -> bool {
 /// The result type semantic analysis gives a supported builtin call:
 /// the floating type of `__builtin_nan*`, `__builtin_inf*`, and
 /// `__builtin_huge_val*`; `int` for `__builtin_signbit*` and the
-/// comparison builtins; `void *` for the memory builtins.
+/// comparison builtins; `void *` for the memory builtins; `size_t` for
+/// `__builtin_object_size`; and for `__builtin___NAME_chk` the type of
+/// `__builtin_NAME`.
 pub(super) fn builtin_result_type(name: &str) -> Option<CType> {
     if let Some(fp) = crate::float::FpFormatBuiltin::from_name(name) {
         return Some(CType::Float(fp.kind()));
@@ -381,6 +397,12 @@ pub(super) fn builtin_result_type(name: &str) -> Option<CType> {
     }
     if is_memory_builtin(name) {
         return Some(CType::pointer(CType::Void));
+    }
+    if let Some(checked) = crate::builtins::checked_builtin(name) {
+        return builtin_result_type(checked.plain);
+    }
+    if crate::builtins::is_object_size_builtin(name) {
+        return Some(CType::Int(crate::ast::TypeName::size_t()));
     }
     if let Some(inline) = crate::builtins::Inline::from_name(name) {
         return Some(inline.result_type());
@@ -403,20 +425,70 @@ pub(super) fn check_uneval_signbit(arg: &Expr, env: Env) -> Result<(), BoundErr>
 /// destination; a pointer source, or an integer value for memset; an
 /// integer size. An operand whose type the parser cannot work out is left
 /// to semantic analysis.
+/// The operand checks semantic analysis applies to an object size
+/// builtin (`check_object_size`, `check_checked_builtin`): for
+/// `__builtin_object_size` a pointer or null pointer constant and an
+/// integer type; for `__builtin___NAME_chk` integer flag and size
+/// arguments, and the memory builtins' own checks on the rest. An operand
+/// whose type the parser cannot work out is left to semantic analysis.
+fn check_uneval_object_size_operands(
+    checked: Option<crate::builtins::CheckedBuiltin>,
+    args: &[Expr],
+    env: Env,
+) -> Result<(), BoundErr> {
+    let known = |arg: &Expr| rvalue_type(arg, env).ok();
+    let Some(checked) = checked else {
+        if let Some(ty) = known(&args[0]) {
+            if !ty.is_pointer() && !uneval_null_constant(&args[0], &ty, env) {
+                return Err(BoundErr::InvalidOperand);
+            }
+        }
+        // The type is an integer constant expression from 0 to 3, as
+        // semantic analysis requires (`check_object_size`).
+        if let Some(ty) = known(&args[1]) {
+            let in_range = ty.is_integer()
+                && eval_ice(&args[1], env).is_ok_and(|value| value.bits & value.ty.mask() <= 3);
+            if !in_range {
+                return Err(BoundErr::InvalidOperand);
+            }
+        }
+        return Ok(());
+    };
+    for &index in checked.extra {
+        if known(&args[index]).is_some_and(|ty| !ty.is_integer()) {
+            return Err(BoundErr::InvalidOperand);
+        }
+    }
+    if is_memory_builtin(checked.plain) {
+        let rest: Vec<Expr> = args
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !checked.extra.contains(index))
+            .map(|(_, arg)| arg.clone())
+            .collect();
+        check_uneval_memory_builtin(checked.plain, &rest, env)?;
+    }
+    Ok(())
+}
+
 pub(super) fn check_uneval_memory_builtin(
     name: &str,
     args: &[Expr],
     env: Env,
 ) -> Result<(), BoundErr> {
     let known = |arg: &Expr| rvalue_type(arg, env).ok();
-    if known(&args[0]).is_some_and(|ty| !ty.is_pointer()) {
+    // A pointer parameter also takes a null pointer constant (C11 6.3.2.3p3).
+    let not_pointer = |arg: &Expr| {
+        known(arg).is_some_and(|ty| !ty.is_pointer() && !uneval_null_constant(arg, &ty, env))
+    };
+    if not_pointer(&args[0]) {
         return Err(BoundErr::MemoryDest);
     }
     if name == "__builtin_memset" {
         if known(&args[1]).is_some_and(|ty| !ty.is_integer()) {
             return Err(BoundErr::MemsetValue);
         }
-    } else if known(&args[1]).is_some_and(|ty| !ty.is_pointer()) {
+    } else if not_pointer(&args[1]) {
         return Err(BoundErr::MemorySource);
     }
     if known(&args[2]).is_some_and(|ty| !ty.is_integer()) {

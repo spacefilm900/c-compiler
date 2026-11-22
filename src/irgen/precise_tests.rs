@@ -326,3 +326,302 @@ fn unsigned_case_ranges_order_by_value() {
     };
     assert_eq!(err.message, "duplicate case value '2'");
 }
+
+/// The body of the function whose `define` line contains `name`.
+fn function_body<'a>(ir: &'a str, name: &str) -> &'a str {
+    let start = ir
+        .lines()
+        .position(|line| line.starts_with("define ") && line.contains(name))
+        .unwrap_or_else(|| panic!("no define for {name}:\n{ir}"));
+    let begin = ir.lines().take(start).map(|l| l.len() + 1).sum::<usize>();
+    let rest = &ir[begin..];
+    &rest[..rest.find("\n}").map_or(rest.len(), |end| end + 2)]
+}
+
+#[test]
+fn struct_parameter_pieces_are_not_followed_by_a_whole_slot_zero_store() {
+    // `store_param`. LLVM's AddressSanitizer at -O0 moves each first store
+    // of a parameter into its stack slot to the top of the function. A
+    // whole-slot `zeroinitializer` store written before the register pieces
+    // then runs after them and erases the parameter (the weekly sanitizer
+    // run found this in lib/threads.c `thrd_join`). The pieces are stored
+    // first, and only bytes no piece covers are zeroed, after them.
+    let x86 = PpOptions {
+        target: crate::Target::X86_64Linux,
+        ..PpOptions::default()
+    };
+    let ir = ir_for(
+        "struct s { long a; void *b; };\nlong get(struct s x) { return x.a; }\n",
+        &x86,
+    );
+    let body = function_body(&ir, "@get(");
+    assert!(!body.contains("zeroinitializer"), "{body}");
+    assert!(body.contains("store i64 %p0, ptr"), "{body}");
+    assert!(body.contains("store ptr %p0.1, ptr"), "{body}");
+
+    // A float in the second eightbyte leaves bytes 12..16 (tail padding)
+    // to no piece: they are zeroed, and only they, after the pieces.
+    let ir = ir_for(
+        "struct t { double d; float f; };\nfloat get(struct t x) { return x.f; }\n",
+        &x86,
+    );
+    let body = function_body(&ir, "@get(");
+    let lines: Vec<&str> = body.lines().collect();
+    let zero = lines
+        .iter()
+        .position(|l| l.contains("zeroinitializer"))
+        .unwrap_or_else(|| panic!("tail padding is not zeroed:\n{body}"));
+    assert!(
+        lines[zero].contains("store [4 x i8] zeroinitializer"),
+        "{body}"
+    );
+    // Both pieces are stored, and the zero store follows both.
+    let piece = |text: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(text))
+            .unwrap_or_else(|| panic!("no `{text}` store:\n{body}"))
+    };
+    let first = piece("store double %p0, ptr");
+    let second = piece("store float %p0.1, ptr");
+    assert!(zero > first && zero > second, "{body}");
+    // The zero store is to byte 12 of the parameter's slot, not to `f`.
+    let slot = lines[first]
+        .split("ptr ")
+        .nth(1)
+        .and_then(|rest| rest.split(',').next())
+        .unwrap_or_else(|| panic!("no slot in {}", lines[first]));
+    let address = lines[zero]
+        .split("ptr ")
+        .nth(1)
+        .and_then(|rest| rest.split(',').next())
+        .unwrap_or_else(|| panic!("no address in {}", lines[zero]));
+    let offset = format!("{address} = getelementptr inbounds i8, ptr {slot}, i64 12");
+    assert!(body.contains(&offset), "want `{offset}`:\n{body}");
+    assert_eq!(body.matches("zeroinitializer").count(), 1, "{body}");
+}
+
+const OBJECT_SIZE_PROGRAM: &str = "int printf(const char *, ...);\n\
+         int puts(const char *);\n\
+         static int sizes;\n\
+         static unsigned long size(void) { sizes++; return (unsigned long)-1; }\n\
+         static int fmt(char *b, unsigned long n, const char *f, ...) {\n\
+             __builtin_va_list ap; __builtin_va_start(ap, f);\n\
+             int r = __builtin___vsnprintf_chk(b, n, 1, size(), f, ap);\n\
+             __builtin_va_end(ap); return r; }\n\
+         static int fmt_all(char *b, const char *f, ...) {\n\
+             __builtin_va_list ap; __builtin_va_start(ap, f);\n\
+             int r = __builtin___vsprintf_chk(b, 0, __builtin_object_size(b, 0), f, ap);\n\
+             __builtin_va_end(ap); return r; }\n\
+         static int say(const char *f, ...) {\n\
+             __builtin_va_list ap; __builtin_va_start(ap, f);\n\
+             int r = __builtin___vprintf_chk(0, f, ap);\n\
+             __builtin_va_end(ap); return r; }\n\
+         int main(void) {\n\
+             char s[32]; char *d = s; unsigned long os = __builtin_object_size(d, 1);\n\
+             __builtin___memset_chk(d, 0, sizeof s, os);\n\
+             __builtin___strcpy_chk(d, \"ab\", os);\n\
+             __builtin___strcat_chk(d, \"cd\", size());\n\
+             __builtin___strncat_chk(d, \"efgh\", 2, os);\n\
+             puts(d);\n\
+             __builtin___strncpy_chk(d, \"xyz\", 2, os);\n\
+             char *e = __builtin___stpcpy_chk(d + 2, \"!\", os);\n\
+             printf(\"%s %d\\n\", d, (int)(e - d));\n\
+             int n = __builtin___sprintf_chk(d, 1, os, \"%d-%s\", 7, \"seven\");\n\
+             printf(\"%d %s\\n\", n, d);\n\
+             n = __builtin___snprintf_chk(d, 4, 0, os, \"%d\", 123456);\n\
+             printf(\"%d %s\\n\", n, d);\n\
+             n = fmt(d, 6, \"%s:%d\", \"ab\", 99);\n\
+             printf(\"%d %s\\n\", n, d);\n\
+             n = fmt_all(d, \"%c%c\", 'o', 'k');\n\
+             printf(\"%d %s\\n\", n, d);\n\
+             __builtin___printf_chk(1, \"%s\\n\", \"chk\");\n\
+             say(\"%d sizes\\n\", sizes);\n\
+             return 0; }\n";
+
+#[test]
+fn object_size_checking_builtins_call_the_plain_functions() {
+    // GCC manual, "Object Size Checking": each `__builtin___NAME_chk`
+    // takes the arguments of NAME plus the object size (and, for the
+    // formatted-output family, a flag). This compiler performs no check:
+    // the call is to NAME with the extra arguments removed. The macOS SDK's
+    // <stdio.h> spells `vsnprintf` as `__builtin___vsnprintf_chk`.
+    let source = OBJECT_SIZE_PROGRAM;
+    let text = ir(source);
+    assert!(
+        !text.contains("_chk"),
+        "a checking entry point was called:\n{text}"
+    );
+    for plain in [
+        "@vsnprintf(",
+        "@vsprintf(",
+        "@vprintf(",
+        "@sprintf(",
+        "@snprintf(",
+    ] {
+        assert!(text.contains(plain), "no call to {plain}:\n{text}");
+    }
+    // `mempcpy` is a GNU function that macOS lacks, so it is checked in IR.
+    let text = ir(
+        "void *f(char *d) { return __builtin___mempcpy_chk(d, \"mp\", 2, 8); }\n\
+         void g(void *s, int f) { __builtin___fprintf_chk(s, f, \"x\"); }\n",
+    );
+    assert!(!text.contains("_chk"), "{text}");
+    assert!(
+        text.contains("@mempcpy(") && text.contains("@fprintf("),
+        "{text}"
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn object_size_checking_builtins_run_as_the_plain_functions() {
+    let source = OBJECT_SIZE_PROGRAM;
+    assert_eq!(
+        run(source),
+        "abcdef\nxy! 3\n7 7-seven\n6 123\n5 ab:99\n2 ok\nchk\n2 sizes\n"
+    );
+}
+
+#[test]
+fn object_size_is_a_constant_that_does_not_evaluate_its_operand() {
+    // GCC manual, "Object Size Checking": the pointer argument is not
+    // evaluated, and an unknown size is (size_t)-1 for types 0 and 1 and 0
+    // for types 2 and 3. This compiler never knows the size.
+    let text = ir("char *next(void);\n\
+         unsigned long a(void) { return __builtin_object_size(next(), 0); }\n\
+         unsigned long b(void) { return __builtin_dynamic_object_size(next(), 3); }\n");
+    assert!(
+        !text.contains("call ptr @next"),
+        "operand evaluated:\n{text}"
+    );
+    assert!(
+        function_body(&text, "@a(").contains("ret i64 18446744073709551615"),
+        "{text}"
+    );
+    assert!(function_body(&text, "@b(").contains("ret i64 0"), "{text}");
+}
+
+#[test]
+fn object_size_accepts_a_null_pointer_constant() {
+    // The first parameter is `const void *` (GCC manual, "Object Size
+    // Checking"), so an integer constant 0 converts to it (C11 6.3.2.3p3).
+    let text = ir(
+        "unsigned long f(void) { return __builtin_object_size(0, 0); }\n\
+         unsigned long g(void) { return __builtin_object_size(0L, 2); }\n",
+    );
+    assert!(
+        function_body(&text, "@f(").contains("ret i64 18446744073709551615"),
+        "{text}"
+    );
+    assert!(function_body(&text, "@g(").contains("ret i64 0"), "{text}");
+    // In an unevaluated operand the call has the arity it needs.
+    ir(
+        "int n = sizeof(__builtin_object_size(0, 1)) + sizeof(__builtin___strcpy_chk(0, 0, 1))\n\
+         + sizeof(__builtin___memset_chk((void *)0, 0, 0, 8));\n",
+    );
+}
+
+#[test]
+fn memory_builtins_accept_null_pointer_constants() {
+    // The pointer parameters of memcpy, memmove and memset are `void *` /
+    // `const void *`, so an integer constant 0 converts to them (C11
+    // 6.3.2.3p3, 6.5.16.1p1), evaluated or not, plain or `_chk`.
+    let text = ir("void *f(void) { return __builtin___memcpy_chk((void *)0, 0, 0, 8); }\n\
+         void *g(void) { return __builtin_memcpy(0, 0, 0); }\n\
+         void *h(void) { return __builtin_memset(0, 1, 0); }\n\
+         int n = sizeof(__builtin___memcpy_chk((void *)0, 0, 0, 8)) + sizeof(__builtin_memmove(0, 0, 0));\n\
+         char a[sizeof(__builtin_object_size((char *)0, 3))];\n");
+    assert!(text.contains("define ptr @f("), "{text}");
+}
+
+#[test]
+fn object_size_checking_builtins_report_misuse() {
+    for (source, message) in [
+        (
+            "unsigned long f(char *p, int t) { return __builtin_object_size(p, t); }",
+            "integer constant",
+        ),
+        (
+            "unsigned long f(char *p) { return __builtin_object_size(p, 4); }",
+            "0 to 3",
+        ),
+        (
+            "unsigned long f(int p) { return __builtin_object_size(p, 0); }",
+            "pointer",
+        ),
+        (
+            "void f(char *p) { __builtin___strcpy_chk(p, \"a\"); }",
+            "expects 3 arguments",
+        ),
+        (
+            "void f(char *p) { __builtin___strcpy_chk(p, \"a\", p); }",
+            "integer",
+        ),
+        (
+            "int f(char *p) { return __builtin___sprintf_chk(p, 0, 1); }",
+            "at least 4",
+        ),
+        // The argument count is checked in an operand that is never
+        // evaluated too (C11 6.5.2.2p2), where only the folded size is kept.
+        (
+            "char a[sizeof(__builtin_object_size())];",
+            "wrong number of arguments",
+        ),
+        (
+            "_Static_assert(sizeof(__builtin___strcpy_chk(0)) == 8, \"\");",
+            "wrong number of arguments",
+        ),
+        (
+            "int f(void) { char a[sizeof(__builtin___sprintf_chk(0, 0))]; return sizeof a; }",
+            "wrong number of arguments",
+        ),
+        (
+            "unsigned long f(void) { return __builtin_object_size(1, 0); }",
+            "pointer",
+        ),
+        // The type argument is an integer constant from 0 to 3 there too.
+        (
+            "char a[sizeof(__builtin_object_size((char *)0, 4))];",
+            "invalid operand",
+        ),
+        (
+            "int n; char a[sizeof(__builtin_object_size((char *)0, n))];",
+            "invalid operand",
+        ),
+        (
+            "void *f(char *p) { return __builtin_memcpy(p, 1, 0); }",
+            "source must be a pointer",
+        ),
+        // The operands are checked in an unevaluated operand too.
+        (
+            "char a[sizeof(__builtin_object_size(1, 0))];",
+            "invalid operand",
+        ),
+        (
+            "char a[sizeof(__builtin_object_size((char *)0, 1.0))];",
+            "invalid operand",
+        ),
+        (
+            "char a[sizeof(__builtin___memset_chk((void *)0, 0, 0, (void *)0))];",
+            "invalid operand",
+        ),
+        (
+            "char a[sizeof(__builtin___memcpy_chk((void *)0, 1, 0, 0))];",
+            "source must be a pointer",
+        ),
+        (
+            "char a[sizeof(__builtin___sprintf_chk((char *)0, 0.5, 0, \"\"))];",
+            "invalid operand",
+        ),
+    ] {
+        let err = crate::compile_dialect(source, "t.c", &PpOptions::default(), Dialect::Gnu11)
+            .err()
+            .unwrap_or_else(|| panic!("accepted: {source}"))
+            .to_string();
+        assert!(err.contains(message), "{source}: {err}");
+    }
+}

@@ -1,0 +1,440 @@
+[
+  {
+    "id": "x86_64-linux-gnu--data-model",
+    "target": "x86_64-linux-gnu",
+    "file": "x86_64-linux-gnu--data-model.c",
+    "fixture": "data-model",
+    "standard": "6.2.5; 6.2.8; 6.7.2.1; target ABI",
+    "expected_exit": 0,
+    "target_arg": "x86_64-linux-gnu",
+    "files": [
+      "x86_64-linux-gnu--data-model.c"
+    ]
+  },
+  {
+    "id": "x86_64-linux-gnu--nested-16",
+    "target": "x86_64-linux-gnu",
+    "file": "x86_64-linux-gnu--nested-16.c",
+    "fixture": "nested-16",
+    "standard": "6.7.2.1; 6.7.5; target ABI",
+    "expected_exit": 0,
+    "target_arg": "x86_64-linux-gnu",
+    "files": [
+      "x86_64-linux-gnu--nested-16.c"
+    ]
+  },
+  {
+    "id": "x86_64-linux-gnu--nested-64",
+    "target": "x86_64-linux-gnu",
+    "file": "x86_64-linux-gnu--nested-64.c",
+    "fixture": "nested-64",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "expected_exit": 0,
+    "target_arg": "x86_64-linux-gnu",
+    "files": [
+      "x86_64-linux-gnu--nested-64.c"
+    ]
+  },
+  {
+    "id": "x86_64-linux-gnu--aggregate-call",
+    "target": "x86_64-linux-gnu",
+    "file": "x86_64-linux-gnu--aggregate-call.c",
+    "fixture": "aggregate-call",
+    "standard": "6.5.2.2; 6.9.1; target ABI",
+    "expected_exit": 0,
+    "target_arg": "x86_64-linux-gnu",
+    "files": [
+      "x86_64-linux-gnu--aggregate-call.c",
+      "x86_64-linux-gnu--aggregate-call-definition.c"
+    ]
+  },
+  {
+    "id": "x86_64-linux-gnu--atomic64",
+    "target": "x86_64-linux-gnu",
+    "file": "x86_64-linux-gnu--atomic64.c",
+    "fixture": "atomic64",
+    "standard": "6.5.16.2p3; 6.5.2.4; 6.7.2.4",
+    "expected_exit": 0,
+    "target_arg": "x86_64-linux-gnu",
+    "files": [
+      "x86_64-linux-gnu--atomic64.c"
+    ]
+  },
+  {
+    "id": "x86_64-linux-gnu--tls-layout",
+    "target": "x86_64-linux-gnu",
+    "file": "x86_64-linux-gnu--tls-layout.c",
+    "fixture": "tls-layout",
+    "standard": "6.2.4p4; 6.7.1; 6.7.5",
+    "expected_exit": 0,
+    "target_arg": "x86_64-linux-gnu",
+    "files": [
+      "x86_64-linux-gnu--tls-layout.c"
+    ]
+  },
+  {
+    "id": "aarch64-linux-gnu--data-model",
+    "target": "aarch64-linux-gnu",
+    "file": "aarch64-linux-gnu--data-model.c",
+    "fixture": "data-model",
+    "standard": "6.2.5; 6.2.8; 6.7.2.1; target ABI",
+    "expected_exit": 0,
+    "target_arg": "aarch64-linux-gnu",
+    "files": [
+      "aarch64-linux-gnu--data-model.c"
+    ]
+  },
+  {
+    "id": "aarch64-linux-gnu--nested-16",
+    "target": "aarch64-linux-gnu",
+    "file": "aarch64-linux-gnu--nested-16.c",
+    "fixture": "nested-16",
+    "standard": "6.7.2.1; 6.7.5; target ABI",
+    "expected_exit": 0,
+    "target_arg": "aarch64-linux-gnu",
+    "files": [
+      "aarch64-linux-gnu--nested-16.c"
+    ]
+  },
+  {
+    "id": "aarch64-linux-gnu--nested-64",
+    "target": "aarch64-linux-gnu",
+    "file": "aarch64-linux-gnu--nested-64.c",
+    "fixture": "nested-64",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "expected_exit": 0,
+    "target_arg": "aarch64-linux-gnu",
+    "files": [
+      "aarch64-linux-gnu--nested-64.c"
+    ]
+  },
+  {
+    "id": "aarch64-linux-gnu--aggregate-call",
+    "target": "aarch64-linux-gnu",
+    "file": "aarch64-linux-gnu--aggregate-call.c",
+    "fixture": "aggregate-call",
+    "standard": "6.5.2.2; 6.9.1; target ABI",
+    "expected_exit": 0,
+    "target_arg": "aarch64-linux-gnu",
+    "files": [
+      "aarch64-linux-gnu--aggregate-call.c",
+      "aarch64-linux-gnu--aggregate-call-definition.c"
+    ]
+  },
+  {
+    "id": "aarch64-linux-gnu--atomic64",
+    "target": "aarch64-linux-gnu",
+    "file": "aarch64-linux-gnu--atomic64.c",
+    "fixture": "atomic64",
+    "standard": "6.5.16.2p3; 6.5.2.4; 6.7.2.4",
+    "expected_exit": 0,
+    "target_arg": "aarch64-linux-gnu",
+    "files": [
+      "aarch64-linux-gnu--atomic64.c"
+    ]
+  },
+  {
+    "id": "aarch64-linux-gnu--tls-layout",
+    "target": "aarch64-linux-gnu",
+    "file": "aarch64-linux-gnu--tls-layout.c",
+    "fixture": "tls-layout",
+    "standard": "6.2.4p4; 6.7.1; 6.7.5",
+    "expected_exit": 0,
+    "target_arg": "aarch64-linux-gnu",
+    "files": [
+      "aarch64-linux-gnu--tls-layout.c"
+    ]
+  },
+  {
+    "id": "arm64-apple-macos--data-model",
+    "target": "arm64-apple-macos",
+    "file": "arm64-apple-macos--data-model.c",
+    "fixture": "data-model",
+    "standard": "6.2.5; 6.2.8; 6.7.2.1; target ABI",
+    "expected_exit": 0,
+    "target_arg": "arm64-apple-macos11.0",
+    "files": [
+      "arm64-apple-macos--data-model.c"
+    ]
+  },
+  {
+    "id": "arm64-apple-macos--nested-16",
+    "target": "arm64-apple-macos",
+    "file": "arm64-apple-macos--nested-16.c",
+    "fixture": "nested-16",
+    "standard": "6.7.2.1; 6.7.5; target ABI",
+    "expected_exit": 0,
+    "target_arg": "arm64-apple-macos11.0",
+    "files": [
+      "arm64-apple-macos--nested-16.c"
+    ]
+  },
+  {
+    "id": "arm64-apple-macos--nested-64",
+    "target": "arm64-apple-macos",
+    "file": "arm64-apple-macos--nested-64.c",
+    "fixture": "nested-64",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "expected_exit": 0,
+    "target_arg": "arm64-apple-macos11.0",
+    "files": [
+      "arm64-apple-macos--nested-64.c"
+    ]
+  },
+  {
+    "id": "arm64-apple-macos--aggregate-call",
+    "target": "arm64-apple-macos",
+    "file": "arm64-apple-macos--aggregate-call.c",
+    "fixture": "aggregate-call",
+    "standard": "6.5.2.2; 6.9.1; target ABI",
+    "expected_exit": 0,
+    "target_arg": "arm64-apple-macos11.0",
+    "files": [
+      "arm64-apple-macos--aggregate-call.c",
+      "arm64-apple-macos--aggregate-call-definition.c"
+    ]
+  },
+  {
+    "id": "arm64-apple-macos--atomic64",
+    "target": "arm64-apple-macos",
+    "file": "arm64-apple-macos--atomic64.c",
+    "fixture": "atomic64",
+    "standard": "6.5.16.2p3; 6.5.2.4; 6.7.2.4",
+    "expected_exit": 0,
+    "target_arg": "arm64-apple-macos11.0",
+    "files": [
+      "arm64-apple-macos--atomic64.c"
+    ]
+  },
+  {
+    "id": "arm64-apple-macos--tls-layout",
+    "target": "arm64-apple-macos",
+    "file": "arm64-apple-macos--tls-layout.c",
+    "fixture": "tls-layout",
+    "standard": "6.2.4p4; 6.7.1; 6.7.5",
+    "expected_exit": 0,
+    "target_arg": "arm64-apple-macos11.0",
+    "files": [
+      "arm64-apple-macos--tls-layout.c"
+    ]
+  },
+  {
+    "id": "x86_64-apple-macos--data-model",
+    "target": "x86_64-apple-macos",
+    "file": "x86_64-apple-macos--data-model.c",
+    "fixture": "data-model",
+    "standard": "6.2.5; 6.2.8; 6.7.2.1; target ABI",
+    "expected_exit": 0,
+    "target_arg": "x86_64-apple-macos10.15",
+    "files": [
+      "x86_64-apple-macos--data-model.c"
+    ]
+  },
+  {
+    "id": "x86_64-apple-macos--nested-16",
+    "target": "x86_64-apple-macos",
+    "file": "x86_64-apple-macos--nested-16.c",
+    "fixture": "nested-16",
+    "standard": "6.7.2.1; 6.7.5; target ABI",
+    "expected_exit": 0,
+    "target_arg": "x86_64-apple-macos10.15",
+    "files": [
+      "x86_64-apple-macos--nested-16.c"
+    ]
+  },
+  {
+    "id": "x86_64-apple-macos--nested-64",
+    "target": "x86_64-apple-macos",
+    "file": "x86_64-apple-macos--nested-64.c",
+    "fixture": "nested-64",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "expected_exit": 0,
+    "target_arg": "x86_64-apple-macos10.15",
+    "files": [
+      "x86_64-apple-macos--nested-64.c"
+    ]
+  },
+  {
+    "id": "x86_64-apple-macos--aggregate-call",
+    "target": "x86_64-apple-macos",
+    "file": "x86_64-apple-macos--aggregate-call.c",
+    "fixture": "aggregate-call",
+    "standard": "6.5.2.2; 6.9.1; target ABI",
+    "expected_exit": 0,
+    "target_arg": "x86_64-apple-macos10.15",
+    "files": [
+      "x86_64-apple-macos--aggregate-call.c",
+      "x86_64-apple-macos--aggregate-call-definition.c"
+    ]
+  },
+  {
+    "id": "x86_64-apple-macos--atomic64",
+    "target": "x86_64-apple-macos",
+    "file": "x86_64-apple-macos--atomic64.c",
+    "fixture": "atomic64",
+    "standard": "6.5.16.2p3; 6.5.2.4; 6.7.2.4",
+    "expected_exit": 0,
+    "target_arg": "x86_64-apple-macos10.15",
+    "files": [
+      "x86_64-apple-macos--atomic64.c"
+    ]
+  },
+  {
+    "id": "x86_64-apple-macos--tls-layout",
+    "target": "x86_64-apple-macos",
+    "file": "x86_64-apple-macos--tls-layout.c",
+    "fixture": "tls-layout",
+    "standard": "6.2.4p4; 6.7.1; 6.7.5",
+    "expected_exit": 0,
+    "target_arg": "x86_64-apple-macos10.15",
+    "files": [
+      "x86_64-apple-macos--tls-layout.c"
+    ]
+  },
+  {
+    "id": "x86_64-w64-windows-gnu--data-model",
+    "target": "x86_64-w64-windows-gnu",
+    "file": "x86_64-w64-windows-gnu--data-model.c",
+    "fixture": "data-model",
+    "standard": "6.2.5; 6.2.8; 6.7.2.1; target ABI",
+    "expected_exit": 0,
+    "target_arg": "x86_64-w64-windows-gnu",
+    "files": [
+      "x86_64-w64-windows-gnu--data-model.c"
+    ]
+  },
+  {
+    "id": "x86_64-w64-windows-gnu--nested-16",
+    "target": "x86_64-w64-windows-gnu",
+    "file": "x86_64-w64-windows-gnu--nested-16.c",
+    "fixture": "nested-16",
+    "standard": "6.7.2.1; 6.7.5; target ABI",
+    "expected_exit": 0,
+    "target_arg": "x86_64-w64-windows-gnu",
+    "files": [
+      "x86_64-w64-windows-gnu--nested-16.c"
+    ]
+  },
+  {
+    "id": "x86_64-w64-windows-gnu--nested-64",
+    "target": "x86_64-w64-windows-gnu",
+    "file": "x86_64-w64-windows-gnu--nested-64.c",
+    "fixture": "nested-64",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "expected_exit": 0,
+    "target_arg": "x86_64-w64-windows-gnu",
+    "files": [
+      "x86_64-w64-windows-gnu--nested-64.c"
+    ]
+  },
+  {
+    "id": "x86_64-w64-windows-gnu--aggregate-call",
+    "target": "x86_64-w64-windows-gnu",
+    "file": "x86_64-w64-windows-gnu--aggregate-call.c",
+    "fixture": "aggregate-call",
+    "standard": "6.5.2.2; 6.9.1; target ABI",
+    "expected_exit": 0,
+    "target_arg": "x86_64-w64-windows-gnu",
+    "files": [
+      "x86_64-w64-windows-gnu--aggregate-call.c",
+      "x86_64-w64-windows-gnu--aggregate-call-definition.c"
+    ]
+  },
+  {
+    "id": "x86_64-w64-windows-gnu--atomic64",
+    "target": "x86_64-w64-windows-gnu",
+    "file": "x86_64-w64-windows-gnu--atomic64.c",
+    "fixture": "atomic64",
+    "standard": "6.5.16.2p3; 6.5.2.4; 6.7.2.4",
+    "expected_exit": 0,
+    "target_arg": "x86_64-w64-windows-gnu",
+    "files": [
+      "x86_64-w64-windows-gnu--atomic64.c"
+    ]
+  },
+  {
+    "id": "x86_64-w64-windows-gnu--tls-layout",
+    "target": "x86_64-w64-windows-gnu",
+    "file": "x86_64-w64-windows-gnu--tls-layout.c",
+    "fixture": "tls-layout",
+    "standard": "6.2.4p4; 6.7.1; 6.7.5",
+    "expected_exit": 0,
+    "target_arg": "x86_64-w64-windows-gnu",
+    "files": [
+      "x86_64-w64-windows-gnu--tls-layout.c"
+    ]
+  },
+  {
+    "id": "x86_64-pc-windows-msvc--data-model",
+    "target": "x86_64-pc-windows-msvc",
+    "file": "x86_64-pc-windows-msvc--data-model.c",
+    "fixture": "data-model",
+    "standard": "6.2.5; 6.2.8; 6.7.2.1; target ABI",
+    "expected_exit": 0,
+    "target_arg": "x86_64-pc-windows-msvc",
+    "files": [
+      "x86_64-pc-windows-msvc--data-model.c"
+    ]
+  },
+  {
+    "id": "x86_64-pc-windows-msvc--nested-16",
+    "target": "x86_64-pc-windows-msvc",
+    "file": "x86_64-pc-windows-msvc--nested-16.c",
+    "fixture": "nested-16",
+    "standard": "6.7.2.1; 6.7.5; target ABI",
+    "expected_exit": 0,
+    "target_arg": "x86_64-pc-windows-msvc",
+    "files": [
+      "x86_64-pc-windows-msvc--nested-16.c"
+    ]
+  },
+  {
+    "id": "x86_64-pc-windows-msvc--nested-64",
+    "target": "x86_64-pc-windows-msvc",
+    "file": "x86_64-pc-windows-msvc--nested-64.c",
+    "fixture": "nested-64",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "expected_exit": 0,
+    "target_arg": "x86_64-pc-windows-msvc",
+    "files": [
+      "x86_64-pc-windows-msvc--nested-64.c"
+    ]
+  },
+  {
+    "id": "x86_64-pc-windows-msvc--aggregate-call",
+    "target": "x86_64-pc-windows-msvc",
+    "file": "x86_64-pc-windows-msvc--aggregate-call.c",
+    "fixture": "aggregate-call",
+    "standard": "6.5.2.2; 6.9.1; target ABI",
+    "expected_exit": 0,
+    "target_arg": "x86_64-pc-windows-msvc",
+    "files": [
+      "x86_64-pc-windows-msvc--aggregate-call.c",
+      "x86_64-pc-windows-msvc--aggregate-call-definition.c"
+    ]
+  },
+  {
+    "id": "x86_64-pc-windows-msvc--atomic64",
+    "target": "x86_64-pc-windows-msvc",
+    "file": "x86_64-pc-windows-msvc--atomic64.c",
+    "fixture": "atomic64",
+    "standard": "6.5.16.2p3; 6.5.2.4; 6.7.2.4",
+    "expected_exit": 0,
+    "target_arg": "x86_64-pc-windows-msvc",
+    "files": [
+      "x86_64-pc-windows-msvc--atomic64.c"
+    ]
+  },
+  {
+    "id": "x86_64-pc-windows-msvc--tls-layout",
+    "target": "x86_64-pc-windows-msvc",
+    "file": "x86_64-pc-windows-msvc--tls-layout.c",
+    "fixture": "tls-layout",
+    "standard": "6.2.4p4; 6.7.1; 6.7.5",
+    "expected_exit": 0,
+    "target_arg": "x86_64-pc-windows-msvc",
+    "files": [
+      "x86_64-pc-windows-msvc--tls-layout.c"
+    ]
+  }
+]

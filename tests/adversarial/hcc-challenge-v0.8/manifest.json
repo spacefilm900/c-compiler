@@ -1,0 +1,1718 @@
+[
+  {
+    "id": "HCC08-001",
+    "group": "layout",
+    "title": "union nested record, alignment 8",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "rationale": "Check physical offset, stride, copy, and frontend layout together.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-002",
+    "group": "layout",
+    "title": "bitfield nested record, alignment 8",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "rationale": "Check physical offset, stride, copy, and frontend layout together.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-003",
+    "group": "layout",
+    "title": "matrix nested record, alignment 8",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "rationale": "Check physical offset, stride, copy, and frontend layout together.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-004",
+    "group": "layout",
+    "title": "Flexible array element alignment 8",
+    "standard": "6.7.2.1p18; 6.7.5",
+    "rationale": "Target layout of flexible array header; no flexible element accessed.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-005",
+    "group": "layout",
+    "title": "union nested record, alignment 16",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "rationale": "Check physical offset, stride, copy, and frontend layout together.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-006",
+    "group": "layout",
+    "title": "bitfield nested record, alignment 16",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "rationale": "Check physical offset, stride, copy, and frontend layout together.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-007",
+    "group": "layout",
+    "title": "matrix nested record, alignment 16",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "rationale": "Check physical offset, stride, copy, and frontend layout together.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-008",
+    "group": "layout",
+    "title": "Flexible array element alignment 16",
+    "standard": "6.7.2.1p18; 6.7.5",
+    "rationale": "Target layout of flexible array header; no flexible element accessed.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-009",
+    "group": "layout",
+    "title": "union nested record, alignment 32",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "rationale": "Check physical offset, stride, copy, and frontend layout together.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-010",
+    "group": "layout",
+    "title": "bitfield nested record, alignment 32",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "rationale": "Check physical offset, stride, copy, and frontend layout together.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-011",
+    "group": "layout",
+    "title": "matrix nested record, alignment 32",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "rationale": "Check physical offset, stride, copy, and frontend layout together.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-012",
+    "group": "layout",
+    "title": "Flexible array element alignment 32",
+    "standard": "6.7.2.1p18; 6.7.5",
+    "rationale": "Target layout of flexible array header; no flexible element accessed.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-013",
+    "group": "layout",
+    "title": "union nested record, alignment 64",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "rationale": "Check physical offset, stride, copy, and frontend layout together.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-014",
+    "group": "layout",
+    "title": "bitfield nested record, alignment 64",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "rationale": "Check physical offset, stride, copy, and frontend layout together.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-015",
+    "group": "layout",
+    "title": "matrix nested record, alignment 64",
+    "standard": "6.7.2.1; 6.7.5; 6.5.16.1",
+    "rationale": "Check physical offset, stride, copy, and frontend layout together.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-016",
+    "group": "layout",
+    "title": "Flexible array element alignment 64",
+    "standard": "6.7.2.1p18; 6.7.5",
+    "rationale": "Target layout of flexible array header; no flexible element accessed.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-017",
+    "group": "ABI",
+    "title": "Over-aligned return (16 bytes)",
+    "standard": "6.7.5; 6.5.2.2; 6.9.1; 7.16 (variadic); target ABI",
+    "rationale": "Separate compilation; verify values across actual ABI boundary.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "definition.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-018",
+    "group": "ABI",
+    "title": "Over-aligned argument (16 bytes)",
+    "standard": "6.7.5; 6.5.2.2; 6.9.1; 7.16 (variadic); target ABI",
+    "rationale": "Separate compilation; verify values across actual ABI boundary.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "definition.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-019",
+    "group": "ABI",
+    "title": "Over-aligned variadic (16 bytes)",
+    "standard": "6.7.5; 6.5.2.2; 6.9.1; 7.16 (variadic); target ABI",
+    "rationale": "Separate compilation; verify values across actual ABI boundary.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "definition.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-020",
+    "group": "ABI",
+    "title": "Over-aligned callback (16 bytes)",
+    "standard": "6.7.5; 6.5.2.2; 6.9.1; 7.16 (variadic); target ABI",
+    "rationale": "Separate compilation; verify values across actual ABI boundary.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "definition.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-021",
+    "group": "ABI",
+    "title": "Over-aligned return (32 bytes)",
+    "standard": "6.7.5; 6.5.2.2; 6.9.1; 7.16 (variadic); target ABI",
+    "rationale": "Separate compilation; verify values across actual ABI boundary.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "definition.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-022",
+    "group": "ABI",
+    "title": "Over-aligned argument (32 bytes)",
+    "standard": "6.7.5; 6.5.2.2; 6.9.1; 7.16 (variadic); target ABI",
+    "rationale": "Separate compilation; verify values across actual ABI boundary.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "definition.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-023",
+    "group": "ABI",
+    "title": "Over-aligned variadic (32 bytes)",
+    "standard": "6.7.5; 6.5.2.2; 6.9.1; 7.16 (variadic); target ABI",
+    "rationale": "Separate compilation; verify values across actual ABI boundary.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "definition.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-024",
+    "group": "ABI",
+    "title": "Over-aligned callback (32 bytes)",
+    "standard": "6.7.5; 6.5.2.2; 6.9.1; 7.16 (variadic); target ABI",
+    "rationale": "Separate compilation; verify values across actual ABI boundary.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "definition.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-025",
+    "group": "ABI",
+    "title": "Over-aligned return (64 bytes)",
+    "standard": "6.7.5; 6.5.2.2; 6.9.1; 7.16 (variadic); target ABI",
+    "rationale": "Separate compilation; verify values across actual ABI boundary.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "definition.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-026",
+    "group": "ABI",
+    "title": "Over-aligned argument (64 bytes)",
+    "standard": "6.7.5; 6.5.2.2; 6.9.1; 7.16 (variadic); target ABI",
+    "rationale": "Separate compilation; verify values across actual ABI boundary.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "definition.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-027",
+    "group": "ABI",
+    "title": "Over-aligned variadic (64 bytes)",
+    "standard": "6.7.5; 6.5.2.2; 6.9.1; 7.16 (variadic); target ABI",
+    "rationale": "Separate compilation; verify values across actual ABI boundary.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "definition.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-028",
+    "group": "ABI",
+    "title": "Over-aligned callback (64 bytes)",
+    "standard": "6.7.5; 6.5.2.2; 6.9.1; 7.16 (variadic); target ABI",
+    "rationale": "Separate compilation; verify values across actual ABI boundary.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "definition.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-029",
+    "group": "atomics",
+    "title": "CAS success and failure with distinct expected values",
+    "standard": "6.5.16.2; 7.17.3; 7.17.7; 7.17.8",
+    "rationale": "Defined operation and exact state checks; no padding comparison.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-030",
+    "group": "atomics",
+    "title": "Weak CAS retry after mismatch",
+    "standard": "6.5.16.2; 7.17.3; 7.17.7; 7.17.8",
+    "rationale": "Defined operation and exact state checks; no padding comparison.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-031",
+    "group": "atomics",
+    "title": "Atomic pointer exchange with side-effecting new value",
+    "standard": "6.5.16.2; 7.17.3; 7.17.7; 7.17.8",
+    "rationale": "A pointer-valued exchange returns the old value and evaluates the desired expression once; no disagreement on element scaling.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-032",
+    "group": "atomics",
+    "title": "Atomic pointer CAS with typed expected",
+    "standard": "6.5.16.2; 7.17.3; 7.17.7; 7.17.8",
+    "rationale": "Defined operation and exact state checks; no padding comparison.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-033",
+    "group": "atomics",
+    "title": "Unsigned bitwise fetch sequence",
+    "standard": "6.5.16.2; 7.17.3; 7.17.7; 7.17.8",
+    "rationale": "Defined operation and exact state checks; no padding comparison.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-034",
+    "group": "atomics",
+    "title": "Nonconstant order expression evaluated once",
+    "standard": "6.5.16.2; 7.17.3; 7.17.7; 7.17.8",
+    "rationale": "Defined operation and exact state checks; no padding comparison.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-035",
+    "group": "atomics",
+    "title": "Atomic floating multiply and division",
+    "standard": "6.5.16.2; 7.17.3; 7.17.7; 7.17.8",
+    "rationale": "Defined operation and exact state checks; no padding comparison.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-036",
+    "group": "atomics",
+    "title": "Atomic signed short compound operations",
+    "standard": "6.5.16.2; 7.17.3; 7.17.7; 7.17.8",
+    "rationale": "Defined operation and exact state checks; no padding comparison.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-037",
+    "group": "atomics",
+    "title": "Atomic aggregate exchange without padding",
+    "standard": "6.5.16.2; 7.17.3; 7.17.7; 7.17.8",
+    "rationale": "Defined operation and exact state checks; no padding comparison.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-038",
+    "group": "atomics",
+    "title": "Atomic 16-byte aggregate CAS",
+    "standard": "6.5.16.2; 7.17.3; 7.17.7; 7.17.8",
+    "rationale": "Defined operation and exact state checks; no padding comparison.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-039",
+    "group": "atomics",
+    "title": "Atomic elements in a VLA",
+    "standard": "6.5.16.2; 7.17.3; 7.17.7; 7.17.8",
+    "rationale": "Defined operation and exact state checks; no padding comparison.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-040",
+    "group": "atomics",
+    "title": "Atomic flag in nested aligned record",
+    "standard": "6.5.16.2; 7.17.3; 7.17.7; 7.17.8",
+    "rationale": "Defined operation and exact state checks; no padding comparison.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-041",
+    "group": "threads",
+    "title": "CAS contention exact count",
+    "standard": "5.1.2.4; 6.2.4; 7.17; 7.26",
+    "rationale": "Deterministic invariant after synchronisation; no timing-dependent expected value.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread",
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-042",
+    "group": "threads",
+    "title": "Atomic floating multiply contended",
+    "standard": "5.1.2.4; 6.2.4; 7.17; 7.26",
+    "rationale": "Deterministic invariant after synchronisation; no timing-dependent expected value.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread",
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-043",
+    "group": "threads",
+    "title": "Recursive mutex depth and trylock",
+    "standard": "5.1.2.4; 6.2.4; 7.17; 7.26",
+    "rationale": "Deterministic invariant after synchronisation; no timing-dependent expected value.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread",
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-044",
+    "group": "threads",
+    "title": "Condition variable broadcast predicate",
+    "standard": "5.1.2.4; 6.2.4; 7.17; 7.26",
+    "rationale": "Deterministic invariant after synchronisation; no timing-dependent expected value.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread",
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-045",
+    "group": "threads",
+    "title": "TLS nested over-aligned object in workers",
+    "standard": "5.1.2.4; 6.2.4; 7.17; 7.26",
+    "rationale": "Deterministic invariant after synchronisation; no timing-dependent expected value.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread",
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-046",
+    "group": "threads",
+    "title": "Release sequence RMW publishes payload",
+    "standard": "5.1.2.4; 6.2.4; 7.17; 7.26",
+    "rationale": "Deterministic invariant after synchronisation; no timing-dependent expected value.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread",
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-047",
+    "group": "threads",
+    "title": "TSS independent keys and deletion",
+    "standard": "5.1.2.4; 6.2.4; 7.17; 7.26",
+    "rationale": "Deterministic invariant after synchronisation; no timing-dependent expected value.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread",
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-048",
+    "group": "threads",
+    "title": "Thread exit publishes return code and TLS",
+    "standard": "5.1.2.4; 6.2.4; 7.17; 7.26",
+    "rationale": "Deterministic invariant after synchronisation; no timing-dependent expected value.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread",
+      "-latomic"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-049",
+    "group": "VLA",
+    "title": "VLA with aligned record stride",
+    "standard": "6.2.4; 6.5.3.4; 6.7.6.2; 6.7.6.3; 6.8.6",
+    "rationale": "Defined size, indexing, lifetime or control-flow invariant.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-050",
+    "group": "VLA",
+    "title": "VLA typedef shadowing and capture",
+    "standard": "6.2.4; 6.5.3.4; 6.7.6.2; 6.7.6.3; 6.8.6",
+    "rationale": "Defined size, indexing, lifetime or control-flow invariant.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-051",
+    "group": "VLA",
+    "title": "VLA pointer difference after bound changes",
+    "standard": "6.2.4; 6.5.3.4; 6.7.6.2; 6.7.6.3; 6.8.6",
+    "rationale": "Defined size, indexing, lifetime or control-flow invariant.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-052",
+    "group": "VLA",
+    "title": "VLA parameter captures bound and modifies independently",
+    "standard": "6.2.4; 6.5.3.4; 6.7.6.2; 6.7.6.3; 6.8.6",
+    "rationale": "Defined size, indexing, lifetime or control-flow invariant.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-053",
+    "group": "VLA",
+    "title": "VLA sizeof type evaluates dimension once",
+    "standard": "6.2.4; 6.5.3.4; 6.7.6.2; 6.7.6.3; 6.8.6",
+    "rationale": "Defined size, indexing, lifetime or control-flow invariant.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-054",
+    "group": "VLA",
+    "title": "VLA typedef declaration side effect once",
+    "standard": "6.2.4; 6.5.3.4; 6.7.6.2; 6.7.6.3; 6.8.6",
+    "rationale": "Defined size, indexing, lifetime or control-flow invariant.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-055",
+    "group": "VLA",
+    "title": "VLA multidimensional compound assignment pointer",
+    "standard": "6.2.4; 6.5.3.4; 6.7.6.2; 6.7.6.3; 6.8.6",
+    "rationale": "Defined size, indexing, lifetime or control-flow invariant.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-056",
+    "group": "VLA",
+    "title": "VLA loop with early return from nested scopes",
+    "standard": "6.2.4; 6.5.3.4; 6.7.6.2; 6.7.6.3; 6.8.6",
+    "rationale": "Defined size, indexing, lifetime or control-flow invariant.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-057",
+    "group": "VLA",
+    "title": "VLA goto backward reevaluates bound",
+    "standard": "6.2.4; 6.5.3.4; 6.7.6.2; 6.7.6.3; 6.8.6",
+    "rationale": "Defined size, indexing, lifetime or control-flow invariant.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-058",
+    "group": "VLA",
+    "title": "VLA nested switch exits with outer storage intact",
+    "standard": "6.2.4; 6.5.3.4; 6.7.6.2; 6.7.6.3; 6.8.6",
+    "rationale": "Defined size, indexing, lifetime or control-flow invariant.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-059",
+    "group": "VLA",
+    "title": "VLA and function pointer with runtime stride",
+    "standard": "6.2.4; 6.5.3.4; 6.7.6.2; 6.7.6.3; 6.8.6",
+    "rationale": "Defined size, indexing, lifetime or control-flow invariant.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-060",
+    "group": "VLA",
+    "title": "VLA pointer casts with runtime row type",
+    "standard": "6.2.4; 6.5.3.4; 6.7.6.2; 6.7.6.3; 6.8.6",
+    "rationale": "Defined size, indexing, lifetime or control-flow invariant.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-061",
+    "group": "GNU",
+    "title": "GNU typeof on VLA pointer captures stride",
+    "standard": "GCC C extensions; N1570 6.5, 6.7, 6.8 as applicable",
+    "rationale": "Documented GNU feature combined with ordinary C semantics.",
+    "classification": "gnu-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-062",
+    "group": "GNU",
+    "title": "GNU statement expression returns record by value",
+    "standard": "GCC C extensions; N1570 6.5, 6.7, 6.8 as applicable",
+    "rationale": "Documented GNU feature combined with ordinary C semantics.",
+    "classification": "gnu-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-063",
+    "group": "GNU",
+    "title": "GNU omitted conditional with pointer side effects",
+    "standard": "GCC C extensions; N1570 6.5, 6.7, 6.8 as applicable",
+    "rationale": "Documented GNU feature combined with ordinary C semantics.",
+    "classification": "gnu-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-064",
+    "group": "GNU",
+    "title": "GNU packed nested aligned object offsets",
+    "standard": "GCC C extensions; N1570 6.5, 6.7, 6.8 as applicable",
+    "rationale": "Documented GNU feature combined with ordinary C semantics.",
+    "classification": "gnu-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-065",
+    "group": "GNU",
+    "title": "GNU overflow builtin narrow output",
+    "standard": "GCC C extensions; N1570 6.5, 6.7, 6.8 as applicable",
+    "rationale": "Documented GNU feature combined with ordinary C semantics.",
+    "classification": "gnu-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-066",
+    "group": "GNU",
+    "title": "GNU statement expression nested loop VLA exit",
+    "standard": "GCC C extensions; N1570 6.5, 6.7, 6.8 as applicable",
+    "rationale": "Documented GNU feature combined with ordinary C semantics.",
+    "classification": "gnu-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-067",
+    "group": "GNU",
+    "title": "GNU computed goto exits inner ordinary scope",
+    "standard": "GCC C extensions; N1570 6.5, 6.7, 6.8 as applicable",
+    "rationale": "Documented GNU feature combined with ordinary C semantics.",
+    "classification": "gnu-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-068",
+    "group": "GNU",
+    "title": "GNU case range mixed with enum constant",
+    "standard": "GCC C extensions; N1570 6.5, 6.7, 6.8 as applicable",
+    "rationale": "Documented GNU feature combined with ordinary C semantics.",
+    "classification": "gnu-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-069",
+    "group": "diagnostics",
+    "title": "Atomic type specifier rejects const-qualified type",
+    "standard": "6.7.2.4p3",
+    "rationale": "Constraint violation: diagnostic required; rejection is challenge policy.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject"
+    }
+  },
+  {
+    "id": "HCC08-070",
+    "group": "diagnostics",
+    "title": "Atomic qualifier on function typedef",
+    "standard": "6.7.3p3",
+    "rationale": "Constraint violation: diagnostic required; rejection is challenge policy.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject"
+    }
+  },
+  {
+    "id": "HCC08-071",
+    "group": "diagnostics",
+    "title": "Atomic type specifier rejects already atomic type",
+    "standard": "6.7.2.4p3",
+    "rationale": "Constraint violation: diagnostic required; rejection is challenge policy.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject"
+    }
+  },
+  {
+    "id": "HCC08-072",
+    "group": "diagnostics",
+    "title": "Alignment on register object",
+    "standard": "6.7.5p2",
+    "rationale": "Constraint violation: diagnostic required; rejection is challenge policy.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject"
+    }
+  },
+  {
+    "id": "HCC08-073",
+    "group": "diagnostics",
+    "title": "Alignment on function declaration",
+    "standard": "6.7.5p2",
+    "rationale": "Constraint violation: diagnostic required; rejection is challenge policy.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject"
+    }
+  },
+  {
+    "id": "HCC08-074",
+    "group": "diagnostics",
+    "title": "Thread-local member",
+    "standard": "6.7.1; 6.7.2.1",
+    "rationale": "Constraint violation: diagnostic required; rejection is challenge policy.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject"
+    }
+  },
+  {
+    "id": "HCC08-075",
+    "group": "diagnostics",
+    "title": "VLA file scope via variable bound",
+    "standard": "6.7.6.2p2",
+    "rationale": "Constraint violation: diagnostic required; rejection is challenge policy.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject"
+    }
+  },
+  {
+    "id": "HCC08-076",
+    "group": "diagnostics",
+    "title": "VLA named goto into nested block",
+    "standard": "6.8.6.1p1",
+    "rationale": "Constraint violation: diagnostic required; rejection is challenge policy.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject"
+    }
+  },
+  {
+    "id": "HCC08-077",
+    "group": "K&R / tgmath",
+    "title": "K&R float promotion into type generic math",
+    "standard": "6.5.2.2; 6.7.6.3; 6.9.1; 7.25",
+    "rationale": "Check documented promoted parameter/real generic dispatch.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-078",
+    "group": "K&R / tgmath",
+    "title": "Old-style parameter adjusted array",
+    "standard": "6.5.2.2; 6.7.6.3; 6.9.1; 7.25",
+    "rationale": "Check documented promoted parameter/real generic dispatch.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-079",
+    "group": "K&R / tgmath",
+    "title": "Type generic fma mixes integer and float",
+    "standard": "6.5.2.2; 6.7.6.3; 6.9.1; 7.25",
+    "rationale": "Check documented promoted parameter/real generic dispatch.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC08-080",
+    "group": "K&R / tgmath",
+    "title": "Type generic real math on VLA elements",
+    "standard": "6.5.2.2; 6.7.6.3; 6.9.1; 7.25",
+    "rationale": "Check documented promoted parameter/real generic dispatch.",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  }
+]

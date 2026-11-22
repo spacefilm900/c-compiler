@@ -1,0 +1,4 @@
+# Challenge-kit cases that fail on real 64-bit Windows with the MSVC
+# toolchain for a documented reason, for tools/platform/challenge_native.py
+# --known-failures. Format: CASE-ID [O0|O2]  # reason (no level: both)
+# A listed case that passes is reported so its line can be removed.

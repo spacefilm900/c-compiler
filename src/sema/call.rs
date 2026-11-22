@@ -114,6 +114,14 @@ impl Sema<'_> {
                     let name = name.clone();
                     return Some(self.check_fp_compare(expr, &name));
                 }
+                if let Some(checked) = crate::builtins::checked_builtin(name) {
+                    let name = name.clone();
+                    return Some(self.check_checked_builtin(expr, &name, checked));
+                }
+                if crate::builtins::is_object_size_builtin(name) {
+                    let name = name.clone();
+                    return Some(self.check_object_size(expr, &name));
+                }
                 if let Some(inline) = crate::builtins::Inline::from_name(name) {
                     let name = name.clone();
                     return Some(self.check_inline_builtin(expr, &name, inline));
@@ -241,6 +249,153 @@ impl Sema<'_> {
         }
         self.library_calls.insert(sig.name.clone(), sig);
         expr.set_ty(ret);
+        Ok(())
+    }
+
+    /// `__builtin___NAME_chk` (GCC manual, "Object Size Checking"): the
+    /// call becomes `((void)extra, ..., __builtin_NAME(args))`, so the
+    /// flag and object size are still evaluated, before the call (the order
+    /// of argument evaluation is unspecified, C11 6.5.2.2p10), and no check
+    /// is made. See [`crate::builtins::CheckedBuiltin`].
+    pub(super) fn check_checked_builtin(
+        &mut self,
+        expr: &mut Expr,
+        name: &str,
+        checked: crate::builtins::CheckedBuiltin,
+    ) -> Result<(), Diagnostic> {
+        let (line, column) = (expr.line(), expr.column());
+        let Expr::Call { callee, args, .. } = expr else {
+            unreachable!("checked builtin");
+        };
+        let argc = args.len();
+        let arity = checked.arity;
+        if (checked.variadic && argc < arity) || (!checked.variadic && argc != arity) {
+            return self.err(
+                line,
+                column,
+                format!(
+                    "{name} expects {}{arity} arguments, found {argc}",
+                    if checked.variadic { "at least " } else { "" },
+                ),
+            );
+        }
+        let mut extra = Vec::with_capacity(checked.extra.len());
+        for &index in checked.extra.iter().rev() {
+            extra.push(args.remove(index));
+        }
+        extra.reverse();
+        for arg in extra.iter_mut() {
+            self.check_expr(arg)?;
+            self.decay(arg)?;
+            if !arg.ty().expect("typed").is_integer() {
+                return self.err(
+                    arg.line(),
+                    arg.column(),
+                    format!("{name} flag and object size must be integers"),
+                );
+            }
+        }
+        let (callee_line, callee_column) = (callee.line(), callee.column());
+        **callee = Expr::Var {
+            name: checked.plain.to_string(),
+            line: callee_line,
+            column: callee_column,
+            resolved: None,
+            ty: None,
+        };
+        self.check_call(expr)?;
+        let ty = expr.ty();
+        for arg in extra.into_iter().rev() {
+            let call = std::mem::replace(
+                expr,
+                Expr::Int {
+                    bits: 0,
+                    value_ty: TypeName::Int,
+                    line,
+                    column,
+                    ty: None,
+                },
+            );
+            let discarded = Expr::Cast {
+                ty_name: CType::Void,
+                expr: Box::new(arg),
+                line,
+                column,
+                ty: Some(CType::Void),
+            };
+            *expr = Expr::Comma {
+                left: Box::new(discarded),
+                right: Box::new(call),
+                line,
+                column,
+                ty: ty.clone(),
+            };
+        }
+        Ok(())
+    }
+
+    /// `__builtin_object_size (ptr, type)` and
+    /// `__builtin_dynamic_object_size` (GCC manual, "Object Size
+    /// Checking"). `ptr` is not evaluated, and `type` is an integer
+    /// constant from 0 to 3. This compiler never determines an object's
+    /// size, so the result is the manual's value for an unknown size:
+    /// `(size_t)-1` for types 0 and 1, and 0 for types 2 and 3.
+    pub(super) fn check_object_size(
+        &mut self,
+        expr: &mut Expr,
+        name: &str,
+    ) -> Result<(), Diagnostic> {
+        let (line, column) = (expr.line(), expr.column());
+        let Expr::Call { args, .. } = expr else {
+            unreachable!("object size builtin");
+        };
+        if args.len() != 2 {
+            return self.err(
+                line,
+                column,
+                format!("{name} expects 2 arguments, found {}", args.len()),
+            );
+        }
+        for arg in args.iter_mut() {
+            self.check_expr(arg)?;
+            self.decay(arg)?;
+        }
+        // The parameter is `const void *`, so a null pointer constant is
+        // accepted too (C11 6.3.2.3p3).
+        if !args[0].ty().expect("typed").is_pointer()
+            && !super::expr::is_null_pointer_constant(&args[0])
+        {
+            return self.err(
+                args[0].line(),
+                args[0].column(),
+                format!("{name} operand must be a pointer"),
+            );
+        }
+        let kind = match eval_const_expr(&args[1]) {
+            Ok(value) if value.ty.is_integer() => value.bits & value.ty.mask(),
+            _ => {
+                return self.err(
+                    args[1].line(),
+                    args[1].column(),
+                    format!("{name} type must be an integer constant expression"),
+                );
+            }
+        };
+        if kind > 3 {
+            return self.err(
+                args[1].line(),
+                args[1].column(),
+                format!("{name} type must be from 0 to 3"),
+            );
+        }
+        let size_t = TypeName::size_t();
+        *expr = Expr::Int {
+            bits: if kind < 2 { u64::MAX } else { 0 },
+            value_ty: size_t,
+            line,
+            column,
+            ty: Some(CType::Int(size_t)),
+        };
         Ok(())
     }
 
@@ -540,6 +695,37 @@ impl Sema<'_> {
         for arg in args.iter_mut() {
             self.check_expr(arg)?;
             self.decay(arg)?;
+        }
+        // The pointer parameters are `void *` / `const void *`, so a null
+        // pointer constant converts to them (C11 6.3.2.3p3, 6.5.16.1p1).
+        let pointer_params: &[usize] = if name == "__builtin_memset" {
+            &[0]
+        } else {
+            &[0, 1]
+        };
+        for &index in pointer_params {
+            let arg = &mut args[index];
+            if !arg.ty().expect("typed").is_pointer() && super::expr::is_null_pointer_constant(arg)
+            {
+                let (arg_line, arg_column) = (arg.line(), arg.column());
+                let inner = std::mem::replace(
+                    arg,
+                    Expr::Int {
+                        bits: 0,
+                        value_ty: TypeName::Int,
+                        line: arg_line,
+                        column: arg_column,
+                        ty: None,
+                    },
+                );
+                *arg = Expr::Cast {
+                    ty_name: CType::pointer(CType::Void),
+                    expr: Box::new(inner),
+                    line: arg_line,
+                    column: arg_column,
+                    ty: Some(CType::pointer(CType::Void)),
+                };
+            }
         }
         let dest = args[0].ty().expect("typed");
         let mid = args[1].ty().expect("typed");

@@ -1,0 +1,2 @@
+struct S {unsigned a:3;unsigned :0;_Alignas(16) int x;unsigned b:5;};
+struct O {char c;struct S s;char tail;}; _Static_assert(_Alignof(struct S)==16,"alignment");_Static_assert(sizeof(struct S)==32,"size");_Static_assert(__builtin_offsetof(struct S,x)==16,"offset");_Static_assert(sizeof(struct O)==64,"nested size"); int main(void){struct O a[2]={0};a[0].s.a=5;a[0].s.x=77;a[0].s.b=21;a[0].tail=3;a[1]=a[0];return a[1].s.a!=5||a[1].s.b!=21||a[1].s.x!=77||a[1].tail!=3||(unsigned long long)&a[1].s.x%16!=0;} 

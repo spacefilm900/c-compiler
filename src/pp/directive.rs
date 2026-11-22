@@ -716,6 +716,8 @@ pub(super) fn is_implemented_builtin(name: &str) -> bool {
     crate::builtins::Inline::from_name(name).is_some()
         || crate::builtins::library(name).is_some()
         || crate::builtins::AtomicOp::from_name(name).is_some()
+        || crate::builtins::checked_builtin(name).is_some()
+        || crate::builtins::is_object_size_builtin(name)
         || crate::float::FpFormatBuiltin::from_name(name).is_some()
         || matches!(
             name,
