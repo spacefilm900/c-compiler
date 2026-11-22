@@ -81,6 +81,15 @@ class ReportTest(unittest.TestCase):
         sited = (b"WARNING: ThreadSanitizer: data race (pid=1)\n"
                  b"SUMMARY: ThreadSanitizer: data race (a.out+0xded43) (BuildId: 20e0) in main\n")
         self.assertEqual(cn.report_kinds(sited), {"ThreadSanitizer: data race in main"})
+        # A sited report and an unrelated one without a SUMMARY line: both
+        # are kept, so the second cannot hide behind the first.
+        mixed = sited + b"==1==WARNING: ThreadSanitizer: lock-order-inversion (potential deadlock)\n"
+        self.assertEqual(cn.report_kinds(mixed), {"ThreadSanitizer: data race in main",
+                                                  "ThreadSanitizer: lock-order-inversion"})
+        two = sited + (b"WARNING: ThreadSanitizer: data race (pid=1)\n"
+                       b"SUMMARY: ThreadSanitizer: data race (a.out+0x10) in worker\n")
+        self.assertEqual(cn.report_kinds(two), {"ThreadSanitizer: data race in main",
+                                                "ThreadSanitizer: data race in worker"})
 
     def test_windows_line_ends_match_the_kit(self):
         self.assertEqual(cn.normal(b"ok\r\n"), "ok\n")

@@ -122,13 +122,28 @@ REPORT_SITE = re.compile(rb"SUMMARY: (\w+Sanitizer): ([A-Za-z][\w-]*(?: [A-Za-z]
 
 
 def report_kinds(err):
-    """The sanitizer findings in standard error, as strings: the kind and
-    the function the SUMMARY line names ("ThreadSanitizer: data race in
-    main"), or the kind alone where there is no such line."""
-    kinds = {f"{m.group(1).decode()}: {m.group(2).decode()} in {m.group(3).decode()}"
-             for m in REPORT_SITE.finditer(err)}
-    if not kinds:
-        kinds = {f"{m.group(1).decode()}: {m.group(2).decode()}" for m in REPORT_KIND.finditer(err)}
+    """The sanitizer findings in standard error, as strings. Each report
+    header ("WARNING: ThreadSanitizer: data race") is paired with the next
+    SUMMARY line of the same kind, which adds the function ("... in
+    main"); a header with no such line is kept as the kind alone, and a
+    SUMMARY line with no header is kept too, so no finding is dropped."""
+    events = sorted([(m.start(), "head", m) for m in REPORT_KIND.finditer(err)]
+                    + [(m.start(), "site", m) for m in REPORT_SITE.finditer(err)],
+                    key=lambda e: e[0])
+    open_reports = []  # [kind, site or None], in order
+    for _, what, m in events:
+        kind = f"{m.group(1).decode()}: {m.group(2).decode()}"
+        if what == "head":
+            open_reports.append([kind, None])
+            continue
+        site = m.group(3).decode()
+        for report in open_reports:
+            if report[0] == kind and report[1] is None:
+                report[1] = site
+                break
+        else:
+            open_reports.append([kind, site])
+    kinds = {kind if site is None else f"{kind} in {site}" for kind, site in open_reports}
     if b"runtime error:" in err:
         kinds.add("UBSan: runtime error")
     if not kinds and SANITIZER_REPORT.search(err):
@@ -340,6 +355,11 @@ class Runner:
             if not self.matches_expected(reference, case):
                 notes.append("reference differs from the kit's expected result")
                 result["reference_differs_from_kit"] = True
+            if self.sanitize == "undefined" and SANITIZER_REPORT.search(reference["err"]):
+                # In this mode the reference is what is under test: a
+                # report about it fails the case.
+                checks["reference-sanitizer-clean"] = False
+                notes.append("the sanitizer reports the reference: " + short(reference["err"], 600))
             if self.sanitize and SANITIZER_REPORT.search(reference["err"]):
                 notes.append("the sanitizer also reports the reference")
                 result["sanitizer_reports_reference"] = True
