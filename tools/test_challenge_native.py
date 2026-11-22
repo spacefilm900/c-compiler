@@ -69,6 +69,16 @@ class ReportTest(unittest.TestCase):
         self.assertFalse(cn.SANITIZER_CRASH.search(b"==1==WARNING: ThreadSanitizer: data race\n"))
         self.assertFalse(cn.SANITIZER_CRASH.search(b"==1==ERROR: AddressSanitizer: heap-use-after-free\n"))
 
+    def test_report_kinds(self):
+        err = (b"==1==WARNING: ThreadSanitizer: data race (pid=1)\n"
+               b"==1==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x60\n"
+               b"t.c:3:5: runtime error: signed integer overflow\n")
+        self.assertEqual(cn.report_kinds(err), {
+            "ThreadSanitizer: data race",
+            "AddressSanitizer: heap-buffer-overflow on address",
+            "UBSan: runtime error"})
+        self.assertEqual(cn.report_kinds(b"ok\n"), set())
+
     def test_windows_line_ends_match_the_kit(self):
         self.assertEqual(cn.normal(b"ok\r\n"), "ok\n")
 

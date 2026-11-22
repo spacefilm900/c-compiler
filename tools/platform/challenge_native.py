@@ -114,6 +114,21 @@ SANITIZER_REPORT = re.compile(rb"(ERROR|WARNING): (AddressSanitizer|ThreadSaniti
 # therefore runs only with --force-threads-shim (lib/threads.c, which
 # calls pthread_create).
 SANITIZER_CRASH = re.compile(rb"Sanitizer:DEADLYSIGNAL|Sanitizer: nested bug|Sanitizer: CHECK failed")
+# One finding: "ThreadSanitizer: data race", "AddressSanitizer:
+# heap-buffer-overflow on address", "UBSan: runtime error".
+REPORT_KIND = re.compile(rb"(?:ERROR|WARNING): (\w+Sanitizer): ([A-Za-z][\w-]*(?: [A-Za-z][\w-]*)*)")
+
+
+def report_kinds(err):
+    """The kinds of sanitizer finding in standard error, as strings."""
+    kinds = {f"{m.group(1).decode()}: {m.group(2).decode()}" for m in REPORT_KIND.finditer(err)}
+    if b"runtime error:" in err:
+        kinds.add("UBSan: runtime error")
+    if not kinds and SANITIZER_REPORT.search(err):
+        kinds.add("unrecognised report")
+    return kinds
+
+
 CRASH_WORDS = ("internal compiler error", "segmentation fault", "panicked at", "stack overflow",
                "killed signal", "please submit a bug report")
 # A function definition line: the signature up to the parameter list's
@@ -321,6 +336,7 @@ class Runner:
             if self.sanitize and SANITIZER_REPORT.search(reference["err"]):
                 notes.append("the sanitizer also reports the reference")
                 result["sanitizer_reports_reference"] = True
+                result["reference_report_kinds"] = sorted(report_kinds(reference["err"]))
         configs = [("native", [True] * len(srcs))]
         if len(srcs) == 2:
             configs += [("mixed-hcc-first", [True, False]), ("mixed-hcc-second", [False, True])]
@@ -364,14 +380,22 @@ class Runner:
         if got["timeout"] or got["rc"] is None:
             return False, f"did not complete ({'timeout' if got['timeout'] else short(got['err'])})"
         if self.sanitize and SANITIZER_REPORT.search(got["err"]):
-            if result.get("sanitizer_reports_reference"):
+            # Excused only when every kind of finding is one the reference
+            # has too (TSan on a stand-alone fence, say); a different kind
+            # of finding still fails the case.
+            extra = report_kinds(got["err"]) - set(result.get("reference_report_kinds", []))
+            if not extra:
                 return True, None
-            return False, "sanitizer report: " + short(got["err"], 600)
+            return False, f"sanitizer report not in the reference ({', '.join(sorted(extra))}): " + \
+                short(got["err"], 600)
         if reference is None or self.sanitize:
             # Under a sanitizer, standard error carries the runtime's own
-            # messages, so both sides are held to the kit's result.
+            # messages, so both sides are held to the kit's result. A
+            # reference ended or changed by its own sanitizer report is not
+            # an expected result: a report-free candidate must match the kit.
             want = case["expected"]
-            if reference is not None and result.get("reference_differs_from_kit"):
+            if (reference is not None and result.get("reference_differs_from_kit")
+                    and not result.get("sanitizer_reports_reference")):
                 same = got["rc"] == reference["rc"] and got["out"] == reference["out"]
                 return same, None if same else describe(got, reference["rc"], reference["out"])
             if self.matches_expected(got, case):
@@ -479,6 +503,11 @@ def main():
     p.add_argument("--known-failures")
     p.add_argument("--title", default="")
     args = p.parse_args()
+    # A level, kit or case given twice would share a scratch directory.
+    args.opt = list(dict.fromkeys(args.opt))
+    args.kit = list({k.resolve(): k for k in args.kit}.values())
+    if args.case:
+        args.case = list(dict.fromkeys(args.case))
     if args.target and args.target in win.TARGETS:
         missing = win.available(args.target)
         if missing:
@@ -491,6 +520,13 @@ def main():
     known = load_known(args.known_failures)
     args.out.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix="challenge-native-"))
+    try:
+        return run_all(args, known, tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def run_all(args, known, tmp):
     runner = Runner(args, tmp)
     problems = runner.controls()
     if problems:
@@ -566,7 +602,6 @@ def main():
         print(f"FAIL {r['kit']} {r['id']} {r['opt']} {r['checks']} {'; '.join(r['notes'][:2])[:300]}")
     print(f"{data['passed']}/{data['total']} passed, {len(failed)} failed, "
           f"{len(known_hit)} known failures, {seconds} s")
-    shutil.rmtree(tmp, ignore_errors=True)
     return 1 if failed else 0
 
 
