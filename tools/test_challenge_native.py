@@ -59,6 +59,16 @@ class ReportTest(unittest.TestCase):
         self.assertTrue(cn.SANITIZER_REPORT.search(b"t.c:3:5: runtime error: signed integer overflow"))
         self.assertFalse(cn.SANITIZER_REPORT.search(b"ok\n"))
 
+    def test_a_sanitizer_crash_is_not_a_finding(self):
+        # What ThreadSanitizer printed for a thread from glibc's thrd_create
+        # in the first weekly run.
+        crash = (b"ThreadSanitizerThreadSanitizer:DEADLYSIGNAL\n"
+                 b"==157092==ERROR: ThreadSanitizer: SEGV on unknown address 0x000000000018\n"
+                 b"ThreadSanitizer: nested bug in the same thread, aborting.\n")
+        self.assertTrue(cn.SANITIZER_CRASH.search(crash))
+        self.assertFalse(cn.SANITIZER_CRASH.search(b"==1==WARNING: ThreadSanitizer: data race\n"))
+        self.assertFalse(cn.SANITIZER_CRASH.search(b"==1==ERROR: AddressSanitizer: heap-use-after-free\n"))
+
     def test_windows_line_ends_match_the_kit(self):
         self.assertEqual(cn.normal(b"ok\r\n"), "ok\n")
 

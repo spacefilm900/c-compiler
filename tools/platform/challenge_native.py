@@ -49,6 +49,10 @@ Sanitizers (--sanitize, Linux or macOS host with Clang's runtimes):
                    candidate fails the case unless the reference reports
                    too (then it is "sanitizer also reports the
                    reference", for example TSan on a stand-alone fence).
+                   A fatal signal or a failure of the sanitizer's own
+                   runtime is not a report: such a reference is blocked
+                   and such a control is not detected. Use thread with
+                   --force-threads-shim on glibc (see SANITIZER_CRASH).
   undefined        UBSan checks are inserted by the C frontend, so LLVM
                    cannot add them to this compiler's IR. Only the
                    reference is built with -fsanitize=undefined (plus
@@ -99,6 +103,17 @@ CONTROLS = Path(__file__).resolve().parent / "controls"
 SANITIZER_ATTR = {"address": "sanitize_address", "thread": "sanitize_thread"}
 SANITIZER_REPORT = re.compile(rb"(ERROR|WARNING): (AddressSanitizer|ThreadSanitizer|LeakSanitizer)"
                               rb"|runtime error:|SUMMARY: UndefinedBehaviorSanitizer")
+# A fatal signal under the sanitizer, or its runtime failing (a nested
+# failure, an internal CHECK), as opposed to a finding such as a data race
+# or a buffer overflow. A reference that ends this way is "blocked", and a
+# control that ends this way has not been detected. ThreadSanitizer
+# (LLVM 18 on the runner, LLVM 19 locally) ends this way in every thread
+# that glibc's own thrd_create starts, while threads from pthread_create
+# work: apparently glibc's thrd_create does not reach the pthread_create
+# interceptor, so the new thread has no sanitizer state. ThreadSanitizer
+# therefore runs only with --force-threads-shim (lib/threads.c, which
+# calls pthread_create).
+SANITIZER_CRASH = re.compile(rb"Sanitizer:DEADLYSIGNAL|Sanitizer: nested bug|Sanitizer: CHECK failed")
 CRASH_WORDS = ("internal compiler error", "segmentation fault", "panicked at", "stack overflow",
                "killed signal", "please submit a bug report")
 # A function definition line: the signature up to the parameter list's
@@ -292,6 +307,9 @@ class Runner:
             if reference["timeout"] or reference["rc"] is None:
                 ref_err = "reference did not complete"
                 reference = None
+            elif self.sanitize and SANITIZER_CRASH.search(reference["err"]):
+                ref_err = "the sanitizer's runtime failed in the reference: " + short(reference["err"])
+                reference = None
         if reference is None:
             notes.append(f"reference blocked: {ref_err}")
             result["reference"] = "blocked"
@@ -392,8 +410,8 @@ class Runner:
         if prefix not in obj:
             problems.append(f"control {name}: this compiler's object does not reference {prefix.decode()}*")
         got = self.execute(exe, wd)
-        if not SANITIZER_REPORT.search(got["err"]):
-            problems.append(f"control {name}: no sanitizer report (exit {got['rc']}): {short(got['err'])}")
+        if not SANITIZER_REPORT.search(got["err"]) or SANITIZER_CRASH.search(got["err"]):
+            problems.append(f"control {name}: no sanitizer finding (exit {got['rc']}): {short(got['err'])}")
         # Regression: a struct parameter in registers, this compiler's
         # callee and Clang's caller (see store_param in src/irgen/call.rs).
         pair = [CONTROLS / "param_spill_def.c", CONTROLS / "param_spill_use.c"]
