@@ -27,13 +27,14 @@ mkdir -p "$RESULTS"
 log="$RESULTS/$name.log"
 # Open the log first, so that a log that cannot be written is reported as
 # the recorder's failure, not taken for COMMAND's exit status.
-if ! : >"$log"; then
+if ! exec 3>"$log"; then
   echo "$0: cannot write $log" >&2
   exit 2
 fi
 start=$(date +%s)
-"$@" >>"$log" 2>&1
+"$@" >&3 2>&3
 rc=$?
+exec 3>&-
 seconds=$(($(date +%s) - start))
 last=$(grep -v '^[[:space:]]*$' "$log" | tail -n 1 | cut -c1-200 | tr '|' '/' | tr -d '\r')
 if [ "$info" = true ]; then
