@@ -1,0 +1,1384 @@
+[
+  {
+    "id": "HCC07-001",
+    "group": "alignment",
+    "title": "Over-aligned nested record arrays",
+    "standard": "6.2.8; 6.7.5; 6.7.2.1",
+    "rationale": "Each element and each nested member must honor alignment; stride must preserve it. Extended alignment 32 is a documented target choice.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-002",
+    "group": "alignment",
+    "title": "Multiple specifiers with weaker and zero",
+    "standard": "6.7.5p4,p6",
+    "rationale": "Only the combined alignment must meet the natural alignment; zero imposes none.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-003",
+    "group": "alignment",
+    "title": "Aligned union and enclosing record copy",
+    "standard": "6.7.5; 6.7.2.1; 6.5.16.1",
+    "rationale": "Union member alignment propagates through enclosing record and array; copy preserves values.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-004",
+    "group": "alignment",
+    "title": "Extern alignment and one definition",
+    "standard": "6.7.5p7; 6.2.2",
+    "rationale": "An extern declaration without alignment may precede an aligned definition; subsequent equivalent alignment is allowed.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-005",
+    "group": "alignment",
+    "title": "Alignment cannot weaken natural alignment",
+    "standard": "6.7.5p4",
+    "rationale": "Combined alignment below that of double violates a constraint.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-006",
+    "group": "alignment",
+    "title": "Non-power-of-two alignment",
+    "standard": "6.7.5p3; 6.2.8p4",
+    "rationale": "Three is not a valid alignment.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-007",
+    "group": "alignment",
+    "title": "Aligned typedef constraint",
+    "standard": "6.7.5p2",
+    "rationale": "Alignment specifier on typedef is forbidden.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-008",
+    "group": "alignment",
+    "title": "Aligned bit-field constraint",
+    "standard": "6.7.5p2",
+    "rationale": "Alignment specifier cannot apply to bit-field.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-009",
+    "group": "alignment",
+    "title": "Aligned parameter constraint",
+    "standard": "6.7.5p2",
+    "rationale": "Parameter may not bear alignment specifier.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-010",
+    "group": "TLS",
+    "title": "TLS extern across translation units",
+    "standard": "6.7.1p3; 6.2.4p4",
+    "rationale": "All declarations carry TLS; each thread has its own instance; thread starts with initializer.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "definition.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-011",
+    "group": "TLS",
+    "title": "Aligned TLS inside a worker",
+    "standard": "6.2.4p4; 6.7.5; 7.26.5",
+    "rationale": "Local static TLS persists per thread across calls and honors alignment.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-012",
+    "group": "TLS",
+    "title": "TLS missing at block scope",
+    "standard": "6.7.1p3",
+    "rationale": "Block scope TLS must be static or extern.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-013",
+    "group": "TLS",
+    "title": "TLS forbidden on function",
+    "standard": "6.7.1p2",
+    "rationale": "Only objects may be thread-local.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-014",
+    "group": "TLS",
+    "title": "Mixed TLS declarations",
+    "standard": "6.7.1p3",
+    "rationale": "Every declaration of a TLS object must contain _Thread_local.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-015",
+    "group": "K&R",
+    "title": "Prior prototype uses promoted unsigned short and float",
+    "standard": "6.7.6.3p15; 6.9.1; 6.5.2.2",
+    "rationale": "Old-style definition compatible with promoted int and double; body sees narrow declared types on documented targets.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-016",
+    "group": "K&R",
+    "title": "Old-style definition declaration order differs",
+    "standard": "6.9.1p6; 6.5.2.2",
+    "rationale": "Identifier list, not declaration order, determines argument positions.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-017",
+    "group": "K&R",
+    "title": "K&R caller and prototype definition separate units",
+    "standard": "6.7.6.3p14,p15; 6.5.2.2",
+    "rationale": "Nonprototype call promotes float and narrow integer; separate definition uses promoted types.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "definition.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-018",
+    "group": "K&R",
+    "title": "Prototype incompatible with promoted float",
+    "standard": "6.7.6.3p15",
+    "rationale": "Prior float parameter is incompatible with old-style float parameter promoted to double.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-019",
+    "group": "K&R",
+    "title": "Extraneous K&R parameter declaration",
+    "standard": "6.9.1p6",
+    "rationale": "Declaration names must occur in identifier list.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-020",
+    "group": "K&R",
+    "title": "Duplicate K&R parameter declaration",
+    "standard": "6.9.1p6",
+    "rationale": "Each identifier in list is declared only once.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-021",
+    "group": "tgmath",
+    "title": "Type-generic math with side effects and qualifiers",
+    "standard": "7.25p3; 6.5.1.1",
+    "rationale": "Type selection does not evaluate arguments; call consumes each once; qualifiers do not change real function domain.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-022",
+    "group": "tgmath",
+    "title": "Non-generic parameters do not select precision",
+    "standard": "7.25p3; 7.12.6.4; 7.12.10.3",
+    "rationale": "Exponent and pointer parameters do not influence type selection; frexp and remquo return exact values.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-023",
+    "group": "tgmath",
+    "title": "Ternary real precision and integer argument",
+    "standard": "7.25p3",
+    "rationale": "All generic arguments participate in selection, including integer mapped to double.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-024",
+    "group": "VLA",
+    "title": "VLA typedef captured across changed bounds",
+    "standard": "6.7.6.2p5; 6.5.3.4p2",
+    "rationale": "Each VLA instance keeps its captured bound; typedef and nested declarator capture separately.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-025",
+    "group": "VLA",
+    "title": "VLA pointer stride across three dimensions",
+    "standard": "6.7.6.2; 6.5.6p8,p9",
+    "rationale": "Runtime strides and pointer subtraction use complete element size.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-026",
+    "group": "VLA",
+    "title": "sizeof operand with VLA type evaluates pointer increment",
+    "standard": "6.5.3.4p2; 6.5.2.4",
+    "rationale": "For VLA operand, sizeof evaluates its operand; pointer advances exactly once.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-027",
+    "group": "VLA",
+    "title": "Nested break and continue release scopes",
+    "standard": "6.2.4p7; 6.8.6.2; 6.8.6.3",
+    "rationale": "Storage follows VLA scope lifetime across repeated exits; large cumulative allocation catches missing stack restoration.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-028",
+    "group": "VLA",
+    "title": "Named goto leaves only inner VLA declaration",
+    "standard": "6.2.4p7; 6.8.6.1",
+    "rationale": "Outer VLA remains live when a backward jump leaves an inner VLA scope.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-029",
+    "group": "VLA",
+    "title": "Static pointer to VLA type in block",
+    "standard": "6.7.6.2p2; 6.2.4",
+    "rationale": "Block-scope static objects of pointer-to-VLA type are permitted when the identifier has no linkage.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-030",
+    "group": "VLA",
+    "title": "Prototype star replaced by runtime bound in definition",
+    "standard": "6.7.6.2p4,p5; 6.7.6.3p7",
+    "rationale": "Prototype-scope star is compatible with later parameter whose inner dimension is runtime-valued.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-031",
+    "group": "VLA",
+    "title": "VLA element type containing bit-fields",
+    "standard": "6.7.6.2; 6.7.2.1",
+    "rationale": "Runtime stride is record size, including bit-fields and trailing member.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-032",
+    "group": "VLA",
+    "title": "Named goto enters scope of VM typedef",
+    "standard": "6.8.6.1p1",
+    "rationale": "Jump into scope of a variably modified identifier is forbidden even if it is a typedef.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-033",
+    "group": "VLA",
+    "title": "Switch bypasses VM pointer declaration",
+    "standard": "6.8.4.2p2",
+    "rationale": "A switch label in scope of VM identifier requires switch statement wholly in that scope.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-034",
+    "group": "VLA",
+    "title": "Variably modified generic association",
+    "standard": "6.5.1.1p2",
+    "rationale": "Association type may not be variably modified, even when unselected.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-035",
+    "group": "VLA",
+    "title": "VLA member constraint",
+    "standard": "6.7.2.1p9",
+    "rationale": "Record members cannot have variably modified type.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-036",
+    "group": "VLA",
+    "title": "VLA initializer constraint",
+    "standard": "6.7.9p3",
+    "rationale": "Variable length array objects cannot be initialized.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-037",
+    "group": "VLA",
+    "title": "VLA static storage constraint",
+    "standard": "6.7.6.2p2",
+    "rationale": "Static storage duration object cannot have variable length array type.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-038",
+    "group": "atomics",
+    "title": "Failed compare exchange updates expected",
+    "standard": "7.17.7.4",
+    "rationale": "Strong CAS failure changes expected to stored value, and successful retry installs desired.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-039",
+    "group": "atomics",
+    "title": "Atomic floating exchange and compound RMW",
+    "standard": "6.5.16.2p3; 7.17.7.3",
+    "rationale": "Atomic floating exchange and multiplication operate on represented floating values, not integer bit patterns.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-040",
+    "group": "atomics",
+    "title": "Atomic pointer increment and decrement preserve element stride",
+    "standard": "6.5.2.4p2; 6.5.3.1; 6.5.6",
+    "rationale": "Language-level increment and decrement on atomic pointer use ordinary pointer arithmetic.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-041",
+    "group": "atomics",
+    "title": "Atomic aggregate load store and exchange",
+    "standard": "6.5.16.1; 7.17.7.2,p3",
+    "rationale": "Eight-byte, padding-free record is within supported atomic size; whole record exchanged.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-042",
+    "group": "atomics",
+    "title": "Nonconstant memory order evaluated once",
+    "standard": "7.17.7.2; 6.5.2.2",
+    "rationale": "Runtime order argument has side effect exactly once; stronger lowering is documented.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-043",
+    "group": "atomics",
+    "title": "VLA of atomic members and alignment",
+    "standard": "6.7.6.2; 6.7.3; 7.17.7.1",
+    "rationale": "An array of atomic-qualified elements is distinct from atomic array type specifier.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-044",
+    "group": "atomics",
+    "title": "Atomic type specifier rejects qualified type",
+    "standard": "6.7.2.4p3",
+    "rationale": "Type name in _Atomic(type-name) may not be qualified.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-045",
+    "group": "atomics",
+    "title": "Atomic type specifier rejects array",
+    "standard": "6.7.2.4p3",
+    "rationale": "Type name may not specify array type.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-046",
+    "group": "atomics",
+    "title": "Atomic bit-field constraint",
+    "standard": "6.7.3p3",
+    "rationale": "Atomic qualifier must not be used with bit-field.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": null,
+      "stderr": null,
+      "exit": null
+    }
+  },
+  {
+    "id": "HCC07-047",
+    "group": "threads",
+    "title": "Concurrent atomic increment with exact total",
+    "standard": "6.5.2.4p2; 7.17; 7.26.5",
+    "rationale": "Two workers perform atomic RMW; join makes final observation deterministic.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-048",
+    "group": "threads",
+    "title": "call_once publishes ordinary data to concurrent callers",
+    "standard": "7.26.2.1",
+    "rationale": "Completion of initialization synchronizes with return from other call_once calls.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-049",
+    "group": "threads",
+    "title": "Thread exit and TSS destructor iteration",
+    "standard": "7.26.5.5; 7.26.6",
+    "rationale": "Destructor resets its own key twice; third call clears it; thread completion synchronizes with join.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-050",
+    "group": "threads",
+    "title": "Release/acquire publishes non-atomic payload",
+    "standard": "5.1.2.4; 7.17.3; 7.26.5",
+    "rationale": "A successful acquire load reading the release store synchronizes payload access; no data race.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-051",
+    "group": "GNU",
+    "title": "typeof VLA captures operand type from runtime bound",
+    "standard": "N1570 6.7.6.2; GCC manual Typeof",
+    "rationale": "GNU typeof of variably modified type preserves runtime stride; plain typeof is opt-in.",
+    "classification": "GNU-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-052",
+    "group": "GNU",
+    "title": "Statement expression and VLA scope",
+    "standard": "N1570 6.2.4; GCC manual Statement Exprs",
+    "rationale": "Statement expression yields final expression value before VLA lifetime ends.",
+    "classification": "GNU-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-053",
+    "group": "GNU",
+    "title": "Omitted conditional evaluates first operand once",
+    "standard": "N1570 6.5.15; GCC manual Conditionals",
+    "rationale": "GNU x ?: y skips second operand when first is nonzero and evaluates first exactly once.",
+    "classification": "GNU-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-054",
+    "group": "GNU",
+    "title": "Case range with negative endpoints",
+    "standard": "N1570 6.8.4.2; GCC manual Case Ranges",
+    "rationale": "Inclusive GNU range uses promoted switch values, including negative boundaries.",
+    "classification": "GNU-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-055",
+    "group": "GNU",
+    "title": "Computed goto with VLA declared outside targets",
+    "standard": "N1570 6.2.4; GCC manual Labels as Values",
+    "rationale": "Indirect jump between labels wholly within already-live VLA scope does not enter a new VM scope.",
+    "classification": "GNU-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-056",
+    "group": "GNU",
+    "title": "Zero-length tail member and padding",
+    "standard": "N1570 6.7.6.2; GCC manual Zero Length",
+    "rationale": "GNU zero length member at end contributes alignment but zero element storage; no access beyond it.",
+    "classification": "GNU-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-057",
+    "group": "GNU",
+    "title": "GNU overflow builtin single evaluation",
+    "standard": "N1570 6.5.2.2; GCC manual Integer Overflow Builtins",
+    "rationale": "Result conversion checked at destination width, and each input and pointer evaluated once.",
+    "classification": "GNU-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-058",
+    "group": "GNU",
+    "title": "Packed record nested with explicit aligned member",
+    "standard": "N1570 6.7.2.1; GCC manual Common Type Attributes",
+    "rationale": "Packed non-bitfield layout and explicit higher member alignment affect offset and stride; contract checked on Linux.",
+    "classification": "GNU-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-059",
+    "group": "GNU",
+    "title": "Choose expression unselected side effect",
+    "standard": "N1570 6.5.1.1 analogous; GCC manual Other Builtins",
+    "rationale": "Chosen expression is evaluated, unchosen expression is not.",
+    "classification": "GNU-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-060",
+    "group": "alignment",
+    "title": "stdalign header and type-name alignment",
+    "standard": "7.15; 6.7.5p5",
+    "rationale": "Header aliases and feature macros are provided; type-name form has the same alignment requirement as alignof.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-061",
+    "group": "alignment",
+    "title": "Aligned compound literal and record ABI across translation units",
+    "standard": "6.7.5; 6.5.2.5; 6.5.2.2; 6.9.1",
+    "rationale": "An aligned member changes record layout; passing and returning this type must preserve fields and alignment in mixed object files.",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "definition.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-062",
+    "group": "atomics",
+    "title": "Volatile atomic operand and atomic flag state",
+    "standard": "6.7.3; 7.17.7.5; 7.17.8",
+    "rationale": "Generic fetch operation accepts volatile atomic objects; flag test-and-set returns previous state.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-063",
+    "group": "GNU",
+    "title": "Empty initializer for fixed-size record and array",
+    "standard": "N1570 6.7.9; GCC manual C extensions",
+    "rationale": "GNU empty initializer zero-initializes named fields and all fixed-size elements; incomplete array case is deliberately not tested.",
+    "classification": "GNU-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-064",
+    "group": "GNU",
+    "title": "GNU constructor runs before main",
+    "standard": "N1570 5.1.2.2.1; GCC manual Common Function Attributes",
+    "rationale": "A single constructor runs before main under documented GNU attribute contract; no ordering assumption among constructors.",
+    "classification": "GNU-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC07-065",
+    "group": "TLS",
+    "title": "Thread feature-test macros and independent block scope TLS",
+    "standard": "6.10.8.3; 6.2.4p4; 7.26",
+    "rationale": "VLA, atomics, threads are advertised; distinct same-named TLS variables in nested scopes retain separate values.",
+    "classification": "C11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  }
+]

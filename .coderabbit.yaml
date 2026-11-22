@@ -15,6 +15,10 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+  # The adversarial challenge kits are third-party test material, kept
+  # byte-for-byte as received (their SHA256SUMS.txt checks that).
+  path_filters:
+    - "!tests/adversarial/hcc-challenge-*/**"
   path_instructions:
     - path: "src/**/*.rs"
       instructions: |

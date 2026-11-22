@@ -1,0 +1,296 @@
+[
+  {
+    "id": "x86_64-linux-gnu--bitfield-nested",
+    "target": "x86_64-linux-gnu",
+    "target_arg": "x86_64-linux-gnu",
+    "file": "x86_64-linux-gnu--bitfield-nested.c",
+    "fixture": "bitfield-nested",
+    "standard": "6.7.2.1; 6.7.5; target ABI",
+    "expected_exit": 0,
+    "files": [
+      "x86_64-linux-gnu--bitfield-nested.c"
+    ]
+  },
+  {
+    "id": "x86_64-linux-gnu--bitfield-return",
+    "target": "x86_64-linux-gnu",
+    "target_arg": "x86_64-linux-gnu",
+    "file": "x86_64-linux-gnu--bitfield-return.c",
+    "fixture": "bitfield-return",
+    "standard": "6.5.2.2; target ABI",
+    "expected_exit": 0,
+    "files": [
+      "x86_64-linux-gnu--bitfield-return.c",
+      "x86_64-linux-gnu--bitfield-return-definition.c"
+    ]
+  },
+  {
+    "id": "x86_64-linux-gnu--tls-align",
+    "target": "x86_64-linux-gnu",
+    "target_arg": "x86_64-linux-gnu",
+    "file": "x86_64-linux-gnu--tls-align.c",
+    "fixture": "tls-align",
+    "standard": "6.2.4; 6.7.5; 6.7.1",
+    "expected_exit": 0,
+    "files": [
+      "x86_64-linux-gnu--tls-align.c"
+    ]
+  },
+  {
+    "id": "x86_64-linux-gnu--atomic-rmw",
+    "target": "x86_64-linux-gnu",
+    "target_arg": "x86_64-linux-gnu",
+    "file": "x86_64-linux-gnu--atomic-rmw.c",
+    "fixture": "atomic-rmw",
+    "standard": "6.5.2.4; 6.5.16.2; 6.7.2.4",
+    "expected_exit": 0,
+    "files": [
+      "x86_64-linux-gnu--atomic-rmw.c"
+    ]
+  },
+  {
+    "id": "aarch64-linux-gnu--bitfield-nested",
+    "target": "aarch64-linux-gnu",
+    "target_arg": "aarch64-linux-gnu",
+    "file": "aarch64-linux-gnu--bitfield-nested.c",
+    "fixture": "bitfield-nested",
+    "standard": "6.7.2.1; 6.7.5; target ABI",
+    "expected_exit": 0,
+    "files": [
+      "aarch64-linux-gnu--bitfield-nested.c"
+    ]
+  },
+  {
+    "id": "aarch64-linux-gnu--bitfield-return",
+    "target": "aarch64-linux-gnu",
+    "target_arg": "aarch64-linux-gnu",
+    "file": "aarch64-linux-gnu--bitfield-return.c",
+    "fixture": "bitfield-return",
+    "standard": "6.5.2.2; target ABI",
+    "expected_exit": 0,
+    "files": [
+      "aarch64-linux-gnu--bitfield-return.c",
+      "aarch64-linux-gnu--bitfield-return-definition.c"
+    ]
+  },
+  {
+    "id": "aarch64-linux-gnu--tls-align",
+    "target": "aarch64-linux-gnu",
+    "target_arg": "aarch64-linux-gnu",
+    "file": "aarch64-linux-gnu--tls-align.c",
+    "fixture": "tls-align",
+    "standard": "6.2.4; 6.7.5; 6.7.1",
+    "expected_exit": 0,
+    "files": [
+      "aarch64-linux-gnu--tls-align.c"
+    ]
+  },
+  {
+    "id": "aarch64-linux-gnu--atomic-rmw",
+    "target": "aarch64-linux-gnu",
+    "target_arg": "aarch64-linux-gnu",
+    "file": "aarch64-linux-gnu--atomic-rmw.c",
+    "fixture": "atomic-rmw",
+    "standard": "6.5.2.4; 6.5.16.2; 6.7.2.4",
+    "expected_exit": 0,
+    "files": [
+      "aarch64-linux-gnu--atomic-rmw.c"
+    ]
+  },
+  {
+    "id": "arm64-apple-macos--bitfield-nested",
+    "target": "arm64-apple-macos",
+    "target_arg": "arm64-apple-macos11.0",
+    "file": "arm64-apple-macos--bitfield-nested.c",
+    "fixture": "bitfield-nested",
+    "standard": "6.7.2.1; 6.7.5; target ABI",
+    "expected_exit": 0,
+    "files": [
+      "arm64-apple-macos--bitfield-nested.c"
+    ]
+  },
+  {
+    "id": "arm64-apple-macos--bitfield-return",
+    "target": "arm64-apple-macos",
+    "target_arg": "arm64-apple-macos11.0",
+    "file": "arm64-apple-macos--bitfield-return.c",
+    "fixture": "bitfield-return",
+    "standard": "6.5.2.2; target ABI",
+    "expected_exit": 0,
+    "files": [
+      "arm64-apple-macos--bitfield-return.c",
+      "arm64-apple-macos--bitfield-return-definition.c"
+    ]
+  },
+  {
+    "id": "arm64-apple-macos--tls-align",
+    "target": "arm64-apple-macos",
+    "target_arg": "arm64-apple-macos11.0",
+    "file": "arm64-apple-macos--tls-align.c",
+    "fixture": "tls-align",
+    "standard": "6.2.4; 6.7.5; 6.7.1",
+    "expected_exit": 0,
+    "files": [
+      "arm64-apple-macos--tls-align.c"
+    ]
+  },
+  {
+    "id": "arm64-apple-macos--atomic-rmw",
+    "target": "arm64-apple-macos",
+    "target_arg": "arm64-apple-macos11.0",
+    "file": "arm64-apple-macos--atomic-rmw.c",
+    "fixture": "atomic-rmw",
+    "standard": "6.5.2.4; 6.5.16.2; 6.7.2.4",
+    "expected_exit": 0,
+    "files": [
+      "arm64-apple-macos--atomic-rmw.c"
+    ]
+  },
+  {
+    "id": "x86_64-apple-macos--bitfield-nested",
+    "target": "x86_64-apple-macos",
+    "target_arg": "x86_64-apple-macos10.15",
+    "file": "x86_64-apple-macos--bitfield-nested.c",
+    "fixture": "bitfield-nested",
+    "standard": "6.7.2.1; 6.7.5; target ABI",
+    "expected_exit": 0,
+    "files": [
+      "x86_64-apple-macos--bitfield-nested.c"
+    ]
+  },
+  {
+    "id": "x86_64-apple-macos--bitfield-return",
+    "target": "x86_64-apple-macos",
+    "target_arg": "x86_64-apple-macos10.15",
+    "file": "x86_64-apple-macos--bitfield-return.c",
+    "fixture": "bitfield-return",
+    "standard": "6.5.2.2; target ABI",
+    "expected_exit": 0,
+    "files": [
+      "x86_64-apple-macos--bitfield-return.c",
+      "x86_64-apple-macos--bitfield-return-definition.c"
+    ]
+  },
+  {
+    "id": "x86_64-apple-macos--tls-align",
+    "target": "x86_64-apple-macos",
+    "target_arg": "x86_64-apple-macos10.15",
+    "file": "x86_64-apple-macos--tls-align.c",
+    "fixture": "tls-align",
+    "standard": "6.2.4; 6.7.5; 6.7.1",
+    "expected_exit": 0,
+    "files": [
+      "x86_64-apple-macos--tls-align.c"
+    ]
+  },
+  {
+    "id": "x86_64-apple-macos--atomic-rmw",
+    "target": "x86_64-apple-macos",
+    "target_arg": "x86_64-apple-macos10.15",
+    "file": "x86_64-apple-macos--atomic-rmw.c",
+    "fixture": "atomic-rmw",
+    "standard": "6.5.2.4; 6.5.16.2; 6.7.2.4",
+    "expected_exit": 0,
+    "files": [
+      "x86_64-apple-macos--atomic-rmw.c"
+    ]
+  },
+  {
+    "id": "x86_64-w64-windows-gnu--bitfield-nested",
+    "target": "x86_64-w64-windows-gnu",
+    "target_arg": "x86_64-w64-windows-gnu",
+    "file": "x86_64-w64-windows-gnu--bitfield-nested.c",
+    "fixture": "bitfield-nested",
+    "standard": "6.7.2.1; 6.7.5; target ABI",
+    "expected_exit": 0,
+    "files": [
+      "x86_64-w64-windows-gnu--bitfield-nested.c"
+    ]
+  },
+  {
+    "id": "x86_64-w64-windows-gnu--bitfield-return",
+    "target": "x86_64-w64-windows-gnu",
+    "target_arg": "x86_64-w64-windows-gnu",
+    "file": "x86_64-w64-windows-gnu--bitfield-return.c",
+    "fixture": "bitfield-return",
+    "standard": "6.5.2.2; target ABI",
+    "expected_exit": 0,
+    "files": [
+      "x86_64-w64-windows-gnu--bitfield-return.c",
+      "x86_64-w64-windows-gnu--bitfield-return-definition.c"
+    ]
+  },
+  {
+    "id": "x86_64-w64-windows-gnu--tls-align",
+    "target": "x86_64-w64-windows-gnu",
+    "target_arg": "x86_64-w64-windows-gnu",
+    "file": "x86_64-w64-windows-gnu--tls-align.c",
+    "fixture": "tls-align",
+    "standard": "6.2.4; 6.7.5; 6.7.1",
+    "expected_exit": 0,
+    "files": [
+      "x86_64-w64-windows-gnu--tls-align.c"
+    ]
+  },
+  {
+    "id": "x86_64-w64-windows-gnu--atomic-rmw",
+    "target": "x86_64-w64-windows-gnu",
+    "target_arg": "x86_64-w64-windows-gnu",
+    "file": "x86_64-w64-windows-gnu--atomic-rmw.c",
+    "fixture": "atomic-rmw",
+    "standard": "6.5.2.4; 6.5.16.2; 6.7.2.4",
+    "expected_exit": 0,
+    "files": [
+      "x86_64-w64-windows-gnu--atomic-rmw.c"
+    ]
+  },
+  {
+    "id": "x86_64-pc-windows-msvc--bitfield-nested",
+    "target": "x86_64-pc-windows-msvc",
+    "target_arg": "x86_64-pc-windows-msvc",
+    "file": "x86_64-pc-windows-msvc--bitfield-nested.c",
+    "fixture": "bitfield-nested",
+    "standard": "6.7.2.1; 6.7.5; target ABI",
+    "expected_exit": 0,
+    "files": [
+      "x86_64-pc-windows-msvc--bitfield-nested.c"
+    ]
+  },
+  {
+    "id": "x86_64-pc-windows-msvc--bitfield-return",
+    "target": "x86_64-pc-windows-msvc",
+    "target_arg": "x86_64-pc-windows-msvc",
+    "file": "x86_64-pc-windows-msvc--bitfield-return.c",
+    "fixture": "bitfield-return",
+    "standard": "6.5.2.2; target ABI",
+    "expected_exit": 0,
+    "files": [
+      "x86_64-pc-windows-msvc--bitfield-return.c",
+      "x86_64-pc-windows-msvc--bitfield-return-definition.c"
+    ]
+  },
+  {
+    "id": "x86_64-pc-windows-msvc--tls-align",
+    "target": "x86_64-pc-windows-msvc",
+    "target_arg": "x86_64-pc-windows-msvc",
+    "file": "x86_64-pc-windows-msvc--tls-align.c",
+    "fixture": "tls-align",
+    "standard": "6.2.4; 6.7.5; 6.7.1",
+    "expected_exit": 0,
+    "files": [
+      "x86_64-pc-windows-msvc--tls-align.c"
+    ]
+  },
+  {
+    "id": "x86_64-pc-windows-msvc--atomic-rmw",
+    "target": "x86_64-pc-windows-msvc",
+    "target_arg": "x86_64-pc-windows-msvc",
+    "file": "x86_64-pc-windows-msvc--atomic-rmw.c",
+    "fixture": "atomic-rmw",
+    "standard": "6.5.2.4; 6.5.16.2; 6.7.2.4",
+    "expected_exit": 0,
+    "files": [
+      "x86_64-pc-windows-msvc--atomic-rmw.c"
+    ]
+  }
+]

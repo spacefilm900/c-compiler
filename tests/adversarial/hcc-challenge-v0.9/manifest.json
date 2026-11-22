@@ -1,0 +1,2321 @@
+[
+  {
+    "id": "HCC09-001",
+    "group": "threads",
+    "title": "join return value and argument identity",
+    "standard": "7.26; 6.2.4",
+    "rationale": "join return value and argument identity",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-002",
+    "group": "threads",
+    "title": "thrd_exit return value",
+    "standard": "7.26; 6.2.4",
+    "rationale": "thrd_exit return value",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-003",
+    "group": "threads",
+    "title": "thread identity across worker and creator",
+    "standard": "7.26; 6.2.4",
+    "rationale": "thread identity across worker and creator",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-004",
+    "group": "threads",
+    "title": "nested create/join",
+    "standard": "7.26; 6.2.4",
+    "rationale": "nested create/join",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-005",
+    "group": "threads",
+    "title": "detached thread publication with static lifetime",
+    "standard": "7.26; 6.2.4",
+    "rationale": "detached thread publication with static lifetime",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-006",
+    "group": "threads",
+    "title": "thrd_sleep with valid interval",
+    "standard": "7.26; 6.2.4",
+    "rationale": "thrd_sleep with valid interval",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-007",
+    "group": "threads",
+    "title": "plain mutex serialises ordinary writes",
+    "standard": "7.26; 6.2.4",
+    "rationale": "plain mutex serialises ordinary writes",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-008",
+    "group": "threads",
+    "title": "trylock on mutex held by another thread",
+    "standard": "7.26; 6.2.4",
+    "rationale": "trylock on mutex held by another thread",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-009",
+    "group": "threads",
+    "title": "recursive mutex lock and trylock depth",
+    "standard": "7.26; 6.2.4",
+    "rationale": "recursive mutex lock and trylock depth",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-010",
+    "group": "threads",
+    "title": "recursive mutex retains ownership until final unlock",
+    "standard": "7.26; 6.2.4",
+    "rationale": "recursive mutex retains ownership until final unlock",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-011",
+    "group": "threads",
+    "title": "timed mutex acquisition on free lock",
+    "standard": "7.26; 6.2.4",
+    "rationale": "timed mutex acquisition on free lock",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-012",
+    "group": "threads",
+    "title": "timed mutex deadline while held by another thread",
+    "standard": "7.26; 6.2.4",
+    "rationale": "timed mutex deadline while held by another thread",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-013",
+    "group": "threads",
+    "title": "condition signal guarded by predicate",
+    "standard": "7.26; 6.2.4",
+    "rationale": "condition signal guarded by predicate",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-014",
+    "group": "threads",
+    "title": "condition broadcast to multiple waiters",
+    "standard": "7.26; 6.2.4",
+    "rationale": "condition broadcast to multiple waiters",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-015",
+    "group": "threads",
+    "title": "timed condition wait expiry and mutex reacquisition",
+    "standard": "7.26; 6.2.4",
+    "rationale": "timed condition wait expiry and mutex reacquisition",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-016",
+    "group": "threads",
+    "title": "initialized TLS scalar",
+    "standard": "7.26; 6.2.4",
+    "rationale": "initialized TLS scalar",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-017",
+    "group": "threads",
+    "title": "zero-initialized TLS scalar",
+    "standard": "7.26; 6.2.4",
+    "rationale": "zero-initialized TLS scalar",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-018",
+    "group": "threads",
+    "title": "initialized TLS aggregate",
+    "standard": "7.26; 6.2.4",
+    "rationale": "initialized TLS aggregate",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-019",
+    "group": "threads",
+    "title": "TLS pointer initial value",
+    "standard": "7.26; 6.2.4",
+    "rationale": "TLS pointer initial value",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-020",
+    "group": "threads",
+    "title": "block static TLS persists within thread",
+    "standard": "7.26; 6.2.4",
+    "rationale": "block static TLS persists within thread",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-021",
+    "group": "threads",
+    "title": "external TLS across translation units",
+    "standard": "7.26; 6.2.4",
+    "rationale": "external TLS across translation units",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "other.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-022",
+    "group": "threads",
+    "title": "TSS default NULL and independent values",
+    "standard": "7.26; 6.2.4",
+    "rationale": "TSS default NULL and independent values",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-023",
+    "group": "threads",
+    "title": "TSS destructor runs before join",
+    "standard": "7.26; 6.2.4",
+    "rationale": "TSS destructor runs before join",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-024",
+    "group": "threads",
+    "title": "TSS destructor resets key for another iteration",
+    "standard": "7.26; 6.2.4",
+    "rationale": "TSS destructor resets key for another iteration",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-025",
+    "group": "threads",
+    "title": "TSS null value suppresses destructor",
+    "standard": "7.26; 6.2.4",
+    "rationale": "TSS null value suppresses destructor",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-026",
+    "group": "threads",
+    "title": "call_once publishes ordinary data to concurrent callers",
+    "standard": "7.26; 6.2.4",
+    "rationale": "call_once publishes ordinary data to concurrent callers",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-027",
+    "group": "threads",
+    "title": "independent once flags and repeated calls",
+    "standard": "7.26; 6.2.4",
+    "rationale": "independent once flags and repeated calls",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-028",
+    "group": "ordering",
+    "title": "contended CAS increment int",
+    "standard": "7.17.7.4",
+    "rationale": "contended CAS increment int",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-029",
+    "group": "ordering",
+    "title": "contended CAS increment unsigned long",
+    "standard": "7.17.7.4",
+    "rationale": "contended CAS increment unsigned long",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-030",
+    "group": "ordering",
+    "title": "contended CAS increment unsigned char",
+    "standard": "7.17.7.4",
+    "rationale": "contended CAS increment unsigned char",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-031",
+    "group": "ordering",
+    "title": "contended CAS increment unsigned short",
+    "standard": "7.17.7.4",
+    "rationale": "contended CAS increment unsigned short",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-032",
+    "group": "ordering",
+    "title": "contended atomic fetch_xor",
+    "standard": "7.17.7.5",
+    "rationale": "contended atomic fetch_xor",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-033",
+    "group": "ordering",
+    "title": "contended atomic fetch_or",
+    "standard": "7.17.7.5",
+    "rationale": "contended atomic fetch_or",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-034",
+    "group": "ordering",
+    "title": "contended atomic fetch_add",
+    "standard": "7.17.7.5",
+    "rationale": "contended atomic fetch_add",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-035",
+    "group": "ordering",
+    "title": "contended atomic fetch_sub",
+    "standard": "7.17.7.5",
+    "rationale": "contended atomic fetch_sub",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-036",
+    "group": "ordering",
+    "title": "publication: release acquire",
+    "standard": "5.1.2.4; 7.17.4",
+    "rationale": "publication: release acquire",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-037",
+    "group": "ordering",
+    "title": "publication: release fence",
+    "standard": "5.1.2.4; 7.17.4",
+    "rationale": "publication: release fence",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-038",
+    "group": "ordering",
+    "title": "publication: acquire fence",
+    "standard": "5.1.2.4; 7.17.4",
+    "rationale": "publication: acquire fence",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-039",
+    "group": "ordering",
+    "title": "publication: paired fences",
+    "standard": "5.1.2.4; 7.17.4",
+    "rationale": "publication: paired fences",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-040",
+    "group": "ordering",
+    "title": "publication: seq_cst",
+    "standard": "5.1.2.4; 7.17.4",
+    "rationale": "publication: seq_cst",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-041",
+    "group": "ordering",
+    "title": "release sequence through separate RMW thread",
+    "standard": "5.1.2.4",
+    "rationale": "release sequence through separate RMW thread",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-042",
+    "group": "ordering",
+    "title": "SC store buffering forbidden both-zero outcome",
+    "standard": "5.1.2.4; 7.17.3",
+    "rationale": "SC store buffering forbidden both-zero outcome",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-043",
+    "group": "ordering",
+    "title": "atomic flag protects ordinary critical section",
+    "standard": "7.17.8",
+    "rationale": "atomic flag protects ordinary critical section",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-044",
+    "group": "concurrent",
+    "title": "parallel histogram with 2 workers",
+    "standard": "7.26; 7.17",
+    "rationale": "parallel histogram with 2 workers",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-045",
+    "group": "concurrent",
+    "title": "parallel histogram with 4 workers",
+    "standard": "7.26; 7.17",
+    "rationale": "parallel histogram with 4 workers",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-046",
+    "group": "concurrent",
+    "title": "parallel histogram with 8 workers",
+    "standard": "7.26; 7.17",
+    "rationale": "parallel histogram with 8 workers",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-047",
+    "group": "concurrent",
+    "title": "parallel histogram with 16 workers",
+    "standard": "7.26; 7.17",
+    "rationale": "parallel histogram with 16 workers",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-048",
+    "group": "concurrent",
+    "title": "parallel histogram with 32 workers",
+    "standard": "7.26; 7.17",
+    "rationale": "parallel histogram with 32 workers",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-049",
+    "group": "concurrent",
+    "title": "bounded producer consumer ring capacity 1",
+    "standard": "7.26.3; 7.26.4",
+    "rationale": "bounded producer consumer ring capacity 1",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-050",
+    "group": "concurrent",
+    "title": "bounded producer consumer ring capacity 7",
+    "standard": "7.26.3; 7.26.4",
+    "rationale": "bounded producer consumer ring capacity 7",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-051",
+    "group": "concurrent",
+    "title": "SPSC atomic ring buffer",
+    "standard": "5.1.2.4; 7.17",
+    "rationale": "SPSC atomic ring buffer",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-052",
+    "group": "concurrent",
+    "title": "parallel VLA matrix row computation",
+    "standard": "6.7.6.2; 7.26",
+    "rationale": "parallel VLA matrix row computation",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-053",
+    "group": "concurrent",
+    "title": "parallel task allocation through atomic index",
+    "standard": "7.17; 7.26",
+    "rationale": "parallel task allocation through atomic index",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-054",
+    "group": "concurrent",
+    "title": "aligned TLS scratch records in workers",
+    "standard": "6.7.5; 6.2.4; 7.26",
+    "rationale": "aligned TLS scratch records in workers",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-055",
+    "group": "concurrent",
+    "title": "reference count final release publishes worker contributions",
+    "standard": "5.1.2.4; 7.17",
+    "rationale": "reference count final release publishes worker contributions",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [
+      "-pthread"
+    ],
+    "strict_probe": false,
+    "stress": true,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-056",
+    "group": "layout",
+    "title": "bit-fields around aligned member variant 1, 8 bytes",
+    "standard": "6.7.2.1; 6.7.5",
+    "rationale": "bit-fields around aligned member variant 1, 8 bytes",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-057",
+    "group": "layout",
+    "title": "bit-fields around aligned member variant 2, 8 bytes",
+    "standard": "6.7.2.1; 6.7.5",
+    "rationale": "bit-fields around aligned member variant 2, 8 bytes",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-058",
+    "group": "layout",
+    "title": "bit-fields around aligned member variant 3, 8 bytes",
+    "standard": "6.7.2.1; 6.7.5",
+    "rationale": "bit-fields around aligned member variant 3, 8 bytes",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-059",
+    "group": "layout",
+    "title": "bit-fields around aligned member variant 1, 16 bytes",
+    "standard": "6.7.2.1; 6.7.5",
+    "rationale": "bit-fields around aligned member variant 1, 16 bytes",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-060",
+    "group": "layout",
+    "title": "bit-fields around aligned member variant 2, 16 bytes",
+    "standard": "6.7.2.1; 6.7.5",
+    "rationale": "bit-fields around aligned member variant 2, 16 bytes",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-061",
+    "group": "layout",
+    "title": "bit-fields around aligned member variant 3, 16 bytes",
+    "standard": "6.7.2.1; 6.7.5",
+    "rationale": "bit-fields around aligned member variant 3, 16 bytes",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-062",
+    "group": "layout",
+    "title": "bit-fields around aligned member variant 1, 32 bytes",
+    "standard": "6.7.2.1; 6.7.5",
+    "rationale": "bit-fields around aligned member variant 1, 32 bytes",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-063",
+    "group": "layout",
+    "title": "bit-fields around aligned member variant 2, 32 bytes",
+    "standard": "6.7.2.1; 6.7.5",
+    "rationale": "bit-fields around aligned member variant 2, 32 bytes",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-064",
+    "group": "layout",
+    "title": "bit-fields around aligned member variant 3, 32 bytes",
+    "standard": "6.7.2.1; 6.7.5",
+    "rationale": "bit-fields around aligned member variant 3, 32 bytes",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-065",
+    "group": "layout",
+    "title": "bit-fields around aligned member variant 1, 64 bytes",
+    "standard": "6.7.2.1; 6.7.5",
+    "rationale": "bit-fields around aligned member variant 1, 64 bytes",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-066",
+    "group": "layout",
+    "title": "bit-fields around aligned member variant 2, 64 bytes",
+    "standard": "6.7.2.1; 6.7.5",
+    "rationale": "bit-fields around aligned member variant 2, 64 bytes",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-067",
+    "group": "layout",
+    "title": "bit-fields around aligned member variant 3, 64 bytes",
+    "standard": "6.7.2.1; 6.7.5",
+    "rationale": "bit-fields around aligned member variant 3, 64 bytes",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-068",
+    "group": "layout",
+    "title": "mixed ABI aligned bitfield aggregate return 8",
+    "standard": "6.7.2.1; 6.7.5; target ABI",
+    "rationale": "mixed ABI aligned bitfield aggregate return 8",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "other.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-069",
+    "group": "layout",
+    "title": "mixed ABI aligned bitfield aggregate variadic 8",
+    "standard": "6.7.2.1; 7.16; target ABI",
+    "rationale": "mixed ABI aligned bitfield aggregate variadic 8",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "other.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-070",
+    "group": "layout",
+    "title": "mixed ABI aligned bitfield aggregate return 16",
+    "standard": "6.7.2.1; 6.7.5; target ABI",
+    "rationale": "mixed ABI aligned bitfield aggregate return 16",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "other.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-071",
+    "group": "layout",
+    "title": "mixed ABI aligned bitfield aggregate variadic 16",
+    "standard": "6.7.2.1; 7.16; target ABI",
+    "rationale": "mixed ABI aligned bitfield aggregate variadic 16",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "other.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-072",
+    "group": "layout",
+    "title": "mixed ABI aligned bitfield aggregate return 32",
+    "standard": "6.7.2.1; 6.7.5; target ABI",
+    "rationale": "mixed ABI aligned bitfield aggregate return 32",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "other.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-073",
+    "group": "layout",
+    "title": "mixed ABI aligned bitfield aggregate variadic 32",
+    "standard": "6.7.2.1; 7.16; target ABI",
+    "rationale": "mixed ABI aligned bitfield aggregate variadic 32",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "other.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-074",
+    "group": "layout",
+    "title": "mixed ABI aligned bitfield aggregate return 64",
+    "standard": "6.7.2.1; 6.7.5; target ABI",
+    "rationale": "mixed ABI aligned bitfield aggregate return 64",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "other.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-075",
+    "group": "layout",
+    "title": "mixed ABI aligned bitfield aggregate variadic 64",
+    "standard": "6.7.2.1; 7.16; target ABI",
+    "rationale": "mixed ABI aligned bitfield aggregate variadic 64",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c",
+      "other.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-076",
+    "group": "vla",
+    "title": "VLA typedef with runtime bound and nested aligned records 3",
+    "standard": "6.7.6.2; 6.7.5",
+    "rationale": "VLA typedef with runtime bound and nested aligned records 3",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-077",
+    "group": "vla",
+    "title": "VLA typedef with runtime bound and nested aligned records 5",
+    "standard": "6.7.6.2; 6.7.5",
+    "rationale": "VLA typedef with runtime bound and nested aligned records 5",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-078",
+    "group": "vla",
+    "title": "VLA typedef with runtime bound and nested aligned records 9",
+    "standard": "6.7.6.2; 6.7.5",
+    "rationale": "VLA typedef with runtime bound and nested aligned records 9",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-079",
+    "group": "vla",
+    "title": "VLA typedef with runtime bound and nested aligned records 17",
+    "standard": "6.7.6.2; 6.7.5",
+    "rationale": "VLA typedef with runtime bound and nested aligned records 17",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-080",
+    "group": "vla",
+    "title": "VLA typedef with runtime bound and nested aligned records 31",
+    "standard": "6.7.6.2; 6.7.5",
+    "rationale": "VLA typedef with runtime bound and nested aligned records 31",
+    "classification": "target-contract",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-081",
+    "group": "vla",
+    "title": "GNU statement expression and typeof VLA 3",
+    "standard": "GNU typeof and statement expressions",
+    "rationale": "GNU statement expression and typeof VLA 3",
+    "classification": "gnu-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-082",
+    "group": "vla",
+    "title": "GNU statement expression and typeof VLA 7",
+    "standard": "GNU typeof and statement expressions",
+    "rationale": "GNU statement expression and typeof VLA 7",
+    "classification": "gnu-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-083",
+    "group": "vla",
+    "title": "GNU statement expression and typeof VLA 13",
+    "standard": "GNU typeof and statement expressions",
+    "rationale": "GNU statement expression and typeof VLA 13",
+    "classification": "gnu-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-084",
+    "group": "vla",
+    "title": "GNU statement expression and typeof VLA 19",
+    "standard": "GNU typeof and statement expressions",
+    "rationale": "GNU statement expression and typeof VLA 19",
+    "classification": "gnu-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-085",
+    "group": "vla",
+    "title": "GNU statement expression and typeof VLA 29",
+    "standard": "GNU typeof and statement expressions",
+    "rationale": "GNU statement expression and typeof VLA 29",
+    "classification": "gnu-contract",
+    "mode": "gnu11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": true,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-086",
+    "group": "diagnostic",
+    "title": "atomic bit-field",
+    "standard": "6.7.2.4; 6.7.3; 6.7.5; 6.7.1; 6.7.6.2",
+    "rationale": "atomic bit-field",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-087",
+    "group": "diagnostic",
+    "title": "aligned bit-field",
+    "standard": "6.7.2.4; 6.7.3; 6.7.5; 6.7.1; 6.7.6.2",
+    "rationale": "aligned bit-field",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-088",
+    "group": "diagnostic",
+    "title": "atomic array specifier",
+    "standard": "6.7.2.4; 6.7.3; 6.7.5; 6.7.1; 6.7.6.2",
+    "rationale": "atomic array specifier",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-089",
+    "group": "diagnostic",
+    "title": "atomic function specifier",
+    "standard": "6.7.2.4; 6.7.3; 6.7.5; 6.7.1; 6.7.6.2",
+    "rationale": "atomic function specifier",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-090",
+    "group": "diagnostic",
+    "title": "atomic qualified type specifier",
+    "standard": "6.7.2.4; 6.7.3; 6.7.5; 6.7.1; 6.7.6.2",
+    "rationale": "atomic qualified type specifier",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-091",
+    "group": "diagnostic",
+    "title": "TLS automatic local",
+    "standard": "6.7.2.4; 6.7.3; 6.7.5; 6.7.1; 6.7.6.2",
+    "rationale": "TLS automatic local",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-092",
+    "group": "diagnostic",
+    "title": "TLS function declaration",
+    "standard": "6.7.2.4; 6.7.3; 6.7.5; 6.7.1; 6.7.6.2",
+    "rationale": "TLS function declaration",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-093",
+    "group": "diagnostic",
+    "title": "VLA static storage",
+    "standard": "6.7.2.4; 6.7.3; 6.7.5; 6.7.1; 6.7.6.2",
+    "rationale": "VLA static storage",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "reject",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "reject",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-094",
+    "group": "other",
+    "title": "atomic exchange and failed compare-exchange expected update int",
+    "standard": "7.17.7",
+    "rationale": "atomic exchange and failed compare-exchange expected update int",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-095",
+    "group": "other",
+    "title": "atomic exchange and failed compare-exchange expected update unsigned long",
+    "standard": "7.17.7",
+    "rationale": "atomic exchange and failed compare-exchange expected update unsigned long",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-096",
+    "group": "other",
+    "title": "atomic exchange and failed compare-exchange expected update double",
+    "standard": "7.17.7",
+    "rationale": "atomic exchange and failed compare-exchange expected update double",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-097",
+    "group": "other",
+    "title": "atomic exchange and failed compare-exchange expected update float",
+    "standard": "7.17.7",
+    "rationale": "atomic exchange and failed compare-exchange expected update float",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-098",
+    "group": "other",
+    "title": "atomic flag clear and test sequence",
+    "standard": "7.17.8",
+    "rationale": "atomic flag clear and test sequence",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-099",
+    "group": "other",
+    "title": "nonconstant memory order evaluated once",
+    "standard": "7.17.3; 7.17.7",
+    "rationale": "nonconstant memory order evaluated once",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  {
+    "id": "HCC09-100",
+    "group": "other",
+    "title": "atomic signal fence preserves observable values",
+    "standard": "7.17.4",
+    "rationale": "atomic signal fence preserves observable values",
+    "classification": "portable-c11",
+    "mode": "c11",
+    "kind": "run",
+    "files": [
+      "test.c"
+    ],
+    "flags": [],
+    "strict_probe": false,
+    "stress": false,
+    "expected": {
+      "compile": "accept",
+      "stdout": "ok\n",
+      "stderr": "",
+      "exit": 0
+    }
+  }
+]
