@@ -228,7 +228,7 @@ jobs:
 
   macos:
     name: macOS arm64 native (threads, TLS, atomics, ABI pairs vs Apple clang)
-    if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'macos'
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'macos')
     # Apple Silicon (M1). The per-merge job in macos.yml uses macos-26;
     # this one stays on the older image, so the two cover two Xcode clangs.
     runs-on: macos-15
@@ -318,7 +318,7 @@ jobs:
 
   windows:
     name: Windows x64 native (MSVC and MinGW-w64; threads, TLS, ABI pairs)
-    if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'windows'
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'windows')
     runs-on: windows-latest
     # Windows minutes cost twice Linux minutes.
     timeout-minutes: 35
