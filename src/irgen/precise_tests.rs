@@ -401,14 +401,7 @@ fn struct_parameter_pieces_are_not_followed_by_a_whole_slot_zero_store() {
     assert_eq!(body.matches("zeroinitializer").count(), 1, "{body}");
 }
 
-#[test]
-fn object_size_checking_builtins_call_the_plain_functions() {
-    // GCC manual, "Object Size Checking": each `__builtin___NAME_chk`
-    // takes the arguments of NAME plus the object size (and, for the
-    // formatted-output family, a flag). This compiler performs no check:
-    // the call is to NAME with the extra arguments removed. The macOS SDK's
-    // <stdio.h> spells `vsnprintf` as `__builtin___vsnprintf_chk`.
-    let source = "int printf(const char *, ...);\n\
+const OBJECT_SIZE_PROGRAM: &str = "int printf(const char *, ...);\n\
          int puts(const char *);\n\
          static int sizes;\n\
          static unsigned long size(void) { sizes++; return (unsigned long)-1; }\n\
@@ -445,6 +438,15 @@ fn object_size_checking_builtins_call_the_plain_functions() {
              __builtin___printf_chk(1, \"%s\\n\", \"chk\");\n\
              say(\"%d sizes\\n\", sizes);\n\
              return 0; }\n";
+
+#[test]
+fn object_size_checking_builtins_call_the_plain_functions() {
+    // GCC manual, "Object Size Checking": each `__builtin___NAME_chk`
+    // takes the arguments of NAME plus the object size (and, for the
+    // formatted-output family, a flag). This compiler performs no check:
+    // the call is to NAME with the extra arguments removed. The macOS SDK's
+    // <stdio.h> spells `vsnprintf` as `__builtin___vsnprintf_chk`.
+    let source = OBJECT_SIZE_PROGRAM;
     let text = ir(source);
     assert!(
         !text.contains("_chk"),
@@ -459,10 +461,6 @@ fn object_size_checking_builtins_call_the_plain_functions() {
     ] {
         assert!(text.contains(plain), "no call to {plain}:\n{text}");
     }
-    assert_eq!(
-        run(source),
-        "abcdef\nxy! 3\n7 7-seven\n6 123\n5 ab:99\n2 ok\nchk\n2 sizes\n"
-    );
     // `mempcpy` is a GNU function that macOS lacks, so it is checked in IR.
     let text = ir(
         "void *f(char *d) { return __builtin___mempcpy_chk(d, \"mp\", 2, 8); }\n\
@@ -472,6 +470,19 @@ fn object_size_checking_builtins_call_the_plain_functions() {
     assert!(
         text.contains("@mempcpy(") && text.contains("@fprintf("),
         "{text}"
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn object_size_checking_builtins_run_as_the_plain_functions() {
+    let source = OBJECT_SIZE_PROGRAM;
+    assert_eq!(
+        run(source),
+        "abcdef\nxy! 3\n7 7-seven\n6 123\n5 ab:99\n2 ok\nchk\n2 sizes\n"
     );
 }
 
