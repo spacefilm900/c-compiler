@@ -55,6 +55,7 @@ def mutate(text, rng):
         return text[:s]
     return text[:s] + rng.choice(INSERTS) + " " + text[s:]
 
+RUST_PANIC_STATUS = 101
 PANIC = re.compile(r"panicked at (?:\S*/)?(src/[\w/]+\.rs):(\d+):\d+")
 
 def run(compiler, src, timeout, extra):
@@ -67,13 +68,18 @@ def run(compiler, src, timeout, extra):
         except subprocess.TimeoutExpired:
             return "timeout", None
         err = p.stderr.decode(errors="replace")
+        # A Rust panic exits with status 101 (or dies by a signal under
+        # panic=abort); a diagnostic exits with 1. The status is checked
+        # first so that a diagnostic quoting "panicked at" (an #error line,
+        # say) is not taken for a panic.
+        died = p.returncode == RUST_PANIC_STATUS or p.returncode < 0
         m = PANIC.search(err)
-        if m:
+        if died and m:
             return "panic", f"{m.group(1)}:{m.group(2)}"
-        if "panicked at" in err:
+        if died and "panicked at" in err:
             m2 = re.search(r"panicked at ([^\n]+)", err)
             return "panic", "other:" + (m2.group(1).split(":")[0] if m2 else "?")
-        if "overflowed its stack" in err:
+        if p.returncode < 0 and "overflowed its stack" in err:
             return "stackoverflow", "stack-overflow"
         if p.returncode < 0:
             return "signal", f"signal-{-p.returncode}"
