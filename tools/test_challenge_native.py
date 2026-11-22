@@ -78,6 +78,9 @@ class ReportTest(unittest.TestCase):
             "AddressSanitizer: heap-buffer-overflow on address",
             "UBSan: runtime error"})
         self.assertEqual(cn.report_kinds(b"ok\n"), set())
+        sited = (b"WARNING: ThreadSanitizer: data race (pid=1)\n"
+                 b"SUMMARY: ThreadSanitizer: data race (a.out+0xded43) (BuildId: 20e0) in main\n")
+        self.assertEqual(cn.report_kinds(sited), {"ThreadSanitizer: data race in main"})
 
     def test_windows_line_ends_match_the_kit(self):
         self.assertEqual(cn.normal(b"ok\r\n"), "ok\n")

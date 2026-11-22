@@ -115,13 +115,20 @@ SANITIZER_REPORT = re.compile(rb"(ERROR|WARNING): (AddressSanitizer|ThreadSaniti
 # calls pthread_create).
 SANITIZER_CRASH = re.compile(rb"Sanitizer:DEADLYSIGNAL|Sanitizer: nested bug|Sanitizer: CHECK failed")
 # One finding: "ThreadSanitizer: data race", "AddressSanitizer:
-# heap-buffer-overflow on address", "UBSan: runtime error".
+# heap-buffer-overflow on address", "UBSan: runtime error". The runtime's
+# SUMMARY line adds where: "... in FUNCTION".
 REPORT_KIND = re.compile(rb"(?:ERROR|WARNING): (\w+Sanitizer): ([A-Za-z][\w-]*(?: [A-Za-z][\w-]*)*)")
+REPORT_SITE = re.compile(rb"SUMMARY: (\w+Sanitizer): ([A-Za-z][\w-]*(?: [A-Za-z][\w-]*)*)[^\n]* in (\S+)")
 
 
 def report_kinds(err):
-    """The kinds of sanitizer finding in standard error, as strings."""
-    kinds = {f"{m.group(1).decode()}: {m.group(2).decode()}" for m in REPORT_KIND.finditer(err)}
+    """The sanitizer findings in standard error, as strings: the kind and
+    the function the SUMMARY line names ("ThreadSanitizer: data race in
+    main"), or the kind alone where there is no such line."""
+    kinds = {f"{m.group(1).decode()}: {m.group(2).decode()} in {m.group(3).decode()}"
+             for m in REPORT_SITE.finditer(err)}
+    if not kinds:
+        kinds = {f"{m.group(1).decode()}: {m.group(2).decode()}" for m in REPORT_KIND.finditer(err)}
     if b"runtime error:" in err:
         kinds.add("UBSan: runtime error")
     if not kinds and SANITIZER_REPORT.search(err):
@@ -380,14 +387,19 @@ class Runner:
         if got["timeout"] or got["rc"] is None:
             return False, f"did not complete ({'timeout' if got['timeout'] else short(got['err'])})"
         if self.sanitize and SANITIZER_REPORT.search(got["err"]):
-            # Excused only when every kind of finding is one the reference
-            # has too (TSan on a stand-alone fence, say); a different kind
-            # of finding still fails the case.
+            # Excused only when every finding (kind and function) is one
+            # the reference has too (TSan on a stand-alone fence, say), and
+            # the program then ended as the reference did; any other
+            # finding, or another outcome, still fails the case.
             extra = report_kinds(got["err"]) - set(result.get("reference_report_kinds", []))
-            if not extra:
-                return True, None
-            return False, f"sanitizer report not in the reference ({', '.join(sorted(extra))}): " + \
-                short(got["err"], 600)
+            if extra:
+                return False, f"sanitizer report not in the reference ({', '.join(sorted(extra))}): " + \
+                    short(got["err"], 600)
+            if reference is None or (got["rc"], got["out"]) != (reference["rc"], reference["out"]):
+                want_rc = reference["rc"] if reference else None
+                want_out = reference["out"] if reference else b""
+                return False, "same sanitizer findings as the reference, but " + describe(got, want_rc, want_out)
+            return True, None
         if reference is None or self.sanitize:
             # Under a sanitizer, standard error carries the runtime's own
             # messages, so both sides are held to the kit's result. A
