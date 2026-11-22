@@ -526,6 +526,19 @@ fn object_size_accepts_a_null_pointer_constant() {
 }
 
 #[test]
+fn memory_builtins_accept_null_pointer_constants() {
+    // The pointer parameters of memcpy, memmove and memset are `void *` /
+    // `const void *`, so an integer constant 0 converts to them (C11
+    // 6.3.2.3p3, 6.5.16.1p1), evaluated or not, plain or `_chk`.
+    let text = ir("void *f(void) { return __builtin___memcpy_chk((void *)0, 0, 0, 8); }\n\
+         void *g(void) { return __builtin_memcpy(0, 0, 0); }\n\
+         void *h(void) { return __builtin_memset(0, 1, 0); }\n\
+         int n = sizeof(__builtin___memcpy_chk((void *)0, 0, 0, 8)) + sizeof(__builtin_memmove(0, 0, 0));\n\
+         char a[sizeof(__builtin_object_size((char *)0, 3))];\n");
+    assert!(text.contains("define ptr @f("), "{text}");
+}
+
+#[test]
 fn object_size_checking_builtins_report_misuse() {
     for (source, message) in [
         (
@@ -569,6 +582,19 @@ fn object_size_checking_builtins_report_misuse() {
         (
             "unsigned long f(void) { return __builtin_object_size(1, 0); }",
             "pointer",
+        ),
+        // The type argument is an integer constant from 0 to 3 there too.
+        (
+            "char a[sizeof(__builtin_object_size((char *)0, 4))];",
+            "invalid operand",
+        ),
+        (
+            "int n; char a[sizeof(__builtin_object_size((char *)0, n))];",
+            "invalid operand",
+        ),
+        (
+            "void *f(char *p) { return __builtin_memcpy(p, 1, 0); }",
+            "source must be a pointer",
         ),
         // The operands are checked in an unevaluated operand too.
         (
