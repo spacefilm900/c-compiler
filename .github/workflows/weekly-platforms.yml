@@ -9,11 +9,11 @@
 # describes each job, its cost and how to read the results.
 #
 # Estimated cost per full run (private repo; GitHub's published per-minute
-# prices, Nov 2026; billing rounds each job up to whole minutes): arm64
-# Linux about 30 min x $0.005, macOS about 15 min x $0.062, Windows about
-# 30 min x $0.010, sanitizers about 25 min x $0.006: about $1.55 a run,
-# about $6.70 a month at one run a week. These are estimates; the measured
-# minutes are in docs/WEEKLY_PLATFORMS.md.
+# prices, Nov 2026; billing rounds each job up to whole minutes), from the
+# validation runs' measured times: arm64 Linux 7 min x $0.005, macOS 3 min
+# x $0.062, Windows 13 min x $0.010, sanitizers 14 min x $0.006: about
+# $0.44 a run, about $1.90 a month at one run a week. These are estimates;
+# docs/WEEKLY_PLATFORMS.md has the details.
 
 name: weekly-platforms
 
@@ -21,12 +21,6 @@ on:
   schedule:
     # Sundays 03:00 UTC.
     - cron: '0 3 * * 0'
-  # TEMPORARY, for validation on the weekly-platform-tests pull request; removed before the
-  # pull request is ready to merge. workflow_dispatch needs the file on the
-  # default branch, so this is the only way to run it before the merge.
-  pull_request:
-    paths:
-      - '.github/workflows/weekly-platforms.yml'
   workflow_dispatch:
     inputs:
       jobs:
@@ -228,7 +222,7 @@ jobs:
 
   macos:
     name: macOS arm64 native (threads, TLS, atomics, ABI pairs vs Apple clang)
-    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'macos')
+    if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'macos'
     # Apple Silicon (M1). The per-merge job in macos.yml uses macos-26;
     # this one stays on the older image, so the two cover two Xcode clangs.
     runs-on: macos-15
@@ -318,7 +312,7 @@ jobs:
 
   windows:
     name: Windows x64 native (MSVC and MinGW-w64; threads, TLS, ABI pairs)
-    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'windows')
+    if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'windows'
     runs-on: windows-latest
     # Windows minutes cost twice Linux minutes.
     timeout-minutes: 35

@@ -149,26 +149,58 @@ pieces first and zeroes only the bytes no piece covers
 `tools/platform/controls/param_spill_*.c` is a regression control the
 ASan and TSan runs check first.
 
+### Found on real macOS
+
+The `macos-15` image's SDK (15.8, Apple clang 17) has `<stdio.h>` spell
+`vsnprintf` as `__builtin___vsnprintf_chk`, one of GCC's object size
+checking builtins (GCC manual, "Object Size Checking"), which hcc did not
+know: `tests/107_vararg.c` failed with "use of undeclared identifier
+'__builtin___vsnprintf_chk'". hcc now accepts `__builtin_object_size` and
+`__builtin_dynamic_object_size` (the operand is not evaluated; the result
+is the manual's unknown-size value, `(size_t)-1` for types 0 and 1, 0 for
+types 2 and 3) and the manual's `__builtin___NAME_chk` functions (memcpy,
+mempcpy, memmove, memset, strcpy, stpcpy, strncpy, strcat, strncat, and
+the sprintf, snprintf, vsprintf, vsnprintf, printf, vprintf, fprintf and
+vfprintf family). Each becomes a call of NAME with the flag and object size
+removed; those arguments are still evaluated, and no check is made, which
+is what the manual specifies for an unknown size and a zero flag.
+`__has_builtin` answers 1 for them. Apple's extra checking builtins
+(`__builtin___stpncpy_chk`, `__builtin___strlcpy_chk`,
+`__builtin___strlcat_chk`, `__builtin___memccpy_chk`) are not in the GCC
+manual and are not supported yet.
+
+### Validation runs
+
+| Run | Head | arm64 | macOS | Windows | Sanitizers |
+| --- | --- | --- | --- | --- | --- |
+| [45024148310](https://github.com/spacefilm900/c-compiler/actions/runs/45024148310) | `0f261ff` | fail: v0.7/v0.8 runners refuse AArch64 | fail: `__builtin___vsnprintf_chk`; HCC09-054 | fail: MSVC tgmath oracle; MinGW `timespec_get` | pass, but glibc TSan was vacuous (see above) |
+| [45026299529](https://github.com/spacefilm900/c-compiler/actions/runs/45026299529) | `045ee73` | fail: one unit test ran x86-64 code on AArch64 | pass | pass | pass |
+| [45027623169](https://github.com/spacefilm900/c-compiler/actions/runs/45027623169) | `125c324` | pass | not run | not run | pass |
+
+Run 3 ran only the two Linux jobs, to check the fixes after run 2 without
+paying for macOS and Windows again.
+
 ## Cost
 
 GitHub bills private-repository Actions per minute, rounding each job up to
 a whole minute. Published per-minute prices (November 2026): Linux x64
 2-core $0.006, Linux arm64 2-core $0.005, Windows $0.010, macOS $0.062.
-These are estimates from those prices and the measured run times below;
-the real bill can differ a little.
+These are estimates from those prices and the times measured in the
+validation runs on pull request 61 (run 45026299529 for macOS and
+Windows, run 45027623169 for the two Linux jobs); the real bill can differ.
 
-| Job | Estimated minutes | Estimated cost |
-| --- | ---: | ---: |
-| arm64 Linux | 30 | $0.15 |
-| macOS arm64 | 15 | $0.93 |
-| Windows x64 | 30 | $0.30 |
-| Sanitizers | 25 | $0.15 |
-| **One full run** | **100** | **about $1.55** |
-| **Weekly, per month (4.3 runs)** | | **about $6.70** |
+| Job | Measured time | Billed minutes | Estimated cost |
+| --- | ---: | ---: | ---: |
+| arm64 Linux | 6 min 49 s | 7 | $0.035 |
+| macOS arm64 | 2 min 46 s | 3 | $0.19 |
+| Windows x64 | 12 min 45 s | 13 | $0.13 |
+| Sanitizers | 13 min 9 s | 14 | $0.084 |
+| **One full run** | | **37** | **about $0.44** |
+| **Weekly, per month (4.3 runs)** | | **about 160** | **about $1.90** |
 
 The monthly CI budget is $30. A manual run of one job costs that job's
-row. The macOS job is the dearest per minute, which is why its cap is 25
-minutes.
+row. The macOS job is the dearest per minute, so its cap is 25 minutes;
+at that cap it would cost $1.55.
 
 ## Not covered
 
@@ -179,4 +211,9 @@ minutes.
 - ThreadSanitizer on Windows (not available for these targets), and
   ThreadSanitizer on macOS beyond the v0.9 kit at `-O0`.
 - The v0.1-v0.6 challenge kits (724 cases), which are not in the tree.
+- GCC mixed-object checks for v0.7 and v0.8 on AArch64 (their runners are
+  x86-64 only; `challenge_native.py` mixes with Clang only).
+- `workflow_dispatch` itself: it can only run once the file is on the
+  default branch. The jobs were validated through a temporary
+  `pull_request` trigger, now removed.
 - Stress runs and the crash fuzzer are bounded samples, not proofs.
