@@ -443,8 +443,14 @@ fn check_uneval_object_size_operands(
                 return Err(BoundErr::InvalidOperand);
             }
         }
-        if known(&args[1]).is_some_and(|ty| !ty.is_integer()) {
-            return Err(BoundErr::InvalidOperand);
+        // The type is an integer constant expression from 0 to 3, as
+        // semantic analysis requires (`check_object_size`).
+        if let Some(ty) = known(&args[1]) {
+            let in_range = ty.is_integer()
+                && eval_ice(&args[1], env).is_ok_and(|value| value.bits & value.ty.mask() <= 3);
+            if !in_range {
+                return Err(BoundErr::InvalidOperand);
+            }
         }
         return Ok(());
     };
@@ -471,14 +477,18 @@ pub(super) fn check_uneval_memory_builtin(
     env: Env,
 ) -> Result<(), BoundErr> {
     let known = |arg: &Expr| rvalue_type(arg, env).ok();
-    if known(&args[0]).is_some_and(|ty| !ty.is_pointer()) {
+    // A pointer parameter also takes a null pointer constant (C11 6.3.2.3p3).
+    let not_pointer = |arg: &Expr| {
+        known(arg).is_some_and(|ty| !ty.is_pointer() && !uneval_null_constant(arg, &ty, env))
+    };
+    if not_pointer(&args[0]) {
         return Err(BoundErr::MemoryDest);
     }
     if name == "__builtin_memset" {
         if known(&args[1]).is_some_and(|ty| !ty.is_integer()) {
             return Err(BoundErr::MemsetValue);
         }
-    } else if known(&args[1]).is_some_and(|ty| !ty.is_pointer()) {
+    } else if not_pointer(&args[1]) {
         return Err(BoundErr::MemorySource);
     }
     if known(&args[2]).is_some_and(|ty| !ty.is_integer()) {

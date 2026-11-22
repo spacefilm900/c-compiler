@@ -696,6 +696,37 @@ impl Sema<'_> {
             self.check_expr(arg)?;
             self.decay(arg)?;
         }
+        // The pointer parameters are `void *` / `const void *`, so a null
+        // pointer constant converts to them (C11 6.3.2.3p3, 6.5.16.1p1).
+        let pointer_params: &[usize] = if name == "__builtin_memset" {
+            &[0]
+        } else {
+            &[0, 1]
+        };
+        for &index in pointer_params {
+            let arg = &mut args[index];
+            if !arg.ty().expect("typed").is_pointer() && super::expr::is_null_pointer_constant(arg)
+            {
+                let (arg_line, arg_column) = (arg.line(), arg.column());
+                let inner = std::mem::replace(
+                    arg,
+                    Expr::Int {
+                        bits: 0,
+                        value_ty: TypeName::Int,
+                        line: arg_line,
+                        column: arg_column,
+                        ty: None,
+                    },
+                );
+                *arg = Expr::Cast {
+                    ty_name: CType::pointer(CType::Void),
+                    expr: Box::new(inner),
+                    line: arg_line,
+                    column: arg_column,
+                    ty: Some(CType::pointer(CType::Void)),
+                };
+            }
+        }
         let dest = args[0].ty().expect("typed");
         let mid = args[1].ty().expect("typed");
         let len = args[2].ty().expect("typed");
