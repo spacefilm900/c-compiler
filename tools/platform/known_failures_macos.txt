@@ -2,3 +2,4 @@
 # reason, for tools/platform/challenge_native.py --known-failures.
 # Format: CASE-ID [O0|O2]  # reason
 # A listed case that passes is reported so its line can be removed.
+HCC09-054 O0  # Darwin does not honour _Alignas(32) on a _Thread_local object: Apple Clang's own build fails the kit's alignment check too, and hcc's result varies run to run. -O2 passed in the first weekly run

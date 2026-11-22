@@ -1,0 +1,8 @@
+# Challenge-kit cases that fail on real 64-bit Windows with MinGW-w64
+# (MSYS2's mingw64 environment, on msvcrt.dll) for a documented reason, for
+# tools/platform/challenge_native.py --known-failures.
+# Format: CASE-ID [O0|O2]  # reason (no level: both)
+# A listed case that passes is reported so its line can be removed.
+HCC09-011  # msvcrt.dll has no timespec_get, so mingw64's <time.h> declares neither it nor TIME_UTC; Clang (the reference) and hcc both reject the call
+HCC09-012  # msvcrt.dll has no timespec_get, so mingw64's <time.h> declares neither it nor TIME_UTC; Clang (the reference) and hcc both reject the call
+HCC09-015  # msvcrt.dll has no timespec_get, so mingw64's <time.h> declares neither it nor TIME_UTC; Clang (the reference) and hcc both reject the call
