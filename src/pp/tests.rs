@@ -213,6 +213,8 @@ fn has_include_and_feature_queries() {
               && __has_builtin(__builtin_bswap16) && __has_builtin(__builtin_memcpy) \\\n\
               && __has_builtin(__builtin_nanf) && __has_builtin(__builtin_huge_val) \\\n\
               && !__has_builtin(__builtin_no_such_thing) && !__has_builtin(memcpy) \\\n\
+              && __has_builtin(__builtin_object_size) && __has_builtin(__builtin___vsnprintf_chk) \\\n\
+              && !__has_builtin(__builtin___no_such_chk) \\\n\
               && !__has_extension(x) && !__building_module(m)\nint plain_c;\n#endif\n\
             #include <n.h>\n#include <only.h>\n";
     let text = preprocess(source, "t.c", &options).unwrap();
