@@ -103,7 +103,7 @@ CRASH_WORDS = ("internal compiler error", "segmentation fault", "panicked at", "
                "killed signal", "please submit a bug report")
 # A function definition line: the signature up to the parameter list's
 # closing parenthesis, then any function attributes, then "{".
-DEFINE = re.compile(r"^(define\b[^\n]*\))([^()\n]*?)(\s*\{)[ \t]*$", re.M)
+DEFINE = re.compile(r"^(define\b[^\n]*\))([^()\n]*?)([ \t]*\{)[ \t]*$", re.M)
 
 
 def sha256(path):
