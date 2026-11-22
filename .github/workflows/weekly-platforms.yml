@@ -99,36 +99,46 @@ jobs:
           tools/platform/record.sh abi-pairs python3 tools/abi_fuzz.py --count 200 --seed-start 1001 || status=1
           exit "${status}"
 
-      # The kits' own runners (native Linux only): every case with this
-      # compiler at -O0 and -O2, mixed objects with Clang and with GCC.
-      - name: Challenge kits v0.7-v0.9 (kit runners, hcc)
+      # The v0.9 kit's own runner accepts native AArch64 Linux: every case
+      # with this compiler at -O0 and -O2, mixed objects with Clang and with
+      # GCC. The v0.7 and v0.8 runners refuse any host but x86-64 Linux
+      # ("This release runner targets native x86_64 Linux"), so those kits
+      # run through tools/platform/challenge_native.py in the next step.
+      - name: Challenge kit v0.9 (kit runner, hcc)
         if: success() || failure()
         run: |
           set -uo pipefail
           status=0
-          for v in 0.7 0.8 0.9; do
-            kit="tests/adversarial/hcc-challenge-v${v}"
-            for opt in O0 O2; do
-              tools/platform/record.sh "v${v}-hcc-${opt}" python3 "${kit}/runner.py" --engine hcc \
-                --compiler "${PWD}/build/hcc" --linker clang --opt "${opt}" --jobs "$(nproc)" \
-                --out "${WORK}/v${v}-hcc-${opt}" || status=1
-              cp "${WORK}/v${v}-hcc-${opt}/results.json" "${RESULTS}/v${v}-hcc-${opt}.json" 2>/dev/null || :
-            done
-          done
-          for v in 0.8 0.9; do
-            kit="tests/adversarial/hcc-challenge-v${v}"
-            for opt in O0 O2; do
-              tools/platform/record.sh "v${v}-hcc-gccabi-${opt}" python3 "${kit}/runner.py" --engine hcc \
-                --compiler "${PWD}/build/hcc" --linker clang --abi-reference gcc --opt "${opt}" \
-                --jobs "$(nproc)" --out "${WORK}/v${v}-gccabi-${opt}" || status=1
-            done
+          kit=tests/adversarial/hcc-challenge-v0.9
+          for opt in O0 O2; do
+            tools/platform/record.sh "v0.9-hcc-${opt}" python3 "${kit}/runner.py" --engine hcc \
+              --compiler "${PWD}/build/hcc" --linker clang --opt "${opt}" --jobs "$(nproc)" \
+              --out "${WORK}/v0.9-hcc-${opt}" || status=1
+            cp "${WORK}/v0.9-hcc-${opt}/results.json" "${RESULTS}/v0.9-hcc-${opt}.json" 2>/dev/null || :
+            tools/platform/record.sh "v0.9-hcc-gccabi-${opt}" python3 "${kit}/runner.py" --engine hcc \
+              --compiler "${PWD}/build/hcc" --linker clang --abi-reference gcc --opt "${opt}" \
+              --jobs "$(nproc)" --out "${WORK}/v0.9-gccabi-${opt}" || status=1
           done
           exit "${status}"
 
-      # PLATFORM_PROTOCOL.md: >= 100 repetitions of the 33 marked cases at
-      # -O0 and -O2, and 1,000 of publication (036), paired fences (039),
-      # release sequence (041), SC store buffering (042) and the SPSC ring
-      # (051) at -O2, on native weak-memory hardware.
+      # Every case of v0.7-v0.9 on glibc's own <threads.h>, compared with
+      # Clang at -O0 and -O2, with mixed hcc/Clang objects for the
+      # multi-file cases and every stress case repeated.
+      - name: Challenge kits v0.7-v0.9 on glibc threads (challenge_native)
+        if: success() || failure()
+        run: |
+          # KITS is a fixed list of options; split on spaces.
+          # shellcheck disable=SC2086
+          tools/platform/record.sh challenge python3 tools/platform/challenge_native.py ${KITS} \
+            --opt O0 --opt O2 --stress-repetitions 100 \
+            --title "Challenge kits on arm64 Linux (glibc threads)" --out "${RESULTS}/challenge"
+
+      # PLATFORM_PROTOCOL.md asks for >= 100 repetitions of the 33 marked
+      # cases at -O0 and -O2, and >= 1,000 of publication (036), paired
+      # fences (039), release sequence (041), SC store buffering (042) and
+      # the SPSC ring (051) at -O2, on native weak-memory hardware. The
+      # weekly run does ten times that: 1,000 and 10,000 (about two minutes
+      # in all on the 4-core runner).
       - name: Thread stress (v0.9, native AArch64)
         if: success() || failure()
         run: |
@@ -138,10 +148,10 @@ jobs:
           for opt in O0 O2; do
             tools/platform/record.sh "v0.9-stress-${opt}" python3 "${kit}/stress_threads.py" \
               --run-dir "${WORK}/v0.9-hcc-${opt}" --out "${WORK}/v0.9-stress-${opt}" \
-              --repetitions 100 --jobs "$(nproc)" || status=1
+              --repetitions 1000 --jobs "$(nproc)" || status=1
           done
           tools/platform/record.sh v0.9-stress-deep-O2 python3 "${kit}/stress_threads.py" \
-            --run-dir "${WORK}/v0.9-hcc-O2" --out "${WORK}/v0.9-stress-deep-O2" --repetitions 1000 \
+            --run-dir "${WORK}/v0.9-hcc-O2" --out "${WORK}/v0.9-stress-deep-O2" --repetitions 10000 \
             --jobs "$(nproc)" --case HCC09-036 --case HCC09-039 --case HCC09-041 --case HCC09-042 \
             --case HCC09-051 || status=1
           exit "${status}"
@@ -193,9 +203,11 @@ jobs:
         if: always()
         run: |
           cat "${RESULTS}/summary.md" >> "${GITHUB_STEP_SUMMARY}" || :
-          if [ -f "${RESULTS}/threads-shim/summary.md" ]; then
-            cat "${RESULTS}/threads-shim/summary.md" >> "${GITHUB_STEP_SUMMARY}"
-          fi
+          for f in "${RESULTS}/challenge/summary.md" "${RESULTS}/threads-shim/summary.md"; do
+            if [ -f "${f}" ]; then
+              cat "${f}" >> "${GITHUB_STEP_SUMMARY}"
+            fi
+          done
           for d in "${WORK}"/v0.9-stress-* "${WORK}"/v0.9-gen-* "${WORK}"/v0.9-cross-*; do
             [ -f "${d}/results.json" ] && cp "${d}/results.json" "${RESULTS}/$(basename "${d}").json"
           done
@@ -371,7 +383,7 @@ jobs:
           # shellcheck disable=SC2086
           tools/platform/record.sh msvc-challenge python tools/platform/challenge_native.py ${KITS} \
             --target x86_64-pc-windows-msvc --opt O0 --opt O2 --stress-repetitions 10 \
-            --known-failures tools/platform/known_failures_windows.txt \
+            --known-failures tools/platform/known_failures_msvc.txt \
             --title "Challenge kits on Windows x64 (MSVC)" --out "${RESULTS}/msvc-challenge"
 
       - name: MinGW-w64 toolchain (MSYS2)
@@ -400,7 +412,7 @@ jobs:
           # shellcheck disable=SC2086
           tools/platform/record.sh mingw-challenge python tools/platform/challenge_native.py ${KITS} \
             --target x86_64-w64-windows-gnu --opt O0 --opt O2 --stress-repetitions 10 \
-            --known-failures tools/platform/known_failures_windows.txt \
+            --known-failures tools/platform/known_failures_mingw.txt \
             --title "Challenge kits on Windows x64 (MinGW-w64)" --out "${RESULTS}/mingw-challenge"
 
       - name: Summary
