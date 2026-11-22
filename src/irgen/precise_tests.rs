@@ -506,6 +506,23 @@ fn object_size_is_a_constant_that_does_not_evaluate_its_operand() {
 }
 
 #[test]
+fn object_size_accepts_a_null_pointer_constant() {
+    // The first parameter is `const void *` (GCC manual, "Object Size
+    // Checking"), so an integer constant 0 converts to it (C11 6.3.2.3p3).
+    let text = ir(
+        "unsigned long f(void) { return __builtin_object_size(0, 0); }\n\
+         unsigned long g(void) { return __builtin_object_size(0L, 2); }\n",
+    );
+    assert!(
+        function_body(&text, "@f(").contains("ret i64 18446744073709551615"),
+        "{text}"
+    );
+    assert!(function_body(&text, "@g(").contains("ret i64 0"), "{text}");
+    // In an unevaluated operand the call has the arity it needs.
+    ir("int n = sizeof(__builtin_object_size(0, 1)) + sizeof(__builtin___strcpy_chk(0, 0, 1));\n");
+}
+
+#[test]
 fn object_size_checking_builtins_report_misuse() {
     for (source, message) in [
         (
@@ -531,6 +548,24 @@ fn object_size_checking_builtins_report_misuse() {
         (
             "int f(char *p) { return __builtin___sprintf_chk(p, 0, 1); }",
             "at least 4",
+        ),
+        // The argument count is checked in an operand that is never
+        // evaluated too (C11 6.5.2.2p2), where only the folded size is kept.
+        (
+            "char a[sizeof(__builtin_object_size())];",
+            "wrong number of arguments",
+        ),
+        (
+            "_Static_assert(sizeof(__builtin___strcpy_chk(0)) == 8, \"\");",
+            "wrong number of arguments",
+        ),
+        (
+            "int f(void) { char a[sizeof(__builtin___sprintf_chk(0, 0))]; return sizeof a; }",
+            "wrong number of arguments",
+        ),
+        (
+            "unsigned long f(void) { return __builtin_object_size(1, 0); }",
+            "pointer",
         ),
     ] {
         let err = crate::compile_dialect(source, "t.c", &PpOptions::default(), Dialect::Gnu11)
