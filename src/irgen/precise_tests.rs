@@ -375,11 +375,29 @@ fn struct_parameter_pieces_are_not_followed_by_a_whole_slot_zero_store() {
         lines[zero].contains("store [4 x i8] zeroinitializer"),
         "{body}"
     );
-    let last_piece = lines
-        .iter()
-        .rposition(|l| l.contains("store double %p0,") || l.contains("store float %p0.1,"))
-        .unwrap_or_else(|| panic!("no piece stores:\n{body}"));
-    assert!(zero > last_piece, "{body}");
+    // Both pieces are stored, and the zero store follows both.
+    let piece = |text: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(text))
+            .unwrap_or_else(|| panic!("no `{text}` store:\n{body}"))
+    };
+    let first = piece("store double %p0, ptr");
+    let second = piece("store float %p0.1, ptr");
+    assert!(zero > first && zero > second, "{body}");
+    // The zero store is to byte 12 of the parameter's slot, not to `f`.
+    let slot = lines[first]
+        .split("ptr ")
+        .nth(1)
+        .and_then(|rest| rest.split(',').next())
+        .unwrap_or_else(|| panic!("no slot in {}", lines[first]));
+    let address = lines[zero]
+        .split("ptr ")
+        .nth(1)
+        .and_then(|rest| rest.split(',').next())
+        .unwrap_or_else(|| panic!("no address in {}", lines[zero]));
+    let offset = format!("{address} = getelementptr inbounds i8, ptr {slot}, i64 12");
+    assert!(body.contains(&offset), "want `{offset}`:\n{body}");
     assert_eq!(body.matches("zeroinitializer").count(), 1, "{body}");
 }
 
