@@ -211,6 +211,7 @@ fn check_uneval_builtin_call(name: &str, args: &[Expr], env: Env) -> Result<bool
         if (variadic && args.len() < arity) || (!variadic && args.len() != arity) {
             return Err(BoundErr::WrongArity);
         }
+        check_uneval_object_size_operands(checked, args, env)?;
         return Ok(true);
     }
     let Some(arity) = builtin_arity(name) else {
@@ -424,6 +425,46 @@ pub(super) fn check_uneval_signbit(arg: &Expr, env: Env) -> Result<(), BoundErr>
 /// destination; a pointer source, or an integer value for memset; an
 /// integer size. An operand whose type the parser cannot work out is left
 /// to semantic analysis.
+/// The operand checks semantic analysis applies to an object size
+/// builtin (`check_object_size`, `check_checked_builtin`): for
+/// `__builtin_object_size` a pointer or null pointer constant and an
+/// integer type; for `__builtin___NAME_chk` integer flag and size
+/// arguments, and the memory builtins' own checks on the rest. An operand
+/// whose type the parser cannot work out is left to semantic analysis.
+fn check_uneval_object_size_operands(
+    checked: Option<crate::builtins::CheckedBuiltin>,
+    args: &[Expr],
+    env: Env,
+) -> Result<(), BoundErr> {
+    let known = |arg: &Expr| rvalue_type(arg, env).ok();
+    let Some(checked) = checked else {
+        if let Some(ty) = known(&args[0]) {
+            if !ty.is_pointer() && !uneval_null_constant(&args[0], &ty, env) {
+                return Err(BoundErr::InvalidOperand);
+            }
+        }
+        if known(&args[1]).is_some_and(|ty| !ty.is_integer()) {
+            return Err(BoundErr::InvalidOperand);
+        }
+        return Ok(());
+    };
+    for &index in checked.extra {
+        if known(&args[index]).is_some_and(|ty| !ty.is_integer()) {
+            return Err(BoundErr::InvalidOperand);
+        }
+    }
+    if is_memory_builtin(checked.plain) {
+        let rest: Vec<Expr> = args
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !checked.extra.contains(index))
+            .map(|(_, arg)| arg.clone())
+            .collect();
+        check_uneval_memory_builtin(checked.plain, &rest, env)?;
+    }
+    Ok(())
+}
+
 pub(super) fn check_uneval_memory_builtin(
     name: &str,
     args: &[Expr],
