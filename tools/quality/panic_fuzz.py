@@ -14,7 +14,7 @@ Usage: python3 tools/quality/panic_fuzz.py --compiler build/hcc
            --corpus tests --corpus tests/external/wacc/tests
            [--mutants-per-file 20] [--stack 1] [--arg -std=gnu11]
            [--seed 1] [--jobs 8] [--timeout 5]
-           --out OUTDIR
+           --out OUTDIR [--fail-on-crash]
 Writes OUTDIR/sites.txt (src/file.rs:LINE, one per line, for
 crash_points.py --confirmed), OUTDIR/crashes.csv (site, count, smallest
 reproducer) and OUTDIR/repro/ (the smallest input per site).
@@ -91,6 +91,8 @@ def main():
     ap.add_argument("--arg", action="append", default=[], help="extra compiler argument, e.g. -std=gnu11")
     ap.add_argument("--max-bytes", type=int, default=20000, help="skip larger seed files")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--fail-on-crash", action="store_true",
+                    help="exit 1 when any crash site (not a timeout) was found")
     a = ap.parse_args()
     files = sorted({p for c in a.corpus for p in Path(c).rglob("*.c") if p.stat().st_size <= a.max_bytes})
     rng = random.Random(a.seed)
@@ -131,6 +133,7 @@ def main():
     print(f"runs {len(jobs)}, timeouts {counts.get('timeout', 0)}, distinct crash sites {len(crashes)}")
     for site in sorted(found, key=lambda s: -counts[s]):
         print(f"  {counts[site]:5}  {site}")
+    return 1 if a.fail_on_crash and crashes else 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
