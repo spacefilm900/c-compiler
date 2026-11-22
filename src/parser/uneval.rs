@@ -194,11 +194,22 @@ fn check_uneval_call(callee: &Expr, args: &[Expr], env: Env) -> Result<(), Bound
 fn check_uneval_builtin_call(name: &str, args: &[Expr], env: Env) -> Result<bool, BoundErr> {
     if crate::builtins::Inline::from_name(name).is_some()
         || (crate::builtins::library(name).is_some() && env_lookup(env, name).is_none())
-        || crate::builtins::checked_builtin(name).is_some()
-        || crate::builtins::is_object_size_builtin(name)
     {
         for arg in args {
             check_uneval(arg, env)?;
+        }
+        return Ok(true);
+    }
+    // The object size builtins: the argument count is checked here too,
+    // because a constant context keeps only the folded value.
+    let checked = crate::builtins::checked_builtin(name);
+    if checked.is_some() || crate::builtins::is_object_size_builtin(name) {
+        for arg in args {
+            check_uneval(arg, env)?;
+        }
+        let (arity, variadic) = checked.map_or((2, false), |c| (c.arity, c.variadic));
+        if (variadic && args.len() < arity) || (!variadic && args.len() != arity) {
+            return Err(BoundErr::WrongArity);
         }
         return Ok(true);
     }

@@ -360,7 +360,11 @@ impl Sema<'_> {
             self.check_expr(arg)?;
             self.decay(arg)?;
         }
-        if !args[0].ty().expect("typed").is_pointer() {
+        // The parameter is `const void *`, so a null pointer constant is
+        // accepted too (C11 6.3.2.3p3).
+        if !args[0].ty().expect("typed").is_pointer()
+            && !super::expr::is_null_pointer_constant(&args[0])
+        {
             return self.err(
                 args[0].line(),
                 args[0].column(),
