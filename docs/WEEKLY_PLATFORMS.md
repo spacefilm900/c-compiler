@@ -23,7 +23,9 @@ push, and it does not change `ci.yml`, `linux-arm64.yml`, `macos.yml` or
   file is on the default branch; `--ref` then picks the branch to test.
 
 Only one run per branch goes at a time. A run started while another is
-going waits for it rather than cancelling it.
+going waits for it rather than cancelling it. GitHub keeps at most one
+waiting run per branch: a third run replaces the waiting one, which is
+cancelled without starting.
 
 ## The four jobs
 

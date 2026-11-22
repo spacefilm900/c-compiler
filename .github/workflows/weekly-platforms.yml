@@ -87,6 +87,7 @@ jobs:
         run: make
 
       - name: Unit tests
+        if: success() || failure()
         run: tools/platform/record.sh unit-tests cargo test --offline --lib
 
       - name: Differential harness, stage dumps and random ABI pairs
@@ -208,7 +209,11 @@ jobs:
               cat "${f}" >> "${GITHUB_STEP_SUMMARY}"
             fi
           done
-          for d in "${WORK}"/v0.9-stress-* "${WORK}"/v0.9-gen-* "${WORK}"/v0.9-cross-*; do
+          # Per-case reports of the runs that write under WORK, for the
+          # artifact: GCC ABI and reference-compiler runs included.
+          for d in "${WORK}"/v0.9-stress-* "${WORK}"/v0.9-gen-* "${WORK}"/v0.9-cross-* \
+                   "${WORK}"/v0.9-gccabi-* "${WORK}"/v0.9-gcc-O2 "${WORK}"/v0.9-clang-O2 \
+                   "${WORK}"/v0.9-mixed-reference; do
             [ -f "${d}/results.json" ] && cp "${d}/results.json" "${RESULTS}/$(basename "${d}").json"
           done
           :
@@ -552,6 +557,10 @@ jobs:
           cat "${RESULTS}/summary.md" >> "${GITHUB_STEP_SUMMARY}" || :
           for f in "${RESULTS}"/*/summary.md; do
             [ -f "${f}" ] && cat "${f}" >> "${GITHUB_STEP_SUMMARY}"
+          done
+          # The checked compiler's kit reports, for the artifact.
+          for d in "${WORK}"/checked-v*; do
+            [ -f "${d}/results.json" ] && cp "${d}/results.json" "${RESULTS}/$(basename "${d}").json"
           done
           :
 
