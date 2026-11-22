@@ -326,3 +326,59 @@ fn unsigned_case_ranges_order_by_value() {
     };
     assert_eq!(err.message, "duplicate case value '2'");
 }
+
+/// The body of the function whose `define` line contains `name`.
+fn function_body<'a>(ir: &'a str, name: &str) -> &'a str {
+    let start = ir
+        .lines()
+        .position(|line| line.starts_with("define ") && line.contains(name))
+        .unwrap_or_else(|| panic!("no define for {name}:\n{ir}"));
+    let begin = ir.lines().take(start).map(|l| l.len() + 1).sum::<usize>();
+    let rest = &ir[begin..];
+    &rest[..rest.find("\n}").map_or(rest.len(), |end| end + 2)]
+}
+
+#[test]
+fn struct_parameter_pieces_are_not_followed_by_a_whole_slot_zero_store() {
+    // `store_param`. LLVM's AddressSanitizer at -O0 moves each first store
+    // of a parameter into its stack slot to the top of the function. A
+    // whole-slot `zeroinitializer` store written before the register pieces
+    // then runs after them and erases the parameter (the weekly sanitizer
+    // run found this in lib/threads.c `thrd_join`). The pieces are stored
+    // first, and only bytes no piece covers are zeroed, after them.
+    let x86 = PpOptions {
+        target: crate::Target::X86_64Linux,
+        ..PpOptions::default()
+    };
+    let ir = ir_for(
+        "struct s { long a; void *b; };\nlong get(struct s x) { return x.a; }\n",
+        &x86,
+    );
+    let body = function_body(&ir, "@get(");
+    assert!(!body.contains("zeroinitializer"), "{body}");
+    assert!(body.contains("store i64 %p0, ptr"), "{body}");
+    assert!(body.contains("store ptr %p0.1, ptr"), "{body}");
+
+    // A float in the second eightbyte leaves bytes 12..16 (tail padding)
+    // to no piece: they are zeroed, and only they, after the pieces.
+    let ir = ir_for(
+        "struct t { double d; float f; };\nfloat get(struct t x) { return x.f; }\n",
+        &x86,
+    );
+    let body = function_body(&ir, "@get(");
+    let lines: Vec<&str> = body.lines().collect();
+    let zero = lines
+        .iter()
+        .position(|l| l.contains("zeroinitializer"))
+        .unwrap_or_else(|| panic!("tail padding is not zeroed:\n{body}"));
+    assert!(
+        lines[zero].contains("store [4 x i8] zeroinitializer"),
+        "{body}"
+    );
+    let last_piece = lines
+        .iter()
+        .rposition(|l| l.contains("store double %p0,") || l.contains("store float %p0.1,"))
+        .unwrap_or_else(|| panic!("no piece stores:\n{body}"));
+    assert!(zero > last_piece, "{body}");
+    assert_eq!(body.matches("zeroinitializer").count(), 1, "{body}");
+}
