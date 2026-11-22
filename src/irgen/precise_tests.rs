@@ -519,7 +519,10 @@ fn object_size_accepts_a_null_pointer_constant() {
     );
     assert!(function_body(&text, "@g(").contains("ret i64 0"), "{text}");
     // In an unevaluated operand the call has the arity it needs.
-    ir("int n = sizeof(__builtin_object_size(0, 1)) + sizeof(__builtin___strcpy_chk(0, 0, 1));\n");
+    ir(
+        "int n = sizeof(__builtin_object_size(0, 1)) + sizeof(__builtin___strcpy_chk(0, 0, 1))\n\
+         + sizeof(__builtin___memset_chk((void *)0, 0, 0, 8));\n",
+    );
 }
 
 #[test]
@@ -566,6 +569,27 @@ fn object_size_checking_builtins_report_misuse() {
         (
             "unsigned long f(void) { return __builtin_object_size(1, 0); }",
             "pointer",
+        ),
+        // The operands are checked in an unevaluated operand too.
+        (
+            "char a[sizeof(__builtin_object_size(1, 0))];",
+            "invalid operand",
+        ),
+        (
+            "char a[sizeof(__builtin_object_size((char *)0, 1.0))];",
+            "invalid operand",
+        ),
+        (
+            "char a[sizeof(__builtin___memset_chk((void *)0, 0, 0, (void *)0))];",
+            "invalid operand",
+        ),
+        (
+            "char a[sizeof(__builtin___memcpy_chk((void *)0, 1, 0, 0))];",
+            "source must be a pointer",
+        ),
+        (
+            "char a[sizeof(__builtin___sprintf_chk((char *)0, 0.5, 0, \"\"))];",
+            "invalid operand",
         ),
     ] {
         let err = crate::compile_dialect(source, "t.c", &PpOptions::default(), Dialect::Gnu11)
