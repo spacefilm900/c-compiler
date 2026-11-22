@@ -18,7 +18,6 @@ entry:
   %v2 = alloca %struct.flags, align 4
   %v3 = alloca %union.word, align 4
   store ptr %p0, ptr %v1, align 8
-  store %struct.flags zeroinitializer, ptr %v2, align 4
   store i32 %p1, ptr %v2, align 4
   %t1 = getelementptr inbounds i8, ptr %v3, i64 0
   store i32 0, ptr %t1, align 4

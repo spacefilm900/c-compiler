@@ -290,20 +290,21 @@ impl Gen {
             .iter()
             .any(|part| matches!(part.kind, PartKind::Piece(_)))
         {
-            // Pieces cover the bytes the ABI passes. Tail padding that stays
-            // in memory is zero, which is a defined object representation.
-            self.emit(&format!(
-                "  store {} zeroinitializer, ptr {}, align {}",
-                param.ty.ir_type(),
-                param.slot,
-                param.ty.align()
-            ));
+            // Pieces cover the bytes the ABI passes. Bytes no piece covers
+            // (padding) are zero, which is a defined object representation.
+            // They are zeroed after the pieces and apart from them: a
+            // whole-slot zero store before the pieces is undone by LLVM's
+            // AddressSanitizer at -O0, which moves each parameter's first
+            // store into its slot to the top of the function.
+            let mut covered = Vec::new();
             for (part, name) in parts.iter().zip(names.iter()) {
                 let PartKind::Piece(piece) = &part.kind else {
                     continue;
                 };
                 self.store_piece(&param.slot, param.ty.align(), piece, name);
+                covered.push((piece.offset(), piece.offset() + piece.size()));
             }
+            self.zero_gaps(&param.slot, param.ty.size().unwrap_or(0), covered);
             return;
         }
         self.emit(&format!(
@@ -313,6 +314,33 @@ impl Gen {
             param.slot,
             param.ty.align()
         ));
+    }
+
+    /// Zero the bytes of the `size`-byte object at `slot` that no range in
+    /// `covered` (half-open byte ranges) includes.
+    fn zero_gaps(&mut self, slot: &str, size: u64, mut covered: Vec<(u64, u64)>) {
+        covered.sort_unstable();
+        let mut at = 0;
+        let mut gaps = Vec::new();
+        for (lo, hi) in covered {
+            if lo > at {
+                gaps.push((at, lo.min(size)));
+            }
+            at = at.max(hi);
+        }
+        if at < size {
+            gaps.push((at, size));
+        }
+        for (lo, hi) in gaps {
+            if hi <= lo {
+                continue;
+            }
+            let addr = self.offset_ptr(slot, lo);
+            self.emit(&format!(
+                "  store [{} x i8] zeroinitializer, ptr {addr}, align 1",
+                hi - lo
+            ));
+        }
     }
 
     /// A fresh entry-block slot of type `ty` holding `value`, for a scalar

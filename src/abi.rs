@@ -71,6 +71,18 @@ impl RegPiece {
         matches!(self, RegPiece::Sse { .. })
     }
 
+    /// Bytes of the object this piece carries.
+    pub fn size(&self) -> u64 {
+        match self {
+            RegPiece::Int { bits, .. } => u64::from(*bits / 8),
+            RegPiece::Ptr { .. } => 8,
+            RegPiece::Sse { kind, .. } => match kind {
+                SsePiece::Float => 4,
+                SsePiece::Double | SsePiece::FloatPair => 8,
+            },
+        }
+    }
+
     pub fn ir_type(&self) -> String {
         match self {
             RegPiece::Ptr { .. } => "ptr".to_string(),
