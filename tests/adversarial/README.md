@@ -21,10 +21,11 @@ only; every other line is unchanged.
 
 The kits' own runners (`runner.py`, `stress_threads.py`, and in v0.9
 `mixed_reference.py`, `generated_campaign.py`, `cross_target.py` and
-`ir_inventory.py`) run only on native Linux (x86-64 or AArch64).
-`tools/platform/challenge_native.py` runs the same cases on macOS and
-Windows, and `tools/platform/sanitize_run.py` runs them under the
-sanitizers. The weekly real-platform workflow
+`ir_inventory.py`) run only on native Linux: the v0.7 and v0.8 runners
+on x86-64 only, the v0.9 ones on x86-64 or AArch64.
+`tools/platform/challenge_native.py` runs the same cases on any of those
+hosts, on macOS and on Windows, and with `--sanitize
+address|thread|undefined` under the sanitizers. The weekly real-platform workflow
 (`.github/workflows/weekly-platforms.yml`, described in
 `docs/WEEKLY_PLATFORMS.md`) uses all of them. The standard pull-request CI
 does not run these kits.
