@@ -21,15 +21,23 @@ compiler stays on the stable toolchain in `rust-toolchain.toml`.
 | `preprocess` | `pp::preprocess` with the default options (host headers) |
 | `parse` | preprocessing and parsing (`dump_stage(.., Stage::Ast)`) in `-std=c11` and `-std=gnu11` |
 | `frontend` | the whole front end to LLVM IR, in both dialects |
+| `roundtrip` | the front end on the input and on its `-E` output; the two IR modules must be identical |
 
 The oracle: no panic, no hang (libFuzzer's `-timeout`, 10 seconds), no
 internal compiler error, and with `HCC_FUZZ_VERIFY=1` the `frontend`
 target runs `llvm-as` (or `$LLVM_AS`) on every module the compiler
-accepts, so invalid IR from an accepted input is a failure. An ordinary
+accepts, so invalid IR from an accepted input is a failure. `roundtrip` adds its own check: when an
+input compiles, its preprocessed text must compile to the same IR. An ordinary
 error diagnostic for an invalid program is the expected result, not a
 failure. Inputs over 64 KiB, inputs that are not UTF-8, and inputs that
 mention `/dev`, `/proc` or `/sys` are skipped: an `#include` of a device
 file would hang for a reason that is not a compiler bug.
+
+By default `#include <...>` finds only this compiler's own headers
+(`include/`), so an input naming `<stdio.h>` fails at once instead of
+spending most of a second in the C library's headers; that made the
+targets about twenty times faster. `HCC_FUZZ_HOST_HEADERS=1` searches the
+host's headers as well.
 
 Setup, once:
 
@@ -81,6 +89,28 @@ YARPGen is fetched and built separately (CMake); it is not vendored:
         -DCMAKE_BUILD_TYPE=Release && cmake --build yarpgen/build
     python3 tools/yarpgen_campaign.py --yarpgen yarpgen/build/yarpgen \
         --seed-start 1 --count 500 --jobs 4 --out /tmp/yarpgen-campaign
+
+### Constant folding (own generator)
+
+`tools/constfold_fuzz.py` writes one random arithmetic expression per
+program (every integer type, `float` and `double`, casts, shifts,
+division, `?:`, logical operators) and evaluates it twice: as a static
+initializer, which this compiler folds, and at run time from `volatile`
+copies of the constants. Clang builds the same program with
+`-fsanitize=undefined`; programs with undefined behaviour or that Clang
+does not accept as constant are discarded.
+
+    python3 tools/constfold_fuzz.py --count 20000 --jobs 2 --out /tmp/constfold
+
+### Record layout (own generator)
+
+`tools/layout_fuzz.py` declares random structs and unions (bit-fields of
+every integer type including zero-width ones, `_Alignas`, arrays, nesting;
+with `--gnu` also `packed` and `aligned` on records without bit-fields)
+and prints `sizeof`, `_Alignof`, `offsetof`, each member read from a byte
+pattern, and the bytes after storing every member.
+
+    python3 tools/layout_fuzz.py --count 5000 --out /tmp/layout [--gnu]
 
 ## Results
 
