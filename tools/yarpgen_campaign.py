@@ -40,10 +40,11 @@ COMPILE_TIMEOUT = 300
 
 
 def big_stack():
-    """Generated programs may keep large arrays on the stack."""
-    resource.setrlimit(
-        resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY)
-    )
+    """Generated programs may keep large arrays on the stack: allow 1 GiB of
+    stack, and cap the address space at 4 GiB so one program cannot take
+    the machine's memory."""
+    resource.setrlimit(resource.RLIMIT_STACK, (1 << 30, 1 << 30))
+    resource.setrlimit(resource.RLIMIT_AS, (4 << 30, 4 << 30))
 
 
 def call(cmd, cwd, timeout, run=False):

@@ -33,3 +33,7 @@ Branch `hardening/fuzz`, worktree /workspace/cc-fuzz, off main 90e83d9.
 - Round 2 finished ~15:48: no crashes, no invalid IR. Round 3 running (started 15:48). roundtrip target added (IR of source == IR of its -E output); no false positives in trial.
 - Differential: Csmith 1378+ seeds agree at O0 and O2 (only spurious timeouts from VM pauses; seed 202136 rechecked fine). YARPGen 604 agree; seed 585 timeout rechecked fine.
 - Bugs found so far: none.
+- constfold_fuzz.py (own generator) running seeds 1000-20999 -> /workspace/constfold-hardening, log constfold-1.log
+- yarpgen seeds 1-1000 done (857 agree, 142 reference failed, 1 spurious timeout); 1001-2000 started
+- 16:50 yarpgen restarted (resumable) with 1 GiB stack + 4 GiB address-space cap after reference programs hit the OOM killer at 9 GB
+- layout_fuzz.py (own generator; struct/union/bit-field layout vs Clang) c11 and gnu, seeds 1000-5999, logs layout-*.log
