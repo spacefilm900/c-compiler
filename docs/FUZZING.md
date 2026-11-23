@@ -63,9 +63,12 @@ Leak detection is off. Record types are reference counted and a record
 can point at itself, so a compilation keeps them until the process exits.
 In a compiler process that is not a bug, but LeakSanitizer reports it for
 every input that declares such a struct. A fuzz worker does keep that memory
-until it exits; `tools/fuzz_run.sh` uses `-fork=1`, so each worker runs one
-short job and is replaced, and `-rss_limit_mb=4096` would still stop a run
-that grew without bound (the first campaign had no out-of-memory exits).
+until it exits, so its memory can grow during a job (one job runs many
+inputs). `tools/fuzz_run.sh` uses `-fork=1`, so each worker runs one job
+and is then replaced, and nothing carries over between jobs.
+`-rss_limit_mb=4096` stops a worker that goes over 4 GB, and with
+`-ignore_ooms=1` the run carries on with a new worker, keeping that input
+as an `oom-*` artifact. The first campaign had no out-of-memory exits.
 
 Each failure gets a regression test in the ordinary test suite first
 (usually a unit test next to the code, or a `tests/` program), then the

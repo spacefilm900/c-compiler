@@ -35,11 +35,12 @@ Triage of what libFuzzer reported:
 - **Leaks** (LeakSanitizer, every input with a self-referencing struct):
   record types are reference counted and a record can point at itself, so
   they live until the process exits. Not a bug for a compiler process;
-  leak detection is off in `tools/fuzz_run.sh`. The retained memory did
-  not build up during fuzzing: libFuzzer's fork mode replaces the worker
-  after every job (about 860 jobs across the targets here), each with a
-  4 GB memory limit, and none of them hit it (0 out-of-memory exits in
-  every log).
+  leak detection is off in `tools/fuzz_run.sh`. Retained memory can grow
+  within one job, since a job runs many inputs, but it cannot carry over:
+  libFuzzer's fork mode replaces the worker after every job (about 860
+  jobs across the targets here). No worker reached the 4 GB memory limit
+  (0 out-of-memory exits in every log). Growth within a job was not
+  measured.
 - **About 190 "timeouts" and "slow units"**: every one re-ran alone in
   under 1.5 seconds under ASan. The box pauses from time to time (the
   kernel log shows virtual machine snapshots), and those pauses were
