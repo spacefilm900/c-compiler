@@ -398,9 +398,9 @@ impl Parser<'_> {
             let (value, ty) = if self.match_kind(TokenKind::Assign) {
                 let expr = self.parse_assignment()?;
                 check_uneval(&expr, self.env())
-                    .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
+                    .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
                 let folded = eval_ice(&expr, self.env())
-                    .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
+                    .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
                 let folded_ty = folded.ty;
                 let wide = enum_wide(&folded);
                 match enum_int(folded) {
@@ -472,9 +472,9 @@ impl Parser<'_> {
             let (value, line, column) = if self.match_kind(TokenKind::Assign) {
                 let expr = self.parse_assignment()?;
                 check_uneval(&expr, self.env())
-                    .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
+                    .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
                 let folded = eval_ice(&expr, self.env())
-                    .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
+                    .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
                 let value = enum_wide(&folded)
                     .ok_or_else(|| self.error_at(expr.line(), expr.column(), too_wide))?;
                 (value, expr.line(), expr.column())
@@ -700,9 +700,9 @@ impl Parser<'_> {
         }
         let expr = self.parse_conditional()?;
         check_uneval(&expr, self.env())
-            .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
+            .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
         let value = eval_ice(&expr, self.env())
-            .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
+            .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
         let signed = if value.ty.is_signed() {
             sign_extend(value.bits, value.ty.width())
         } else if value.bits > i64::MAX as u128 {
