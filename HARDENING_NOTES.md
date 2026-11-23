@@ -25,3 +25,11 @@ Branch `hardening/fuzz`, worktree /workspace/cc-fuzz, off main 90e83d9.
 - At ~14:48 the fuzz targets switched to compiler-only headers (common::options); exec/s went from ~15 to ~200 and coverage from 22k to 36k.
 - "timeout-*" and "slow-unit-*" artifacts all re-run in < 0.5 s: the VM pauses ("virtual machine fork" in dmesg). Discard after rechecking.
 - Next: when round 2 ends, recheck artifacts, run another round, then write reports/hardening/README.md, open draft PR.
+- Round 3 queued via /workspace/cc-fuzz-logs/round3.sh (parse 90m, preprocess 60m, frontend+verify 90m, frontend host headers 60m); roundtrip-3 running 90m.
+- Csmith big-program shards (no CI caps, seeds 300001-300600) queued via /workspace/cc-fuzz-logs/csmith-big.sh into /workspace/csmith-hardening/big
+
+## Status at 15:58 (Europe/London)
+- PR 62: head 22ceef7, MERGEABLE, 12 checks pass + 2 expected skips, CodeRabbit check "completed success / Review completed", 0 review comments ("No actionable comments"). Waiting for Keith's OK; do not merge.
+- Round 2 finished ~15:48: no crashes, no invalid IR. Round 3 running (started 15:48). roundtrip target added (IR of source == IR of its -E output); no false positives in trial.
+- Differential: Csmith 1378+ seeds agree at O0 and O2 (only spurious timeouts from VM pauses; seed 202136 rechecked fine). YARPGen 604 agree; seed 585 timeout rechecked fine.
+- Bugs found so far: none.

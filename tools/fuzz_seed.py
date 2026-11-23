@@ -13,7 +13,7 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-TARGETS = ["lex", "preprocess", "parse", "frontend"]
+TARGETS = ["lex", "preprocess", "parse", "frontend", "roundtrip"]
 LIMIT = 64 * 1024
 
 

@@ -45,6 +45,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "roundtrip"
+path = "fuzz_targets/roundtrip.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]
 
