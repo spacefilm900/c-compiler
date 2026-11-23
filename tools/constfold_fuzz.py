@@ -184,6 +184,11 @@ def keep(seed, work, args, why):
     return why.split(":")[0].split()[0]
 
 
+
+def resolve_tool(path):
+    """`path` made absolute when it names a file relative to here."""
+    return os.path.abspath(path) if os.sep in path else path
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--compiler", default=str(ROOT / "build" / "hcc"))
@@ -193,6 +198,10 @@ def main():
     ap.add_argument("--jobs", type=int, default=2)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
+    # Each seed runs in its own temporary directory, so a relative tool
+    # path must be made absolute first; a bare name is left to PATH.
+    args.compiler = resolve_tool(args.compiler)
+    args.clang = resolve_tool(args.clang)
     Path(args.out).mkdir(parents=True, exist_ok=True)
     totals = {}
     seeds = range(args.seed_start, args.seed_start + args.count)

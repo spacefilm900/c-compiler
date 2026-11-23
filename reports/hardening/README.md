@@ -35,7 +35,11 @@ Triage of what libFuzzer reported:
 - **Leaks** (LeakSanitizer, every input with a self-referencing struct):
   record types are reference counted and a record can point at itself, so
   they live until the process exits. Not a bug for a compiler process;
-  leak detection is off in `tools/fuzz_run.sh`.
+  leak detection is off in `tools/fuzz_run.sh`. The retained memory did
+  not build up during fuzzing: libFuzzer's fork mode replaces the worker
+  after every job (about 860 jobs across the targets here), each with a
+  4 GB memory limit, and none of them hit it (0 out-of-memory exits in
+  every log).
 - **About 190 "timeouts" and "slow units"**: every one re-ran alone in
   under 1.5 seconds under ASan. The box pauses from time to time (the
   kernel log shows virtual machine snapshots), and those pauses were
@@ -69,6 +73,14 @@ Programs not compared, and why:
   Clang rejects the static initializer.
 - Layout: Clang rejected the declarations (for example `_Alignas` weaker
   than the member's type).
+
+The layout campaign above compared the object's bytes after the stores.
+Review pointed out that padding bytes, and the bytes of a union outside
+the last member stored, have unspecified values after a store (C11
+6.2.6.1p6–7), so a correct compiler could differ there. No difference was
+seen, but the generator now reads each stored member back instead (for a
+union, only the last one); a recheck of 300 programs in the new form (285
+compared, C11 and GNU11) agreed.
 
 A further Csmith run with Csmith's own (larger) default program sizes,
 seeds 300001–300600, was still running when this report was written.

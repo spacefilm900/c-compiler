@@ -43,7 +43,9 @@ Setup, once:
 
     rustup toolchain install nightly --profile minimal
     cargo +nightly install cargo-fuzz --locked
-    # libFuzzer is C++: Debian needs g++ (or clang with libstdc++ headers)
+    # libFuzzer is C++ (needs g++ or libstdc++ headers); llvm-as is the
+    # verifier for HCC_FUZZ_VERIFY=1 (Debian/Ubuntu package names)
+    sudo apt-get install -y g++ llvm
     python3 tools/fuzz_seed.py        # seed fuzz/corpus/* from tests/
 
 Run one target for an hour, continuing past failures so every distinct
@@ -60,7 +62,10 @@ Reproduce and minimise a failure:
 Leak detection is off. Record types are reference counted and a record
 can point at itself, so a compilation keeps them until the process exits.
 In a compiler process that is not a bug, but LeakSanitizer reports it for
-every input that declares such a struct.
+every input that declares such a struct. A fuzz worker does keep that memory
+until it exits; `tools/fuzz_run.sh` uses `-fork=1`, so each worker runs one
+short job and is replaced, and `-rss_limit_mb=4096` would still stop a run
+that grew without bound (the first campaign had no out-of-memory exits).
 
 Each failure gets a regression test in the ordinary test suite first
 (usually a unit test next to the code, or a `tests/` program), then the

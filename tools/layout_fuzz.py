@@ -6,8 +6,8 @@ integer type (zero-width ones included), `_Bool`, `_Alignas`, arrays,
 nested and anonymous members, and, with --gnu, `__attribute__((packed))`
 and `aligned` on records without bit-fields. It prints sizeof, _Alignof
 and offsetof for each record, then fills an object with a byte pattern
-and prints every member, then stores into every member and prints the
-object's bytes. Clang is the black-box oracle; this compiler's output
+and prints every member, then stores into every member and reads each
+one back (for a union, the last one stored). Clang is the black-box oracle; this compiler's output
 must match at -O0 and -O2.
 
 Usage: python3 tools/layout_fuzz.py --count 2000 --jobs 2 --out DIR [--gnu]
@@ -97,10 +97,7 @@ def program(seed, gnu):
         g.record(2)
     out = ["#include <stdio.h>", "#include <stddef.h>", "#include <string.h>", ""]
     out += [d for d, _, _ in g.decls]
-    out += ["static void dump(const void *p, size_t n) {",
-            "    const unsigned char *b = p;",
-            "    for (size_t i = 0; i < n; i++) printf(\"%02x\", b[i]);",
-            "    printf(\"\\n\");", "}", "", "int main(void) {"]
+    out += ["", "int main(void) {"]
     for idx, (_, ty, members) in enumerate(g.decls):
         v = f"x{idx}"
         out.append(f"    printf(\"{ty} %zu %zu\\n\", sizeof({ty}), _Alignof({ty}));")
@@ -114,13 +111,24 @@ def program(seed, gnu):
             # defined value, so plain `_Bool` members are not read here.
             if kind == "bits" or (kind == "scalar" and mty not in ("float", "double", "void *", "_Bool")):
                 out.append(f"    printf(\" {m}=%llx\\n\", (unsigned long long)({v}.{m}));")
+        # Store into the members, then read back what was stored. Padding
+        # bytes, and the bytes of a union outside its last-stored member,
+        # have unspecified values after a store (C11 6.2.6.1p6-7), so the
+        # object's bytes are not compared. For a union only the last
+        # stored member is read back.
+        stored = []
         for m, kind, mty, bits in members:
             val = rng.randint(0, (1 << 64) - 1)
             if kind == "bits" or (kind == "scalar" and mty not in ("float", "double", "void *")):
                 out.append(f"    {v}.{m} = ({mty}){val}ull;")
+                stored.append((m, "%llx", "unsigned long long"))
             elif kind == "scalar" and mty != "void *":
                 out.append(f"    {v}.{m} = ({mty}){rng.randint(-1000, 1000)}.5;")
-        out.append(f"    dump(&{v}, sizeof {v});")
+                stored.append((m, "%.17g", "double"))
+        if ty.startswith("union"):
+            stored = stored[-1:]
+        for m, fmt, cast in stored:
+            out.append(f"    printf(\" {m}<-{fmt}\\n\", ({cast})({v}.{m}));")
     out += ["    return 0;", "}", ""]
     return "\n".join(out)
 
@@ -168,6 +176,11 @@ def keep(seed, work, args, why):
     return why.split(":")[0].split()[0]
 
 
+
+def resolve_tool(path):
+    """`path` made absolute when it names a file relative to here."""
+    return os.path.abspath(path) if os.sep in path else path
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--compiler", default=str(ROOT / "build" / "hcc"))
@@ -178,6 +191,10 @@ def main():
     ap.add_argument("--gnu", action="store_true")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
+    # Each seed runs in its own temporary directory, so a relative tool
+    # path must be made absolute first; a bare name is left to PATH.
+    args.compiler = resolve_tool(args.compiler)
+    args.clang = resolve_tool(args.clang)
     Path(args.out).mkdir(parents=True, exist_ok=True)
     totals = {}
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:

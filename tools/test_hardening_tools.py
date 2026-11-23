@@ -68,7 +68,8 @@ class Programs(unittest.TestCase):
                 for name, kind, ty, _ in members:
                     if kind == "scalar" and ty == "_Bool":
                         checked += 1
-                        self.assertNotIn(f"(x{idx}.{name}));", text)
+                        read = f'" {name}=%llx\\n", (unsigned long long)(x{idx}.{name}));'
+                        self.assertNotIn(read, text)
         self.assertGreater(checked, 0)
 
     def test_layout_no_packed_without_gnu(self):

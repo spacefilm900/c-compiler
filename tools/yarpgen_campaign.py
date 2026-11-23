@@ -39,19 +39,21 @@ ROOT = Path(__file__).resolve().parent.parent
 COMPILE_TIMEOUT = 300
 
 
-def big_stack():
+def set_run_limits():
     """Generated programs may keep large arrays on the stack: allow 1 GiB of
     stack, and cap the address space at 4 GiB so one program cannot take
-    the machine's memory."""
+    the machine's memory. Set once in this process (before any worker
+    thread starts) and inherited by every child: `preexec_fn` is not safe
+    with threads."""
     resource.setrlimit(resource.RLIMIT_STACK, (1 << 30, 1 << 30))
     resource.setrlimit(resource.RLIMIT_AS, (4 << 30, 4 << 30))
 
 
-def call(cmd, cwd, timeout, run=False):
+def call(cmd, cwd, timeout):
     try:
         proc = subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
-            errors="replace", preexec_fn=big_stack if run else None,
+            errors="replace",
         )
         return proc.returncode, proc.stdout, proc.stderr
     except subprocess.TimeoutExpired:
@@ -83,7 +85,7 @@ def run_seed(seed, args):
             if code != 0:
                 rec.update(status="reference-build-failed", detail=tail(err))
                 return rec
-            code, out, err = call([str(exe)], work, args.timeout, run=True)
+            code, out, err = call([str(exe)], work, args.timeout)
             if code != 0:
                 rec.update(status="reference-run-failed", opt=opt, code=code)
                 return rec
@@ -110,11 +112,11 @@ def run_seed(seed, args):
             if code != 0:
                 rec.update(status="candidate-bad-ir", opt=opt, detail=tail(err))
                 return rec
-            code, out, err = call([str(exe)], work, args.timeout, run=True)
+            code, out, err = call([str(exe)], work, args.timeout)
             if code == -9:
                 # Killed from outside (memory pressure on a loaded machine):
                 # run it once more before calling it a failure.
-                code, out, err = call([str(exe)], work, args.timeout, run=True)
+                code, out, err = call([str(exe)], work, args.timeout)
             if code == "timeout":
                 rec.update(status="candidate-timeout", opt=opt)
                 return rec
@@ -137,6 +139,11 @@ def run_seed(seed, args):
         shutil.rmtree(work, ignore_errors=True)
 
 
+
+def resolve_tool(path):
+    """`path` made absolute when it names a file relative to here."""
+    return os.path.abspath(path) if os.sep in path else path
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--compiler", default=str(ROOT / "build" / "hcc"))
@@ -149,6 +156,11 @@ def main():
                         help="run timeout in seconds")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
+    # Each seed runs in its own temporary directory, so a relative tool
+    # path must be made absolute first; a bare name is left to PATH.
+    args.compiler = resolve_tool(args.compiler)
+    args.clang = resolve_tool(args.clang)
+    args.yarpgen = resolve_tool(args.yarpgen)
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -160,6 +172,8 @@ def main():
                 done.add(json.loads(line)["seed"])
     seeds = [s for s in range(args.seed_start, args.seed_start + args.count)
              if s not in done]
+    if seeds:
+        set_run_limits()
     totals = {}
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool, \
             results.open("a") as log:

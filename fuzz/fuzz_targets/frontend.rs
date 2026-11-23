@@ -22,12 +22,12 @@ fn verify(ir: &str, text: &str) {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap_or_else(|e| panic!("cannot run {tool}: {e}"));
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(ir.as_bytes())
-        .expect("write IR");
+    // Write the module, then close stdin so llvm-as sees end of input. If
+    // llvm-as stops reading early (it rejected the IR), the write fails with
+    // a broken pipe; ignore that and report llvm-as's own diagnostic below.
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(ir.as_bytes());
+    }
     let out = child.wait_with_output().expect("wait for llvm-as");
     if !out.status.success() {
         panic!(
