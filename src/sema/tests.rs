@@ -2208,3 +2208,42 @@ struct Outer { char lead; struct Inner inner; char tail; };
             .contains("bit-fields in a packed or aligned")
     );
 }
+
+#[test]
+fn address_constants_through_integer_pointers() {
+    // C11 6.6p9: `[]`, `->`, `.`, `&` and `*` may build an address constant
+    // from an integer constant cast to a pointer, the pre-offsetof idiom.
+    // Found by the coverage tests: these were rejected as not constant.
+    let ir = crate::compile_to_ir(
+        "struct S { int a; short b[4]; struct { char c; long d; } in; };\n\
+         long o1 = (long)&((struct S *)0)->b;\n\
+         short *o2 = &((struct S *)0)->b[2];\n\
+         struct S *o3 = &((struct S *)0x100)[1];\n\
+         short *o4 = ((struct S *)0x100)->b;\n\
+         char *o5 = &(*(struct S *)0x200).in.c;\n\
+         int *o6 = &*(int *)0;\n",
+        "t.c",
+    )
+    .unwrap();
+    assert!(ir.contains("@o1 = global i64 4"), "{ir}");
+    assert!(
+        ir.contains("@o2 = global ptr inttoptr (i64 8 to ptr)"),
+        "{ir}"
+    );
+    assert!(
+        ir.contains("@o3 = global ptr inttoptr (i64 288 to ptr)"),
+        "{ir}"
+    );
+    assert!(
+        ir.contains("@o4 = global ptr inttoptr (i64 260 to ptr)"),
+        "{ir}"
+    );
+    assert!(
+        ir.contains("@o5 = global ptr inttoptr (i64 528 to ptr)"),
+        "{ir}"
+    );
+    assert!(ir.contains("@o6 = global ptr null"), "{ir}");
+    // A label address still may not be offset, and an object's value is
+    // still not a constant.
+    assert!(sema_err("int x; int *p = &*(&x + (x - x));").contains("not a constant"));
+}
