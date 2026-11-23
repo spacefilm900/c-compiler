@@ -54,7 +54,8 @@ Triage of what libFuzzer reported:
 
 | Generator | Programs | Compared | Agree | Differences |
 | --- | --- | --- | --- | --- |
-| Csmith (CI size caps, `-std=gnu11`), seeds 200001–203000 | 3,000 | 2,772 at `-O0`, 2,771 at `-O2` | all | 0 |
+| Csmith (CI size caps, `-std=gnu11`), seeds 200001–203000 | 3,000 | 2,775 at `-O0`, 2,774 at `-O2` | all | 0 |
+| Csmith, its own default (larger) program sizes, seeds 300001–300210 | 210 | 174 at `-O0`, 175 at `-O2` | all | 0 |
 | YARPGen 2 (`--std=c`, about 8,000 lines each), seeds 1–2000 | 2,000 | 1,694 | all | 0 |
 | Constant folding (`tools/constfold_fuzz.py`, new) | 20,000 | 12,756 | all | 0 |
 | Record layout, C11 (`tools/layout_fuzz.py`, new) | 5,000 | 4,816 | all | 0 |
@@ -83,8 +84,9 @@ seen, but the generator now reads each stored member back instead (for a
 union, only the last one); a recheck of 300 programs in the new form (285
 compared, C11 and GNU11) agreed.
 
-A further Csmith run with Csmith's own (larger) default program sizes,
-seeds 300001–300600, was still running when this report was written.
+The larger-program Csmith run was stopped after 210 of the 600 planned
+seeds (about a minute per seed); `tools/csmith_campaign.py` resumes it
+with the same `--out`.
 
 ## What this means and what comes next
 
