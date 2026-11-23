@@ -12,8 +12,9 @@
 # prices, Nov 2026; billing rounds each job up to whole minutes), from the
 # validation runs' measured times: arm64 Linux 7 min x $0.005, macOS 3 min
 # x $0.062, Windows 13 min x $0.010, sanitizers 14 min x $0.006: about
-# $0.44 a run, about $1.90 a month at one run a week. These are estimates;
-# docs/WEEKLY_PLATFORMS.md has the details.
+# $0.44 a run, about $1.90 a month at one run a week. The coverage job adds
+# about 25 min x $0.006, about $0.15 a run and $0.65 a month. These are
+# estimates; docs/WEEKLY_PLATFORMS.md has the details.
 
 name: weekly-platforms
 
@@ -24,9 +25,9 @@ on:
   workflow_dispatch:
     inputs:
       jobs:
-        description: "Which jobs: all, arm64, macos, windows or sanitizers"
+        description: "Which jobs: all, arm64, macos, windows, sanitizers or coverage"
         type: choice
-        options: ["all", "arm64", "macos", "windows", "sanitizers"]
+        options: ["all", "arm64", "macos", "windows", "sanitizers", "coverage"]
         default: "all"
 
 permissions:
@@ -564,4 +565,74 @@ jobs:
         with:
           name: weekly-sanitizers
           path: build/weekly/sanitizers
+          if-no-files-found: warn
+
+  coverage:
+    # Line, function and branch coverage of hcc (tools/quality/branch_coverage.sh)
+    # over the unit tests and every in-repo suite that runs on x86-64 Linux
+    # without Wine. Branch coverage needs a nightly rustc; it only measures,
+    # hcc itself is still built and tested with 1.85.1 everywhere else.
+    # The numbers are informational: the job fails only if a suite did not
+    # finish, not because a percentage moved.
+    name: Coverage of hcc (lines, functions, branches; unit tests and suites)
+    if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'coverage'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RESULTS: ${{ github.workspace }}/build/weekly/coverage
+      TOOLCHAIN: nightly-2026-11-23
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install a pinned nightly Rust with llvm-tools
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: nightly-2026-11-23
+          components: llvm-tools-preview
+
+      - name: Install Clang, LLVM, qemu and the AArch64 cross C library
+        run: |
+          set -euo pipefail
+          scripts/ci-apt-install.sh clang llvm make python3 qemu-user libc6-dev-arm64-cross libgcc-13-dev-arm64-cross binutils-aarch64-linux-gnu
+          clang --version
+          mkdir -p "${RESULTS}"
+
+      - name: Fetch the WACC and GCC torture suites
+        run: |
+          set -euo pipefail
+          scripts/fetch_wacc_tests.sh
+          scripts/fetch_gcc_torture.sh
+
+      - name: Coverage run
+        run: |
+          set -euo pipefail
+          OUT="${RESULTS}" tools/quality/branch_coverage.sh 2>&1 | tee "${RESULTS}/run.log"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "# Coverage of hcc ($(git rev-parse --short HEAD))"
+            echo
+            echo "Non-test code; unit tests plus every suite. Per file: coverage-all.csv."
+            echo
+            echo '| Module | Lines | Line % | Functions % | Branches | Branch % |'
+            echo '| --- | ---: | ---: | ---: | ---: | ---: |'
+            if [ -f "${RESULTS}/modules-all.csv" ]; then
+              tail -n +2 "${RESULTS}/modules-all.csv" | awk -F, '{ printf "| %s | %s | %s | %s | %s | %s |\n", $1, $2, $4, $7, $8, $10 }'
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+          gzip -f "${RESULTS}"/*.lcov 2>/dev/null || :
+          rm -rf "${RESULTS}/challenge-run"
+          :
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: weekly-coverage
+          path: build/weekly/coverage
           if-no-files-found: warn

@@ -14,7 +14,7 @@ push, and it does not change `ci.yml`, `linux-arm64.yml`, `macos.yml` or
 
   ```sh
   gh workflow run weekly-platforms.yml                        # every job, on main
-  gh workflow run weekly-platforms.yml -f jobs=macos          # one job: arm64, macos, windows or sanitizers
+  gh workflow run weekly-platforms.yml -f jobs=macos          # one job: arm64, macos, windows, sanitizers or coverage
   gh workflow run weekly-platforms.yml --ref BRANCH -f jobs=all
   ```
 
@@ -27,7 +27,7 @@ going waits for it rather than cancelling it. GitHub keeps at most one
 waiting run per branch: a third run replaces the waiting one, which is
 cancelled without starting.
 
-## The four jobs
+## The five jobs
 
 | Job | Runner | Time cap | What it runs |
 | --- | --- | ---: | --- |
@@ -35,6 +35,7 @@ cancelled without starting.
 | macOS arm64 native | `macos-15` (Apple Silicon) | 25 min | The differential harness against Apple clang (`tests/hosted/08_threads.c` with `lib/threads.c`, `tests/posix/darwin` with native Darwin TLS, and the `tests/xabi` pairs both ways), 100 random calling-convention pairs, every case of the three kits against Apple clang with `lib/threads.c` (stress cases 20 times), and ThreadSanitizer on the v0.9 kit at `-O0`. |
 | Windows x64 native | `windows-latest` | 35 min | For MSVC (real MSVC headers, linker and UCRT) and then MinGW-w64 (MSYS2): the differential harness (including `08_threads.c` with `lib/threads.c` over the Win32 API, and the `tests/xabi` pairs), 50 random calling-convention pairs with `__int128`, and every case of the three kits with `lib/threads.c` (stress cases 10 times). |
 | Sanitizers | `ubuntu-24.04` | 45 min | hcc built with overflow checks and debug assertions, run over the harness, the three kits at both levels and GCC torture, and a crash fuzzer over mutated inputs (any panic fails). Programs built by hcc under AddressSanitizer (with LeakSanitizer), with glibc's `<threads.h>` and again with `lib/threads.c`, and under ThreadSanitizer with `lib/threads.c` (stress cases 20 times), at `-O0` and `-O2`. UBSan and ASan on the Clang-built reference programs. |
+| Coverage | `ubuntu-24.04` | 45 min | Line, function and branch coverage of hcc's own Rust code with `tools/quality/branch_coverage.sh` (a pinned nightly rustc, because branch coverage is unstable; hcc is still built with 1.85.1 everywhere else): the unit tests, then an instrumented hcc under the differential harness, stage dumps, the IR checks for every target, the AArch64, Apple-arm64 and Intel-macOS harness runs, WACC, GCC torture and the three challenge kits. The summary page has the per-module table; the artifact has per-file CSVs, the largest uncovered runs and gzipped lcov files. Informational: it fails only if a suite did not finish. See `reports/hardening/coverage.md`. |
 
 Each job runs every check even when an earlier one fails, and fails at the
 end if any check failed. Each check is one row of a table in the run's
@@ -42,7 +43,7 @@ summary page (name, PASS, FAIL or INFO, seconds, last line of output),
 followed by the per-kit tables. The same files, with each check's full log
 and the JSON results, are uploaded as one artifact per job
 (`weekly-arm64-linux`, `weekly-macos-arm64`, `weekly-windows-x64`,
-`weekly-sanitizers`). INFO rows are another compiler's own results and
+`weekly-sanitizers`, `weekly-coverage`). INFO rows are another compiler's own results and
 never fail the job.
 
 ## How the challenge kits run off Linux
