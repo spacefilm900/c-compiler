@@ -1,0 +1,80 @@
+# Fuzz the compiler itself with cargo-fuzz (step 14 of PLAN.md, hardening).
+# Manual only: it never runs on a pull request, a push or a schedule, so it
+# costs nothing unless started by hand:
+#   gh workflow run fuzz.yml                      (10 minutes per target)
+#   gh workflow run fuzz.yml -f minutes=30
+# docs/FUZZING.md describes the targets and the oracle.
+#
+# Estimated cost (private repo, GitHub's published Linux price, Nov 2026):
+# setup about 4 minutes plus five targets one after another, so the default
+# run is about 55 billed minutes x $0.006, roughly $0.33. These are
+# estimates.
+
+name: fuzz
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Minutes per fuzz target"
+        type: number
+        default: 10
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: cargo-fuzz (lex, preprocess, parse, roundtrip, frontend with IR verification)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install nightly Rust (the fuzz crate only; the compiler stays on 1.85.1)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: nightly
+
+      - name: Install Clang, LLVM and cargo-fuzz
+        run: |
+          set -euo pipefail
+          scripts/ci-apt-install.sh clang llvm g++ python3
+          cargo +nightly install cargo-fuzz --locked
+          llvm-as --version
+
+      - name: Seed corpora and build the fuzz targets
+        run: |
+          set -euo pipefail
+          python3 tools/fuzz_seed.py
+          cargo +nightly fuzz build -O
+
+      - name: Fuzz each target
+        env:
+          MINUTES: ${{ inputs.minutes }}
+        run: |
+          set -euo pipefail
+          seconds=$(( MINUTES * 60 ))
+          for target in lex preprocess parse roundtrip; do
+            tools/fuzz_run.sh "$target" "$seconds"
+          done
+          HCC_FUZZ_VERIFY=1 tools/fuzz_run.sh frontend "$seconds"
+          found=$(find fuzz/artifacts -type f -name 'crash-*' | wc -l)
+          echo "crash artifacts: $found"
+          find fuzz/artifacts -type f | sort
+          test "$found" -eq 0
+
+      - name: Upload failing inputs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore
