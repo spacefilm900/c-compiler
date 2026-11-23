@@ -2,6 +2,10 @@
 
 The program is `hcc`, the Haviland C Compiler. `make` writes `build/hcc`.
 
+## Next phase: hardening
+
+The C11 and platform work is closed out (step 13 of `PLAN.md`: adversarial rounds v0.7–v0.9, 969/969 at `-O0` and `-O2`, and the weekly platform tests of pull request 61). The current phase is step 14, hardening: fuzzing the compiler itself with `cargo-fuzz`, Csmith (and YARPGen, if it builds) at a much larger scale than CI, coverage and mutation testing, and a new big program (QuickJS, then zlib). Release 1.0 (step 15) follows. Fuzzing and large campaigns run locally or as an optional job, not in standard pull-request CI.
+
 ## Current milestone
 
 **Flexible array members, `u`/`U`/`u8` literals, `long double` aggregate returns, and nested bit-field initializers, on top of variadic definitions, `goto`, designated initializers, bit-fields, and `volatile`.** A function may be defined with `...`. `<stdarg.h>` implements `va_list`, `va_start`, `va_arg`, `va_end`, and `va_copy` with `__builtin_va_list` and the matching builtins. `va_arg` follows the System V AMD64 register-save area: general registers at offsets 0..48, XMM registers at 48..176, then the overflow area. `float` promotes to `double`. An aggregate uses the same classification as a call. `llvm.va_start`, `llvm.va_end`, and `llvm.va_copy` are emitted; LLVM's `va_arg` instruction is not. `goto` and labels are function scope, including a forward jump. Designated initializers (`.field` and `[const]`) are accepted, and the next positional initializer continues at the next subobject. Bit-fields pack least-significant bit first in a storage unit of the declared type. `volatile` is `load volatile` and `store volatile`.

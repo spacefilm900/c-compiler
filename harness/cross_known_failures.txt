@@ -1,10 +1,10 @@
-# Cross-target harness known failures: "TARGET LABEL [WHERE] # reason".
+# Cross-target harness known failures: "TARGET LABEL [WHERE] [oracle] # reason".
 # TARGET is the --target name given to harness/run_cross.py. WHERE, for the
 # Windows targets, limits an entry to the native Windows runner ("native")
 # or to the Linux stand-in under Wine ("standin"); without it the entry
-# applies to both. WHERE may also be "oracle", which covers only a failure
-# reported as the Clang oracle's (compile, link, or run); a failure of this
-# compiler on that test stays unexpected.
+# applies to both. An "oracle" field, alone or after WHERE, covers only a
+# failure reported as the Clang oracle's (compile, link, or run); a failure
+# of this compiler on that test stays unexpected.
 arm64-apple-macos 112_longdouble.c # test dumps 10 bytes of a long double; on Apple arm64 long double is the 8-byte double, so bytes 8-9 are outside the object
 arm64-apple-macos gnu/both/01_attributes.c # test uses the ELF section name ".data.custom"; Mach-O needs "segment,section", so the Clang oracle rejects it
 x86_64-apple-macos gnu/both/01_attributes.c # test uses the ELF section name ".data.custom"; Mach-O needs "segment,section", so the Clang oracle rejects it
@@ -29,7 +29,7 @@ x86_64-pc-windows-msvc 121_signal.c # test calls glibc's `__sysv_signal`, which 
 x86_64-pc-windows-msvc 122_utf8_ucn.c # test assumes a 32-bit wchar_t: L'\U0001F600' does not fit the 16-bit Windows wchar_t (Clang also rejects it)
 x86_64-pc-windows-msvc gnu/03_typeof.c # test assumes LP64: `1L << 40` on a 32-bit long is undefined
 x86_64-pc-windows-msvc gnu/11_label_address_constants.c # test assumes LP64: casts a label address to 32-bit long in a static initializer (Clang also rejects it)
-x86_64-pc-windows-msvc hosted/05_tgmath.c oracle # on a real Windows runner, Clang's own <tgmath.h> passes `float _Complex` to the UCRT <complex.h> functions, which take the struct `_Fcomplex`, so the oracle does not compile (weekly-platforms run 1)
+x86_64-pc-windows-msvc hosted/05_tgmath.c native oracle # on a real Windows runner, Clang's own <tgmath.h> passes `float _Complex` to the UCRT <complex.h> functions, which take the struct `_Fcomplex`, so the oracle does not compile (weekly-platforms run 1)
 x86_64-pc-windows-msvc gnu/16_enum_outside_int.c # test's _Generic associations assume LP64 (an enum beyond int is long long under LLP64, not long)
 x86_64-pc-windows-msvc gnu/both/02_builtins_bits.c # test assumes LP64: `__builtin_clzl` of a value truncated to 0 in a 32-bit long is undefined
 x86_64-pc-windows-msvc 112_longdouble.c # test dumps 10 bytes of a long double; on MSVC long double is the 8-byte double, so bytes 8-9 are outside the object

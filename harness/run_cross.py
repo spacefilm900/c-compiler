@@ -58,8 +58,9 @@ COFF objects, its C runtime), and the MSVC target is a stand-in that reads
 the MinGW-w64 headers. The AArch64 tests are not run for them.
 
 harness/cross_known_failures.txt lists expected failures as
-"TARGET LABEL [native|standin]  # reason" (the optional field limits a
-Windows entry to the native runner or the Wine stand-in). A listed test
+"TARGET LABEL [native|standin] [oracle]  # reason" (the optional where
+limits a Windows entry to the native runner or the Wine stand-in; "oracle"
+limits it to a failure of the Clang oracle). A listed test
 that passes is reported so the line can be removed. An unlisted failure
 fails the run, and so does a compiler crash on a listed test.
 
@@ -452,9 +453,10 @@ def known_failures(target):
 
     side is None (any non-crash failure), "oracle" (only an oracle
     compile/link/run failure), or unused after a native/standin filter.
-    A third field "native" or "standin" still limits an entry to that
-    Windows where; "oracle" limits it to a failure reported as the
-    oracle's, so a failure of this compiler stays unexpected.
+    An optional "native" or "standin" field limits an entry to that
+    Windows where; an optional "oracle" field (alone or after the where)
+    limits it to a failure reported as the oracle's, so a failure of this
+    compiler stays unexpected.
     """
     known = {}
     if not KNOWN.is_file():
@@ -466,17 +468,16 @@ def known_failures(target):
         if len(parts) < 2 or parts[0] != target:
             continue
         side = None
-        if len(parts) == 3:
-            token = parts[2]
-            if token in ("native", "standin"):
-                if token != where:
-                    continue
-            elif token == "oracle":
-                side = "oracle"
-            else:
-                continue
-        elif len(parts) != 2:
+        extra = parts[2:]
+        wheres = [t for t in extra if t in ("native", "standin")]
+        if len(extra) > 2 or len(wheres) > 1 or extra.count("oracle") > 1:
             continue
+        if any(t not in ("native", "standin", "oracle") for t in extra):
+            continue
+        if wheres and wheres[0] != where:
+            continue
+        if "oracle" in extra:
+            side = "oracle"
         known[parts[1]] = (reason.strip(), side)
     return known
 
