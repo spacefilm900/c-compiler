@@ -1256,13 +1256,13 @@ After pull request 1 was opened, the App reviewed the import:
 - Check run `CodeRabbit` on `3b9d33e`, app `coderabbitai`, conclusion **success**, completed 2026-11-09 00:13:11Z. GitHub URL: https://github.com/spacefilm900/c-compiler/runs/128907038494. Details URL: https://app.coderabbit.ai/change-stack/spacefilm900/c-compiler/pull/1.
 - `coderabbitai[bot]` posted a review with 3 inline comments (profile `CHILL` from `.coderabbit.yaml`). Those three comments were fixed in `b930f0e`.
 
-## Hardening (step 14), first campaign
-
-`fuzz/` holds cargo-fuzz targets for the lexer, the preprocessor, the parser, the whole front end (optionally with `llvm-as` on every accepted module) and a preprocessing round trip; they need a nightly toolchain and stay out of the stable build and pull-request CI (`docs/FUZZING.md`, manual workflow `fuzz.yml`). Random-program runners: Csmith (existing), YARPGen (`tools/yarpgen_campaign.py`), and two new generators for constant folding and record layout. The first campaign on `90e83d9` (13.2 fuzzing hours, 11 million inputs; 3,210 Csmith, 2,000 YARPGen, 20,000 constant-folding and 10,000 layout programs) found no compiler bugs; see `reports/hardening/README.md`. Still to do in step 14: coverage over the whole test set, mutation testing, and QuickJS then zlib.
-
 ## Hardening (step 14), zlib
 
 zlib 1.3.1 (pinned, SHA-256 checked by `scripts/fetch_zlib.sh`) builds with hcc alone at `-O0` and `-O2`. `harness/run_zlib.py` runs zlib's `example` and `minigzip` tests on both the hcc and Clang builds and a 60-case compression round trip (10 inputs, 6 levels and strategies). Both builds write identical gzip streams, and each inflates the other's output. It found one hcc bug: `__STRICT_ANSI__` was defined under `-std=gnu11`, which hid glibc's POSIX declarations (`fileno`). A Linux-only `zlib` CI job runs the comparison. Report: `reports/hardening/zlib.md`.
+
+## Hardening (step 14), first campaign
+
+`fuzz/` holds cargo-fuzz targets for the lexer, the preprocessor, the parser, the whole front end (optionally with `llvm-as` on every accepted module) and a preprocessing round trip; they need a nightly toolchain and stay out of the stable build and pull-request CI (`docs/FUZZING.md`, manual workflow `fuzz.yml`). Random-program runners: Csmith (existing), YARPGen (`tools/yarpgen_campaign.py`), and two new generators for constant folding and record layout. The first campaign on `90e83d9` (13.2 fuzzing hours, 11 million inputs; 3,210 Csmith, 2,000 YARPGen, 20,000 constant-folding and 10,000 layout programs) found no compiler bugs; see `reports/hardening/README.md`. Still to do in step 14: coverage over the whole test set, mutation testing, and QuickJS then zlib.
 
 ## Clean-room reminder
 
