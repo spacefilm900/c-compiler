@@ -271,7 +271,7 @@ pub(super) fn infer_init_len(elem: &CType, init: &Init, env: Env) -> Option<u64>
                 if designators.len() == 1 && !scalar && !matches!(**init, Init::List { .. }) {
                     // `[2] = x` for an aggregate element may start brace
                     // elision; the next positional items could belong to it.
-                    return None;
+                    return elided_len(elem, items, env);
                 }
                 init.as_ref()
             }
@@ -281,12 +281,139 @@ pub(super) fn infer_init_len(elem: &CType, init: &Init, env: Env) -> Option<u64>
             || matches!(value, Init::List { .. })
             || (char_array && matches!(value, Init::Expr(Expr::Str { .. })));
         if !one {
-            return None;
+            return elided_len(elem, items, env);
         }
         index = index.checked_add(1)?;
         count = count.max(index);
     }
     (count > 0).then_some(count)
+}
+
+/// The length of an unknown-size array of aggregates whose initializer
+/// elides braces (C11 6.7.9p20): `struct P { int x, y; } a[] = {1, 2, 3};`
+/// has two elements. Each element takes initializers one subobject at a
+/// time until all of its members are filled; a braced list takes one
+/// whole subobject. A designator `[k] =` moves to element `k` (6.7.9p17).
+/// Only items that are certainly scalars, braced lists, and string
+/// literals for character arrays are counted; for anything else (a struct
+/// value, a longer designator) the length depends on types the parser
+/// does not have, and `None` leaves it to semantic analysis.
+fn elided_len(elem: &CType, items: &[Init], env: Env) -> Option<u64> {
+    // Each designator `[k] = init` is replaced by `init`, with the element
+    // index it starts at.
+    let mut flat = Vec::with_capacity(items.len());
+    let mut starts = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            Init::Designated {
+                designators, init, ..
+            } => {
+                let [Designator::Index { expr, .. }] = designators.as_slice() else {
+                    return None;
+                };
+                let at = eval_ice(expr, env).ok()?;
+                if at.ty.is_signed() && sign_extend(at.bits, at.ty.width()) < 0 {
+                    return None;
+                }
+                starts.push(Some(u64::try_from(at.bits & at.ty.mask()).ok()?));
+                flat.push((**init).clone());
+            }
+            other => {
+                starts.push(None);
+                flat.push(other.clone());
+            }
+        }
+    }
+    let mut pos = 0usize;
+    let mut index = 0u64;
+    let mut count = 0u64;
+    while pos < flat.len() {
+        if let Some(at) = starts[pos] {
+            index = at;
+        }
+        let next = fill_subobject(elem, &flat, &starts, pos, pos)?;
+        if next == pos {
+            return None;
+        }
+        pos = next;
+        index = index.checked_add(1)?;
+        count = count.max(index);
+    }
+    (count > 0).then_some(count)
+}
+
+/// Initialize one object of type `ty` from `items[pos..]`; the position
+/// after what it took.
+/// `begin` is where the current element of the outer array started: a
+/// later designator ends that element.
+fn fill_subobject(
+    ty: &CType,
+    items: &[Init],
+    starts: &[Option<u64>],
+    begin: usize,
+    pos: usize,
+) -> Option<usize> {
+    let item = items.get(pos)?;
+    match item {
+        Init::List { .. } => return Some(pos + 1),
+        Init::Designated { .. } => return None,
+        // 6.7.9p14: a string literal initializes a whole character array.
+        Init::Expr(Expr::Str { enc, .. })
+            if ty.array_elem().is_some_and(|inner| {
+                inner.is_integer() && inner.size() == Some(enc.unit() as u64)
+            }) =>
+        {
+            return Some(pos + 1);
+        }
+        Init::Expr(expr) if ty.is_scalar() => return certainly_scalar(expr).then_some(pos + 1),
+        Init::Expr(expr) if !certainly_scalar(expr) => return None,
+        Init::Expr(_) => {}
+    }
+    let mut pos = pos;
+    if let Some(sub) = ty.array_elem() {
+        let len = ty.array_len().filter(|len| *len > 0)?;
+        for _ in 0..len {
+            if pos >= items.len() || (pos != begin && starts[pos].is_some()) {
+                break;
+            }
+            pos = fill_subobject(sub, items, starts, begin, pos)?;
+        }
+        return Some(pos);
+    }
+    let record = ty.struct_ref()?;
+    let fields = record.fields()?;
+    // Unnamed bit-fields take no initializer (6.7.9p9); a union takes one
+    // for its first member only.
+    let members = fields
+        .iter()
+        .filter(|field| !(field.name.is_empty() && field.bit_width.is_some()));
+    let limit = if record.is_union() { 1 } else { usize::MAX };
+    for field in members.take(limit) {
+        if pos >= items.len() || (pos != begin && starts[pos].is_some()) {
+            break;
+        }
+        if field.ty.is_array() && field.ty.array_len().is_none() {
+            return None;
+        }
+        pos = fill_subobject(&field.ty, items, starts, begin, pos)?;
+    }
+    Some(pos)
+}
+
+/// An expression whose value is a scalar whatever the types of its names.
+fn certainly_scalar(expr: &Expr) -> bool {
+    match expr {
+        Expr::Int { .. } | Expr::Float { .. } | Expr::Sizeof { .. } | Expr::Bin { .. } => true,
+        Expr::LabelAddr { .. } | Expr::IncDec { .. } | Expr::CompoundAssign { .. } => true,
+        Expr::Unary { op, .. } => *op != UnaryOp::Deref,
+        Expr::Cast { ty_name, .. } => ty_name.is_scalar(),
+        Expr::Cond {
+            then_expr,
+            else_expr,
+            ..
+        } => certainly_scalar(then_expr) && certainly_scalar(else_expr),
+        _ => false,
+    }
 }
 
 pub(super) fn eval_ice_unary(op: UnaryOp, expr: &Expr, env: Env) -> Result<BVal, BoundErr> {

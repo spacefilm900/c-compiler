@@ -1085,8 +1085,8 @@ fn array_bounds_reject_overflow_and_undefined_operations() {
 fn infers_array_lengths_like_clang() {
     // Sizes as Clang prints them: designators move the position, strings
     // count their units plus the terminator (u"" and U"" units are 2 and 4
-    // bytes), and brace elision into a struct element is counted by the
-    // initializer walk rather than the parser's quick count.
+    // bytes), and brace elision fills one element's members before the
+    // next (C11 6.7.9p20).
     let unit = analyzed(
         r#"struct P { int x, y; };
 int i0[] = {1, 2, [7] = 3, 4};
@@ -1121,6 +1121,21 @@ int z_i12 = sizeof i12;
 int z_i13 = sizeof i13;
 int z_i14 = sizeof i14;
 int z_i15 = sizeof i15;
+int y_i0 = sizeof(char[sizeof i0]);
+int y_i1 = sizeof(char[sizeof i1]);
+int y_i2 = sizeof(char[sizeof i2]);
+int y_i3 = sizeof(char[sizeof i3]);
+int y_i4 = sizeof(char[sizeof i4]);
+int y_i5 = sizeof(char[sizeof i5]);
+int y_i6 = sizeof(char[sizeof i6]);
+int y_i7 = sizeof(char[sizeof i7]);
+int y_i8 = sizeof(char[sizeof i8]);
+int y_i9 = sizeof(char[sizeof i9]);
+int y_i10 = sizeof(char[sizeof i10]);
+int y_i11 = sizeof(char[sizeof i11]);
+int y_i12 = sizeof(char[sizeof i12]);
+int y_i13 = sizeof(char[sizeof i13]);
+int y_i15 = sizeof(char[sizeof i15]);
 "#,
     );
     for (name, want) in [
@@ -1148,6 +1163,18 @@ int z_i15 = sizeof i15;
             .unwrap()
             .int_init();
         assert_eq!(size, Some(want), "{name}");
+        // The parser folds the same length for `sizeof` in an array bound
+        // (C11 6.6p6), except after a designator into an element's member,
+        // which it leaves to semantic analysis.
+        if name != "i14" {
+            let folded = unit
+                .globals
+                .iter()
+                .find(|global| global.name == format!("y_{name}"))
+                .unwrap()
+                .int_init();
+            assert_eq!(folded, Some(want), "{name} in a constant expression");
+        }
     }
 }
 
@@ -1168,6 +1195,9 @@ struct S13 { char a; short b : 3; short c : 13; char x; };
 struct S14 { int a : 3; long long b : 61; char x; };
 union U0 { char a : 3; int b : 9; };
 union U1 { char a; int : 0; short b : 3; };
+union U2 { char a; int : 3; };
+struct S15 { char a; int : 4; char b; };
+union U3 { char a : 2; long long : 7; };
 int z_S0 = sizeof(struct S0);
 int a_S0 = _Alignof(struct S0);
 int z_S1 = sizeof(struct S1);
@@ -1202,6 +1232,12 @@ int z_U0 = sizeof(union U0);
 int a_U0 = _Alignof(union U0);
 int z_U1 = sizeof(union U1);
 int a_U1 = _Alignof(union U1);
+int z_U2 = sizeof(union U2);
+int a_U2 = _Alignof(union U2);
+int z_S15 = sizeof(struct S15);
+int a_S15 = _Alignof(struct S15);
+int z_U3 = sizeof(union U3);
+int a_U3 = _Alignof(union U3);
 int o_S12 = __builtin_offsetof(struct S12, x);
 int o_S13 = __builtin_offsetof(struct S13, x);
 int o_S14 = __builtin_offsetof(struct S14, x);
@@ -1220,10 +1256,11 @@ fn layout_values(target: crate::target::Target) -> Vec<(String, u128)> {
 #[test]
 fn bit_field_layouts_match_clang_on_sysv_and_msvc() {
     // Mutation testing (reports/hardening/mutation.md) found the MSVC
-    // bit-field rules and the exact-fit case of the System V rule covered
-    // only by the cross harness. Sizes, alignments and offsets are what
-    // Clang emits for the same records at each target.
-    let cases: [(crate::target::Target, &[(&str, u128)]); 2] = [
+    // bit-field rules, the exact-fit case of the System V rule and unnamed
+    // bit-fields in unions covered only by the cross harness. Sizes,
+    // alignments and offsets are what Clang emits for the same records at
+    // each target; `U2` and `U3` were wrong on x86-64 and Apple arm64.
+    let cases: [(crate::target::Target, &[(&str, u128)]); 4] = [
         (
             crate::target::Target::X86_64Linux,
             &[
@@ -1261,6 +1298,12 @@ fn bit_field_layouts_match_clang_on_sysv_and_msvc() {
                 ("a_U0", 4),
                 ("z_U1", 2),
                 ("a_U1", 2),
+                ("z_U2", 1),
+                ("a_U2", 1),
+                ("z_S15", 3),
+                ("a_S15", 1),
+                ("z_U3", 1),
+                ("a_U3", 1),
                 ("o_S12", 4),
                 ("o_S13", 4),
                 ("o_S14", 8),
@@ -1303,9 +1346,111 @@ fn bit_field_layouts_match_clang_on_sysv_and_msvc() {
                 ("a_U0", 1),
                 ("z_U1", 2),
                 ("a_U1", 1),
+                ("z_U2", 4),
+                ("a_U2", 1),
+                ("z_S15", 12),
+                ("a_S15", 4),
+                ("z_U3", 8),
+                ("a_U3", 1),
                 ("o_S12", 4),
                 ("o_S13", 4),
                 ("o_S14", 16),
+            ],
+        ),
+        (
+            crate::target::Target::Aarch64Linux,
+            &[
+                ("z_S0", 1),
+                ("a_S0", 1),
+                ("z_S1", 2),
+                ("a_S1", 1),
+                ("z_S2", 4),
+                ("a_S2", 4),
+                ("z_S3", 8),
+                ("a_S3", 4),
+                ("z_S4", 8),
+                ("a_S4", 4),
+                ("z_S5", 8),
+                ("a_S5", 4),
+                ("z_S6", 4),
+                ("a_S6", 4),
+                ("z_S7", 8),
+                ("a_S7", 8),
+                ("z_S8", 8),
+                ("a_S8", 4),
+                ("z_S9", 8),
+                ("a_S9", 8),
+                ("z_S10", 8),
+                ("a_S10", 4),
+                ("z_S11", 2),
+                ("a_S11", 1),
+                ("z_S12", 8),
+                ("a_S12", 4),
+                ("z_S13", 6),
+                ("a_S13", 2),
+                ("z_S14", 16),
+                ("a_S14", 8),
+                ("z_U0", 4),
+                ("a_U0", 4),
+                ("z_U1", 4),
+                ("a_U1", 4),
+                ("z_U2", 4),
+                ("a_U2", 4),
+                ("z_S15", 4),
+                ("a_S15", 4),
+                ("z_U3", 8),
+                ("a_U3", 8),
+                ("o_S12", 4),
+                ("o_S13", 4),
+                ("o_S14", 8),
+            ],
+        ),
+        (
+            crate::target::APPLE_DEFAULT,
+            &[
+                ("z_S0", 1),
+                ("a_S0", 1),
+                ("z_S1", 2),
+                ("a_S1", 1),
+                ("z_S2", 4),
+                ("a_S2", 4),
+                ("z_S3", 8),
+                ("a_S3", 4),
+                ("z_S4", 8),
+                ("a_S4", 4),
+                ("z_S5", 8),
+                ("a_S5", 4),
+                ("z_S6", 4),
+                ("a_S6", 4),
+                ("z_S7", 8),
+                ("a_S7", 8),
+                ("z_S8", 8),
+                ("a_S8", 4),
+                ("z_S9", 8),
+                ("a_S9", 8),
+                ("z_S10", 8),
+                ("a_S10", 4),
+                ("z_S11", 2),
+                ("a_S11", 1),
+                ("z_S12", 8),
+                ("a_S12", 4),
+                ("z_S13", 6),
+                ("a_S13", 2),
+                ("z_S14", 16),
+                ("a_S14", 8),
+                ("z_U0", 4),
+                ("a_U0", 4),
+                ("z_U1", 2),
+                ("a_U1", 2),
+                ("z_U2", 1),
+                ("a_U2", 1),
+                ("z_S15", 3),
+                ("a_S15", 1),
+                ("z_U3", 1),
+                ("a_U3", 1),
+                ("o_S12", 4),
+                ("o_S13", 4),
+                ("o_S14", 8),
             ],
         ),
     ];
@@ -1316,6 +1461,25 @@ fn bit_field_layouts_match_clang_on_sysv_and_msvc() {
             assert_eq!(found, Some(*value), "{target:?} {name}");
         }
     }
+}
+
+#[test]
+fn union_bit_fields_take_the_bytes_of_their_width() {
+    // A bit-field adds the bytes of its width to a union, not its type's
+    // size. A packed union whose bit-field unit would then not fit is
+    // rejected, like the packed structs above, instead of laid out wrong.
+    for source in [
+        "union __attribute__((packed)) P1 { int a : 3; };",
+        "union __attribute__((packed)) P2 { char c; int a : 12; };",
+        "union P3 { char c; int a : 12 __attribute__((packed)); };",
+    ] {
+        assert!(
+            sema_err(source).contains("bit-fields in a packed or aligned union"),
+            "{source}"
+        );
+    }
+    sema_ok("union U { char a; long long : 33; }; struct S { char c; union U u; };");
+    sema_ok("struct __attribute__((packed)) P4 { char c; union { int a : 3; } u; char d; };");
 }
 
 #[test]
