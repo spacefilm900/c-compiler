@@ -37,6 +37,10 @@ impl Processor {
                 }
                 continue;
             }
+            if !isolated && !self.in_if && self.at_pragma_operator() {
+                self.pragma_operator()?;
+                continue;
+            }
             if self.try_expand(isolated)? {
                 continue;
             }
@@ -53,6 +57,74 @@ impl Processor {
             ));
         }
         Ok(out)
+    }
+
+    fn at_pragma_operator(&self) -> bool {
+        let tok = &self.tokens[self.index];
+        tok.kind == PpKind::Ident && tok.spelling == "_Pragma"
+    }
+
+    /// The `_Pragma ( string-literal )` operator (C11 6.10.9), met in the
+    /// output of macro expansion or in the source. The operand is macro
+    /// replaced first (6.10.3.4 processes the operator after rescanning, so
+    /// `_Pragma(TEXT)` with `#define TEXT "once"` works) and must then be
+    /// one string literal. It is destringized (an `L` prefix and the quotes
+    /// deleted, `\"` and `\\` replaced by `"` and `\`), the result is split
+    /// into preprocessing tokens, and they are carried out as the tokens of
+    /// a `#pragma` line. The operator and its operand are removed.
+    fn pragma_operator(&mut self) -> Result<(), Diagnostic> {
+        let at = self.tokens[self.index].clone();
+        let malformed = || error_at(&at, "_Pragma requires a parenthesized string literal");
+        let skippable = |tok: &PpToken| matches!(tok.kind, PpKind::Newline | PpKind::Placemarker);
+        let mut open = self.index + 1;
+        while open < self.tokens.len() && skippable(&self.tokens[open]) {
+            open += 1;
+        }
+        if open >= self.tokens.len() || !self.tokens[open].is_lparen() {
+            return Err(malformed());
+        }
+        let mut depth = 0usize;
+        let mut close = open;
+        loop {
+            if close >= self.tokens.len() {
+                return Err(malformed());
+            }
+            let tok = &self.tokens[close];
+            if tok.is_lparen() {
+                depth += 1;
+            } else if tok.is_rparen() {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            close += 1;
+        }
+        let operand: Vec<PpToken> = self.tokens[open + 1..close]
+            .iter()
+            .filter(|tok| !skippable(tok))
+            .cloned()
+            .collect();
+        let expanded: Vec<PpToken> = self
+            .expand_list(operand)?
+            .into_iter()
+            .filter(|tok| !skippable(tok))
+            .collect();
+        let [literal] = expanded.as_slice() else {
+            return Err(malformed());
+        };
+        if literal.kind != PpKind::String || literal.spelling.starts_with(['u', 'U']) {
+            return Err(malformed());
+        }
+        let text = destringize(&literal.spelling);
+        let mut line = lex_source(&text, &at.display, at.file_id)?;
+        line.retain(|tok| tok.kind != PpKind::Newline);
+        for tok in &mut line {
+            tok.line = at.line;
+            tok.column = at.column;
+        }
+        self.index = close + 1;
+        self.apply_pragma(&at, &line)
     }
 
     /// The token at the cursor, about to be consumed. Its spelling is moved
@@ -696,4 +768,31 @@ pub(super) fn arity_error(
         format!("macro '{name}' passed {got} arguments but takes {need}")
     };
     error_at(inv, message)
+}
+
+/// C11 6.10.9p1: delete the `L` prefix and the two double quotes, and
+/// replace each `\"` with `"` and each `\\` with `\`.
+pub(super) fn destringize(literal: &str) -> String {
+    let body = literal.strip_prefix('L').unwrap_or(literal);
+    let body = body
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(body);
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some(next @ ('"' | '\\')) => out.push(next),
+                Some(next) => {
+                    out.push('\\');
+                    out.push(next);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }

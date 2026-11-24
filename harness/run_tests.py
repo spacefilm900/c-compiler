@@ -46,6 +46,10 @@ Linux host, or wrappers that add the target), the AArch64
 calling-convention tests in tests/arm64/ (pairs in tests/arm64/xabi/) are
 run too, the same way.
 
+__DATE__ and __TIME__ are also compared with Clang's (`-E`) under fixed
+SOURCE_DATE_EPOCH values, and an invalid value must be rejected by both
+(label pp/source_date_epoch).
+
 Env: CC_UNDER_TEST, CLANG (default "clang"), TIMEOUT (seconds, default 10),
 KNOWN_FAILURES (optional file of test labels, one per line, '#' comments:
 those tests may fail without failing the run; the macOS job uses
@@ -247,6 +251,44 @@ def test_cross(def_src, use_src, tmp):
     return mixed(def_src, use_src, "our-def") or mixed(use_src, def_src, "our-use")
 
 
+def test_source_date_epoch(tmp):
+    """__DATE__ and __TIME__ under SOURCE_DATE_EPOCH, against Clang's."""
+    src = tmp / "date_time.c"
+    src.write_text("__DATE__ __TIME__\n")
+
+    def preprocess(cmd, epoch):
+        """(exit status, the string literals printed, stderr)."""
+        env = {**os.environ, "SOURCE_DATE_EPOCH": epoch}
+        try:
+            done = subprocess.run(cmd, env=env, capture_output=True, text=True,
+                                  errors="replace", timeout=TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return None, [], str(e)
+        return done.returncode, re.findall(r'"[^"]*"', done.stdout), done.stderr
+
+    ours = [str(COMPILER), "-E", str(src)]
+    ref = [CLANG, "-E", "-P", str(src)]
+    # The epoch, a leap day in a century year, a one-digit day, the maximum.
+    for epoch in ("0", "951827696", "1772323200", "253402300799"):
+        got, expected = preprocess(ours, epoch), preprocess(ref, epoch)
+        if got[0] != 0 or expected[0] != 0:
+            return (f"SOURCE_DATE_EPOCH={epoch}: preprocessing failed: ours exit={got[0]} "
+                    f"{got[2][:200]!r}, clang exit={expected[0]} {expected[2][:200]!r}")
+        if len(got[1]) != 2 or got[1] != expected[1]:
+            return f"SOURCE_DATE_EPOCH={epoch}: got {got[1]}, expected {expected[1]}"
+    invalid = ["abc", "-1", " 5", "", "253402300800"]
+    if os.name == "posix":
+        invalid.append("1\udcff")  # byte 0xff: not valid UTF-8
+    for epoch in invalid:
+        got, expected = preprocess(ours, epoch), preprocess(ref, epoch)
+        # An ordinary diagnostic: exit status 1, no panic (101) or signal.
+        if got[0] != 1 or "panicked" in got[2]:
+            return f"SOURCE_DATE_EPOCH={epoch!r} must be rejected with exit 1: got exit={got[0]} {got[2][:200]!r}"
+        if not isinstance(expected[0], int) or expected[0] <= 0:
+            return f"SOURCE_DATE_EPOCH={epoch!r}: Clang did not reject it (exit={expected[0]})"
+    return None
+
+
 def main():
     tests = sorted((ROOT / "tests").glob("*.c"))
     hosted = sorted((ROOT / "tests" / "hosted").glob("*.c"))
@@ -286,7 +328,7 @@ def main():
                 f"Clang/LLVM >= {MIN_CLANG_MAJOR} is required (LLVM 15-17 split an "
                 f"i128 argument between a register and the stack); got: {major}"
             )
-    total = len(tests) + len(hosted) + len(posix) + len(crosses) + len(gnu) + len(both)
+    total = len(tests) + len(hosted) + len(posix) + len(crosses) + len(gnu) + len(both) + 1
     if problems:
         for t in tests:
             print(f"FAIL {t.name}: " + "; ".join(problems))
@@ -298,6 +340,7 @@ def main():
             print(f"FAIL {t.parent.name}/{t.name}: " + "; ".join(problems))
         for t in both:
             print(f"FAIL gnu/both/{t.name}: " + "; ".join(problems))
+        print("FAIL pp/source_date_epoch: " + "; ".join(problems))
         print(f"\n0/{total} passed")
         return 1
     known = known_failures()
@@ -341,6 +384,7 @@ def main():
             report(f"{t.parent.name}/{t.name}", test_gnu(t, tmp))
         for t in both:
             report(f"gnu/both/{t.name}", test_both(t, tmp))
+        report("pp/source_date_epoch", test_source_date_epoch(tmp))
     unexpected = total - passed - len(expected_failures)
     if known:
         print(f"\n{passed}/{total} passed, {len(expected_failures)} known failures, "

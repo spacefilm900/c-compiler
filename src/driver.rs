@@ -35,6 +35,8 @@ options:
   --dump-ir       print the LLVM IR (to standard output unless -o is given)
   -std=c11        strict ISO C11 (the default)
   -std=gnu11      C11 plus the GNU extensions this compiler supports
+  -trigraphs      replace trigraphs under -std=gnu11 too (-std=c11 always
+                  does)
   -fgnu89-inline  GNU89 inline semantics: plain `inline` definitions are
                   external, `extern inline` ones are only for inlining
   -target TRIPLE  compile for TRIPLE (also --target=TRIPLE): x86_64-linux-gnu,
@@ -220,6 +222,11 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         if let Some(name) = arg.strip_prefix("-std=") {
             dialect = Dialect::from_std(name)
                 .ok_or_else(|| format!("unsupported -std value '{name}'; use c11 or gnu11"))?;
+            index += 1;
+            continue;
+        }
+        if arg == "-trigraphs" {
+            pp.trigraphs = true;
             index += 1;
             continue;
         }
@@ -751,6 +758,30 @@ mod tests {
         // Other standards are not supported.
         assert_eq!(compile(&["-std=c99"]), 2);
         assert_eq!(compile(&["-std="]), 2);
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn trigraphs_flag_in_gnu_mode() {
+        let (src, out) = temp_paths();
+        // `??!` is `|` only when trigraphs are replaced; otherwise the
+        // program is a syntax error.
+        std::fs::write(&src, "int main(void) { return 0 ??! 0; }\n").unwrap();
+        let compile = |flags: &[&str]| {
+            let mut args: Vec<String> = vec!["hcc".into()];
+            args.extend(flags.iter().map(|flag| flag.to_string()));
+            args.extend([
+                src.display().to_string(),
+                "-o".into(),
+                out.display().to_string(),
+            ]);
+            run(&args)
+        };
+        assert_eq!(compile(&[]), 0);
+        assert_eq!(compile(&["-std=gnu11"]), 1);
+        assert_eq!(compile(&["-std=gnu11", "-trigraphs"]), 0);
+        assert_eq!(compile(&["-trigraphs", "-std=gnu11"]), 0);
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&out);
     }

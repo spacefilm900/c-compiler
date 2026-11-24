@@ -541,3 +541,134 @@ fn if_expression_errors_name_the_problem() {
     );
     assert!(text.contains("yes"), "{text}");
 }
+
+#[test]
+fn trigraphs_in_strict_c11_only_unless_requested() {
+    // C11 5.2.1.1: phase 1 replaces the nine trigraphs, before line splicing,
+    // so `??/` at the end of a line splices it.
+    let source = "??=define S(x) ??=x\nint a??(2??) = ??< 1, ~0 ??! 2 ??>; char *s = S(a??'b);\n\
+                  int sp = 1 + ??/\n2;\nchar *q = \"what???\"; char *r = \"ok??!\";\n";
+    let strict = pp(source);
+    assert_eq!(
+        squash(&strict),
+        "int a[2] = { 1, ~0 | 2 }; char *s = \"a^b\"; int sp = 1 + 2; char *q = \"what???\"; char *r = \"ok|\";"
+    );
+    // GNU mode ignores them, as GCC does by default.
+    let gnu = PpOptions {
+        gnu: true,
+        system_dirs: Vec::new(),
+        ..PpOptions::default()
+    };
+    let text = preprocess("int a = 1 ??! 2;\nchar *q = \"what??!\";\n", "t.c", &gnu).unwrap();
+    assert!(
+        text.contains("??!") && text.contains("\"what??!\""),
+        "{text}"
+    );
+    // `-trigraphs` turns them on in GNU mode.
+    let requested = PpOptions {
+        trigraphs: true,
+        ..gnu
+    };
+    let text = preprocess("int a = 1 ??! 2;\n", "t.c", &requested).unwrap();
+    assert_eq!(squash(&text), "int a = 1 | 2;");
+}
+
+#[test]
+fn trigraphs_in_included_headers() {
+    let dir = std::env::temp_dir().join(format!("cc-pp-tri-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("t.h"), "??=define FROM_HEADER ??-1\n").unwrap();
+    let options = PpOptions {
+        system_dirs: vec![dir.clone()],
+        ..PpOptions::default()
+    };
+    let text = preprocess("#include <t.h>\nint x = FROM_HEADER;\n", "t.c", &options).unwrap();
+    assert_eq!(squash(&text), "int x = ~1;");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn date_and_time_are_predefined_string_literals() {
+    // C11 6.10.8.1: "Mmm dd yyyy" and "hh:mm:ss". (The SOURCE_DATE_EPOCH
+    // override is tested on the binary, where the environment is its own.)
+    let text = pp("__DATE__ __TIME__\n#if defined(__DATE__) && defined __TIME__\nboth\n#endif\n");
+    let mut parts = text.split('"');
+    let _ = parts.next();
+    let date = parts.next().unwrap();
+    let _ = parts.next();
+    let time = parts.next().unwrap();
+    assert_eq!(date.len(), 11, "{date}");
+    let months = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    assert!(
+        months.contains(&date[..3]) && date.as_bytes()[3] == b' ',
+        "{date}"
+    );
+    assert!(date[4..6].trim_start().parse::<u32>().is_ok(), "{date}");
+    assert!(date[7..].parse::<u32>().is_ok(), "{date}");
+    assert_eq!(time.len(), 8, "{time}");
+    assert_eq!(
+        (time.as_bytes()[2], time.as_bytes()[5]),
+        (b':', b':'),
+        "{time}"
+    );
+    assert!(text.contains("both"), "{text}");
+}
+
+#[test]
+fn pragma_operator_destringizes_and_applies_once() {
+    use super::expand::destringize;
+    assert_eq!(destringize("\"once\""), "once");
+    assert_eq!(destringize("L\"once\""), "once");
+    assert_eq!(destringize(r#""message(\"a\\b\")""#), r#"message("a\b")"#);
+    assert_eq!(destringize(r#""keep \n""#), r#"keep \n"#);
+    let dir = std::env::temp_dir().join(format!("cc-pp-pragma-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("o.h"), "_Pragma(\"once\")\nint once_only;\n").unwrap();
+    std::fs::write(
+        dir.join("m.h"),
+        "#define ONCE _Pragma(L\"once\")\nONCE\nint via_macro;\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("bad.h"), "_Pragma(\"once extra\")\n").unwrap();
+    let options = PpOptions {
+        system_dirs: vec![dir.clone()],
+        ..PpOptions::default()
+    };
+    let text = preprocess(
+        "#include <o.h>\n#include <o.h>\n#include <m.h>\n#include <m.h>\n",
+        "t.c",
+        &options,
+    )
+    .unwrap();
+    assert_eq!(text.matches("once_only").count(), 1, "{text}");
+    assert_eq!(text.matches("via_macro").count(), 1, "{text}");
+    let err = preprocess("#include <bad.h>\n", "t.c", &options)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("extra tokens after #pragma once"), "{err}");
+    // Unknown and STDC pragmas are ignored, as on a #pragma line.
+    let text = preprocess(
+        "_Pragma(\"STDC FP_CONTRACT ON\") _Pragma(\"GCC diagnostic push\") int z;\n",
+        "t.c",
+        &options,
+    )
+    .unwrap();
+    assert_eq!(squash(&text), "int z;");
+    // The operand is macro replaced before it must be a string literal,
+    // directly and from inside another macro.
+    std::fs::write(
+        dir.join("t.h"),
+        "#define TEXT \"once\"\n#define MARK _Pragma(TEXT)\nMARK\nint via_text;\n",
+    )
+    .unwrap();
+    let text = preprocess("#include <t.h>\n#include <t.h>\n", "t.c", &options).unwrap();
+    assert_eq!(text.matches("via_text").count(), 1, "{text}");
+    assert!(preprocess("#define TWO \"a\" \"b\"\n_Pragma(TWO)\n", "t.c", &options).is_err());
+    assert!(preprocess("#define N 1\n_Pragma(N)\n", "t.c", &options).is_err());
+    assert!(preprocess("_Pragma\n", "t.c", &options).is_err());
+    assert!(preprocess("_Pragma(u8\"once\")\n", "t.c", &options).is_err());
+    assert!(preprocess("_Pragma(\"once\"\n", "t.c", &options).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
