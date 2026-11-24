@@ -2263,6 +2263,7 @@ struct BP bp[2] = {{1, &g, 2, 3}, {-1, &h, -2, -3}};
 union BU { struct BP s; unsigned char raw[32]; };
 union BU bu = {.s = {3, &h, 7, 0x7fffffffffll}};
 struct BW { union U u; int k : 4; } bw = {.u.p = &g, .k = 5};
+struct BQ { int k : 4; struct BP s; union BU t; } bq = {5, {3, &h, 7, 1}, {.s = {1, &g, 2, 3}}};
 union X x1 = {.b = {7, 127, 8191, 511, 31, 7}};
 union X x2 = {.w = {0xffffffffu, 1, 2}, .w[1] = 0x80000000u};
 static void dump(const char *name, const void *p, unsigned long n) {
@@ -2289,6 +2290,7 @@ int main(void) {
     printf("bp %d %d %d %lld %d %d %d %lld\n", bp[0].a, bp[0].p == &g, bp[0].b, bp[0].c, bp[1].a, bp[1].p == &h, bp[1].b, bp[1].c);
     printf("bu %d %d %d %lld\n", bu.s.a, bu.s.p == &h, bu.s.b, bu.s.c);
     printf("bw %d %d\n", bw.u.p == &g, bw.k);
+    printf("bq %d %d %d %d %lld %d %d\n", bq.k, bq.s.a, bq.s.p == &h, bq.s.b, bq.s.c, bq.t.s.p == &g, bq.t.s.b);
     dump("x1", &x1, sizeof x1);
     dump("x2", &x2, sizeof x2);
     return 0;
