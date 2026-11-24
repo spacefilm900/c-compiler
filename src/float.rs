@@ -730,6 +730,12 @@ pub fn apply_bin(op: FloatOp, kind: FloatKind, left: u128, right: u128) -> u128 
                 FloatOp::Mul => left * right,
                 FloatOp::Div => left / right,
             };
+            // An invalid operation (inf - inf, 0 * inf, 0 / 0, inf / inf)
+            // folds to the default quiet NaN, positive, whatever NaN the
+            // host's hardware would produce; a NaN operand propagates.
+            if value.is_nan() && !left.is_nan() && !right.is_nan() {
+                return u128::from(f32::NAN.to_bits() & 0x7FFF_FFFF);
+            }
             u128::from(value.to_bits())
         }
         FloatKind::Double => {
@@ -741,6 +747,9 @@ pub fn apply_bin(op: FloatOp, kind: FloatKind, left: u128, right: u128) -> u128 
                 FloatOp::Mul => left * right,
                 FloatOp::Div => left / right,
             };
+            if value.is_nan() && !left.is_nan() && !right.is_nan() {
+                return u128::from(f64::NAN.to_bits() & 0x7FFF_FFFF_FFFF_FFFF);
+            }
             u128::from(value.to_bits())
         }
         FloatKind::LongDouble => unreachable!("long double is handled above"),
@@ -1447,5 +1456,33 @@ mod tests {
         );
         let neg = snan | 0x8000_0000;
         assert_eq!(widen_f32_bits(neg), 0xFFF4_0000_0000_0000);
+    }
+
+    #[test]
+    fn invalid_operations_fold_to_the_positive_default_nan() {
+        let inf_d = u128::from(f64::INFINITY.to_bits());
+        let zero_d = 0u128;
+        let inf_f = u128::from(f32::INFINITY.to_bits());
+        let d = FloatKind::Double;
+        let f = FloatKind::Float;
+        assert_eq!(
+            apply_bin(FloatOp::Mul, d, inf_d, zero_d),
+            0x7FF8_0000_0000_0000
+        );
+        assert_eq!(
+            apply_bin(FloatOp::Sub, d, inf_d, inf_d),
+            0x7FF8_0000_0000_0000
+        );
+        assert_eq!(
+            apply_bin(FloatOp::Div, d, zero_d, zero_d),
+            0x7FF8_0000_0000_0000
+        );
+        assert_eq!(apply_bin(FloatOp::Div, f, inf_f, inf_f), 0x7FC0_0000);
+        // A NaN operand still propagates with its sign and payload.
+        let nan5 = 0xFFF8_0000_0000_0005u128;
+        assert_eq!(
+            apply_bin(FloatOp::Mul, d, nan5, 0x4000_0000_0000_0000),
+            nan5
+        );
     }
 }

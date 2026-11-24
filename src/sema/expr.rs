@@ -1051,9 +1051,19 @@ impl Sema<'_> {
                 // C11 6.5.4: an arithmetic type converts to any arithmetic
                 // type. A pointer converts to an integer and the reverse.
                 // There is no conversion between a pointer and a floating type.
+                // GNU C also casts a struct or union to its own type (a
+                // no-op that yields the value; GCC and Clang accept it with
+                // -std=gnu11 and diagnose it in strict ISO C).
+                let same_record = self.dialect.gnu()
+                    && ty_name.is_record()
+                    && src.is_record()
+                    && !ty_name.is_atomic()
+                    && !src.is_atomic()
+                    && crate::ast::compatible(&ty_name.unqualified(), &src.unqualified());
                 let ok = (ty_name.is_arithmetic() && src.is_arithmetic())
                     || (ty_name.is_pointer() && (src.is_pointer() || src.is_integer()))
-                    || (ty_name.is_integer() && src.is_pointer());
+                    || (ty_name.is_integer() && src.is_pointer())
+                    || same_record;
                 if !ok {
                     return self.err(
                         line,

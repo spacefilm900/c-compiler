@@ -250,7 +250,10 @@ impl Parser<'_> {
             .as_ref()
             .map(|(_, line, column)| (*line, *column))
             .unwrap_or_else(|| decl_pos(&raw));
-        let ty = layer_type(self.derive(base, &raw, line, column)?);
+        self.param_array_quals_ok = true;
+        let derived = self.derive(base, &raw, line, column);
+        self.param_array_quals_ok = false;
+        let ty = layer_type(derived?);
         let star_array = type_has_star_param(&ty);
         if type_has_identifier_list(&ty) {
             return Err(self.error_at(
@@ -261,6 +264,10 @@ impl Parser<'_> {
         }
         let unadjusted = ty.clone();
         let ty = self.adjust_parameter(ty, line, column)?;
+        let ty = match outermost_array_quals(&raw) {
+            Some(at) => ty.with_quals(at.quals),
+            None => ty,
+        };
         if let Some((name, line, column)) = &named {
             self.bind_ordinary(name, Some(ty.clone()), *line, *column)?;
         }
@@ -372,9 +379,9 @@ impl Parser<'_> {
             match self.current().kind {
                 TokenKind::LBrack => {
                     self.bump();
-                    let len = self.parse_array_len()?;
+                    let (len, quals) = self.parse_array_len()?;
                     self.expect_skip(TokenKind::RBrack, "']'")?;
-                    node = RawDecl::Array(Box::new(node), len);
+                    node = RawDecl::Array(Box::new(node), len, quals);
                 }
                 TokenKind::LParen => {
                     let params = self.parse_param_list()?;
@@ -467,19 +474,40 @@ impl Parser<'_> {
     /// `[]` is an unknown bound. `[*]` is a prototype-scope VLA of
     /// unspecified size (C11 6.7.6.2p4). Otherwise the bound is an
     /// expression, later folded as a constant or treated as a VLA size.
-    pub(super) fn parse_array_len(&mut self) -> Result<ArrayBound, Diagnostic> {
-        if self.current().kind == TokenKind::KwStatic {
-            return Err(self.error("static array sizes are not supported"));
+    ///
+    /// `static` and type qualifiers may come first, in either order
+    /// (`[static const 3]`, `[const static 3]`, `[const]`); with `static`
+    /// the size is required (C11 6.7.6.2p1 / 6.7.6p1 grammar).
+    pub(super) fn parse_array_len(
+        &mut self,
+    ) -> Result<(ArrayBound, Option<ArrayParamQuals>), Diagnostic> {
+        let (line, column) = (self.current().line, self.current().column);
+        let mut is_static = self.match_kind(TokenKind::KwStatic);
+        let quals = self.parse_pointer_quals()?;
+        if !is_static && self.match_kind(TokenKind::KwStatic) {
+            is_static = true;
+        }
+        let param_quals = (is_static || !quals.is_empty()).then_some(ArrayParamQuals {
+            quals,
+            line,
+            column,
+        });
+        if is_static && matches!(self.current().kind, TokenKind::RBrack)
+            || is_static
+                && self.current().kind == TokenKind::Star
+                && self.lookahead() == TokenKind::RBrack
+        {
+            return Err(self.error("'static' in an array declarator requires a size"));
         }
         if self.current().kind == TokenKind::Star && self.lookahead() == TokenKind::RBrack {
             self.bump();
-            return Ok(ArrayBound::Star);
+            return Ok((ArrayBound::Star, param_quals));
         }
         if self.current().kind == TokenKind::RBrack {
-            return Ok(ArrayBound::Unspecified);
+            return Ok((ArrayBound::Unspecified, param_quals));
         }
         let expr = self.parse_assignment()?;
-        Ok(ArrayBound::Expr(expr))
+        Ok((ArrayBound::Expr(expr), param_quals))
     }
 
     /// Build the type by inserting each constructor next to the base, which is
@@ -539,8 +567,20 @@ impl Parser<'_> {
                     self.derive_layer(Layer::Object(ptr), inner, line, column)
                 }
             },
-            RawDecl::Array(inner, len) => match base {
+            RawDecl::Array(inner, len, param_quals) => match base {
                 Layer::Object(ty) => {
+                    if let Some(at) = param_quals {
+                        let outermost =
+                            matches!(**inner, RawDecl::Named(..) | RawDecl::Abstract(..));
+                        if !(self.param_array_quals_ok && outermost) {
+                            return Err(self.error_at(
+                                at.line,
+                                at.column,
+                                "type qualifiers and 'static' in an array declarator are \
+                                 allowed only in the outermost array type of a parameter",
+                            ));
+                        }
+                    }
                     let arr = self.make_array(ty, len, line, column)?;
                     self.derive_layer(Layer::Object(arr), inner, line, column)
                 }
@@ -760,7 +800,7 @@ pub(super) fn decl_name(raw: &RawDecl) -> Option<(String, usize, usize)> {
     match raw {
         RawDecl::Named(name, line, column) => Some((name.clone(), *line, *column)),
         RawDecl::Abstract(_, _) => None,
-        RawDecl::Pointer(_, inner) | RawDecl::Array(inner, _) | RawDecl::Func(inner, _) => {
+        RawDecl::Pointer(_, inner) | RawDecl::Array(inner, _, _) | RawDecl::Func(inner, _) => {
             decl_name(inner)
         }
     }
@@ -769,7 +809,7 @@ pub(super) fn decl_name(raw: &RawDecl) -> Option<(String, usize, usize)> {
 pub(super) fn decl_pos(raw: &RawDecl) -> (usize, usize) {
     match raw {
         RawDecl::Named(_, line, column) | RawDecl::Abstract(line, column) => (*line, *column),
-        RawDecl::Pointer(_, inner) | RawDecl::Array(inner, _) | RawDecl::Func(inner, _) => {
+        RawDecl::Pointer(_, inner) | RawDecl::Array(inner, _, _) | RawDecl::Func(inner, _) => {
             decl_pos(inner)
         }
     }
@@ -788,5 +828,21 @@ fn type_has_identifier_list(ty: &CType) -> bool {
             type_has_identifier_list(inner)
         }
         CType::Void | CType::Int(_) | CType::Float(_) | CType::Struct(_) => false,
+    }
+}
+
+/// The qualifiers written in the brackets of a parameter's outermost array
+/// derivation, the one next to the name.
+fn outermost_array_quals(raw: &RawDecl) -> Option<ArrayParamQuals> {
+    match raw {
+        RawDecl::Named(..) | RawDecl::Abstract(..) => None,
+        RawDecl::Array(inner, _, quals)
+            if matches!(**inner, RawDecl::Named(..) | RawDecl::Abstract(..)) =>
+        {
+            *quals
+        }
+        RawDecl::Pointer(_, inner) | RawDecl::Array(inner, _, _) | RawDecl::Func(inner, _) => {
+            outermost_array_quals(inner)
+        }
     }
 }

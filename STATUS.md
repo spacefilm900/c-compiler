@@ -1260,10 +1260,22 @@ After pull request 1 was opened, the App reviewed the import:
 - Check run `CodeRabbit` on `3b9d33e`, app `coderabbitai`, conclusion **success**, completed 2026-11-09 00:13:11Z. GitHub URL: https://github.com/spacefilm900/c-compiler/runs/128907038494. Details URL: https://app.coderabbit.ai/change-stack/spacefilm900/c-compiler/pull/1.
 - `coderabbitai[bot]` posted a review with 3 inline comments (profile `CHILL` from `.coderabbit.yaml`). Those three comments were fixed in `b930f0e`.
 
+## Hardening (step 14), zlib
+
+zlib 1.3.1 (pinned, SHA-256 checked by `scripts/fetch_zlib.sh`) builds with hcc alone at `-O0` and `-O2`. `harness/run_zlib.py` runs zlib's `example` and `minigzip` tests on both the hcc and Clang builds and a 60-case compression round trip (10 inputs, 6 levels and strategies). Both builds write identical gzip streams, and each inflates the other's output. It found one hcc bug: `__STRICT_ANSI__` was defined under `-std=gnu11`, which hid glibc's POSIX declarations (`fileno`). A Linux-only `zlib` CI job runs the comparison. Report: `reports/hardening/zlib.md`.
+
 ## Hardening (step 14), first campaign
 
 `fuzz/` holds cargo-fuzz targets for the lexer, the preprocessor, the parser, the whole front end (optionally with `llvm-as` on every accepted module) and a preprocessing round trip; they need a nightly toolchain and stay out of the stable build and pull-request CI (`docs/FUZZING.md`, manual workflow `fuzz.yml`). Random-program runners: Csmith (existing), YARPGen (`tools/yarpgen_campaign.py`), and two new generators for constant folding and record layout. The first campaign on `90e83d9` (13.2 fuzzing hours, 11 million inputs; 3,210 Csmith, 2,000 YARPGen, 20,000 constant-folding and 10,000 layout programs) found no compiler bugs; see `reports/hardening/README.md`. Still to do in step 14: coverage over the whole test set, mutation testing, and QuickJS then zlib.
 
+## Hardening (step 14), QuickJS
+
+QuickJS 2026-06-04 (pinned tarball, SHA-256 checked by `scripts/fetch_quickjs.sh`) builds with hcc alone at `-O0` and `-O2`. `harness/run_quickjs.py` compares it with a Clang build: `qjsc -c` output 15/15 identical, the Makefile's 11 tests matching byte for byte, and test262 (83,558 runs at the pinned revision) failing exactly the same tests as the Clang build (58 at `-O2`, upstream's known list). Getting there found one wrong-code bug (a nonnegative enumeration's compatible type was `int`, not `unsigned int` as GCC and Clang use outside MSVC; an enum bit-field read back negative) and nine rejected constructs, now accepted: GNU struct self-casts, forward-named enums, nested flexible-array structs, zero-size records, range designators, operand-less `asm` statements, C11 `[static N]`/qualified parameter arrays, `offsetof` redefinition in `<stddef.h>`, and an aligned untagged typedef. 34 GCC torture tests now pass. A Linux-only `quickjs` CI job runs the comparison with test262 at `-O2`. Report: `reports/hardening/quickjs.md`.
+
 ## Clean-room reminder
 
 Frontend code was written from the C standard, the LLVM Language Reference, and the System V ABI. Clang and GCC source were not consulted. Clang is only the differential oracle and the linker/backend for emitted IR.
+
+## Hardening (step 14), coverage
+
+Line, function and branch coverage over the unit tests and every in-repo suite (`tools/quality/branch_coverage.sh`, nightly rustc for measurement only): 92.7% of lines, 96.3% of functions, 83.4% of branches (was 90.8 / 95.7 / 80.3 on `f51cc91`). Targeted tests for the worst gaps found and fixed six problems: `long double` division by a subnormal folded to zero, NaN operands and payloads not propagated in `long double` folding, `0.0/0.0` folding to the host's negative NaN, address constants built from integer pointers (the old `offsetof` idiom) rejected, and enumerator/bit-field errors worded as array-size errors. A `coverage` job joins the weekly workflow. Report: `reports/hardening/coverage.md`. Still to do in step 14: mutation testing, QuickJS then zlib.

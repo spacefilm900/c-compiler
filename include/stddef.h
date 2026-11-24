@@ -56,6 +56,9 @@ typedef struct {
 
 #if defined(__CC_STDDEF_H)
 /* C11 7.19p3: an integer constant expression of type size_t. */
+/* A program may have defined its own offsetof first (an old idiom); the
+   header's definition replaces it rather than clashing with it. */
+#undef offsetof
 #define offsetof(type, member) __builtin_offsetof(type, member)
 #endif
 

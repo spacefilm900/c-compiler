@@ -149,6 +149,7 @@ impl Sema<'_> {
                 Ok(())
             }
             Stmt::GotoPtr { expr, line, column } => self.check_goto_ptr(expr, *line, *column),
+            Stmt::Asm { .. } => Ok(()),
         }
     }
 
@@ -463,7 +464,8 @@ impl Sema<'_> {
             | Stmt::Break { .. }
             | Stmt::Continue { .. }
             | Stmt::Goto { .. }
-            | Stmt::GotoPtr { .. } => Ok(()),
+            | Stmt::GotoPtr { .. }
+            | Stmt::Asm { .. } => Ok(()),
         }
     }
 

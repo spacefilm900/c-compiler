@@ -288,6 +288,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         return Err(USAGE.to_string());
     }
     pp.target = target;
+    pp.gnu = dialect.gnu();
     pp.system_dirs = crate::pp::system_dirs_for(target, sysroot.as_deref());
     Ok(Options {
         input,

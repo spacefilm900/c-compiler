@@ -498,7 +498,7 @@ impl Parser<'_> {
                 ));
             }
             check_uneval(&expr, self.env())
-                .map_err(|err| self.error_at(expr.line(), expr.column(), bound_message(err)))?;
+                .map_err(|err| self.error_at(expr.line(), expr.column(), ice_message(err)))?;
             type_only(&expr, self.env()).map_err(|_| {
                 self.error_at(
                     expr.line(),

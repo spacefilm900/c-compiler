@@ -104,6 +104,16 @@ impl Gen {
                 let _ = self.gen_expr(left);
                 self.record_ptr(right)
             }
+            // GNU cast of a struct or union to its own type: the value, as a
+            // copy, so it is not an alias of the operand's object.
+            Expr::Cast { ty_name, expr, .. } => {
+                let ty = ty_name.unqualified();
+                let src_volatile = expr.ty().is_some_and(|t| t.is_volatile());
+                let src = self.record_value_ptr(expr);
+                let tmp = self.entry_alloca(&ty);
+                self.copy_struct(&ty, &src, &tmp, src_volatile);
+                tmp
+            }
             Expr::StmtExpr { body, ty, .. } => {
                 let ty = ty.clone().expect("typed statement expression");
                 let depth = self.vla_depth();

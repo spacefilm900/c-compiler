@@ -110,6 +110,28 @@ impl Gen {
                 self.restore_vla_to(depth);
                 self.br(&c_label(name));
             }
+            Stmt::Asm {
+                template, clobbers, ..
+            } => {
+                // An asm without outputs is volatile (GCC manual, "Volatile"),
+                // so it is a `sideeffect` call. x86 asm also clobbers the
+                // direction flag, the x87 status word and EFLAGS, as Clang's
+                // IR for the same statement shows.
+                self.ensure_block();
+                let mut constraints: Vec<String> = clobbers
+                    .iter()
+                    .map(|reg| format!("~{{{}}}", reg.trim_start_matches('%')))
+                    .collect();
+                if !crate::target::current().is_aarch64() {
+                    constraints.extend(["~{dirflag}", "~{fpsr}", "~{flags}"].map(String::from));
+                }
+                let line = format!(
+                    "  call void asm sideeffect {}, {}()",
+                    super::llvm_bytes(template),
+                    super::llvm_string(&constraints.join(","))
+                );
+                self.emit(&line);
+            }
             Stmt::GotoPtr { expr, .. } => {
                 // An indirect branch may reach any label whose address the
                 // function takes (LLVM LangRef, `indirectbr`).
@@ -574,7 +596,8 @@ impl Gen {
             | Stmt::Break { .. }
             | Stmt::Continue { .. }
             | Stmt::Goto { .. }
-            | Stmt::GotoPtr { .. } => {}
+            | Stmt::GotoPtr { .. }
+            | Stmt::Asm { .. } => {}
         }
         Ok(())
     }

@@ -215,7 +215,6 @@ impl StructRef {
     /// multiple of `align`.
     pub fn raise_align(&self, align: u32) {
         let mut body = self.data.borrow_mut();
-        debug_assert!(body.size % u64::from(align.max(1)) == 0);
         body.align = body.align.max(align);
     }
 

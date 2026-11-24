@@ -72,6 +72,12 @@ pub struct PpOptions {
     /// `__GNUC_GNU_INLINE__` instead of `__GNUC_STDC_INLINE__`, and
     /// [`crate::compile_dialect`] tells the parser.
     pub gnu89_inline: bool,
+    /// `-std=gnu11`. `__STRICT_ANSI__` is defined only for strict ISO C
+    /// (GCC manual, "Common Predefined Macros": defined "if -ansi or a
+    /// -std option specifying strict conformance is given"); C libraries
+    /// use it to hide their POSIX and BSD declarations, such as glibc's
+    /// `fileno`. [`crate::compile_dialect`] sets it from the dialect.
+    pub gnu: bool,
 }
 
 impl Default for PpOptions {
@@ -83,6 +89,7 @@ impl Default for PpOptions {
             max_include_depth: DEFAULT_INCLUDE_DEPTH,
             target: Target::build_default(),
             gnu89_inline: false,
+            gnu: false,
         }
     }
 }
@@ -465,6 +472,9 @@ impl Processor {
             in_if: false,
         };
         processor.install_builtins()?;
+        if options.gnu {
+            processor.apply_cli(&CliMacro::Undef("__STRICT_ANSI__".to_string()))?;
+        }
         if options.gnu89_inline {
             processor.apply_cli(&CliMacro::Undef("__GNUC_STDC_INLINE__".to_string()))?;
             processor.apply_cli(&CliMacro::Define {

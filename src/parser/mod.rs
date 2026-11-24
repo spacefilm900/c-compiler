@@ -58,6 +58,7 @@ pub fn parse_with(
         index: 0,
         filename,
         tags: Vec::new(),
+        param_array_quals_ok: false,
         names: Vec::new(),
         structs: Vec::new(),
         llvm_names: HashSet::new(),
@@ -90,6 +91,9 @@ struct Parser<'a> {
     /// Tag namespace, innermost scope last. Ordinary identifiers are not here.
     /// Structs, unions, and enums share it (C11 6.2.3).
     tags: Vec<HashMap<String, TagEntry>>,
+    /// Set while a parameter's declarator is derived, when its outermost
+    /// array derivation may carry qualifiers or `static`.
+    param_array_quals_ok: bool,
     /// Ordinary identifiers that change how the next token is parsed: a
     /// typedef name starts a declaration, an enumeration constant is an
     /// integer constant. Innermost scope last.
@@ -179,6 +183,13 @@ enum TagEntry {
     /// An enumeration without a fixed underlying type whose list is being
     /// read: incomplete until its `}` (C11 6.7.2.2p4).
     EnumOpen,
+    /// GNU mode: `enum E` named before any definition of `E` (C11
+    /// 6.7.2.3p3 forbids it; GCC and Clang accept it with -std=gnu11, and
+    /// QuickJS has `typedef enum OPCodeEnum OPCodeEnum;` ahead of the list).
+    /// Until the list is read the type is taken to be the one a nonnegative
+    /// enumeration gets ([`record::nonnegative_enum_type`]), and the
+    /// definition must then give that type, so the early uses stay right.
+    EnumForward,
 }
 
 /// A name the parser has to know before semantic analysis.
@@ -669,8 +680,20 @@ enum RawDecl {
     Named(String, usize, usize),
     Abstract(usize, usize),
     Pointer(Quals, Box<RawDecl>),
-    Array(Box<RawDecl>, ArrayBound),
+    Array(Box<RawDecl>, ArrayBound, Option<ArrayParamQuals>),
     Func(Box<RawDecl>, ParsedParams),
+}
+
+/// Type qualifiers and `static` inside the brackets of an array declarator
+/// (C11 6.7.6.2p1, 6.7.6.3p7), allowed only on the outermost array type of
+/// a parameter. The qualifiers go to the pointer the parameter is adjusted
+/// to. `static` promises at least that many elements; it does not change
+/// the type, so it is checked and then kept only as a fact.
+#[derive(Clone, Copy)]
+struct ArrayParamQuals {
+    quals: Quals,
+    line: usize,
+    column: usize,
 }
 
 /// The size in an array declarator: omitted (`[]`), a star (`[*]`), or

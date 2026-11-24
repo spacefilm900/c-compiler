@@ -575,14 +575,8 @@ pub(super) fn eval_ptr(expr: &Expr) -> Result<PtrConst, ConstError> {
             op: UnaryOp::Addr,
             expr,
             ..
-        } => {
-            let (name, offset) = designator(expr)?;
-            Ok(PtrConst::Addr { name, offset })
-        }
-        Expr::Decay { expr, .. } => {
-            let (name, offset) = designator(expr)?;
-            Ok(PtrConst::Addr { name, offset })
-        }
+        } => designator(expr),
+        Expr::Decay { expr, .. } => designator(expr),
         Expr::Bin {
             op: BinOp::Add,
             left,
@@ -646,6 +640,14 @@ pub(super) fn add_ptr_const(
     let delta = index
         .checked_mul(size)
         .ok_or(ConstError::Overflow(TypeName::int64(true)))?;
+    offset_ptr(base, delta)
+}
+
+/// `base` moved by `delta` bytes. A pointer made from an integer stays an
+/// integer address, so `&((struct S *)0)->m` and `&((T *)0x40)[3]` are
+/// address constants too (C11 6.6p9 allows `[]`, `->`, `&` and `*` on an
+/// integer constant cast to a pointer type).
+fn offset_ptr(base: PtrConst, delta: i64) -> Result<PtrConst, ConstError> {
     match base {
         PtrConst::Addr { name, offset } => Ok(PtrConst::Addr {
             name,
@@ -726,18 +728,25 @@ pub(super) fn const_index(expr: &Expr) -> Result<i64, ConstError> {
     }
 }
 
-pub(super) fn designator(expr: &Expr) -> Result<(String, i64), ConstError> {
+/// The address of the lvalue `expr`, for `&expr` or an array that decays:
+/// a named object plus a byte offset, or an integer address when the
+/// lvalue is reached through a pointer made from an integer.
+pub(super) fn designator(expr: &Expr) -> Result<PtrConst, ConstError> {
+    let overflow = || ConstError::Overflow(TypeName::int64(true));
     match expr {
         Expr::Var { resolved, .. } => {
             let slot = &resolved.as_ref().ok_or(ConstError::NotConst)?.slot;
             let Some(name) = slot.strip_prefix('@') else {
                 return Err(ConstError::NotConst);
             };
-            Ok((name.to_string(), 0))
+            Ok(PtrConst::Addr {
+                name: name.to_string(),
+                offset: 0,
+            })
         }
         Expr::Str { symbol, .. } => {
             let name = symbol.clone().ok_or(ConstError::NotConst)?;
-            Ok((name, 0))
+            Ok(PtrConst::Addr { name, offset: 0 })
         }
         Expr::Index {
             base, index, ty, ..
@@ -754,49 +763,29 @@ pub(super) fn designator(expr: &Expr) -> Result<(String, i64), ConstError> {
                 (base, index)
             };
             let step = const_index(index)?;
-            let (name, offset) = pointer_object(base)?;
-            Ok((
-                name,
-                offset
-                    .checked_add(
-                        step.checked_mul(elem)
-                            .ok_or(ConstError::Overflow(TypeName::int64(true)))?,
-                    )
-                    .ok_or(ConstError::Overflow(TypeName::int64(true)))?,
-            ))
+            let delta = step.checked_mul(elem).ok_or_else(overflow)?;
+            offset_ptr(eval_ptr(base)?, delta)
         }
         Expr::Unary {
             op: UnaryOp::Deref,
             expr,
             ..
-        } => pointer_object(expr),
+        } => eval_ptr(expr),
         Expr::Member {
             base,
             offset,
             arrow,
             ..
         } => {
-            let member_off = i64::try_from(offset.ok_or(ConstError::NotConst)?)
-                .map_err(|_| ConstError::Overflow(TypeName::int64(true)))?;
-            let (name, base_off) = if *arrow {
-                pointer_object(base)?
+            let member_off =
+                i64::try_from(offset.ok_or(ConstError::NotConst)?).map_err(|_| overflow())?;
+            let base = if *arrow {
+                eval_ptr(base)?
             } else {
                 designator(base)?
             };
-            Ok((
-                name,
-                base_off
-                    .checked_add(member_off)
-                    .ok_or(ConstError::Overflow(TypeName::int64(true)))?,
-            ))
+            offset_ptr(base, member_off)
         }
-        _ => Err(ConstError::NotConst),
-    }
-}
-
-pub(super) fn pointer_object(expr: &Expr) -> Result<(String, i64), ConstError> {
-    match eval_ptr(expr)? {
-        PtrConst::Addr { name, offset } => Ok((name, offset)),
         _ => Err(ConstError::NotConst),
     }
 }

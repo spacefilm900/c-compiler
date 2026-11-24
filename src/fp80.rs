@@ -76,15 +76,33 @@ pub fn negate(bits: u128) -> u128 {
     bits ^ (1u128 << 79)
 }
 
+/// The result of an operation with a NaN operand: the first NaN operand,
+/// quieted, keeping its sign and payload (IEEE 754 recommends preserving
+/// an input NaN's payload; LLVM's constant folder keeps the first one).
+/// `None` when neither operand is a NaN.
+fn propagate_nan(left: u128, right: u128) -> Option<u128> {
+    [left, right]
+        .into_iter()
+        .find(|&v| is_nan(v))
+        .map(|v| v | (1u128 << 62))
+}
+
 pub fn add(left: u128, right: u128) -> u128 {
     arith(left, right, false)
 }
 
 pub fn sub(left: u128, right: u128) -> u128 {
+    // Before negating: a NaN operand keeps its own sign.
+    if let Some(nan) = propagate_nan(left, right) {
+        return nan;
+    }
     arith(left, negate(right), false)
 }
 
 pub fn mul(left: u128, right: u128) -> u128 {
+    if let Some(nan) = propagate_nan(left, right) {
+        return nan;
+    }
     match classify(left, right) {
         Class::Nan => QNAN,
         Class::InfZero => QNAN,
@@ -103,8 +121,8 @@ pub fn mul(left: u128, right: u128) -> u128 {
 }
 
 pub fn div(left: u128, right: u128) -> u128 {
-    if is_nan(left) || is_nan(right) {
-        return QNAN;
+    if let Some(nan) = propagate_nan(left, right) {
+        return nan;
     }
     let sign = sign_of(left) ^ sign_of(right);
     if is_inf(left) {
@@ -125,7 +143,14 @@ pub fn div(left: u128, right: u128) -> u128 {
         };
     }
     let left = decode(left);
-    let right = decode(right);
+    let mut right = decode(right);
+    // A subnormal divisor's significand has leading zeros; normalize it so
+    // the first quotient chunk stays below 2^65 and fits the shifts below.
+    let lead = right.sig.leading_zeros();
+    if right.sig != 0 && lead > 0 {
+        right.sig <<= lead;
+        right.scale -= lead as i32;
+    }
     if right.sig == 0 {
         return if left.sig == 0 {
             QNAN
@@ -322,7 +347,10 @@ pub fn from_ieee(bits: u64, is_f32: bool) -> u128 {
         if frac == 0 {
             return signed_inf(sign);
         }
-        return if sign { negate(QNAN) } else { QNAN };
+        // Keep the sign and payload (left-aligned below the quiet bit),
+        // and quiet a signaling NaN.
+        let nan = QNAN | (u128::from(frac) << (63 - frac_bits));
+        return if sign { negate(nan) } else { nan };
     }
     let sig = (1u64 << 63) | (frac << (63 - frac_bits));
     let unbiased = exp - bias;
@@ -335,13 +363,13 @@ pub fn to_ieee(bits: u128, is_f32: bool) -> u64 {
     let bias = emax;
     let sign = sign_of(bits);
     if is_nan(bits) {
-        return if is_f32 {
-            u64::from(f32::NAN.to_bits()) | if sign { 0x8000_0000 } else { 0 }
-        } else if sign {
-            f64::from_bits(f64::NAN.to_bits() | (1u64 << 63)).to_bits()
-        } else {
-            f64::NAN.to_bits()
-        };
+        // Quiet, keeping the sign and the top of the payload (the bits
+        // below the quiet bit, left-aligned).
+        let (exp_bits, frac_bits): (u32, u32) = if is_f32 { (8, 23) } else { (11, 52) };
+        let payload = (sig_field(bits) & ((1u64 << 62) - 1)) >> (63 - frac_bits);
+        let exp_all = ((1u64 << exp_bits) - 1) << frac_bits;
+        let sign_bit = u64::from(sign) << (exp_bits + frac_bits);
+        return sign_bit | exp_all | (1u64 << (frac_bits - 1)) | payload;
     }
     if is_inf(bits) {
         return if is_f32 {
@@ -460,8 +488,8 @@ fn put_ieee(sign: bool, exp: u32, frac: u64, is_f32: bool) -> u64 {
 }
 
 fn arith(left: u128, right: u128, _sub: bool) -> u128 {
-    if is_nan(left) || is_nan(right) {
-        return QNAN;
+    if let Some(nan) = propagate_nan(left, right) {
+        return nan;
     }
     if is_inf(left) && is_inf(right) {
         return if sign_of(left) == sign_of(right) {
@@ -971,5 +999,56 @@ mod tests {
             0x4002_9800_0000_0000_0000
         );
         assert_eq!(negate(0), 0x8000_0000_0000_0000_0000);
+    }
+
+    #[test]
+    fn division_by_a_subnormal_keeps_every_quotient_bit() {
+        // A subnormal divisor has leading zero bits in its significand; the
+        // quotient must still be exact before rounding (found by the
+        // coverage tests: 10.0L / 0x1p-16445L folded to +0, not +inf).
+        let min_sub = 1u128;
+        assert_eq!(div(dec("10"), min_sub), plus_inf());
+        assert_eq!(div(negate(dec("10")), min_sub), negate(plus_inf()));
+        // 2^-16400 / 2^-16445 = 2^45, exactly.
+        assert_eq!(
+            div(parse_hex("1", "", -16400), min_sub),
+            parse_hex("1", "", 45)
+        );
+        // Divisor of 3 units in the last place: 1 overflows; 2^-16420 gives
+        // 2^25 / 3, which needs every one of the 64 significand bits.
+        assert_eq!(div(dec("1"), 3), plus_inf());
+        assert_eq!(
+            div(parse_hex("1", "", -16420), 3),
+            0x4016_AAAA_AAAA_AAAA_AAAB
+        );
+    }
+
+    #[test]
+    fn nans_keep_sign_and_payload_through_arithmetic_and_conversion() {
+        let one = dec("1.0");
+        let nan5 = negate(nan_bits(5, false));
+        assert_eq!(mul(nan5, dec("2")), nan5);
+        assert_eq!(div(dec("2"), nan5), nan5);
+        assert_eq!(add(nan_bits(3, true), one), nan_bits(3, false));
+        assert_eq!(
+            sub(nan_bits(1, false), negate(nan_bits(2, false))),
+            nan_bits(1, false)
+        );
+        assert_eq!(sub(one, nan5), nan5);
+        assert_eq!(sub(plus_inf(), plus_inf()), QNAN);
+        assert_eq!(mul(plus_inf(), 0), QNAN);
+        // double sNaN with payload 9 widens to a quiet NaN, payload << 11.
+        assert_eq!(
+            from_ieee(0xFFF0_0000_0000_0009, false),
+            negate(QNAN | (9 << 11))
+        );
+        assert_eq!(from_ieee(0x7FC1_2345, true), QNAN | (0x12345 << 40));
+        // Narrowing keeps the top of the payload.
+        assert_eq!(
+            to_ieee(negate(nan_bits(0x0123_4567_89AB_CDEF, false)), false),
+            0xFFF8_2468_ACF1_3579
+        );
+        assert_eq!(to_ieee(nan_bits(1 << 61, true), true), 0x7FE0_0000);
+        assert_eq!(to_ieee(nan_bits(0, false), false), 0x7FF8_0000_0000_0000);
     }
 }
