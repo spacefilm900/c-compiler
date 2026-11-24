@@ -2151,3 +2151,151 @@ struct Pair f(void) {
     let section = def.find(" section ").expect(def);
     assert!(ret < feat && feat < section, "{def}");
 }
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn float_compares_mixed_conditions_and_packed_members_match_clang() {
+    // Mutation testing (reports/hardening/mutation.md) found no unit test
+    // that used a floating `<=` or `>=`, a mixed int/double condition, a
+    // member of a struct rvalue or a member at an unaligned offset; the
+    // harness was the only guard. Clang runs the same source as the oracle.
+    let source = r#"int printf(const char *, ...);
+struct __attribute__((packed)) P { char c; int i; double d; };
+struct Q { int a[3]; int b; };
+struct __attribute__((packed, aligned(4))) R { char c; int i; };
+struct __attribute__((packed)) O { char c; struct Q q; };
+struct R r = {1, 7};
+struct O o = {1, {{1, 2, 3}, 9}};
+struct __attribute__((packed)) Q2 { int a; int b; };
+struct Q2 q2 = {3, 4};
+struct Q gq = {{1, 2, 3}, 5};
+struct P ps[2] = {{1, 0x11223344, 2.5}, {2, 0x55667788, -1.25}};
+static struct Q make(int k) { struct Q q = {{k, k + 1, k + 2}, k * 10}; return q; }
+static int cmps(double a, double b) {
+    return (a == b) | (a != b) << 1 | (a < b) << 2 | (a > b) << 3 | (a <= b) << 4 | (a >= b) << 5;
+}
+static int fcmps(float a, float b) {
+    return (a == b) | (a != b) << 1 | (a < b) << 2 | (a > b) << 3 | (a <= b) << 4 | (a >= b) << 5;
+}
+static int conds(int i, double d) {
+    int r = 0;
+    if (i < d) r |= 1;
+    if (d <= i) r |= 2;
+    if (i >= d && d > 0) r |= 4;
+    while (d > i) { r += 8; d -= 1.0; }
+    return r;
+}
+int main(void) {
+    double nan = 0.0 / 0.0;
+    double vals[] = {1.0, 2.0, -0.0, 0.0, nan};
+    for (int i = 0; i < 5; i++)
+        for (int j = 0; j < 5; j++)
+            printf("%d %d ", cmps(vals[i], vals[j]), fcmps((float)vals[i], (float)vals[j]));
+    printf("\n%d %d %d %d\n", conds(1, 1.5), conds(2, 1.5), conds(2, 2.0), conds(-1, 3.0));
+    struct P *p = &ps[1];
+    int *ip = &p->i;
+    printf("%x %g %x %d\n", ps[0].i, p->d, *ip & 0xff, (int)sizeof ps);
+    printf("%d %d %d\n", make(3).b, make(4).a[2], (make(5)).a[0] + make(6).a[1]);
+    printf("%d %d %d\n", r.i, o.q.b, (int)sizeof o);
+    printf("%d %d\n", q2.b, gq.b);
+    int arr[4] = {4, 5, 6, 7};
+    int (*pa)[4] = &arr;
+    printf("%d %d %d\n", *&*arr, (*pa)[3], *(&arr[1] + 1));
+    return 0;
+}
+"#;
+    let ir = crate::compile_to_ir(source, "mixed.c").unwrap();
+    assert!(ir.contains("fcmp ole") && ir.contains("fcmp oge"), "{ir}");
+    // ps[0].i, r.i (packed and aligned(4): offset 1), o.q.b (a member
+    // inside a packed struct) and q2.b (offset 4 in a packed struct, so
+    // only 1-aligned) are the unaligned int loads; p->d the double. gq.b,
+    // at offset 12 of an ordinary struct, keeps its alignment.
+    let unaligned = |ty: &str| {
+        ir.lines()
+            .filter(|line| {
+                let line = line.trim();
+                line.contains(&format!("= load {ty}, ptr %t")) && line.ends_with(", align 1")
+            })
+            .count()
+    };
+    assert_eq!(unaligned("i32"), 4, "{ir}");
+    assert_eq!(unaligned("double"), 1, "{ir}");
+    assert_eq!(run_binary(&ir), run_reference(source));
+}
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn static_union_and_bit_field_images_match_clang() {
+    // Mutation testing (reports/hardening/mutation.md): the byte images of
+    // static unions and bit-field records (sema/image.rs) had no unit test.
+    // These cover overlapping designators, addresses inside unions and
+    // nested records, an address replaced by a later member, an address as
+    // an integer, and bit-fields that straddle bytes. Clang is the oracle.
+    let source = r#"int printf(const char *, ...);
+int g, h;
+struct B { unsigned a : 3, b : 7, c : 13, d : 9; unsigned char e : 5, f : 3; };
+struct B b1 = {5, 100, 4000, 300, 17, 6};
+struct B b2[2] = {{1, 2, 3, 4, 5, 6}, {.c = 8191, .f = 7}};
+union U { unsigned char raw[16]; unsigned long long q[2]; int *p; long l; };
+union U u1 = {.q = {0x0102030405060708ull, 0x1112131415161718ull}};
+union U u2 = {.raw = {1, 2, 3}, .raw[2] = 9, .raw[10] = 7};
+union U u3 = {.p = &g};
+union U u4 = {.p = &g, .raw[12] = 5};
+union U u5 = {.l = (long)&h};
+struct S { char c; int *p; short s; };
+union V { struct S s; unsigned char raw[24]; };
+union V v1 = {.s = {1, &h, 0x7777}};
+union V v2 = {.s = {1, &h, 0x7777}, .raw[20] = 3};
+struct W { union U u; struct B b; char tail[3]; };
+struct W w1 = {.u.q[1] = 0xaabbccddeeff0011ull, .b = {7, 1, 2, 3, 31, 1}, .tail = "xy"};
+struct W w2 = {.u = {.p = &h}, .b.d = 511, .tail[2] = 'z'};
+union X { struct B b; unsigned int w[3]; };
+union U u6 = {.q = {0x1111111111111111ull, 2}, .q[0] = (unsigned long long)&g};
+union U u7 = {.raw = {1, 2, 3, 4, 5, 6, 7, 8, 9}, .raw[3] = 0};
+struct BP { int a : 3; int *p; int b : 5; long long c : 40; };
+struct BP bp[2] = {{1, &g, 2, 3}, {-1, &h, -2, -3}};
+union BU { struct BP s; unsigned char raw[32]; };
+union BU bu = {.s = {3, &h, 7, 0x7fffffffffll}};
+struct BW { union U u; int k : 4; } bw = {.u.p = &g, .k = 5};
+struct BQ { int k : 4; struct BP s; union BU t; } bq = {5, {3, &h, 7, 1}, {.s = {1, &g, 2, 3}}};
+union X x1 = {.b = {7, 127, 8191, 511, 31, 7}};
+union X x2 = {.w = {0xffffffffu, 1, 2}, .w[1] = 0x80000000u};
+static void dump(const char *name, const void *p, unsigned long n) {
+    const unsigned char *c = p;
+    printf("%s:", name);
+    for (unsigned long i = 0; i < n; i++) printf(" %02x", c[i]);
+    printf("\n");
+}
+int main(void) {
+    dump("b1", &b1, sizeof b1);
+    dump("b2", b2, sizeof b2);
+    dump("u1", &u1, sizeof u1);
+    dump("u2", &u2, sizeof u2);
+    printf("u3 %d %d\n", u3.p == &g, u4.p == 0);
+    dump("u4", u4.raw + 8, 8);
+    printf("u5 %d\n", u5.l == (long)&h);
+    printf("v1 %d %d %x\n", v1.s.c, v1.s.p == &h, v1.s.s);
+    printf("v2 %d %d %x %d\n", v2.s.c, v2.s.p == &h, v2.s.s, v2.raw[20]);
+    dump("w1", &w1, sizeof w1);
+    printf("w2 %d\n", w2.u.p == &h);
+    dump("w2b", &w2.b, sizeof w2.b + 3);
+    printf("u6 %d %d\n", u6.q[0] == (unsigned long long)&g, (int)u6.q[1]);
+    dump("u7", &u7, sizeof u7);
+    printf("bp %d %d %d %lld %d %d %d %lld\n", bp[0].a, bp[0].p == &g, bp[0].b, bp[0].c, bp[1].a, bp[1].p == &h, bp[1].b, bp[1].c);
+    printf("bu %d %d %d %lld\n", bu.s.a, bu.s.p == &h, bu.s.b, bu.s.c);
+    printf("bw %d %d\n", bw.u.p == &g, bw.k);
+    printf("bq %d %d %d %d %lld %d %d\n", bq.k, bq.s.a, bq.s.p == &h, bq.s.b, bq.s.c, bq.t.s.p == &g, bq.t.s.b);
+    dump("x1", &x1, sizeof x1);
+    dump("x2", &x2, sizeof x2);
+    return 0;
+}
+"#;
+    let ir = crate::compile_to_ir(source, "images.c").unwrap();
+    assert_eq!(run_binary(&ir), run_reference(source));
+}

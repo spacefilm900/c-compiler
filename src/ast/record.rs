@@ -370,12 +370,6 @@ pub fn layout_record(fields: &[(u64, u32)]) -> Option<(Vec<u64>, u64, u32)> {
     layout_fields(fields, false)
 }
 
-/// Union layout. Every member starts at offset 0. The size is the largest
-/// member, rounded up to the strictest alignment.
-pub fn layout_union(fields: &[(u64, u32)]) -> Option<(Vec<u64>, u64, u32)> {
-    layout_fields(fields, true)
-}
-
 /// One member passed to [`layout_members`].
 ///
 /// A bit-field sets `bit_width`. `size` and `align` are then the declared
@@ -645,7 +639,11 @@ pub(super) fn layout_union_members(
                     bit_offset: 0,
                     bit_width: Some(width),
                 });
-                size = size.max(member.size.max(1));
+                // A bit-field takes the bytes its width needs, not its
+                // declared type's size (Clang and GCC as black boxes:
+                // `union { char a; int : 3; }` is 1 byte); the union's
+                // alignment rounds the size up.
+                size = size.max(u64::from(width).div_ceil(8));
                 if member.named {
                     align = align.max(field_align);
                 }

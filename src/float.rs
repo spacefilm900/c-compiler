@@ -867,6 +867,269 @@ mod tests {
         parse_hex(int_digits, frac, exp, kind).unwrap()
     }
 
+    // Mutation testing (reports/hardening/mutation.md) showed that the unit
+    // tests left float and double folding, comparisons, hex rounding and
+    // the integer-conversion limits to the harness. These pin them here.
+
+    #[test]
+    fn float_and_double_arithmetic_folds_each_operator() {
+        let ops = [FloatOp::Add, FloatOp::Sub, FloatOp::Mul, FloatOp::Div];
+        for (a, b) in [(6.0f64, 1.5f64), (-0.1, 3.0), (1e300, 1e-10), (7.0, -2.0)] {
+            let want = [a + b, a - b, a * b, a / b];
+            for (op, want) in ops.iter().zip(want) {
+                let got = apply_bin(
+                    *op,
+                    FloatKind::Double,
+                    u128::from(a.to_bits()),
+                    u128::from(b.to_bits()),
+                );
+                assert_eq!(got, u128::from(want.to_bits()), "{a} {b}");
+            }
+            let (a, b) = (a as f32, b as f32);
+            let want = [a + b, a - b, a * b, a / b];
+            for (op, want) in ops.iter().zip(want) {
+                let got = apply_bin(
+                    *op,
+                    FloatKind::Float,
+                    u128::from(a.to_bits()),
+                    u128::from(b.to_bits()),
+                );
+                assert_eq!(got, u128::from(want.to_bits()), "{a} {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn float_and_double_comparisons_follow_ieee_including_nan() {
+        use FloatCmp::*;
+        let ops = [Eq, Ne, Lt, Gt, Le, Ge];
+        let table = |a: f64, b: f64| [a == b, a != b, a < b, a > b, a <= b, a >= b];
+        for (a, b) in [
+            (1.0, 2.0),
+            (2.0, 1.0),
+            (2.0, 2.0),
+            (f64::NAN, 1.0),
+            (-0.0, 0.0),
+        ] {
+            for (op, want) in ops.iter().zip(table(a, b)) {
+                let d = apply_cmp(
+                    *op,
+                    FloatKind::Double,
+                    u128::from(a.to_bits()),
+                    u128::from(b.to_bits()),
+                );
+                assert_eq!(d, want, "double {a} {b}");
+                let (fa, fb) = (a as f32, b as f32);
+                let f = apply_cmp(
+                    *op,
+                    FloatKind::Float,
+                    u128::from(fa.to_bits()),
+                    u128::from(fb.to_bits()),
+                );
+                assert_eq!(f, want, "float {a} {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn hex_constants_round_to_nearest_even_and_handle_the_extremes() {
+        let d = |i: &str, f: &str, e: i32| hex_float_bits(i, f, e, false);
+        let s = |i: &str, f: &str, e: i32| hex_float_bits(i, f, e, true) as u32;
+        // float: 1 + 2^-24 is a tie and goes to even; 1 + 3*2^-24 rounds up.
+        assert_eq!(s("1", "000001", 0), 1.0f32.to_bits());
+        assert_eq!(s("1", "000003", 0), (1.0f32 + 2f32.powi(-22)).to_bits());
+        assert_eq!(s("1", "000002", 0), (1.0f32 + 2f32.powi(-23)).to_bits());
+        // A carry out of the significand bumps the exponent.
+        assert_eq!(d("1", "fffffffffffff8", 0), 2.0f64.to_bits());
+        assert_eq!(d("1", "fffffffffffff8", 1023), f64::INFINITY.to_bits());
+        assert_eq!(d("1", "", 1024), f64::INFINITY.to_bits());
+        assert_eq!(d("1", "fffffffffffff", 1023), f64::MAX.to_bits());
+        // More digits than 128 bits: the dropped ones decide the rounding.
+        let many = format!("1{}", "0".repeat(40));
+        assert_eq!(d(&many, "", -160), 1.0f64.to_bits());
+        assert_eq!(d("1", &format!("{}1", "0".repeat(40)), 0), 1.0f64.to_bits());
+        let tie_up = format!("1{}8{}1", "0".repeat(13), "0".repeat(28));
+        assert_eq!(d(&tie_up, "", -172), (1.0f64 + 2f64.powi(-52)).to_bits());
+        // Subnormals: the smallest, ties to even at half of it, and above.
+        assert_eq!(d("1", "", -1074), 1);
+        assert_eq!(d("1", "", -1075), 0);
+        assert_eq!(d("1", "8", -1075), 1);
+        assert_eq!(d("3", "", -1075), 2);
+        assert_eq!(d("1", "", -1023), 0x0008_0000_0000_0000);
+        assert_eq!(s("1", "", -149), 1);
+        assert_eq!(s("1", "", -127), 0x0040_0000);
+        // Half-way above the largest subnormal rounds up to the minimum normal.
+        assert_eq!(d("1", "fffffffffffff", -1023), 0x0010_0000_0000_0000);
+        assert_eq!(d("1", "ffffffffffffe", -1023), 0x000f_ffff_ffff_ffff);
+        // Subnormal with digits beyond 128 bits.
+        assert_eq!(d(&many, "", -1074 - 160), 1);
+    }
+
+    #[test]
+    fn conversions_to_integers_stop_exactly_at_the_limits() {
+        let conv =
+            |v: f64, dest: TypeName| real_to_int(u128::from(v.to_bits()), FloatKind::Double, dest);
+        for (dest, min, max) in [
+            (TypeName::SChar, -128.0, 127.0),
+            (TypeName::Short, -32768.0, 32767.0),
+            (TypeName::Int, -2147483648.0, 2147483647.0),
+            (TypeName::UChar, 0.0, 255.0),
+            (TypeName::UShort, 0.0, 65535.0),
+            (TypeName::UInt, 0.0, 4294967295.0),
+        ] {
+            let mask = dest.mask();
+            assert_eq!(
+                conv(max, dest),
+                Some(max as i64 as u128 & mask),
+                "{dest:?} max"
+            );
+            assert_eq!(
+                conv(max + 0.5, dest),
+                Some(max as i64 as u128 & mask),
+                "{dest:?} max + 0.5"
+            );
+            assert_eq!(conv(max + 1.0, dest), None, "{dest:?} max + 1");
+            assert_eq!(
+                conv(min, dest),
+                Some(min as i64 as u128 & mask),
+                "{dest:?} min"
+            );
+            assert_eq!(conv(min - 1.0, dest), None, "{dest:?} min - 1");
+        }
+        assert_eq!(conv(-0.75, TypeName::UInt), Some(0));
+    }
+
+    /// Runs `check` with `target` selected on this thread, then restores
+    /// the default.
+    fn on_target(target: crate::target::Target, check: impl FnOnce()) {
+        crate::target::set(target);
+        check();
+        crate::target::set(crate::target::Target::build_default());
+    }
+
+    #[test]
+    fn long_double_follows_the_target_format() {
+        // AArch64 Linux: IEEE binary128. x86-64 Linux: x87 80-bit with an
+        // explicit integer bit. MSVC: the same as double. Encodings from the
+        // AAPCS64, the System V psABI and the Intel SDM.
+        let ld = FloatKind::LongDouble;
+        let quad_one = 0x3FFFu128 << 112;
+        let quad_two = 0x4000u128 << 112;
+        let quad_1_5 = quad_one | (1u128 << 111);
+        on_target(crate::target::Target::Aarch64Linux, || {
+            assert_eq!(one_bits(ld), quad_one);
+            assert_eq!(min_normal_bits(ld), 1u128 << 112);
+            assert_eq!(plus_inf(ld), 0x7FFFu128 << 112);
+            assert_eq!(nan_bits(ld, 0, false), 0x7FFF8u128 << 108);
+            assert_eq!(llvm_bits(ld, quad_1_5 | 1), quad_1_5 | 1);
+            assert_eq!(negate(ld, quad_one), quad_one | (1u128 << 127));
+            assert!(real_is_zero(ld, 0) && real_is_zero(ld, 1u128 << 127));
+            assert!(!real_is_zero(ld, quad_one) && !real_is_zero(ld, 1));
+            assert_eq!(parse_hex("1", "8", 0, ld), Some(quad_1_5));
+            assert!(apply_cmp(FloatCmp::Eq, ld, quad_one, quad_one));
+            assert!(!apply_cmp(FloatCmp::Eq, ld, quad_one, quad_two));
+            assert!(apply_cmp(FloatCmp::Ne, ld, quad_one, quad_two));
+            assert!(!apply_cmp(FloatCmp::Ne, ld, quad_two, quad_two));
+            assert!(apply_cmp(FloatCmp::Lt, ld, quad_one, quad_two));
+            assert!(!apply_cmp(FloatCmp::Lt, ld, quad_two, quad_one));
+            assert_eq!(real_to_real(quad_1_5, ld, FloatKind::Float), 0x3FC0_0000);
+            assert_eq!(
+                real_to_real(quad_1_5, ld, FloatKind::Double),
+                0x3FF8_0000_0000_0000
+            );
+            assert_eq!(real_to_real(0x3FC0_0000, FloatKind::Float, ld), quad_1_5);
+            assert_eq!(
+                real_to_real(0x3FF8_0000_0000_0000, FloatKind::Double, ld),
+                quad_1_5
+            );
+            assert_eq!(real_to_real(quad_1_5, ld, ld), quad_1_5);
+        });
+        let x87_one = (0x3FFFu128 << 64) | (1u128 << 63);
+        let x87_1_5 = x87_one | (1u128 << 62);
+        on_target(crate::target::Target::X86_64Linux, || {
+            assert_eq!(one_bits(ld), x87_one);
+            assert_eq!(min_normal_bits(ld), (1u128 << 64) | (1u128 << 63));
+            assert_eq!(plus_inf(ld), (0x7FFFu128 << 64) | (1u128 << 63));
+            assert_eq!(nan_bits(ld, 0, false), (0x7FFFu128 << 64) | (3u128 << 62));
+            assert_eq!(llvm_bits(ld, x87_one | (1u128 << 100)), x87_one);
+            assert_eq!(negate(ld, x87_one), x87_one | (1u128 << 79));
+            assert!(!real_is_zero(ld, x87_one));
+            assert_eq!(parse_hex("1", "8", 0, ld), Some(x87_1_5));
+            assert_eq!(real_to_real(x87_1_5, ld, FloatKind::Float), 0x3FC0_0000);
+            assert_eq!(
+                real_to_real(x87_1_5, ld, FloatKind::Double),
+                0x3FF8_0000_0000_0000
+            );
+            assert_eq!(real_to_real(0x3FC0_0000, FloatKind::Float, ld), x87_1_5);
+        });
+        on_target(crate::target::Target::X86_64Windows { msvc: true }, || {
+            assert_eq!(one_bits(ld), 0x3FF0_0000_0000_0000);
+            assert_eq!(
+                real_to_real(0x3FF8_0000_0000_0000, FloatKind::Double, ld),
+                0x3FF8_0000_0000_0000
+            );
+        });
+        // float <-> double directly.
+        assert_eq!(
+            real_to_real(0x3FC0_0000, FloatKind::Float, FloatKind::Double),
+            0x3FF8_0000_0000_0000
+        );
+        assert_eq!(
+            real_to_real(0x3FF8_0000_0000_0000, FloatKind::Double, FloatKind::Float),
+            0x3FC0_0000
+        );
+    }
+
+    #[test]
+    fn wide_integer_conversions_and_exponent_limits() {
+        // 64- and 128-bit results are compared in the destination's width;
+        // a negative one comes back sign-extended to 128 bits, and every
+        // caller masks it.
+        let conv = |v: f64, dest: TypeName| {
+            real_to_int(u128::from(v.to_bits()), FloatKind::Double, dest)
+                .map(|bits| bits & dest.mask())
+        };
+        let two63 = 9_223_372_036_854_775_808.0f64;
+        assert_eq!(conv(two63, TypeName::LongLong), None);
+        assert_eq!(
+            conv(-two63, TypeName::LongLong),
+            Some(i64::MIN as u64 as u128)
+        );
+        assert_eq!(conv(-two63 * 2.0, TypeName::LongLong), None);
+        assert_eq!(
+            conv(1e18, TypeName::LongLong),
+            Some(1_000_000_000_000_000_000)
+        );
+        assert_eq!(
+            conv(-1e18, TypeName::LongLong),
+            Some((-1_000_000_000_000_000_000i64) as u64 as u128)
+        );
+        assert_eq!(conv(two63, TypeName::ULongLong), Some(1u128 << 63));
+        assert_eq!(conv(two63 * 2.0, TypeName::ULongLong), None);
+        assert_eq!(conv(-1.0, TypeName::ULongLong), None);
+        assert_eq!(conv(-0.5, TypeName::ULongLong), Some(0));
+        let two127 = 170141183460469231731687303715884105728.0f64;
+        assert_eq!(conv(two127, TypeName::Int128), None);
+        assert_eq!(conv(two63 * 4.0, TypeName::Int128), Some(1u128 << 65));
+        assert_eq!(conv(-two127, TypeName::Int128), Some(1u128 << 127));
+        assert_eq!(conv(two127, TypeName::UInt128), Some(1u128 << 127));
+        assert_eq!(conv(two127 * 2.0, TypeName::UInt128), None);
+        // Exponents: 100000 is kept, anything larger saturates by sign.
+        assert_eq!(parse_exponent("100000", false), Ok(100_000));
+        assert_eq!(parse_exponent("100000", true), Ok(-100_000));
+        assert_eq!(parse_exponent("100001", false), Err(false));
+        assert_eq!(parse_exponent("100001", true), Err(true));
+        assert_eq!(parse_exponent("999999999", false), Err(false));
+        assert_eq!(parse_exponent("1000000000", true), Err(true));
+        assert_eq!(parse_exponent("000000000000012", false), Ok(12));
+        // nan("0x...") takes hexadecimal digits of either case.
+        assert_eq!(parse_nan_tag("0xAbC"), Some(0xABC));
+        assert_eq!(parse_nan_tag("0Xf0"), Some(0xF0));
+        // Dropped digits that are all zero leave a tie, which goes to even.
+        let tie = format!("1{}8{}", "0".repeat(13), "0".repeat(29));
+        assert_eq!(hex_float_bits(&tie, "", -172, false), 1.0f64.to_bits());
+    }
+
     #[test]
     fn hex_constants_match_ieee_values() {
         assert_eq!(hex("", "0", 0, FloatKind::Double), 0);

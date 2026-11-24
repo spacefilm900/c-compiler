@@ -629,6 +629,14 @@ int main(void) { return f(1); }
     );
 }
 
+fn analyzed_gnu(source: &str) -> TranslationUnit {
+    let dialect = crate::Dialect::Gnu11;
+    let tokens = lex(source, "gnu.c").unwrap();
+    let mut unit = crate::parser::parse_dialect(&tokens, "gnu.c", dialect).unwrap();
+    analyze_dialect(&mut unit, "gnu.c", &tokens, dialect).unwrap();
+    unit
+}
+
 fn analyzed(source: &str) -> TranslationUnit {
     let tokens = lex(source, "ok.c").unwrap();
     let mut unit = parse(&tokens, "ok.c").unwrap();
@@ -911,6 +919,881 @@ int main(void) {
         );
     }
     assert!(sema_err("int main(void) { int (*p)[]; return p[0][0]; }").contains("incomplete type"));
+}
+
+#[test]
+fn folds_every_comparison_and_operator_like_clang() {
+    // Mutation testing (reports/hardening/mutation.md) found that no unit
+    // test told `<` from `<=`, `|` from `^`, or a real `?:` from an integer
+    // one in the folders. Every value below is what Clang prints for the
+    // same initializer; the `aN` bounds go through the parser's ICE folder
+    // and the `gN` initializers through sema's.
+    let unit = analyzed(
+        "\
+int g0 = 1.5 < 2.0;
+int g1 = 2.0 < 1.5;
+int g2 = 2.0 < 2.0;
+int g3 = 1.5 > 2.0;
+int g4 = 2.5 > 2.0;
+int g5 = 2.0 > 2.0;
+int g6 = 1.5 <= 2.0;
+int g7 = 2.0 <= 2.0;
+int g8 = 2.5 <= 2.0;
+int g9 = 1.5 >= 2.0;
+int g10 = 2.0 >= 2.0;
+int g11 = 2.5 >= 2.0;
+int g12 = 1.5 == 1.5;
+int g13 = 1.5 == 2.5;
+int g14 = 1.5 != 1.5;
+int g15 = 1.5 != 2.5;
+int g16 = 1.5f < 2.0f;
+int g17 = 2.0f >= 2.5f;
+int g18 = 1 < 1.5;
+int g19 = 2 <= 1.5f;
+int g20 = 0.0 || 2.5;
+int g21 = 0.5 || 0;
+int g22 = 0.0 || 0.0;
+int g23 = 0.0 && 1;
+int g24 = 1.5 && 0.0;
+int g25 = 1.5 && 2;
+int g26 = !0.0;
+int g27 = !0.5;
+int g28 = (int)-2.5;
+int g29 = (int)+2.5;
+int g30 = (int)(1.5 ? 2 : 3);
+int g31 = (int)(0.0 ? 2 : 3);
+int g32 = (int)(1 ? 2.5 : 3);
+int g33 = (int)(0 ? 2 : 3.5);
+int g34 = (int)(0.5 ? 7.25 : 3);
+int g35 = (int)(1 ? 2 : 3.5);
+int g36 = (int)((double)7 / 2);
+int g37 = (int)(7 / 2.0 * 2);
+int g38 = (int)(7.5 - 2);
+int g39 = (int)(1.25 + 1.75);
+int g40 = (int)(sizeof(int) * 1.5);
+int g41 = (int)(3 * 1.5f);
+int g42 = -1 < 1;
+int g43 = -1 < 1u;
+int g44 = 2 > 2;
+int g45 = 3 > 2;
+int g46 = 2 >= 2;
+int g47 = 1 >= 2;
+int g48 = 3 <= 2;
+int g49 = 2 <= 2;
+int g50 = 1 != 1;
+int g51 = 1 != 2;
+int g52 = 1 == 2;
+int g53 = 2u >= 3u;
+int g54 = 3u >= 3u;
+int g55 = 2u <= 2u;
+int g56 = 3u <= 2u;
+int g57 = 3u > 3u;
+int g58 = 4u > 3u;
+int g59 = 1u != 2u;
+int g60 = 1u != 1u;
+int g61 = 2u < 3u;
+int g62 = -7 % 3;
+int g63 = 7 % -3;
+int g64 = 7 % 3;
+int g65 = 6 | 3;
+int g66 = 6 ^ 3;
+int g67 = 6 & 3;
+int g68 = 5u % 3u;
+int g69 = 5u | 2u;
+int g70 = 5u ^ 1u;
+int g71 = 5u & 4u;
+int g72 = (int)(-1u / 2);
+int g73 = (int)~0u;
+int g74 = ~5;
+int g75 = -(-5);
+int g76 = (int)(-1u >> 28);
+char a0[(-1 < 1) + 3]; int s0 = sizeof a0;
+char a1[(-1 < 1u) + 3]; int s1 = sizeof a1;
+char a2[(2 > 2) + 3]; int s2 = sizeof a2;
+char a3[(3 > 2) + 3]; int s3 = sizeof a3;
+char a4[(2 >= 2) + 3]; int s4 = sizeof a4;
+char a5[(1 >= 2) + 3]; int s5 = sizeof a5;
+char a6[(3 <= 2) + 3]; int s6 = sizeof a6;
+char a7[(2 <= 2) + 3]; int s7 = sizeof a7;
+char a8[(1 != 1) + 3]; int s8 = sizeof a8;
+char a9[(1 != 2) + 3]; int s9 = sizeof a9;
+char a10[(1 == 2) + 3]; int s10 = sizeof a10;
+char a11[(2u >= 3u) + 3]; int s11 = sizeof a11;
+char a12[(3u >= 3u) + 3]; int s12 = sizeof a12;
+char a13[(2u <= 2u) + 3]; int s13 = sizeof a13;
+char a14[(3u <= 2u) + 3]; int s14 = sizeof a14;
+char a15[(3u > 3u) + 3]; int s15 = sizeof a15;
+char a16[(4u > 3u) + 3]; int s16 = sizeof a16;
+char a17[(1u != 2u) + 3]; int s17 = sizeof a17;
+char a18[(1u != 1u) + 3]; int s18 = sizeof a18;
+char a19[(2u < 3u) + 3]; int s19 = sizeof a19;
+char a20[(-7 % 3) + 3]; int s20 = sizeof a20;
+char a21[(7 % -3) + 3]; int s21 = sizeof a21;
+char a22[(7 % 3) + 3]; int s22 = sizeof a22;
+char a23[(6 | 3) + 3]; int s23 = sizeof a23;
+char a24[(6 ^ 3) + 3]; int s24 = sizeof a24;
+char a25[(6 & 3) + 3]; int s25 = sizeof a25;
+char a26[(5u % 3u) + 3]; int s26 = sizeof a26;
+char a27[(5u | 2u) + 3]; int s27 = sizeof a27;
+char a28[(5u ^ 1u) + 3]; int s28 = sizeof a28;
+char a29[(5u & 4u) + 3]; int s29 = sizeof a29;
+char a30[((int)~0u) + 3]; int s30 = sizeof a30;
+char a31[(-(-5)) + 3]; int s31 = sizeof a31;
+char a32[((int)(-1u >> 28)) + 3]; int s32 = sizeof a32;
+",
+    );
+    let value = |name: String| {
+        unit.globals
+            .iter()
+            .find(|global| global.name == name)
+            .unwrap()
+            .int_init()
+            .unwrap()
+    };
+    let globals: [i32; 77] = [
+        1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1, 1, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 0, -2, 2,
+        2, 3, 2, 3, 7, 2, 3, 7, 5, 3, 6, 4, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 1,
+        0, 1, -1, 1, 1, 7, 5, 2, 2, 7, 4, 4, 2147483647, -1, -6, 5, 15,
+    ];
+    for (i, want) in globals.iter().enumerate() {
+        assert_eq!(value(format!("g{i}")), u128::from(*want as u32), "g{i}");
+    }
+    let bounds: [u32; 33] = [
+        4, 3, 3, 4, 4, 3, 3, 4, 3, 4, 3, 3, 4, 4, 3, 3, 4, 4, 3, 4, 2, 4, 4, 10, 8, 5, 5, 10, 7, 7,
+        2, 8, 18,
+    ];
+    for (i, want) in bounds.iter().enumerate() {
+        assert_eq!(value(format!("s{i}")), u128::from(*want), "s{i}");
+    }
+}
+
+#[test]
+fn folds_shifts_limits_and_conditionals_like_clang() {
+    // A second mutation pass (reports/hardening/mutation.md) found shift
+    // counts of 0 and unsigned counts, values at exactly INT_MAX/INT_MIN,
+    // unsigned negation and `?:` operand types untested. Every value is what
+    // Clang prints; `bN` bounds go through the parser's ICE folder and the
+    // `hN` initializers through sema's.
+    // `?:` with an omitted middle operand is GNU, so this is gnu11.
+    let unit = analyzed_gnu(
+        r#"
+int h0 = 0 << 3;
+int h1 = 1 << 0;
+int h2 = 1 << 2u;
+int h3 = 8u >> 1u;
+int h4 = -8 >> 1;
+int h5 = 1u << 31 >> 30;
+int h6 = 5 >> 0;
+int h7 = (unsigned char)1 << 3;
+int h8 = 1L << 40 >> 38;
+int h9 = -1 >> 31;
+int h10 = 1 << 30 >> 29;
+int h11 = 2147483647 + 0;
+int h12 = -2147483647 - 1 + 0;
+int h13 = 2147483646 + 1;
+int h14 = (-2147483647 - 1) / 1;
+int h15 = (-2147483647 - 1) / -2;
+int h16 = 7 / -1;
+int h17 = -7 % -1;
+int h18 = (-2147483647 - 1) % 2;
+int h19 = -(0u);
+int h20 = -1u;
+int h21 = -(unsigned char)1;
+int h22 = ~0u;
+int h23 = ~(unsigned char)0;
+int h24 = ~5;
+int h25 = - -3;
+int h26 = -(unsigned short)2;
+int h27 = 5 | 3;
+int h28 = 5u | 3u;
+int h29 = 6L | 3;
+int h30 = 5 ^ 3;
+int h31 = -1 < 0u;
+int h32 = 1 <= 1;
+int h33 = -1 < 1;
+int h34 = 2u < 2u;
+int h35 = 2u <= 2u;
+int h36 = (long long)-1 < 0;
+int h37 = -1L < 0u;
+int h38 = 1 <= 0;
+int h39 = 3 > 3;
+int h40 = 3 >= 3;
+int h41 = -1 > -2;
+int h42 = 4294967295u > 1;
+int h43 = (unsigned char)256 ? 1 : 2;
+int h44 = (unsigned char)257 ? 1 : 2;
+int h45 = (unsigned char)256 ?: 7;
+int h46 = (unsigned short)65536 ?: 9;
+int h47 = (char)3 ?: 4;
+int h48 = !(unsigned char)256;
+int h49 = !(unsigned short)1;
+int h50 = sizeof(1 ? (char)1 : (char)2);
+int h51 = sizeof(1 ? 1 : 2L);
+int h52 = sizeof(0 ? 1 : 2.0);
+int h53 = sizeof(1 ? 1 : 2.0f);
+int h54 = sizeof((char)1 ?: (char)2);
+int h55 = sizeof(0 ?: 1L);
+int h56 = sizeof(1 ?: 2.0);
+int h57 = sizeof(1 ? (void *)0 : 0);
+int h58 = (int)(4294967295u + 2u);
+int h59 = (unsigned char)300 + 0;
+int h60 = (signed char)200 + 0;
+int h61 = (short)40000 + 0;
+int h62 = (unsigned short)70000 + 0;
+int h63 = 3 * -4;
+int h64 = -12 / 5;
+int h65 = -12 % 5;
+int h66 = 12u / 5u;
+int h67 = 12u % 5u;
+int h68 = 4294967295u * 2u;
+int h69 = 0u - 1u;
+int h70 = 2147483647 - -1L > 0;
+int h71 = 1 ? 2 : (1 / 0);
+int h72 = 0 ? (1 / 0) : 3;
+int h73 = 0 && (1 / 0);
+int h74 = 1 || (1 / 0);
+int h75 = 2 < 2;
+int h76 = -1 < -1;
+int h77 = -2 < -1;
+int h78 = -2 <= -3;
+int h79 = -2 > -2;
+int h80 = -2 >= -1;
+int h81 = (2147483646 + 1) - 2147483640;
+int h82 = (-2147483647 - 1) + 2147483647 + 2;
+int h83 = 1 && 0;
+int h84 = 1 && 2;
+int h85 = 0 || 0;
+int h86 = 0 || 3;
+int h87 = !0;
+int h88 = !5;
+char b0[(0 << 3) + 3]; int t0 = sizeof b0;
+char b1[(1 << 0) + 3]; int t1 = sizeof b1;
+char b2[(1 << 2u) + 3]; int t2 = sizeof b2;
+char b3[(8u >> 1u) + 3]; int t3 = sizeof b3;
+char b4[(1u << 31 >> 30) + 3]; int t4 = sizeof b4;
+char b5[(5 >> 0) + 3]; int t5 = sizeof b5;
+char b6[((unsigned char)1 << 3) + 3]; int t6 = sizeof b6;
+char b7[(1L << 40 >> 38) + 3]; int t7 = sizeof b7;
+char b8[(-1 >> 31) + 3]; int t8 = sizeof b8;
+char b9[(1 << 30 >> 29) + 3]; int t9 = sizeof b9;
+char b10[(-7 % -1) + 3]; int t10 = sizeof b10;
+char b11[((-2147483647 - 1) % 2) + 3]; int t11 = sizeof b11;
+char b12[(-(0u)) + 3]; int t12 = sizeof b12;
+char b13[(-1u) + 3]; int t13 = sizeof b13;
+char b14[(-(unsigned char)1) + 3]; int t14 = sizeof b14;
+char b15[(~0u) + 3]; int t15 = sizeof b15;
+char b16[(~(unsigned char)0) + 3]; int t16 = sizeof b16;
+char b17[(- -3) + 3]; int t17 = sizeof b17;
+char b18[(-(unsigned short)2) + 3]; int t18 = sizeof b18;
+char b19[(5 | 3) + 3]; int t19 = sizeof b19;
+char b20[(5u | 3u) + 3]; int t20 = sizeof b20;
+char b21[(6L | 3) + 3]; int t21 = sizeof b21;
+char b22[(5 ^ 3) + 3]; int t22 = sizeof b22;
+char b23[(-1 < 0u) + 3]; int t23 = sizeof b23;
+char b24[(1 <= 1) + 3]; int t24 = sizeof b24;
+char b25[(-1 < 1) + 3]; int t25 = sizeof b25;
+char b26[(2u < 2u) + 3]; int t26 = sizeof b26;
+char b27[(2u <= 2u) + 3]; int t27 = sizeof b27;
+char b28[((long long)-1 < 0) + 3]; int t28 = sizeof b28;
+char b29[(-1L < 0u) + 3]; int t29 = sizeof b29;
+char b30[(1 <= 0) + 3]; int t30 = sizeof b30;
+char b31[(3 > 3) + 3]; int t31 = sizeof b31;
+char b32[(3 >= 3) + 3]; int t32 = sizeof b32;
+char b33[(-1 > -2) + 3]; int t33 = sizeof b33;
+char b34[(4294967295u > 1) + 3]; int t34 = sizeof b34;
+char b35[((unsigned char)256 ? 1 : 2) + 3]; int t35 = sizeof b35;
+char b36[((unsigned char)257 ? 1 : 2) + 3]; int t36 = sizeof b36;
+char b37[((unsigned char)256 ?: 7) + 3]; int t37 = sizeof b37;
+char b38[((unsigned short)65536 ?: 9) + 3]; int t38 = sizeof b38;
+char b39[((char)3 ?: 4) + 3]; int t39 = sizeof b39;
+char b40[(!(unsigned char)256) + 3]; int t40 = sizeof b40;
+char b41[(!(unsigned short)1) + 3]; int t41 = sizeof b41;
+char b42[(sizeof(1 ? (char)1 : (char)2)) + 3]; int t42 = sizeof b42;
+char b43[(sizeof(1 ? 1 : 2L)) + 3]; int t43 = sizeof b43;
+char b44[(sizeof(0 ? 1 : 2.0)) + 3]; int t44 = sizeof b44;
+char b45[(sizeof(1 ? 1 : 2.0f)) + 3]; int t45 = sizeof b45;
+char b46[(sizeof((char)1 ?: (char)2)) + 3]; int t46 = sizeof b46;
+char b47[(sizeof(0 ?: 1L)) + 3]; int t47 = sizeof b47;
+char b48[(sizeof(1 ?: 2.0)) + 3]; int t48 = sizeof b48;
+char b49[(sizeof(1 ? (void *)0 : 0)) + 3]; int t49 = sizeof b49;
+char b50[((int)(4294967295u + 2u)) + 3]; int t50 = sizeof b50;
+char b51[((unsigned char)300 + 0) + 3]; int t51 = sizeof b51;
+char b52[(-12 / 5) + 3]; int t52 = sizeof b52;
+char b53[(-12 % 5) + 3]; int t53 = sizeof b53;
+char b54[(12u / 5u) + 3]; int t54 = sizeof b54;
+char b55[(12u % 5u) + 3]; int t55 = sizeof b55;
+char b56[(4294967295u * 2u) + 3]; int t56 = sizeof b56;
+char b57[(0u - 1u) + 3]; int t57 = sizeof b57;
+char b58[(2147483647 - -1L > 0) + 3]; int t58 = sizeof b58;
+char b59[(1 ? 2 : (1 / 0)) + 3]; int t59 = sizeof b59;
+char b60[(0 ? (1 / 0) : 3) + 3]; int t60 = sizeof b60;
+char b61[(0 && (1 / 0)) + 3]; int t61 = sizeof b61;
+char b62[(1 || (1 / 0)) + 3]; int t62 = sizeof b62;
+char b63[(2 < 2) + 3]; int t63 = sizeof b63;
+char b64[(-1 < -1) + 3]; int t64 = sizeof b64;
+char b65[(-2 < -1) + 3]; int t65 = sizeof b65;
+char b66[(-2 <= -3) + 3]; int t66 = sizeof b66;
+char b67[(-2 > -2) + 3]; int t67 = sizeof b67;
+char b68[(-2 >= -1) + 3]; int t68 = sizeof b68;
+char b69[((2147483646 + 1) - 2147483640) + 3]; int t69 = sizeof b69;
+char b70[((-2147483647 - 1) + 2147483647 + 2) + 3]; int t70 = sizeof b70;
+char b71[(1 && 0) + 3]; int t71 = sizeof b71;
+char b72[(1 && 2) + 3]; int t72 = sizeof b72;
+char b73[(0 || 0) + 3]; int t73 = sizeof b73;
+char b74[(0 || 3) + 3]; int t74 = sizeof b74;
+char b75[(!0) + 3]; int t75 = sizeof b75;
+char b76[(!5) + 3]; int t76 = sizeof b76;
+"#,
+    );
+    let value = |name: String| {
+        unit.globals
+            .iter()
+            .find(|global| global.name == name)
+            .unwrap()
+            .int_init()
+            .unwrap()
+    };
+    let globals: [i32; 89] = [
+        0,
+        1,
+        4,
+        4,
+        -4,
+        2,
+        5,
+        8,
+        4,
+        -1,
+        2,
+        2147483647,
+        -2147483648,
+        2147483647,
+        -2147483648,
+        1073741824,
+        -7,
+        0,
+        0,
+        0,
+        -1,
+        -1,
+        -1,
+        -1,
+        -6,
+        3,
+        -2,
+        7,
+        7,
+        7,
+        6,
+        0,
+        1,
+        1,
+        0,
+        1,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        1,
+        2,
+        1,
+        7,
+        9,
+        3,
+        1,
+        0,
+        4,
+        8,
+        8,
+        4,
+        4,
+        8,
+        8,
+        8,
+        1,
+        44,
+        -56,
+        -25536,
+        4464,
+        -12,
+        -2,
+        -2,
+        2,
+        2,
+        -2,
+        -1,
+        1,
+        2,
+        3,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        7,
+        1,
+        0,
+        1,
+        0,
+        1,
+        1,
+        0,
+    ];
+    for (i, want) in globals.iter().enumerate() {
+        assert_eq!(value(format!("h{i}")), u128::from(*want as u32), "h{i}");
+    }
+    let bounds: [u32; 77] = [
+        3, 4, 7, 7, 5, 8, 11, 7, 2, 5, 3, 3, 3, 2, 2, 2, 2, 6, 1, 10, 10, 10, 9, 3, 4, 4, 3, 4, 4,
+        4, 3, 3, 4, 4, 4, 5, 4, 10, 12, 6, 4, 3, 7, 11, 11, 7, 7, 11, 11, 11, 4, 47, 1, 1, 5, 5, 1,
+        2, 4, 5, 6, 3, 4, 3, 3, 4, 3, 3, 3, 10, 4, 3, 4, 3, 4, 4, 3,
+    ];
+    for (i, want) in bounds.iter().enumerate() {
+        assert_eq!(value(format!("t{i}")), u128::from(*want), "t{i}");
+    }
+}
+
+#[test]
+fn array_bounds_reject_overflow_and_undefined_operations() {
+    for bound in [
+        "2147483647 + 1",
+        "(-2147483647 - 1) / -1",
+        "(-2147483647 - 1) % -1",
+        "-2147483647 - 2",
+        "2147483647 * 2",
+        "1 << 31",
+        "-1 << 1",
+        "1 << 32",
+        "1u % 0u",
+        "1 % 0",
+    ] {
+        let err = sema_err(&format!("char a[{bound}];"));
+        assert!(err.contains("array size"), "{bound}: {err}");
+    }
+    // The limits themselves are fine.
+    sema_ok("char a[(-2147483647 - 1) / 1 + 2147483647 + 2]; char b[2147483647 / 2147483647];");
+    sema_ok("char c[(-2147483647 - 1) % 2 + 1]; char d[0x7fffffff >> 30];");
+}
+
+#[test]
+fn infers_array_lengths_like_clang() {
+    // Sizes as Clang prints them: designators move the position, strings
+    // count their units plus the terminator (u"" and U"" units are 2 and 4
+    // bytes), and brace elision fills one element's members before the
+    // next (C11 6.7.9p20).
+    let unit = analyzed(
+        r#"struct P { int x, y; };
+int i0[] = {1, 2, [7] = 3, 4};
+int i1[] = {[2] = 1, [0] = 2};
+char i2[] = "abc";
+char i3[] = {"abcde"};
+int i4[][2] = {{1, 2}, {3}, {4}};
+char i5[][4] = {"ab", "cde"};
+short i6[] = {[1] = 1};
+int i7[] = {1, 2, [0] = 2};
+unsigned short i8[] = u"ab";
+unsigned int i9[] = U"xyz";
+unsigned short i10[] = {u"abcd"};
+struct P i11[] = {{1, 2}, {3, 4}, {5}};
+struct P i12[] = {1, 2, 3};
+struct P i13[] = {[1] = {1, 2}, 3, 4};
+struct P i14[] = {[1].y = 2, 3};
+char i15[][3] = {[1] = "ab", "c"};
+int z_i0 = sizeof i0;
+int z_i1 = sizeof i1;
+int z_i2 = sizeof i2;
+int z_i3 = sizeof i3;
+int z_i4 = sizeof i4;
+int z_i5 = sizeof i5;
+int z_i6 = sizeof i6;
+int z_i7 = sizeof i7;
+int z_i8 = sizeof i8;
+int z_i9 = sizeof i9;
+int z_i10 = sizeof i10;
+int z_i11 = sizeof i11;
+int z_i12 = sizeof i12;
+int z_i13 = sizeof i13;
+int z_i14 = sizeof i14;
+int z_i15 = sizeof i15;
+int y_i0 = sizeof(char[sizeof i0]);
+int y_i1 = sizeof(char[sizeof i1]);
+int y_i2 = sizeof(char[sizeof i2]);
+int y_i3 = sizeof(char[sizeof i3]);
+int y_i4 = sizeof(char[sizeof i4]);
+int y_i5 = sizeof(char[sizeof i5]);
+int y_i6 = sizeof(char[sizeof i6]);
+int y_i7 = sizeof(char[sizeof i7]);
+int y_i8 = sizeof(char[sizeof i8]);
+int y_i9 = sizeof(char[sizeof i9]);
+int y_i10 = sizeof(char[sizeof i10]);
+int y_i11 = sizeof(char[sizeof i11]);
+int y_i12 = sizeof(char[sizeof i12]);
+int y_i13 = sizeof(char[sizeof i13]);
+int y_i15 = sizeof(char[sizeof i15]);
+"#,
+    );
+    for (name, want) in [
+        ("i0", 36),
+        ("i1", 12),
+        ("i2", 4),
+        ("i3", 6),
+        ("i4", 24),
+        ("i5", 8),
+        ("i6", 4),
+        ("i7", 8),
+        ("i8", 6),
+        ("i9", 16),
+        ("i10", 10),
+        ("i11", 24),
+        ("i12", 16),
+        ("i13", 24),
+        ("i14", 24),
+        ("i15", 9),
+    ] {
+        let size = unit
+            .globals
+            .iter()
+            .find(|global| global.name == format!("z_{name}"))
+            .unwrap()
+            .int_init();
+        assert_eq!(size, Some(want), "{name}");
+        // The parser folds the same length for `sizeof` in an array bound
+        // (C11 6.6p6), except after a designator into an element's member,
+        // which it leaves to semantic analysis.
+        if name != "i14" {
+            let folded = unit
+                .globals
+                .iter()
+                .find(|global| global.name == format!("y_{name}"))
+                .unwrap()
+                .int_init();
+            assert_eq!(folded, Some(want), "{name} in a constant expression");
+        }
+    }
+}
+
+const LAYOUT_PROBES: &str = r#"struct S0 { char a : 4; char b : 4; };
+struct S1 { char a : 4; char b : 5; };
+struct S2 { int a : 4; char b : 4; };
+struct S3 { int a : 30; int b : 2; char c; };
+struct S4 { int a : 30; int b : 3; };
+struct S5 { short a : 9; short b : 7; int c; };
+struct S6 { char a; int b : 1; char c; };
+struct S7 { long long a : 40; int b : 20; };
+struct S8 { int a : 1; int : 0; int b : 1; };
+struct S9 { char a : 1; long long b : 1; };
+struct S10 { int a : 16; int b : 16; int c : 1; };
+struct S11 { char a : 3; char b : 3; char c : 3; };
+struct S12 { int a : 7; int b : 25; char x; };
+struct S13 { char a; short b : 3; short c : 13; char x; };
+struct S14 { int a : 3; long long b : 61; char x; };
+union U0 { char a : 3; int b : 9; };
+union U1 { char a; int : 0; short b : 3; };
+union U2 { char a; int : 3; };
+struct S15 { char a; int : 4; char b; };
+union U3 { char a : 2; long long : 7; };
+int z_S0 = sizeof(struct S0);
+int a_S0 = _Alignof(struct S0);
+int z_S1 = sizeof(struct S1);
+int a_S1 = _Alignof(struct S1);
+int z_S2 = sizeof(struct S2);
+int a_S2 = _Alignof(struct S2);
+int z_S3 = sizeof(struct S3);
+int a_S3 = _Alignof(struct S3);
+int z_S4 = sizeof(struct S4);
+int a_S4 = _Alignof(struct S4);
+int z_S5 = sizeof(struct S5);
+int a_S5 = _Alignof(struct S5);
+int z_S6 = sizeof(struct S6);
+int a_S6 = _Alignof(struct S6);
+int z_S7 = sizeof(struct S7);
+int a_S7 = _Alignof(struct S7);
+int z_S8 = sizeof(struct S8);
+int a_S8 = _Alignof(struct S8);
+int z_S9 = sizeof(struct S9);
+int a_S9 = _Alignof(struct S9);
+int z_S10 = sizeof(struct S10);
+int a_S10 = _Alignof(struct S10);
+int z_S11 = sizeof(struct S11);
+int a_S11 = _Alignof(struct S11);
+int z_S12 = sizeof(struct S12);
+int a_S12 = _Alignof(struct S12);
+int z_S13 = sizeof(struct S13);
+int a_S13 = _Alignof(struct S13);
+int z_S14 = sizeof(struct S14);
+int a_S14 = _Alignof(struct S14);
+int z_U0 = sizeof(union U0);
+int a_U0 = _Alignof(union U0);
+int z_U1 = sizeof(union U1);
+int a_U1 = _Alignof(union U1);
+int z_U2 = sizeof(union U2);
+int a_U2 = _Alignof(union U2);
+int z_S15 = sizeof(struct S15);
+int a_S15 = _Alignof(struct S15);
+int z_U3 = sizeof(union U3);
+int a_U3 = _Alignof(union U3);
+int o_S12 = __builtin_offsetof(struct S12, x);
+int o_S13 = __builtin_offsetof(struct S13, x);
+int o_S14 = __builtin_offsetof(struct S14, x);
+"#;
+
+fn layout_values(target: crate::target::Target) -> Vec<(String, u128)> {
+    crate::target::set(target);
+    let unit = analyzed(LAYOUT_PROBES);
+    crate::target::set(crate::target::Target::build_default());
+    unit.globals
+        .iter()
+        .map(|global| (global.name.clone(), global.int_init().unwrap()))
+        .collect()
+}
+
+#[test]
+fn bit_field_layouts_match_clang_on_sysv_and_msvc() {
+    // Mutation testing (reports/hardening/mutation.md) found the MSVC
+    // bit-field rules, the exact-fit case of the System V rule and unnamed
+    // bit-fields in unions covered only by the cross harness. Sizes,
+    // alignments and offsets are what Clang emits for the same records at
+    // each target; `U2` and `U3` were wrong on x86-64 and Apple arm64.
+    let cases: [(crate::target::Target, &[(&str, u128)]); 4] = [
+        (
+            crate::target::Target::X86_64Linux,
+            &[
+                ("z_S0", 1),
+                ("a_S0", 1),
+                ("z_S1", 2),
+                ("a_S1", 1),
+                ("z_S2", 4),
+                ("a_S2", 4),
+                ("z_S3", 8),
+                ("a_S3", 4),
+                ("z_S4", 8),
+                ("a_S4", 4),
+                ("z_S5", 8),
+                ("a_S5", 4),
+                ("z_S6", 4),
+                ("a_S6", 4),
+                ("z_S7", 8),
+                ("a_S7", 8),
+                ("z_S8", 8),
+                ("a_S8", 4),
+                ("z_S9", 8),
+                ("a_S9", 8),
+                ("z_S10", 8),
+                ("a_S10", 4),
+                ("z_S11", 2),
+                ("a_S11", 1),
+                ("z_S12", 8),
+                ("a_S12", 4),
+                ("z_S13", 6),
+                ("a_S13", 2),
+                ("z_S14", 16),
+                ("a_S14", 8),
+                ("z_U0", 4),
+                ("a_U0", 4),
+                ("z_U1", 2),
+                ("a_U1", 2),
+                ("z_U2", 1),
+                ("a_U2", 1),
+                ("z_S15", 3),
+                ("a_S15", 1),
+                ("z_U3", 1),
+                ("a_U3", 1),
+                ("o_S12", 4),
+                ("o_S13", 4),
+                ("o_S14", 8),
+            ],
+        ),
+        (
+            crate::target::Target::X86_64Windows { msvc: true },
+            &[
+                ("z_S0", 1),
+                ("a_S0", 1),
+                ("z_S1", 2),
+                ("a_S1", 1),
+                ("z_S2", 8),
+                ("a_S2", 4),
+                ("z_S3", 8),
+                ("a_S3", 4),
+                ("z_S4", 8),
+                ("a_S4", 4),
+                ("z_S5", 8),
+                ("a_S5", 4),
+                ("z_S6", 12),
+                ("a_S6", 4),
+                ("z_S7", 16),
+                ("a_S7", 8),
+                ("z_S8", 8),
+                ("a_S8", 4),
+                ("z_S9", 16),
+                ("a_S9", 8),
+                ("z_S10", 8),
+                ("a_S10", 4),
+                ("z_S11", 2),
+                ("a_S11", 1),
+                ("z_S12", 8),
+                ("a_S12", 4),
+                ("z_S13", 6),
+                ("a_S13", 2),
+                ("z_S14", 24),
+                ("a_S14", 8),
+                ("z_U0", 4),
+                ("a_U0", 1),
+                ("z_U1", 2),
+                ("a_U1", 1),
+                ("z_U2", 4),
+                ("a_U2", 1),
+                ("z_S15", 12),
+                ("a_S15", 4),
+                ("z_U3", 8),
+                ("a_U3", 1),
+                ("o_S12", 4),
+                ("o_S13", 4),
+                ("o_S14", 16),
+            ],
+        ),
+        (
+            crate::target::Target::Aarch64Linux,
+            &[
+                ("z_S0", 1),
+                ("a_S0", 1),
+                ("z_S1", 2),
+                ("a_S1", 1),
+                ("z_S2", 4),
+                ("a_S2", 4),
+                ("z_S3", 8),
+                ("a_S3", 4),
+                ("z_S4", 8),
+                ("a_S4", 4),
+                ("z_S5", 8),
+                ("a_S5", 4),
+                ("z_S6", 4),
+                ("a_S6", 4),
+                ("z_S7", 8),
+                ("a_S7", 8),
+                ("z_S8", 8),
+                ("a_S8", 4),
+                ("z_S9", 8),
+                ("a_S9", 8),
+                ("z_S10", 8),
+                ("a_S10", 4),
+                ("z_S11", 2),
+                ("a_S11", 1),
+                ("z_S12", 8),
+                ("a_S12", 4),
+                ("z_S13", 6),
+                ("a_S13", 2),
+                ("z_S14", 16),
+                ("a_S14", 8),
+                ("z_U0", 4),
+                ("a_U0", 4),
+                ("z_U1", 4),
+                ("a_U1", 4),
+                ("z_U2", 4),
+                ("a_U2", 4),
+                ("z_S15", 4),
+                ("a_S15", 4),
+                ("z_U3", 8),
+                ("a_U3", 8),
+                ("o_S12", 4),
+                ("o_S13", 4),
+                ("o_S14", 8),
+            ],
+        ),
+        (
+            crate::target::APPLE_DEFAULT,
+            &[
+                ("z_S0", 1),
+                ("a_S0", 1),
+                ("z_S1", 2),
+                ("a_S1", 1),
+                ("z_S2", 4),
+                ("a_S2", 4),
+                ("z_S3", 8),
+                ("a_S3", 4),
+                ("z_S4", 8),
+                ("a_S4", 4),
+                ("z_S5", 8),
+                ("a_S5", 4),
+                ("z_S6", 4),
+                ("a_S6", 4),
+                ("z_S7", 8),
+                ("a_S7", 8),
+                ("z_S8", 8),
+                ("a_S8", 4),
+                ("z_S9", 8),
+                ("a_S9", 8),
+                ("z_S10", 8),
+                ("a_S10", 4),
+                ("z_S11", 2),
+                ("a_S11", 1),
+                ("z_S12", 8),
+                ("a_S12", 4),
+                ("z_S13", 6),
+                ("a_S13", 2),
+                ("z_S14", 16),
+                ("a_S14", 8),
+                ("z_U0", 4),
+                ("a_U0", 4),
+                ("z_U1", 2),
+                ("a_U1", 2),
+                ("z_U2", 1),
+                ("a_U2", 1),
+                ("z_S15", 3),
+                ("a_S15", 1),
+                ("z_U3", 1),
+                ("a_U3", 1),
+                ("o_S12", 4),
+                ("o_S13", 4),
+                ("o_S14", 8),
+            ],
+        ),
+    ];
+    for (target, want) in cases {
+        let got = layout_values(target);
+        for (name, value) in want {
+            let found = got.iter().find(|(n, _)| n == name).map(|(_, v)| *v);
+            assert_eq!(found, Some(*value), "{target:?} {name}");
+        }
+    }
+}
+
+#[test]
+fn union_bit_fields_take_the_bytes_of_their_width() {
+    // A bit-field adds the bytes of its width to a union, not its type's
+    // size. A packed union whose bit-field unit would then not fit is
+    // rejected, like the packed structs above, instead of laid out wrong.
+    for source in [
+        "union __attribute__((packed)) P1 { int a : 3; };",
+        "union __attribute__((packed)) P2 { char c; int a : 12; };",
+        "union P3 { char c; int a : 12 __attribute__((packed)); };",
+    ] {
+        assert!(
+            sema_err(source).contains("bit-fields in a packed or aligned union"),
+            "{source}"
+        );
+    }
+    sema_ok("union U { char a; long long : 33; }; struct S { char c; union U u; };");
+    sema_ok("struct __attribute__((packed)) P4 { char c; union { int a : 3; } u; char d; };");
+}
+
+#[test]
+fn parser_folds_sizeof_of_brace_elided_arrays() {
+    // tests/163: every bound, enumerator and _Static_assert there needs the
+    // parser to know the length of an array completed by a brace-elided or
+    // designated initializer (C11 6.7.9p20, p22; 6.6p6).
+    analyzed(include_str!("../../tests/163_sizeof_brace_elided_array.c"));
+    // A struct value's type is not known to the parser; such a length is
+    // left to semantic analysis, and `sizeof` of it in a bound is still
+    // rejected (a known limitation, reports/hardening/mutation.md).
+    let err = sema_err(
+        "struct P { int x, y; };\n\
+         int f(void) { struct P s = {1, 2}; struct P v[] = {s, s}; char q[sizeof v]; return sizeof q; }\n",
+    );
+    assert!(err.contains("incomplete type"), "{err}");
 }
 
 #[test]

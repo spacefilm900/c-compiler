@@ -1199,6 +1199,10 @@ CodeRabbit reviewed pull request 4 on `ec14e21`. The review posted one inline co
 
 The follow-up review on `29d1635` (review `5825162941`, submitted 2026-11-09 11:24:01Z) posted no new inline comments. Its summary repeated the docstring-coverage pre-merge note. No function docstrings were added. The sources document modules and the language rules, not every function. The same note on pull request 3 was left that way.
 
+## Hardening (step 14), mutation testing
+
+cargo-mutants 26.0.0 ran over constant folding (`sema/consteval.rs`, `sema/convert.rs`, `float.rs`, `parser/ice.rs`), static images (`sema/image.rs`), layout (`ast/record.rs`) and IR generation for expressions (`irgen/expr.rs`), with the unit tests as the oracle. The first pass, on `f51cc91`, ran 1519 mutants: 1067 caught, 365 missed, 10 timeouts and 77 unviable. New tests, with every expected value taken from Clang, killed most of the meaningful survivors. Those survivors led to two fixes: `sizeof` of an array completed by a brace-elided initializer is now an integer constant expression, and a union bit-field now takes the bytes of its width rather than of its type. Dead code (`ast::layout_union`) was also removed. Still open: `sizeof` of an array whose initializer items are struct values (`struct P v[] = {s, s}`) is rejected in a constant expression. The final numbers, the survivor classification and the rerun commands are in `reports/hardening/mutation.md`.
+
 ## Milestone 2 step 2 record
 
 Local results are in the table above: `cargo test --offline --lib` **29 passed**, `python3 harness/run_tests.py` **37/37 passed**, on rustc 1.85.1 and Ubuntu Clang 18.1.3.
