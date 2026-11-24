@@ -20,3 +20,4 @@ tests/external/lua/
 tests/external/quickjs/
 
 tests/external/sqlite/
+tests/external/zlib/
