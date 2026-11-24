@@ -602,7 +602,13 @@ fn collect_leaves(ty: &CType, base: u64, inherited: bool, out: &mut Vec<Leaf>) {
                 collect_leaves(&field.ty, base + field.offset, inherited, out);
             }
         }
-        CType::Void | CType::Func(_) | CType::Array(_, _) | CType::Qualified(_, _) => {}
+        // An incomplete enum has no value; semantic analysis rejects one
+        // passed or returned by value.
+        CType::Void
+        | CType::Func(_)
+        | CType::Array(_, _)
+        | CType::Qualified(_, _)
+        | CType::Enum(_) => {}
     }
 }
 

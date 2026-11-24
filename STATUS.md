@@ -2,9 +2,9 @@
 
 The program is `hcc`, the Haviland C Compiler. `make` writes `build/hcc`.
 
-## Next phase: hardening
+## Next phase: Release 1.0
 
-The C11 and platform work is closed out (step 13 of `PLAN.md`: adversarial rounds v0.7–v0.9, 969/969 at `-O0` and `-O2`, and the weekly platform tests of pull request 61). The current phase is step 14, hardening: fuzzing the compiler itself with `cargo-fuzz`, Csmith (and YARPGen, if it builds) at a much larger scale than CI, coverage and mutation testing, and a new big program (QuickJS, then zlib). Release 1.0 (step 15) follows. Fuzzing and large campaigns run locally or as an optional job, not in standard pull-request CI.
+Hardening (step 14 of `PLAN.md`) is closed: fuzzing, the large Csmith and YARPGen campaigns, coverage and mutation testing, QuickJS and zlib (pull requests 63–67). The current phase is step 15, Release 1.0: version numbers and `hcc --version`, a changelog, a user guide, clearer `--help` and messages, automatic linking of `lib/threads.c`, tagged release builds with checksums, and the project files. Issue #68 (GNU forward-declared enums) is fixed first. A tag or release is made only with the owner's approval.
 
 ## Current milestone
 
@@ -1279,3 +1279,7 @@ Frontend code was written from the C standard, the LLVM Language Reference, and 
 ## Hardening (step 14), coverage
 
 Line, function and branch coverage over the unit tests and every in-repo suite (`tools/quality/branch_coverage.sh`, nightly rustc for measurement only): 92.7% of lines, 96.3% of functions, 83.4% of branches (was 90.8 / 95.7 / 80.3 on `f51cc91`). Targeted tests for the worst gaps found and fixed six problems: `long double` division by a subnormal folded to zero, NaN operands and payloads not propagated in `long double` folding, `0.0/0.0` folding to the host's negative NaN, address constants built from integer pointers (the old `offsetof` idiom) rejected, and enumerator/bit-field errors worded as array-size errors. A `coverage` job joins the weekly workflow. Report: `reports/hardening/coverage.md`. Still to do in step 14: mutation testing, QuickJS then zlib.
+
+## Release 1.0 (step 15), forward-declared enums (issue #68)
+
+In GNU mode an enum tag named before its enumerator list (`typedef enum E E;` ahead of `enum E { ... };`) is now an incomplete type until the definition, as the GCC manual's "Incomplete `enum` Types" says and as Clang and GCC (black boxes, `-std=gnu11`) behave. Before the definition, pointers, `extern` declarations, tentative definitions, prototypes and typedefs may name it; `sizeof`, `_Alignof`, casts, members, block-scope objects, arrays, function definitions, calls and lvalue conversions are diagnosed. After it, every earlier use, including typedefs, pointers and struct members written before the list, has the enumerated type. The definition may now choose any enumerated type (`int` for a negative value, a 64-bit type for a value outside `int`); previously it had to be `unsigned int`. The type is `CType::Enum` (`src/ast/fwd_enum.rs`), completed in place; semantic analysis, which runs after parsing, checks each file-scope declaration against the completions parsed before it. Known limit: a forward enum completed inside a function body counts as complete for that whole function. Tests: `gnu_forward_enum_is_incomplete_until_defined` and `gnu_forward_enum_ir_uses_the_defined_type` (sema), `tests/gnu/22_forward_enum_types.c` (differential against Clang).

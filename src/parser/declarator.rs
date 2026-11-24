@@ -304,7 +304,8 @@ impl Parser<'_> {
             // The type has to be complete at a definition and at a call.
             // Other incomplete types, such as `void` or an incomplete array
             // that was not adjusted to a pointer, are still rejected.
-            ref other if other.unqualified().is_record() => Ok(ty),
+            // So may a GNU forward-declared enum.
+            ref other if other.unqualified().is_record() || other.is_incomplete_enum() => Ok(ty),
             ref other if !other.is_complete() => Err(self.error_at(
                 line,
                 column,
@@ -727,7 +728,7 @@ pub(super) fn star_out_vla_types(ty: &mut CType) {
                 star_out_vla_types(param);
             }
         }
-        CType::Void | CType::Int(_) | CType::Float(_) | CType::Struct(_) => {}
+        CType::Void | CType::Int(_) | CType::Float(_) | CType::Struct(_) | CType::Enum(_) => {}
     }
 }
 
@@ -741,7 +742,7 @@ pub(super) fn star_out_nested_fn_vlas(ty: &mut CType) {
         CType::Array(elem, _) => star_out_nested_fn_vlas(elem),
         CType::Pointer(inner) | CType::Qualified(_, inner) => star_out_nested_fn_vlas(inner),
         CType::Func(_) => star_out_vla_types(ty),
-        CType::Void | CType::Int(_) | CType::Float(_) | CType::Struct(_) => {}
+        CType::Void | CType::Int(_) | CType::Float(_) | CType::Struct(_) | CType::Enum(_) => {}
     }
 }
 
@@ -827,7 +828,7 @@ fn type_has_identifier_list(ty: &CType) -> bool {
         CType::Pointer(inner) | CType::Array(inner, _) | CType::Qualified(_, inner) => {
             type_has_identifier_list(inner)
         }
-        CType::Void | CType::Int(_) | CType::Float(_) | CType::Struct(_) => false,
+        CType::Void | CType::Int(_) | CType::Float(_) | CType::Struct(_) | CType::Enum(_) => false,
     }
 }
 

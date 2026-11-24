@@ -480,7 +480,7 @@ impl ArrayLen {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VlaId(pub u32);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum CType {
     Void,
     Int(TypeName),
@@ -490,7 +490,37 @@ pub enum CType {
     Struct(StructRef),
     Func(Box<FuncTy>),
     Qualified(Quals, Box<CType>),
+    /// A GNU forward-declared enumeration (see [`EnumRef`]). Once its
+    /// definition is visible it stands for its enumerated type:
+    /// [`CType::peel`] and equality see the [`CType::Int`]. Before that it
+    /// is an incomplete type.
+    Enum(EnumRef),
 }
+
+impl PartialEq for CType {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (CType::Enum(left), CType::Enum(right)) if left == right => true,
+            (CType::Enum(left), _) => left.resolved().is_some_and(|ty| ty == other),
+            (_, CType::Enum(right)) => right.resolved().is_some_and(|ty| self == ty),
+            (CType::Void, CType::Void) => true,
+            (CType::Int(left), CType::Int(right)) => left == right,
+            (CType::Float(left), CType::Float(right)) => left == right,
+            (CType::Pointer(left), CType::Pointer(right)) => left == right,
+            (CType::Array(left, left_len), CType::Array(right, right_len)) => {
+                left == right && left_len == right_len
+            }
+            (CType::Struct(left), CType::Struct(right)) => left == right,
+            (CType::Func(left), CType::Func(right)) => left == right,
+            (CType::Qualified(left_q, left), CType::Qualified(right_q, right)) => {
+                left_q == right_q && left == right
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for CType {}
 
 impl CType {
     pub fn from_name(ty: TypeName) -> Self {
@@ -540,6 +570,7 @@ impl CType {
     pub fn unqualified(&self) -> CType {
         match self {
             CType::Qualified(_, inner) => (**inner).clone(),
+            CType::Enum(handle) => handle.resolved().unwrap_or(self).clone(),
             other => other.clone(),
         }
     }
@@ -609,8 +640,14 @@ impl CType {
     pub(crate) fn peel(&self) -> &CType {
         match self {
             CType::Qualified(_, inner) => inner.peel(),
+            CType::Enum(handle) => handle.resolved().unwrap_or(self),
             other => other,
         }
+    }
+
+    /// A forward-declared enumeration whose definition is not visible yet.
+    pub fn is_incomplete_enum(&self) -> bool {
+        matches!(self.peel(), CType::Enum(_))
     }
 
     /// A const object, including an array whose elements are const. A pointer
@@ -881,6 +918,8 @@ impl CType {
             CType::Array(_, ArrayLen::Incomplete) => false,
             CType::Array(elem, _) => elem.is_complete(),
             CType::Struct(handle) => handle.is_complete(),
+            // `peel` resolves a forward enum whose definition is visible.
+            CType::Enum(_) => false,
             CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
         }
     }
@@ -897,6 +936,7 @@ impl CType {
             }
             CType::Array(_, _) => None,
             CType::Struct(handle) => handle.size(),
+            CType::Enum(_) => None,
             CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
         }
     }
@@ -925,6 +965,7 @@ impl CType {
                 }
             }
             CType::Struct(handle) => handle.align(),
+            CType::Enum(_) => 1,
             CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
         };
         if self.is_atomic() {
@@ -963,6 +1004,8 @@ impl CType {
                 format!("[{n} x {}]", elem.ir_type())
             }
             CType::Struct(handle) => format!("%{}", handle.ir_name()),
+            // Only reachable for an incomplete enum, which has no value.
+            CType::Enum(_) => "i8".to_string(),
             CType::Qualified(_, _) => unreachable!("peel removes qualifiers"),
         }
     }
