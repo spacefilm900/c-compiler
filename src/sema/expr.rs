@@ -1055,6 +1055,13 @@ impl Sema<'_> {
             if ty_name.is_array() {
                 return self.err(line, column, "cast to an array type is not supported");
             }
+            if ty_name.is_incomplete_enum() {
+                return self.err(
+                    line,
+                    column,
+                    format!("cast to incomplete type '{}'", ty_name.display()),
+                );
+            }
             if !ty_name.is_void() {
                 let src = inner.ty().expect("typed");
                 // C11 6.5.4: an arithmetic type converts to any arithmetic

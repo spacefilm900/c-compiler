@@ -20,11 +20,24 @@ pub(super) fn render_type(ty: &CType, name: &str) -> String {
                 name,
             ),
             CType::Func(_) => render_type(inner, name),
+            CType::Enum(handle) => match handle.resolved() {
+                Some(resolved) => {
+                    render_type(&CType::Qualified(*quals, Box::new(resolved.clone())), name)
+                }
+                None => join_spec(
+                    &format!("{}enum {}", qual_prefix(*quals), handle.tag()),
+                    name,
+                ),
+            },
         },
         CType::Void => join_spec("void", name),
         CType::Int(scalar) => join_spec(scalar.as_str(), name),
         CType::Float(kind) => join_spec(kind.as_str(), name),
         CType::Struct(handle) => join_spec(&record_spelling(handle), name),
+        CType::Enum(handle) => match handle.resolved() {
+            Some(resolved) => render_type(resolved, name),
+            None => join_spec(&format!("enum {}", handle.tag()), name),
+        },
         CType::Func(func) => {
             let applied = format!("{name}({})", render_params(func));
             render_type(&func.ret, &applied)

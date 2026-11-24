@@ -2061,13 +2061,13 @@ fn quickjs_gnu_extensions_and_their_limits() {
                      int f(struct S s) { return ((struct T)s).a; }"
     )
     .contains("is not supported"));
-    // A forward-named enum must end up with the type it was assumed to have.
+    // A forward-named enum takes whatever type its definition gives it
+    // (see `gnu_forward_enum_is_incomplete_until_defined`).
     assert!(sema_dialect("typedef enum E E; enum E { A, B }; E e = B;", Gnu11).is_ok());
     assert!(sema_dialect("typedef enum E E; enum E { A };", C11)
         .unwrap_err()
         .contains("incomplete enum"));
-    assert!(gnu_err("typedef enum E E; enum E { A = -1 };")
-        .contains("was used before its definition as 'unsigned int', but its type is 'int'"));
+    assert!(sema_dialect("typedef enum E E; enum E { A = -1 };", Gnu11).is_ok());
     // Range designators: constant nonnegative bounds, a nonempty range, and
     // a value without side effects.
     assert!(sema_dialect("int a[4] = { [1 ... 2] = 3 };", Gnu11).is_ok());
@@ -3343,4 +3343,152 @@ fn label_address_differences_name_the_limitation() {
     );
     // A label address is still a `void *` elsewhere.
     analyzed_gnu("int main(void) { void *p = &&a; a: return p == &&a; }");
+}
+
+/// Issue #68: a GNU forward-declared enum is an incomplete type until its
+/// definition (GCC manual, "Incomplete `enum` Types"), then the enumerated
+/// type everywhere, including through earlier typedefs and pointers. The
+/// cases follow Clang and GCC used as black boxes with -std=gnu11.
+#[test]
+fn gnu_forward_enum_is_incomplete_until_defined() {
+    use crate::Dialect::Gnu11;
+    let ok = |source: &str| {
+        if let Err(err) = sema_dialect(source, Gnu11) {
+            panic!("expected {source:?} to be accepted: {err}");
+        }
+    };
+    let err = |source: &str, want: &str| match sema_dialect(source, Gnu11) {
+        Ok(_) => panic!("expected {source:?} to be rejected"),
+        Err(err) => assert!(err.contains(want), "{source:?}: {err}"),
+    };
+    let fwd = "typedef enum E E; ";
+    // Uses that do not need the size, before the definition.
+    for early in [
+        "E *p;",
+        "extern E x;",
+        "E x;",
+        "static E x;",
+        "E f(void);",
+        "int f(E e);",
+        "struct T { E *m; };",
+        "typedef E *EP;",
+        "int f(void) { E *q = 0; return q != 0; }",
+    ] {
+        ok(&format!("{fwd}{early} enum E {{ A }};"));
+    }
+    // Uses that need a complete type, before the definition.
+    for (early, want) in [
+        (
+            "int f(void) { return sizeof(E); }",
+            "sizeof applied to incomplete type 'enum E'",
+        ),
+        ("int f(void) { return _Alignof(E); }", "incomplete type"),
+        (
+            "int f(void) { return (E)0; }",
+            "cast to incomplete type 'enum E'",
+        ),
+        (
+            "struct T { E m; };",
+            "member 'm' has incomplete type 'enum E'",
+        ),
+        (
+            "void f(void) { E y; (void)y; }",
+            "variable 'y' has incomplete type 'enum E'",
+        ),
+        (
+            "extern E a[2];",
+            "array has incomplete element type 'enum E'",
+        ),
+        ("E arr[3];", "array has incomplete element type 'enum E'"),
+        (
+            "E f(void) { for (;;); }",
+            "function returns incomplete type 'enum E'",
+        ),
+        (
+            "int f(E e) { return 0; }",
+            "parameter has incomplete type 'enum E'",
+        ),
+        (
+            "extern E x; int f(void) { return sizeof x; }",
+            "sizeof applied to incomplete type",
+        ),
+        (
+            "int f(E *p) { return *p; }",
+            "cannot use incomplete type 'enum E' as a value",
+        ),
+        (
+            "E x; int g(void) { return x; }",
+            "cannot use incomplete type 'enum E' as a value",
+        ),
+        (
+            "int f(void) { E *q = 0; return q[0]; }",
+            "pointer to incomplete type 'enum E'",
+        ),
+        (
+            "void *f(E *q) { return q + 1; }",
+            "pointer to incomplete type 'enum E'",
+        ),
+        (
+            "E f(void); int g(void) { f(); return 0; }",
+            "function returns incomplete type",
+        ),
+    ] {
+        err(&format!("{fwd}{early} enum E {{ A }};"), want);
+    }
+    // A tentative definition still needs the enum defined by the end.
+    err(
+        &format!("{fwd}E x;"),
+        "variable 'x' has incomplete type 'enum E'",
+    );
+    err(
+        "enum E; int f(void) { return sizeof(enum E); }",
+        "incomplete type 'enum E'",
+    );
+    // After the definition every earlier use sees the enumerated type.
+    for late in [
+        "enum E { A }; int f(void) { return sizeof(E); }",
+        "extern E x; enum E { A }; int f(void) { return sizeof x + x; }",
+        "int f(E *p); enum E { A }; int f(E *p) { return *p; }",
+        "E *p; enum E { A }; int g(void) { return *p + 1; }",
+        "E x; enum E { A }; int g(void) { return x; }",
+        "int f(E e); enum E { A }; int f(enum E e) { return e; }",
+        "E f(void); enum E { A }; E f(void) { return A; }",
+        "extern E x; enum E { A }; extern unsigned x;",
+        "struct T { E *m; }; enum E { A }; int g(struct T *t) { return *t->m; }",
+        "typedef E *EP; enum E { A }; int g(EP p) { return *p; }",
+    ] {
+        ok(&format!("{fwd}{late}"));
+    }
+    // The definition may choose any enumerated type; earlier uses follow it.
+    ok(&format!(
+        "{fwd}E *p; enum E {{ A = -1 }}; int g(void) {{ return *p < 0; }}"
+    ));
+    ok(&format!(
+        "{fwd}extern E x; enum E {{ A = -1 }}; extern int x;"
+    ));
+    err(
+        &format!("{fwd}extern E x; enum E {{ A = -1 }}; extern unsigned x;"),
+        "",
+    );
+    ok(&format!(
+        "{fwd}enum E {{ A = 0x100000000 }}; _Static_assert(sizeof(E) == 8, \"\");"
+    ));
+}
+
+/// The enumerated type a forward enum takes shows in the IR of earlier uses.
+#[test]
+fn gnu_forward_enum_ir_uses_the_defined_type() {
+    let ir = crate::compile_dialect(
+        "typedef enum E E; E *p; extern E x; E get(void);\n\
+         enum E { A = -1, B = 0x100000000 };\n\
+         E get(void) { return *p + x; }\n",
+        "fwd.c",
+        &crate::PpOptions::default(),
+        crate::Dialect::Gnu11,
+    )
+    .unwrap()
+    .ir;
+    assert!(ir.contains("define i64 @get()"), "{ir}");
+    assert!(ir.contains("load i64, ptr"), "{ir}");
+    assert!(ir.contains("@x = external global i64"), "{ir}");
 }

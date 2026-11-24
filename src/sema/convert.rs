@@ -4,9 +4,10 @@
 use super::*;
 
 impl Sema<'_> {
-    /// A struct or union passed or returned by value must be complete.
-    /// An x87 aggregate is passed in memory. A return whose class is `X87`
-    /// uses `%st0`. SSE eightbytes are passed in XMM registers.
+    /// A struct or union passed or returned by value must be complete, and
+    /// so must a GNU forward-declared enum. An x87 aggregate is passed in
+    /// memory. A return whose class is `X87` uses `%st0`. SSE eightbytes are
+    /// passed in XMM registers.
     pub(super) fn require_passed_aggregate(
         &self,
         ty: &CType,
@@ -15,6 +16,18 @@ impl Sema<'_> {
         is_return: bool,
     ) -> Result<(), Diagnostic> {
         let bare = ty.unqualified();
+        if bare.is_incomplete_enum() {
+            let what = if is_return {
+                "function returns"
+            } else {
+                "parameter has"
+            };
+            return self.err(
+                line,
+                column,
+                format!("{what} incomplete type '{}'", bare.display()),
+            );
+        }
         if !bare.is_record() {
             return Ok(());
         }
