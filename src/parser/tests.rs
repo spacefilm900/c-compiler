@@ -1671,3 +1671,30 @@ fn atomic_pointer_and_array_element() {
         parse_err("typedef int F(void); int k = sizeof(_Atomic F *);")
     );
 }
+
+#[test]
+fn array_bound_errors_name_the_problem() {
+    assert!(parse_err("int a[1 / 0];").contains("array size divides by zero"));
+    assert!(parse_err("int a[1 % 0];").contains("array size divides by zero"));
+    assert!(parse_err("int a[(-2147483647 - 1) / -1];").contains("array size overflows"));
+    assert!(parse_err("int a[2147483647 + 1];").contains("array size overflows"));
+    assert!(parse_err("int a[1 << 40];").contains("array size uses an undefined shift"));
+    assert!(parse_err("int a[1 << -1];").contains("array size uses an undefined shift"));
+    assert!(parse_err("int a[-1];").contains("array size must be positive"));
+    assert!(parse_err("int a[0 ? 1 : -1];").contains("array size must be positive"));
+    assert!(parse_err("int a[\"x\"[0]];").contains("variably modified type"));
+    // The unevaluated arm of ?: and the skipped operand of && and || are
+    // not evaluated (C11 6.6p3), so they may divide by zero.
+    assert!(parsed("int a[1 ? 2 : 1 / 0];").contains("a"));
+    assert!(parsed("int a[0 && 1 / 0 ? 1 : 2];").contains("a"));
+    assert!(parsed("int a[1 || 1 / 0];").contains("a"));
+    assert!(parse_err("enum { E = 1 / 0 };").contains("division by zero in a constant expression"));
+    assert!(parse_err("enum { E = 1 << 64 };").contains("undefined shift"));
+    // An enumerator or a bit-field width is not an array size: the
+    // message must not say it is.
+    assert!(!parse_err("enum { E = 1 / 0 };").contains("array size"));
+    assert!(parse_err("struct S { int x : 1 / 0; };")
+        .contains("division by zero in a constant expression"));
+    assert!(parse_err("struct S { int x : 2147483647 + 1; };")
+        .contains("constant expression overflows"));
+}

@@ -280,7 +280,21 @@ pub fn negate(bits: u128) -> u128 {
     bits ^ SIGN
 }
 
+/// The result of an operation with a NaN operand: the first NaN operand,
+/// quieted, keeping its sign and payload (IEEE 754 recommends preserving
+/// an input NaN's payload; LLVM's constant folder keeps the first one).
+/// `None` when neither operand is a NaN.
+fn propagate_nan(left: u128, right: u128) -> Option<u128> {
+    [left, right]
+        .into_iter()
+        .find(|&v| matches!(class(v), Class::Nan))
+        .map(|v| v | QUAD.quiet_bit())
+}
+
 pub fn add(left: u128, right: u128) -> u128 {
+    if let Some(nan) = propagate_nan(left, right) {
+        return nan;
+    }
     match (class(left), class(right)) {
         (Class::Nan, _) | (_, Class::Nan) => QNAN,
         (Class::Inf(a), Class::Inf(b)) => {
@@ -326,13 +340,17 @@ pub fn add(left: u128, right: u128) -> u128 {
 }
 
 pub fn sub(left: u128, right: u128) -> u128 {
-    if matches!(class(right), Class::Nan) {
-        return QNAN;
+    // Before negating: a NaN operand keeps its own sign.
+    if let Some(nan) = propagate_nan(left, right) {
+        return nan;
     }
     add(left, negate(right))
 }
 
 pub fn mul(left: u128, right: u128) -> u128 {
+    if let Some(nan) = propagate_nan(left, right) {
+        return nan;
+    }
     let sign = (left ^ right) & SIGN != 0;
     match (class(left), class(right)) {
         (Class::Nan, _) | (_, Class::Nan) => QNAN,
@@ -347,6 +365,9 @@ pub fn mul(left: u128, right: u128) -> u128 {
 }
 
 pub fn div(left: u128, right: u128) -> u128 {
+    if let Some(nan) = propagate_nan(left, right) {
+        return nan;
+    }
     let sign = (left ^ right) & SIGN != 0;
     match (class(left), class(right)) {
         (Class::Nan, _) | (_, Class::Nan) => QNAN,
@@ -671,5 +692,22 @@ mod tests {
             to_int(negate(parse_hex("1", "", 127)), TypeName::Int128),
             Some(1 << 127)
         );
+    }
+
+    #[test]
+    fn a_nan_operand_propagates_quieted_with_its_sign_and_payload() {
+        let nan5 = negate(nan_bits(5, false));
+        let snan3 = nan_bits(3, true);
+        assert_eq!(mul(nan5, ONE), nan5);
+        assert_eq!(div(ONE, nan5), nan5);
+        assert_eq!(add(snan3, ONE), nan_bits(3, false));
+        // The first NaN wins, and subtraction does not flip its sign.
+        assert_eq!(
+            sub(nan_bits(1, false), negate(nan_bits(2, false))),
+            nan_bits(1, false)
+        );
+        assert_eq!(sub(ONE, nan5), nan5);
+        // An invalid operation still gives the default NaN.
+        assert_eq!(sub(INF, INF), QNAN);
     }
 }
