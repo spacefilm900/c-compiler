@@ -1,6 +1,8 @@
-//! C11 preprocessor (translation phases 2–4).
+//! C11 preprocessor (translation phases 1–4).
 //!
-//! Phase 2 deletes each backslash that is immediately followed by a new-line.
+//! Phase 1 replaces trigraph sequences (C11 5.2.1.1) when they are enabled:
+//! in strict C11 always, in GNU mode only with `-trigraphs` (GCC manual,
+//! "Initial processing"). Phase 2 deletes each backslash that is immediately followed by a new-line.
 //! Phase 3 splits the result into preprocessing tokens and replaces each
 //! comment with one space. Phase 4 runs directives and expands macros
 //! (C11 6.10). `#include` pulls another file through the same phases.
@@ -23,11 +25,13 @@ use crate::diag::Diagnostic;
 use crate::target::{LongDouble, Target};
 use crate::token::{Token, TokenKind};
 
+mod clock;
 mod directive;
 mod expand;
 mod ifexpr;
 mod predefined;
 mod scan;
+use clock::*;
 use directive::*;
 use expand::*;
 use ifexpr::*;
@@ -78,6 +82,17 @@ pub struct PpOptions {
     /// use it to hide their POSIX and BSD declarations, such as glibc's
     /// `fileno`. [`crate::compile_dialect`] sets it from the dialect.
     pub gnu: bool,
+    /// `-trigraphs`: replace trigraphs in GNU mode too. Strict C11 always
+    /// replaces them (C11 5.2.1.1); GNU mode ignores them by default, as
+    /// GCC does (GCC manual, "Initial processing").
+    pub trigraphs: bool,
+}
+
+impl PpOptions {
+    /// Whether translation phase 1 replaces trigraph sequences.
+    pub fn trigraphs_enabled(&self) -> bool {
+        self.trigraphs || !self.gnu
+    }
 }
 
 impl Default for PpOptions {
@@ -90,6 +105,7 @@ impl Default for PpOptions {
             target: Target::build_default(),
             gnu89_inline: false,
             gnu: false,
+            trigraphs: false,
         }
     }
 }
@@ -145,55 +161,9 @@ fn run(source: &str, filename: &str, options: &PpOptions) -> Result<Vec<PpToken>
     crate::target::set(options.target);
     let mut processor = Processor::new(options)?;
     processor.push_main(filename);
-    processor.tokens = crate::timing::lexing(|| lex_source(source, filename, 0))?;
-    let tokens = processor.expand_all(false)?;
-    remove_pragma_operators(tokens)
-}
-
-/// The `_Pragma ( string-literal )` operator (C11 6.10.9), applied after
-/// macro expansion. Its pragma behaves as a `#pragma` line would; every
-/// pragma except `once` is ignored by this implementation, and `once` in
-/// this form is ignored too (it rarely comes from a macro). The operator
-/// and its operand are removed.
-fn remove_pragma_operators(tokens: Vec<PpToken>) -> Result<Vec<PpToken>, Diagnostic> {
-    if !tokens
-        .iter()
-        .any(|tok| tok.kind == PpKind::Ident && tok.spelling == "_Pragma")
-    {
-        return Ok(tokens);
-    }
-    let skippable = |tok: &PpToken| matches!(tok.kind, PpKind::Newline | PpKind::Placemarker);
-    let mut out = Vec::with_capacity(tokens.len());
-    let mut index = 0;
-    while index < tokens.len() {
-        let tok = &tokens[index];
-        if tok.kind != PpKind::Ident || tok.spelling != "_Pragma" {
-            out.push(tok.clone());
-            index += 1;
-            continue;
-        }
-        let mut parts = Vec::new();
-        let mut next = index + 1;
-        while parts.len() < 3 && next < tokens.len() {
-            if !skippable(&tokens[next]) {
-                parts.push(&tokens[next]);
-            }
-            next += 1;
-        }
-        let well_formed = parts.len() == 3
-            && parts[0].is_lparen()
-            && parts[1].kind == PpKind::String
-            && !parts[1].spelling.starts_with(['u', 'U'])
-            && parts[2].is_rparen();
-        if !well_formed {
-            return Err(error_at(
-                tok,
-                "_Pragma requires a parenthesized string literal",
-            ));
-        }
-        index = next;
-    }
-    Ok(out)
+    let source = processor.phase_one(source);
+    processor.tokens = crate::timing::lexing(|| lex_source(&source, filename, 0))?;
+    processor.expand_all(false)
 }
 
 fn format_tokens(tokens: &[PpToken]) -> String {
@@ -228,7 +198,7 @@ fn tokens_glue(previous: &str, next: &str) -> bool {
         return false;
     }
     // `..` is still two tokens, but three dots become `...`. `??` is the
-    // start of a trigraph in a preprocessor that implements them.
+    // start of a trigraph when the output is preprocessed again.
     if (previous == "." && next == ".") || (previous == "?" && next == "?") {
         return true;
     }
@@ -453,6 +423,8 @@ struct Processor {
     /// Expanding an `#if` line: the operand of a `defined` that a macro
     /// produced is kept as written (see `expand_all`).
     in_if: bool,
+    /// Translation phase 1 replaces trigraphs (see [`PpOptions::trigraphs`]).
+    trigraphs: bool,
 }
 
 impl Processor {
@@ -470,6 +442,7 @@ impl Processor {
             system_dirs: options.system_dirs.clone(),
             max_depth: options.max_include_depth,
             in_if: false,
+            trigraphs: options.trigraphs_enabled(),
         };
         processor.install_builtins()?;
         if options.gnu {
@@ -520,7 +493,9 @@ impl Processor {
             ("__BYTE_ORDER__", "__ORDER_LITTLE_ENDIAN__"),
         ];
         let target = target_macros(crate::target::current());
-        for (name, body) in BUILTINS.iter().chain(target.iter()) {
+        let (date, time) = translation_date_time(&command_token())?;
+        let clock = [("__DATE__", date.as_str()), ("__TIME__", time.as_str())];
+        for (name, body) in BUILTINS.iter().chain(target.iter()).chain(clock.iter()) {
             // A function-like builtin is written `NAME(PARAM, ...)`.
             let (name, params) = split_function_like(name);
             let mac = self.macro_from_parts(name, params, false, body_tokens(body)?, None)?;

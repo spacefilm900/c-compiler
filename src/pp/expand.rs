@@ -37,6 +37,10 @@ impl Processor {
                 }
                 continue;
             }
+            if !isolated && !self.in_if && self.at_pragma_operator() {
+                self.pragma_operator()?;
+                continue;
+            }
             if self.try_expand(isolated)? {
                 continue;
             }
@@ -53,6 +57,52 @@ impl Processor {
             ));
         }
         Ok(out)
+    }
+
+    fn at_pragma_operator(&self) -> bool {
+        let tok = &self.tokens[self.index];
+        tok.kind == PpKind::Ident && tok.spelling == "_Pragma"
+    }
+
+    /// The `_Pragma ( string-literal )` operator (C11 6.10.9), met in the
+    /// output of macro expansion or in the source. The string literal is
+    /// destringized (an `L` prefix and the quotes deleted, `\"` and `\\`
+    /// replaced by `"` and `\`), the result is split into preprocessing
+    /// tokens, and they are carried out as the tokens of a `#pragma` line.
+    /// The operator and its operand are removed.
+    fn pragma_operator(&mut self) -> Result<(), Diagnostic> {
+        let at = self.tokens[self.index].clone();
+        let mut parts = Vec::new();
+        let mut next = self.index + 1;
+        while parts.len() < 3 && next < self.tokens.len() {
+            if !matches!(
+                self.tokens[next].kind,
+                PpKind::Newline | PpKind::Placemarker
+            ) {
+                parts.push(next);
+            }
+            next += 1;
+        }
+        let well_formed = parts.len() == 3
+            && self.tokens[parts[0]].is_lparen()
+            && self.tokens[parts[1]].kind == PpKind::String
+            && !self.tokens[parts[1]].spelling.starts_with(['u', 'U'])
+            && self.tokens[parts[2]].is_rparen();
+        if !well_formed {
+            return Err(error_at(
+                &at,
+                "_Pragma requires a parenthesized string literal",
+            ));
+        }
+        let text = destringize(&self.tokens[parts[1]].spelling);
+        let mut line = lex_source(&text, &at.display, at.file_id)?;
+        line.retain(|tok| tok.kind != PpKind::Newline);
+        for tok in &mut line {
+            tok.line = at.line;
+            tok.column = at.column;
+        }
+        self.index = next;
+        self.apply_pragma(&at, &line)
     }
 
     /// The token at the cursor, about to be consumed. Its spelling is moved
@@ -696,4 +746,31 @@ pub(super) fn arity_error(
         format!("macro '{name}' passed {got} arguments but takes {need}")
     };
     error_at(inv, message)
+}
+
+/// C11 6.10.9p1: delete the `L` prefix and the two double quotes, and
+/// replace each `\"` with `"` and each `\\` with `\`.
+pub(super) fn destringize(literal: &str) -> String {
+    let body = literal.strip_prefix('L').unwrap_or(literal);
+    let body = body
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(body);
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some(next @ ('"' | '\\')) => out.push(next),
+                Some(next) => {
+                    out.push('\\');
+                    out.push(next);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }

@@ -69,6 +69,8 @@ Preprocessor:
 Language:
   -std=c11        strict ISO C11 (the default)
   -std=gnu11      C11 plus the GNU extensions this compiler supports
+  -trigraphs      replace trigraphs under -std=gnu11 too (-std=c11 always
+                  does)
   -fgnu89-inline  GNU89 inline semantics: plain `inline` definitions are
                   external, `extern inline` ones are only for inlining
 
@@ -83,7 +85,8 @@ Diagnostics:
                   do not print the source line and a caret under messages
 
 Other:
-  --time-phases   print frontend phase times as JSON on stderr
+  --time-phases   print frontend phase times as JSON on stderr (not with
+                  --link)
   --version       print the version, the default target and the targets
   -h, --help      show this help
 
@@ -445,6 +448,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Options, String> {
             "-fcaret-diagnostics" => caret = true,
             "-fno-caret-diagnostics" => caret = false,
             "-fgnu89-inline" | "-fno-gnu89-inline" => pp.gnu89_inline = arg == "-fgnu89-inline",
+            "-trigraphs" => pp.trigraphs = true,
             "-h" | "--help" | "--version" => {
                 return Err(format!("'{arg}' must be the only argument"));
             }
@@ -1199,5 +1203,29 @@ mod tests {
         for path in [&src, &helper, &helper_ll, &program] {
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    #[test]
+    fn trigraphs_flag_in_gnu_mode() {
+        let (src, out) = temp_paths();
+        // `??!` is `|` only when trigraphs are replaced; otherwise the
+        // program is a syntax error.
+        std::fs::write(&src, "int main(void) { return 0 ??! 0; }\n").unwrap();
+        let compile = |flags: &[&str]| {
+            let mut args: Vec<String> = vec!["hcc".into()];
+            args.extend(flags.iter().map(|flag| flag.to_string()));
+            args.extend([
+                src.display().to_string(),
+                "-o".into(),
+                out.display().to_string(),
+            ]);
+            run(&args)
+        };
+        assert_eq!(compile(&[]), 0);
+        assert_eq!(compile(&["-std=gnu11"]), 1);
+        assert_eq!(compile(&["-std=gnu11", "-trigraphs"]), 0);
+        assert_eq!(compile(&["-trigraphs", "-std=gnu11"]), 0);
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&out);
     }
 }
