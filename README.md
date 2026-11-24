@@ -5,6 +5,8 @@ textual LLVM IR, and Clang/LLVM turns that IR into programs for Linux,
 macOS and Windows. It builds and runs DOOM, Lua, SQLite, QuickJS and zlib
 with the same results as Clang.
 
+It was developed agentically by a Grok Bot as an experiment in building software of scale using agents, without human intervention at code level. The work embedded software engineering practices throughout: configuration management, CI, automated code review, and structured test approaches including adversarial testing by another AI model, with regular human input at process level.
+
 **Version 1.0.0.** [User guide](docs/USER_GUIDE.md) ·
 [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) ·
 [Security](SECURITY.md) · [Design](DESIGN.md) · [Licence: MIT](LICENSE)
