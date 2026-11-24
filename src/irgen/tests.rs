@@ -2219,3 +2219,63 @@ int main(void) {
     assert_eq!(unaligned("double"), 1, "{ir}");
     assert_eq!(run_binary(&ir), run_reference(source));
 }
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn static_union_and_bit_field_images_match_clang() {
+    // Mutation testing (reports/hardening/mutation.md): the byte images of
+    // static unions and bit-field records (sema/image.rs) had no unit test.
+    // These cover overlapping designators, addresses inside unions and
+    // nested records, an address replaced by a later member, an address as
+    // an integer, and bit-fields that straddle bytes. Clang is the oracle.
+    let source = r#"int printf(const char *, ...);
+int g, h;
+struct B { unsigned a : 3, b : 7, c : 13, d : 9; unsigned char e : 5, f : 3; };
+struct B b1 = {5, 100, 4000, 300, 17, 6};
+struct B b2[2] = {{1, 2, 3, 4, 5, 6}, {.c = 8191, .f = 7}};
+union U { unsigned char raw[16]; unsigned long long q[2]; int *p; long l; };
+union U u1 = {.q = {0x0102030405060708ull, 0x1112131415161718ull}};
+union U u2 = {.raw = {1, 2, 3}, .raw[2] = 9, .raw[10] = 7};
+union U u3 = {.p = &g};
+union U u4 = {.p = &g, .raw[12] = 5};
+union U u5 = {.l = (long)&h};
+struct S { char c; int *p; short s; };
+union V { struct S s; unsigned char raw[24]; };
+union V v1 = {.s = {1, &h, 0x7777}};
+union V v2 = {.s = {1, &h, 0x7777}, .raw[20] = 3};
+struct W { union U u; struct B b; char tail[3]; };
+struct W w1 = {.u.q[1] = 0xaabbccddeeff0011ull, .b = {7, 1, 2, 3, 31, 1}, .tail = "xy"};
+struct W w2 = {.u = {.p = &h}, .b.d = 511, .tail[2] = 'z'};
+union X { struct B b; unsigned int w[3]; };
+union X x1 = {.b = {7, 127, 8191, 511, 31, 7}};
+union X x2 = {.w = {0xffffffffu, 1, 2}, .w[1] = 0x80000000u};
+static void dump(const char *name, const void *p, unsigned long n) {
+    const unsigned char *c = p;
+    printf("%s:", name);
+    for (unsigned long i = 0; i < n; i++) printf(" %02x", c[i]);
+    printf("\n");
+}
+int main(void) {
+    dump("b1", &b1, sizeof b1);
+    dump("b2", b2, sizeof b2);
+    dump("u1", &u1, sizeof u1);
+    dump("u2", &u2, sizeof u2);
+    printf("u3 %d %d\n", u3.p == &g, u4.p == 0);
+    dump("u4", u4.raw + 8, 8);
+    printf("u5 %d\n", u5.l == (long)&h);
+    printf("v1 %d %d %x\n", v1.s.c, v1.s.p == &h, v1.s.s);
+    printf("v2 %d %d %x %d\n", v2.s.c, v2.s.p == &h, v2.s.s, v2.raw[20]);
+    dump("w1", &w1, sizeof w1);
+    printf("w2 %d\n", w2.u.p == &h);
+    dump("w2b", &w2.b, sizeof w2.b + 3);
+    dump("x1", &x1, sizeof x1);
+    dump("x2", &x2, sizeof x2);
+    return 0;
+}
+"#;
+    let ir = crate::compile_to_ir(source, "images.c").unwrap();
+    assert_eq!(run_binary(&ir), run_reference(source));
+}
