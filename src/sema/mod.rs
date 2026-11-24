@@ -136,7 +136,9 @@ pub fn analyze_dialect(
             .collect(),
         vla_checked: HashSet::new(),
     };
-    for decl in &mut unit.decls {
+    for (index, decl) in unit.decls.iter_mut().enumerate() {
+        // A forward enum defined in a later declaration is incomplete here.
+        let _horizon = completion_horizon(u32::try_from(index).unwrap_or(u32::MAX));
         match decl {
             TopDecl::Global(global) => sema.declare_global(global)?,
             TopDecl::Func(func) => {

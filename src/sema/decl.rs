@@ -39,7 +39,14 @@ impl Sema<'_> {
         // translation unit. A definition, including a tentative definition,
         // needs a complete type (C11 6.9.2).
         let extern_only = decl.init.is_none() && decl.storage == Storage::Extern;
-        if !ty.is_array() && !ty.is_complete() && !extern_only {
+        // A tentative definition of a GNU forward-declared enum is complete
+        // once the enum is defined later in the file, as GCC and Clang
+        // accept.
+        let completed_later = decl.init.is_none() && ty.is_incomplete_enum() && {
+            let _all = completion_horizon(u32::MAX);
+            ty.is_complete()
+        };
+        if !ty.is_array() && !ty.is_complete() && !extern_only && !completed_later {
             return self.err(
                 decl.line,
                 decl.column,

@@ -16,11 +16,13 @@ use std::rc::Rc;
 
 mod compat;
 mod dump;
+mod fwd_enum;
 mod record;
 mod tree;
 mod types;
 pub use compat::*;
 pub use dump::*;
+pub use fwd_enum::*;
 pub use record::*;
 pub use tree::*;
 pub use types::*;
