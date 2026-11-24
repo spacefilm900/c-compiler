@@ -2,7 +2,7 @@
  * list, then the enumerated type in every earlier use. `Neg` is defined
  * with a negative value, so its type is int (not the unsigned int a
  * nonnegative enumeration gets outside MSVC); `Pos` is nonnegative. */
-#include <stdio.h>
+int printf(const char *, ...);
 
 typedef enum Neg Neg;
 typedef enum Pos Pos;
