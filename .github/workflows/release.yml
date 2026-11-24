@@ -2,9 +2,10 @@
 # Linux x86-64, Linux arm64, macOS on Apple Silicon and Windows x64.
 #
 # - A pushed tag vX.Y.Z (made only with the owner's approval) builds every
-#   archive, checks that the tag matches Cargo.toml's version, and creates a
-#   DRAFT GitHub release with the archives and SHA256SUMS. Publishing the
-#   draft is a separate, manual step.
+#   archive, checks that the tag matches Cargo.toml's version, and uploads
+#   one `release-bundle` artifact: the archives and SHA256SUMS. The
+#   workflow only reads the repository (`contents: read`); the GitHub
+#   release is created by hand from the bundle (docs/RELEASING.md).
 # - Actions > release > Run workflow (or `gh workflow run release.yml`)
 #   builds the same archives as workflow artifacts, with no release.
 # - A pull request that changes this file does the same dry run, so the
@@ -13,7 +14,7 @@
 # Estimated cost per run (private repo; GitHub's per-minute prices, Nov
 # 2026; jobs rounded up to whole minutes): Linux x86-64 4 min x $0.006,
 # Linux arm64 4 min x $0.005, macOS 4 min x $0.062, Windows 6 min x $0.010,
-# draft release 1 min x $0.006: about $0.37 a run.
+# checksums 1 min x $0.006: about $0.37 a run.
 #
 # Linux binaries are static (musl), so they run on any distribution. The
 # Windows binary is built with the MSVC toolchain and targets
@@ -172,41 +173,33 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  draft-release:
-    name: draft GitHub release
+  checksums:
+    name: release bundle and SHA256SUMS
     needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    permissions:
-      contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-
       - name: Download archives
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
 
-      - name: Checksums and draft release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+      - name: SHA256SUMS
         run: |
           set -euo pipefail
           cd dist
           cat ./*.sha256 | sort -k 2 > SHA256SUMS
           sha256sum -c SHA256SUMS
           cat SHA256SUMS
-          version="${TAG#v}"
-          gh release create "${TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --draft \
-            --verify-tag \
-            --title "hcc ${version}" \
-            --notes-file "../docs/release-notes/${TAG}.md" \
-            ./*.tar.gz ./*.zip SHA256SUMS
+
+      - name: Upload the bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-bundle
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30

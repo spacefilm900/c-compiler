@@ -6,9 +6,12 @@
 //! `$HCC_CLANG` when set, else `clang` on `PATH`, and is called with the
 //! target's LLVM triple.
 //!
-//! C11 threads (7.26) need a runtime on some targets. When the IR declares
-//! a `<threads.h>` function (`thrd_*`, `mtx_*`, `cnd_*`, `tss_*` or
-//! `call_once`), POSIX targets link with `-pthread`, and when the target's
+//! Inputs and clang options keep their command-line order, so options
+//! such as `-Wl,--whole-archive` apply to the files after them.
+//!
+//! C11 threads (7.26) need a runtime on some targets. When the IR (hcc's,
+//! or a `.ll` input) declares one of the `<threads.h>` functions, POSIX
+//! targets link with `-pthread`, and when the target's
 //! C library has no `<threads.h>` (macOS, Windows, Linux before glibc 2.28)
 //! `lib/threads.c`, the compiler's own runtime, is compiled by this
 //! compiler and linked too. That is the same choice the compiler's
@@ -18,18 +21,37 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::driver::{compile_source, read_source, Options};
+use crate::driver::{compile_source, read_source, LinkArg, Options};
 use crate::target::Target;
 
 /// Link `options.inputs` into `options.output`. Returns the exit status.
 pub(crate) fn link(options: &Options) -> i32 {
     let output = options.output.as_deref().expect("checked by parse_args");
-    let scratch = Scratch::new();
-    let mut clang_inputs: Vec<PathBuf> = Vec::new();
+    let scratch = match Scratch::new() {
+        Ok(scratch) => scratch,
+        Err(err) => {
+            let _ = writeln!(
+                io::stderr(),
+                "hcc: error: cannot create a temporary directory for the IR: {err}"
+            );
+            return 1;
+        }
+    };
+    let mut clang_args: Vec<std::ffi::OsString> = Vec::new();
     let mut uses_threads = false;
-    for (index, input) in options.inputs.iter().enumerate() {
+    for (index, item) in options.link_line.iter().enumerate() {
+        let input = match item {
+            LinkArg::Option(option) => {
+                clang_args.extend(option.iter().map(Into::into));
+                continue;
+            }
+            LinkArg::File(input) => input,
+        };
         if !is_c_source(input) {
-            clang_inputs.push(PathBuf::from(input));
+            // IR from hcc (or anywhere else) may use <threads.h> too. A file
+            // that cannot be read is left for Clang to report.
+            uses_threads |= ir_input_uses_threads(input);
+            clang_args.push(input.into());
             continue;
         }
         let source = match read_source(input) {
@@ -46,7 +68,7 @@ pub(crate) fn link(options: &Options) -> i32 {
             let _ = writeln!(io::stderr(), "{}: error: {err}", ll.display());
             return 1;
         }
-        clang_inputs.push(ll);
+        clang_args.push(ll.into());
     }
     let target = options.pp.target;
     let mut extra = Vec::new();
@@ -61,7 +83,7 @@ pub(crate) fn link(options: &Options) -> i32 {
                 );
                 return 1;
             };
-            let status = compile_runtime(options, &runtime, &scratch, &mut clang_inputs);
+            let status = compile_runtime(options, &runtime, &scratch, &mut clang_args);
             if status != 0 {
                 return status;
             }
@@ -82,8 +104,7 @@ pub(crate) fn link(options: &Options) -> i32 {
     // The IR is this compiler's output: Clang's warnings about it are not
     // the user's.
     command.arg("-w");
-    command.args(&clang_inputs);
-    command.args(&options.link_args);
+    command.args(&clang_args);
     command.args(&extra);
     command.arg("-o").arg(output);
     match command.status() {
@@ -112,7 +133,7 @@ fn compile_runtime(
     options: &Options,
     runtime: &Path,
     scratch: &Scratch,
-    clang_inputs: &mut Vec<PathBuf>,
+    clang_args: &mut Vec<std::ffi::OsString>,
 ) -> i32 {
     let path = runtime.display().to_string();
     let source = match read_source(&path) {
@@ -135,24 +156,66 @@ fn compile_runtime(
         let _ = writeln!(io::stderr(), "{}: error: {err}", ll.display());
         return 1;
     }
-    clang_inputs.push(ll);
+    clang_args.push(ll.into());
     0
 }
 
-/// A C source file: compiled by this compiler. Anything else (`.ll`, `.o`,
-/// `.a`, `.so`, `.obj`, `.lib`, ...) goes to Clang unchanged.
+/// A C source file, or preprocessed C written by `hcc -E` (`.i`):
+/// compiled by this compiler. Line markers from other preprocessors
+/// (`# 1 "main.c"`) are not directives hcc accepts. Anything else (`.ll`,
+/// `.o`, `.a`, `.so`, `.obj`, `.lib`, ...) goes to Clang unchanged.
 pub(crate) fn is_c_source(path: &str) -> bool {
     Path::new(path)
         .extension()
         .is_some_and(|ext| ext == "c" || ext == "i")
 }
 
-/// Whether the IR declares a C11 `<threads.h>` function.
+/// Whether `path` is a textual LLVM IR input (`.ll`) that declares a C11
+/// `<threads.h>` function. Objects and archives are not read.
+fn ir_input_uses_threads(path: &str) -> bool {
+    Path::new(path).extension().is_some_and(|ext| ext == "ll")
+        && std::fs::read_to_string(path).is_ok_and(|ir| declares_c11_threads(&ir))
+}
+
+/// The functions of C11 `<threads.h>` (7.26.2 to 7.26.6).
+const C11_THREAD_FUNCTIONS: [&str; 25] = [
+    "call_once",
+    "cnd_broadcast",
+    "cnd_destroy",
+    "cnd_init",
+    "cnd_signal",
+    "cnd_timedwait",
+    "cnd_wait",
+    "mtx_destroy",
+    "mtx_init",
+    "mtx_lock",
+    "mtx_timedlock",
+    "mtx_trylock",
+    "mtx_unlock",
+    "thrd_create",
+    "thrd_current",
+    "thrd_detach",
+    "thrd_equal",
+    "thrd_exit",
+    "thrd_join",
+    "thrd_sleep",
+    "thrd_yield",
+    "tss_create",
+    "tss_delete",
+    "tss_get",
+    "tss_set",
+];
+
+/// Whether the IR declares (uses without defining) a C11 `<threads.h>`
+/// function.
 pub(crate) fn declares_c11_threads(ir: &str) -> bool {
-    const PREFIXES: [&str; 5] = ["@thrd_", "@mtx_", "@cnd_", "@tss_", "@call_once("];
     ir.lines()
         .filter(|line| line.starts_with("declare "))
-        .any(|line| PREFIXES.iter().any(|prefix| line.contains(prefix)))
+        .filter_map(|line| {
+            let name = &line[line.find('@')? + 1..];
+            Some(&name[..name.find('(')?])
+        })
+        .any(|name| C11_THREAD_FUNCTIONS.contains(&name))
 }
 
 /// Whether the target needs `lib/threads.c`: its C library has no
@@ -188,22 +251,42 @@ fn threads_runtime() -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
-/// Temporary `.ll` files, removed when dropped.
+/// Temporary `.ll` files in a directory this run created, removed when
+/// dropped.
 struct Scratch {
     dir: PathBuf,
 }
 
 impl Scratch {
-    fn new() -> Self {
+    /// A new directory under the temporary directory. `create_dir` fails if
+    /// the path exists, so the directory is always this run's own; on Unix
+    /// only the user can read it.
+    fn new() -> io::Result<Self> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "hcc-link-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::create_dir_all(&dir);
-        Self { dir }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.subsec_nanos());
+        let mut last_err = None;
+        for _ in 0..100 {
+            let dir = std::env::temp_dir().join(format!(
+                "hcc-link-{}-{nanos:x}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            match builder.create(&dir) {
+                Ok(()) => return Ok(Self { dir }),
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => last_err = Some(err),
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| io::Error::other("no free name")))
     }
 
     fn path(&self, index: usize, input: &str) -> PathBuf {
@@ -247,7 +330,44 @@ mod tests {
             "define i32 @thrd_create(ptr %0) {\n}\n"
         ));
         assert!(!declares_c11_threads("declare i32 @call_once_more(ptr)\n"));
+        // Only the C11 names: an application's `thrd_Custom` is not one.
+        assert!(!declares_c11_threads("declare i32 @thrd_Custom()\n"));
+        assert!(!declares_c11_threads("declare i32 @mtx_lockless(ptr)\n"));
+        assert!(declares_c11_threads("declare void @thrd_yield()\n"));
         assert!(!declares_c11_threads("declare i32 @printf(ptr, ...)\n"));
+    }
+
+    #[test]
+    fn thread_functions_in_ir_inputs() {
+        let dir = Scratch::new().unwrap();
+        let worker = dir.dir.join("worker.ll");
+        std::fs::write(&worker, "declare i32 @thrd_create(ptr, ptr, ptr)\n").unwrap();
+        let plain = dir.dir.join("plain.ll");
+        std::fs::write(&plain, "declare i32 @puts(ptr)\n").unwrap();
+        // An object is passed through unread, whatever it holds.
+        let object = dir.dir.join("worker.o");
+        std::fs::write(&object, "declare i32 @thrd_create(ptr, ptr, ptr)\n").unwrap();
+        assert!(ir_input_uses_threads(&worker.display().to_string()));
+        assert!(!ir_input_uses_threads(&plain.display().to_string()));
+        assert!(!ir_input_uses_threads(&object.display().to_string()));
+        assert!(!ir_input_uses_threads("missing.ll"));
+    }
+
+    #[test]
+    fn scratch_directories_are_new_and_private() {
+        let first = Scratch::new().unwrap();
+        let second = Scratch::new().unwrap();
+        assert_ne!(first.dir, second.dir);
+        assert!(first.dir.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&first.dir).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+        let dir = first.dir.clone();
+        drop(first);
+        assert!(!dir.exists());
     }
 
     #[test]

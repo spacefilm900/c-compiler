@@ -53,7 +53,8 @@ Keep the directory layout: hcc finds its own headers in `include/` and the
 threads runtime in `lib/` next to its `bin/` directory.
 
 On macOS, a browser download is quarantined. If macOS refuses to open
-`hcc`, clear the flag once: `xattr -d com.apple.quarantine bin/hcc`.
+`hcc`, clear the flag once, from the directory you unpacked it in:
+`xattr -d com.apple.quarantine hcc-1.0.0-macos-arm64/bin/hcc`.
 
 ### From source
 
@@ -117,7 +118,9 @@ or let hcc do it:
 hcc --link -O2 main.c util.c -lm -o prog
 ```
 
-With `--link`, every `.c` (or `.i`) input is compiled by hcc and every other
+With `--link`, every `.c` input, and every `.i` file written by `hcc -E`, is
+compiled by hcc. (Output from another preprocessor starts with line
+markers such as `# 1 "main.c"`, which hcc does not accept.) Every other
 input (`.ll`, `.o`, `.a`, `.so`, `.obj`, `.lib`) goes to Clang as it is, so a
 program can mix hcc's code with objects from another compiler. hcc runs
 `$HCC_CLANG` if it is set, else `clang` from `PATH`, with the target's LLVM
@@ -149,14 +152,15 @@ standard output (or `-o FILE.i`).
 | `-target TRIPLE`, `--target=TRIPLE` | Compile for another target (section 6) |
 | `-isysroot DIR` | Take the C library headers from `DIR/usr/include` (`DIR/include` for Windows); on macOS the SDK, which `--link` passes to Clang too |
 | `-fno-caret-diagnostics` | Print messages without the source line and caret |
-| `--time-phases` | Print the front end's phase times as JSON on standard error |
+| `--time-phases` | Print the front end's phase times as JSON on standard error (not with `--link`) |
 | `--version` | Version, commit, default target and supported targets |
 | `-h`, `--help` | Help |
 
 With `--link` only, these go to Clang: `-O0`, `-O1`, `-O2`, `-O3`, `-Os`,
 `-Oz`, `-l NAME`, `-lNAME`, `-L DIR`, `-LDIR`, `-Wl,ARGS`, `-pthread` and
 `-static`. Without `--link` they are an error, because there is nothing to
-pass them to.
+pass them to. Inputs and these options reach Clang in the order you wrote
+them, so `-Wl,--whole-archive lib.a -Wl,--no-whole-archive` works.
 
 hcc defines the usual predefined macros for the target: `__STDC__`,
 `__STDC_VERSION__` (`201112L`), `__STDC_HOSTED__`, and the target's own,

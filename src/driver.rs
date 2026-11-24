@@ -128,12 +128,23 @@ pub(crate) struct Options {
     pub(crate) dialect: Dialect,
     /// `--link`: compile, then link an executable with clang.
     pub(crate) link: bool,
-    /// `-O`, `-l`, `-L`, `-Wl,` and the other options passed to clang
-    /// with `--link`, in order.
-    pub(crate) link_args: Vec<String>,
+    /// With `--link`: the inputs and the clang options (`-O`, `-l`, `-L`,
+    /// `-Wl,` and the others) together, in
+    /// command-line order, because a linker reads them in order
+    /// (`-Wl,--whole-archive lib.a -Wl,--no-whole-archive`).
+    pub(crate) link_line: Vec<LinkArg>,
     pub(crate) sysroot: Option<PathBuf>,
     /// Print the source line and a caret under each diagnostic.
     caret: bool,
+}
+
+/// One item of the `--link` command line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LinkArg {
+    /// An input file.
+    File(String),
+    /// A clang option, with its separate value if it has one (`-l m`).
+    Option(Vec<String>),
 }
 
 impl Options {
@@ -267,18 +278,50 @@ fn report(options: &Options, source: &str, path: &str, text: &str, diag: &crate:
 
 /// The source line `line` (1-based) of `text` and, under it, a caret at
 /// byte column `column` (1-based). A tab before the column stays a tab so
-/// the caret lines up. `None` when the position is not in the text.
+/// the caret lines up, and each other character is as many spaces as the
+/// cells it takes on a terminal (two for East Asian wide characters, none
+/// for combining marks). `None` when the position is not in the text.
 pub(crate) fn caret_snippet(text: &str, line: usize, column: usize) -> Option<String> {
     if line == 0 || column == 0 {
         return None;
     }
     let source_line = text.split('\n').nth(line - 1)?.trim_end_matches('\r');
     let before = source_line.get(..column - 1)?;
-    let pad: String = before
-        .chars()
-        .map(|ch| if ch == '\t' { '\t' } else { ' ' })
-        .collect();
+    let mut pad = String::new();
+    for ch in before.chars() {
+        if ch == '\t' {
+            pad.push('\t');
+        } else {
+            pad.extend(std::iter::repeat_n(' ', display_width(ch)));
+        }
+    }
     Some(format!("{source_line}\n{pad}^"))
+}
+
+/// Terminal cells for `ch`: 0 for combining marks and zero-width
+/// characters, 2 for the East Asian Wide and Fullwidth blocks (Unicode
+/// Standard Annex #11) and emoji, else 1.
+fn display_width(ch: char) -> usize {
+    let code = ch as u32;
+    let zero = matches!(code,
+        0x0300..=0x036F | 0x0483..=0x0489 | 0x0591..=0x05BD | 0x0610..=0x061A
+        | 0x064B..=0x065F | 0x0E31 | 0x0E34..=0x0E3A | 0x1AB0..=0x1AFF
+        | 0x1DC0..=0x1DFF | 0x200B..=0x200F | 0x20D0..=0x20FF | 0xFE00..=0xFE0F
+        | 0xFE20..=0xFE2F);
+    if zero {
+        return 0;
+    }
+    let wide = matches!(code,
+        0x1100..=0x115F | 0x2E80..=0x303E | 0x3041..=0x33FF | 0x3400..=0x4DBF
+        | 0x4E00..=0x9FFF | 0xA000..=0xA4CF | 0xA960..=0xA97F | 0xAC00..=0xD7A3
+        | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6
+        | 0x1F300..=0x1F64F | 0x1F900..=0x1F9FF | 0x20000..=0x2FFFD
+        | 0x30000..=0x3FFFD);
+    if wide {
+        2
+    } else {
+        1
+    }
 }
 
 /// Exit status for a diagnostic that stopped compilation.
@@ -384,6 +427,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut sysroot: Option<PathBuf> = None;
     let mut link = false;
     let mut link_args = Vec::new();
+    let mut link_line = Vec::new();
     let mut caret = true;
     let mut index = 1;
     while index < args.len() {
@@ -439,15 +483,20 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Options, String> {
                     pp.definitions.push(CliMacro::Undef(name));
                     continue;
                 } else if let Some(takes_value) = link_option(arg) {
-                    link_args.push(arg.clone());
+                    let mut option = vec![arg.clone()];
                     if takes_value {
-                        link_args.push(value_of(args, &mut index, arg)?);
+                        option.push(value_of(args, &mut index, arg)?);
+                    }
+                    link_args.extend(option.iter().cloned());
+                    link_line.push(LinkArg::Option(option));
+                    if takes_value {
                         continue;
                     }
                 } else if arg.starts_with('-') {
                     return Err(format!("unknown option '{arg}'"));
                 } else {
                     inputs.push(arg.clone());
+                    link_line.push(LinkArg::File(arg.clone()));
                 }
             }
         }
@@ -465,6 +514,9 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Options, String> {
         }
         if output.is_none() {
             return Err("--link needs an output program name: -o PROGRAM".to_string());
+        }
+        if time_phases {
+            return Err("--time-phases cannot be combined with --link".to_string());
         }
     } else {
         if let Some(flag) = link_args.first() {
@@ -494,7 +546,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Options, String> {
         pp,
         dialect,
         link,
-        link_args,
+        link_line,
         sysroot,
         caret,
     })
@@ -994,6 +1046,8 @@ mod tests {
         assert!(err(&["-O2", "a.c", "-o", "a.ll"]).contains("needs --link"));
         assert!(err(&["--link", "a.c"]).contains("-o PROGRAM"));
         assert!(err(&["--link", "-E", "a.c", "-o", "a"]).contains("cannot be combined"));
+        assert!(err(&["--link", "--time-phases", "a.c", "-o", "a"])
+            .contains("--time-phases cannot be combined with --link"));
         assert!(err(&["-target", "mips-linux-gnu", "a.c", "-o", "a.ll"])
             .contains("x86_64-pc-windows-msvc"));
         // A bare run prints the short usage.
@@ -1021,17 +1075,21 @@ mod tests {
         .expect("parsed");
         assert!(options.link);
         assert_eq!(options.inputs, ["main.c", "util.ll", "lib.a"]);
+        let file = |name: &str| LinkArg::File(name.to_string());
+        let option =
+            |parts: &[&str]| LinkArg::Option(parts.iter().map(|p| p.to_string()).collect());
         assert_eq!(
-            options.link_args,
+            options.link_line,
             [
-                "-O2",
-                "-l",
-                "m",
-                "-lz",
-                "-L",
-                "/opt/lib",
-                "-Wl,--as-needed",
-                "-pthread"
+                file("main.c"),
+                file("util.ll"),
+                option(&["-O2"]),
+                option(&["-l", "m"]),
+                option(&["-lz"]),
+                option(&["-L", "/opt/lib"]),
+                option(&["-Wl,--as-needed"]),
+                option(&["-pthread"]),
+                file("lib.a"),
             ]
         );
         assert_eq!(options.output.as_deref(), Some("prog"));
@@ -1044,10 +1102,20 @@ mod tests {
             caret_snippet(text, 2, 10).as_deref(),
             Some("\tint b = c;\n\t        ^")
         );
-        // Columns count bytes; the caret counts characters.
+        // Columns count bytes; the caret counts terminal cells.
         assert_eq!(
             caret_snippet(text, 3, 10).as_deref(),
             Some("int é = d;\n        ^")
+        );
+        let wide = "/* 界 */ x;\n";
+        assert_eq!(
+            caret_snippet(wide, 1, 11).as_deref(),
+            Some("/* 界 */ x;\n         ^")
+        );
+        let combining = "/* e\u{301} */ y;\n";
+        assert_eq!(
+            caret_snippet(combining, 1, 11).as_deref(),
+            Some("/* e\u{301} */ y;\n        ^")
         );
         assert_eq!(
             caret_snippet(text, 1, 7).as_deref(),
@@ -1058,23 +1126,42 @@ mod tests {
         assert!(caret_snippet(text, 1, 40).is_none());
     }
 
+    /// Whether `clang` can be the backend: it compiles a known-good module
+    /// with opaque pointers (LLVM 15 and later). An older Clang, or none,
+    /// skips the `--link` test rather than failing it.
+    fn clang_reads_opaque_pointer_ir(clang: &str, dir: &std::path::Path) -> bool {
+        let probe = dir.with_extension("probe.ll");
+        let object = dir.with_extension("probe.o");
+        std::fs::write(
+            &probe,
+            "define ptr @f(ptr %p) {\n  store ptr null, ptr %p\n  ret ptr %p\n}\n",
+        )
+        .unwrap();
+        let ok = std::process::Command::new(clang)
+            .args(["-w", "-c"])
+            .arg(&probe)
+            .arg("-o")
+            .arg(&object)
+            .output()
+            .is_ok_and(|done| done.status.success());
+        let _ = std::fs::remove_file(&probe);
+        let _ = std::fs::remove_file(&object);
+        ok
+    }
+
     /// `--link` end to end, when Clang is installed: a program from a C
     /// file and an IR file, and a `<threads.h>` program.
     #[test]
     fn link_builds_and_runs_programs() {
-        let clang = std::env::var("HCC_CLANG").unwrap_or_else(|_| "clang".to_string());
-        if std::process::Command::new(&clang)
-            .arg("--version")
-            .output()
-            .is_err()
-        {
-            eprintln!("skipped: no {clang}");
-            return;
-        }
         if crate::target::Target::host() != crate::target::Target::X86_64Linux {
             return;
         }
+        let clang = std::env::var("HCC_CLANG").unwrap_or_else(|_| "clang".to_string());
         let (src, out) = temp_paths();
+        if !clang_reads_opaque_pointer_ir(&clang, &out) {
+            eprintln!("skipped: {clang} cannot compile opaque-pointer IR");
+            return;
+        }
         let helper = out.with_extension("helper.c");
         let helper_ll = out.with_extension("helper.ll");
         let program = out.with_extension("prog");

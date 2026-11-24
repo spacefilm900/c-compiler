@@ -41,5 +41,13 @@ Each release lists a SHA-256 checksum for every archive in `SHA256SUMS`,
 and each archive has its own `.sha256` file. Check them before use:
 
 ```sh
-sha256sum -c SHA256SUMS --ignore-missing
+sha256sum -c SHA256SUMS --ignore-missing     # Linux
+shasum -a 256 -c SHA256SUMS --ignore-missing # macOS
+```
+
+On Windows, in PowerShell, compare the printed hash with the archive's line
+in `SHA256SUMS`:
+
+```powershell
+Get-FileHash -Algorithm SHA256 hcc-1.0.0-windows-x86_64.zip
 ```
