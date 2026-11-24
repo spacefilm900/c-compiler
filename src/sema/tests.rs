@@ -2208,3 +2208,60 @@ struct Outer { char lead; struct Inner inner; char tail; };
             .contains("bit-fields in a packed or aligned")
     );
 }
+
+#[test]
+fn quickjs_gnu_extensions_and_their_limits() {
+    use crate::Dialect::{Gnu11, C11};
+    let gnu_err = |source: &str| sema_dialect(source, Gnu11).unwrap_err();
+    // A struct or union cast to its own type: GNU only.
+    let cast = "struct S { int a; }; int f(struct S s) { return ((const struct S)s).a; }";
+    assert!(sema_dialect(cast, Gnu11).is_ok());
+    assert!(sema_dialect(cast, C11)
+        .unwrap_err()
+        .contains("is not supported"));
+    assert!(gnu_err(
+        "struct S { int a; }; struct T { int a; }; \
+                     int f(struct S s) { return ((struct T)s).a; }"
+    )
+    .contains("is not supported"));
+    // A forward-named enum must end up with the type it was assumed to have.
+    assert!(sema_dialect("typedef enum E E; enum E { A, B }; E e = B;", Gnu11).is_ok());
+    assert!(sema_dialect("typedef enum E E; enum E { A };", C11)
+        .unwrap_err()
+        .contains("incomplete enum"));
+    assert!(gnu_err("typedef enum E E; enum E { A = -1 };")
+        .contains("was used before its definition as 'unsigned int', but its type is 'int'"));
+    // Range designators: constant nonnegative bounds, a nonempty range, and
+    // a value without side effects.
+    assert!(sema_dialect("int a[4] = { [1 ... 2] = 3 };", Gnu11).is_ok());
+    assert!(
+        gnu_err("int f(void); void g(void) { int a[3] = { [0 ... 2] = f() }; }")
+            .contains("must have no side effects")
+    );
+    assert!(gnu_err("int a[4] = { [2 ... 1] = 3 };").contains("empty range designator"));
+    assert!(gnu_err("int a[4] = { [-1 ... 1] = 3 };").contains("nonnegative integer constant"));
+    assert!(gnu_err("void g(int n) { int a[4] = { [0 ... n] = 3 }; }")
+        .contains("nonnegative integer constant"));
+    assert!(gnu_err("int a[1 << 22] = { [0 ... (1 << 21)] = 1 };").contains("too large"));
+    assert!(sema_dialect("int a[4] = { [1 ... 2] = 3 };", C11).is_err());
+    // Zero-size records are GNU only.
+    assert!(sema_dialect("struct Z { char a[0]; }; struct Z z = {};", Gnu11).is_ok());
+    assert!(sema_dialect("struct Z { char a[0]; };", C11)
+        .unwrap_err()
+        .contains("array size must be positive"));
+    // Array parameter qualifiers and `static`, in both dialects.
+    sema_ok("int f(int a[static const 2]) { return a[1]; }");
+    assert!(sema_err("int f(int a[const 2]) { a = 0; return 0; }").contains("const"));
+    assert!(sema_err("int f(int a[static]);").contains("requires a size"));
+    assert!(sema_err("int f(int a[2][static 2]);").contains("outermost array type"));
+    assert!(sema_err("int a[static 2];").contains("outermost array type"));
+    // asm statements: no operands, no goto.
+    assert!(sema_dialect(
+        "void f(void) { __asm__ volatile(\"\" ::: \"memory\"); }",
+        C11
+    )
+    .is_ok());
+    assert!(gnu_err("void f(int x) { asm(\"\" : : \"r\"(x)); }").contains("operands"));
+    assert!(gnu_err("void f(void) { asm(\"%0\" :::); }").contains("operand references"));
+    assert!(gnu_err("void f(void) { asm goto(\"\" :::: l); l:; }").contains("asm goto"));
+}

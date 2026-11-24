@@ -180,7 +180,10 @@ impl Parser<'_> {
                 ));
             }
         }
-        if size == 0 {
+        // GNU C gives an empty struct, or one of only zero-length arrays,
+        // size 0 (GCC manual, "Structures with No Members" and "Arrays of
+        // Length Zero"); ISO C has no such type.
+        if size == 0 && !self.dialect.gnu() {
             return Err(self.error_at(line, column, format!("{word} '{label}' has size 0")));
         }
         if irregular {
@@ -310,6 +313,7 @@ impl Parser<'_> {
             };
             return match self.lookup_tag(&tag) {
                 Some(TagEntry::Enum(base)) => Ok((line, column, base)),
+                Some(TagEntry::EnumForward) => Ok((line, column, nonnegative_enum_type())),
                 Some(TagEntry::EnumOpen) => Err(self.error_at(
                     line,
                     column,
@@ -320,11 +324,26 @@ impl Parser<'_> {
                     column,
                     format!("'{tag}' defined as a different tag type"),
                 )),
+                None if self.dialect.gnu() => {
+                    self.tags
+                        .last_mut()
+                        .expect("tag scope")
+                        .insert(tag, TagEntry::EnumForward);
+                    Ok((line, column, nonnegative_enum_type()))
+                }
                 None => Err(self.error_at(line, column, format!("incomplete enum '{tag}'"))),
             };
         }
+        let mut forward = false;
         if let Some(tag) = &tag {
             match self.lookup_tag_current(tag) {
+                Some(TagEntry::EnumForward) => {
+                    forward = true;
+                    self.tags.last_mut().expect("tag scope").insert(
+                        tag.clone(),
+                        fixed.map_or(TagEntry::EnumOpen, TagEntry::Enum),
+                    );
+                }
                 Some(TagEntry::Enum(_) | TagEntry::EnumOpen) => {
                     return Err(self.error_at(
                         line,
@@ -350,6 +369,18 @@ impl Parser<'_> {
         self.bump();
         let base = self.parse_enumerators(fixed)?;
         self.expect_skip(TokenKind::RBrace, "'}'")?;
+        if forward && base != nonnegative_enum_type() {
+            return Err(self.error_at(
+                line,
+                column,
+                format!(
+                    "enum '{}' was used before its definition as '{}', but its type is '{}'",
+                    tag.as_deref().unwrap_or_default(),
+                    crate::ast::CType::Int(nonnegative_enum_type()).display(),
+                    crate::ast::CType::Int(base).display()
+                ),
+            ));
+        }
         if let Some(tag) = &tag {
             self.tags
                 .last_mut()
@@ -433,7 +464,11 @@ impl Parser<'_> {
             break;
         }
         if min >= i128::from(i32::MIN) && max <= i128::from(i32::MAX) {
-            return Ok(TypeName::Int);
+            return Ok(if min >= 0 {
+                nonnegative_enum_type()
+            } else {
+                TypeName::Int
+            });
         }
         let base = if min < 0 {
             if min < i128::from(i64::MIN) || max > i128::from(i64::MAX) {
@@ -979,7 +1014,10 @@ impl Parser<'_> {
                 }
                 continue;
             }
-            if kind == RecordKind::Struct && field.ty.flexible_carrier() {
+            // GCC documents a struct ending in a flexible array member as a
+            // member of another struct as an extension ("Arrays of Length
+            // Zero"); QuickJS nests its allocator block header that way.
+            if kind == RecordKind::Struct && field.ty.flexible_carrier() && !self.dialect.gnu() {
                 return Err(self.error_at(
                     line,
                     column,
@@ -1117,4 +1155,20 @@ fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
         (a, b) = (b, a % b);
     }
     a
+}
+
+/// The type compatible with an enumerated type whose values are all
+/// nonnegative and fit in `int` (C11 6.7.2.2p4 leaves the choice to the
+/// implementation). GCC documents `unsigned int` ("Structures, Unions,
+/// Enumerations, and Bit-Fields" in its implementation-defined behavior
+/// chapter), and Clang agrees for every target here except MSVC Windows,
+/// where it is `int`. The constants themselves are `int` (C11 6.4.4.3p2).
+/// The choice shows in an enum bit-field's signedness and in arithmetic on
+/// enum objects (`e - 1 > 0` for `e == 0`).
+pub(super) fn nonnegative_enum_type() -> TypeName {
+    if crate::target::current().is_msvc() {
+        TypeName::Int
+    } else {
+        TypeName::UInt
+    }
 }

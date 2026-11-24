@@ -1055,6 +1055,17 @@ pub enum Stmt {
         line: usize,
         column: usize,
     },
+    /// A GNU `asm` statement without operands (GCC manual, "Basic Asm" and
+    /// "Extended Asm"): `asm("nop");` or `asm volatile("pause" ::: "memory");`.
+    /// `template` is already in LLVM inline-asm form (LLVM LangRef, "Inline
+    /// Assembler Expressions"): `$` doubled, and for extended asm `%%`
+    /// turned into `%`. `clobbers` are the clobber strings as written.
+    Asm {
+        template: Vec<u8>,
+        clobbers: Vec<String>,
+        line: usize,
+        column: usize,
+    },
 }
 
 impl Stmt {
@@ -1077,7 +1088,8 @@ impl Stmt {
             | Stmt::Continue { line, column }
             | Stmt::Label { line, column, .. }
             | Stmt::Goto { line, column, .. }
-            | Stmt::GotoPtr { line, column, .. } => (*line, *column),
+            | Stmt::GotoPtr { line, column, .. }
+            | Stmt::Asm { line, column, .. } => (*line, *column),
         }
     }
 }

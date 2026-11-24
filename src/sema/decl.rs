@@ -1309,6 +1309,7 @@ pub(super) fn number_stmt(stmt: &mut Stmt, next: &mut u32, prefix: &str) {
         | Stmt::Break { .. }
         | Stmt::Continue { .. }
         | Stmt::Goto { .. }
-        | Stmt::GotoPtr { .. } => {}
+        | Stmt::GotoPtr { .. }
+        | Stmt::Asm { .. } => {}
     }
 }

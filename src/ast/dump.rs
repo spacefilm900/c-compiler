@@ -271,6 +271,11 @@ impl Dumper {
                 self.put_at(indent, "goto *", pos);
                 self.expr(expr, indent + 1, None);
             }
+            Stmt::Asm { template, .. } => self.put_at(
+                indent,
+                &format!("asm {:?}", String::from_utf8_lossy(template)),
+                pos,
+            ),
         }
     }
 

@@ -82,7 +82,7 @@ impl Sema<'_> {
         self.overridden.clear();
         let mut stores = Vec::new();
         self.fill_object(&ty, init, 0, &mut stores, line, column)?;
-        if stores.is_empty() && !ty.is_array() {
+        if stores.is_empty() && !ty.is_array() && ty.size() != Some(0) {
             return self.err(line, column, "empty initializer list");
         }
         Ok((ty, stores))
@@ -427,6 +427,11 @@ impl Sema<'_> {
             if !items.is_empty() && !fields.is_empty() {
                 self.select_member(base, key, 0, stores);
             }
+        }
+        // A GNU zero-size record (no members, or only zero-length arrays)
+        // has nothing to initialize; `{}` reaches here as `{0}`.
+        if ty.size() == Some(0) {
+            return Ok(());
         }
         let mut pos = 0usize;
         for field in &fields {

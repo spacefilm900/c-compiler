@@ -292,7 +292,7 @@ impl Parser<'_> {
         }
         let mut items = Vec::new();
         loop {
-            items.push(self.parse_init_item()?);
+            items.extend(self.parse_init_items()?);
             if self.match_kind(TokenKind::Comma) {
                 if self.current().kind == TokenKind::RBrace {
                     break;
@@ -309,49 +309,141 @@ impl Parser<'_> {
         })
     }
 
-    pub(super) fn parse_init_item(&mut self) -> Result<Init, Diagnostic> {
+    /// One item of a brace list. A GNU range designator `[first ... last]`
+    /// (GCC manual, "Designated Inits") stands for one designated item per
+    /// index, so it comes back as that many items.
+    pub(super) fn parse_init_items(&mut self) -> Result<Vec<Init>, Diagnostic> {
         if !matches!(self.current().kind, TokenKind::Dot | TokenKind::LBrack) {
-            return self.parse_initializer();
+            return Ok(vec![self.parse_initializer()?]);
         }
         let line = self.current().line;
         let column = self.current().column;
-        let mut designators = Vec::new();
+        let mut parts = Vec::new();
         while matches!(self.current().kind, TokenKind::Dot | TokenKind::LBrack) {
-            designators.push(self.parse_designator()?);
+            parts.push(self.parse_designator()?);
         }
         self.expect_skip(TokenKind::Assign, "'='")?;
         let init = self.parse_initializer()?;
-        Ok(Init::Designated {
-            designators,
-            init: Box::new(init),
-            line,
-            column,
-        })
+        let ranged = parts
+            .iter()
+            .any(|part| matches!(part, DesignatorPart::Range { .. }));
+        if ranged && !init_repeatable(&init) {
+            return Err(self.error_at(
+                line,
+                column,
+                "a range designator's value must have no side effects",
+            ));
+        }
+        let mut chains: Vec<Vec<Designator>> = vec![Vec::new()];
+        for part in parts {
+            match part {
+                DesignatorPart::One(designator) => {
+                    chains
+                        .iter_mut()
+                        .for_each(|chain| chain.push(designator.clone()));
+                }
+                DesignatorPart::Range {
+                    first,
+                    last,
+                    ty,
+                    line,
+                    column,
+                } => {
+                    let count = (last - first + 1) as usize;
+                    if chains.len().saturating_mul(count) > RANGE_DESIGNATOR_LIMIT {
+                        return Err(self.error_at(line, column, "range designator is too large"));
+                    }
+                    chains = chains
+                        .into_iter()
+                        .flat_map(|chain| {
+                            (first..=last).map(move |index| {
+                                let mut chain = chain.clone();
+                                chain.push(Designator::Index {
+                                    expr: Expr::int(index, ty, line, column),
+                                    line,
+                                    column,
+                                });
+                                chain
+                            })
+                        })
+                        .collect();
+                }
+            }
+        }
+        Ok(chains
+            .into_iter()
+            .map(|designators| Init::Designated {
+                designators,
+                init: Box::new(init.clone()),
+                line,
+                column,
+            })
+            .collect())
     }
 
-    pub(super) fn parse_designator(&mut self) -> Result<Designator, Diagnostic> {
+    pub(super) fn parse_designator(&mut self) -> Result<DesignatorPart, Diagnostic> {
         if self.match_kind(TokenKind::Dot) {
             if self.current().kind != TokenKind::Ident {
                 return Err(self.error("expected a member name"));
             }
             let name = self.advance();
-            return Ok(Designator::Field {
+            return Ok(DesignatorPart::One(Designator::Field {
                 name: name.spelling,
                 line: name.line,
                 column: name.column,
-            });
+            }));
         }
         let bracket = self.advance();
         let expr = self.parse_conditional()?;
+        if self.current().kind == TokenKind::Ellipsis && self.dialect.gnu() {
+            self.bump();
+            let last = self.parse_conditional()?;
+            self.expect_skip(TokenKind::RBrack, "']'")?;
+            let bound = |parser: &Self, expr: &Expr| {
+                eval_ice(expr, parser.env())
+                    .ok()
+                    .and_then(|value| u64::try_from(value.bits).ok().map(|bits| (bits, value.ty)))
+                    .filter(|(bits, ty)| {
+                        let width = ty.width();
+                        let negative = ty.is_signed()
+                            && width > 0
+                            && width <= 64
+                            && (bits >> (width - 1)) & 1 == 1;
+                        !negative && *bits <= i64::MAX as u64
+                    })
+            };
+            let (Some((first, ty)), Some((last, _))) = (bound(self, &expr), bound(self, &last))
+            else {
+                return Err(self.error_at(
+                    bracket.line,
+                    bracket.column,
+                    "range designator bounds must be nonnegative integer constant expressions",
+                ));
+            };
+            if last < first {
+                return Err(self.error_at(bracket.line, bracket.column, "empty range designator"));
+            }
+            return Ok(DesignatorPart::Range {
+                first,
+                last,
+                ty: if ty.is_signed() {
+                    TypeName::Long
+                } else {
+                    TypeName::ULong
+                },
+                line: bracket.line,
+                column: bracket.column,
+            });
+        }
         if self.current().kind == TokenKind::Ellipsis {
-            return Err(self.error("range designators are not supported"));
+            return Err(self.error("range designators are a GNU extension (-std=gnu11)"));
         }
         self.expect_skip(TokenKind::RBrack, "']'")?;
-        Ok(Designator::Index {
+        Ok(DesignatorPart::One(Designator::Index {
             expr,
             line: bracket.line,
             column: bracket.column,
-        })
+        }))
     }
 
     /// `sizeof (type-name)` when the parenthesis starts a type. Otherwise
@@ -1194,5 +1286,63 @@ impl Parser<'_> {
             ));
         }
         Ok(())
+    }
+}
+
+/// A parsed designator: ISO C's, or a GNU `[first ... last]` range with its
+/// folded bounds.
+pub(super) enum DesignatorPart {
+    One(Designator),
+    Range {
+        first: u64,
+        last: u64,
+        ty: TypeName,
+        line: usize,
+        column: usize,
+    },
+}
+
+/// Range designators expand to one item per index; this caps the expansion.
+const RANGE_DESIGNATOR_LIMIT: usize = 1 << 20;
+
+/// Whether an initializer may be repeated for every index of a range
+/// designator. GCC evaluates the value once, so a value that could have a
+/// side effect (a call, an assignment, `++`, a statement expression, a
+/// compound literal's object identity, `va_arg`) is rejected rather than
+/// evaluated once per element.
+fn init_repeatable(init: &Init) -> bool {
+    match init {
+        Init::Expr(expr) => expr_repeatable(expr),
+        Init::List { items, .. } => items.iter().all(init_repeatable),
+        Init::Designated { init, .. } => init_repeatable(init),
+    }
+}
+
+fn expr_repeatable(expr: &Expr) -> bool {
+    match expr {
+        Expr::Int { .. }
+        | Expr::Float { .. }
+        | Expr::Var { .. }
+        | Expr::Str { .. }
+        | Expr::LabelAddr { .. }
+        | Expr::Sizeof { .. } => true,
+        Expr::Bin { left, right, .. } | Expr::Comma { left, right, .. } => {
+            expr_repeatable(left) && expr_repeatable(right)
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } | Expr::Decay { expr, .. } => {
+            expr_repeatable(expr)
+        }
+        Expr::Index { base, index, .. } => expr_repeatable(base) && expr_repeatable(index),
+        Expr::Member { base, .. } => expr_repeatable(base),
+        Expr::Cond {
+            cond,
+            then_expr,
+            else_expr,
+            ..
+        } => expr_repeatable(cond) && expr_repeatable(then_expr) && expr_repeatable(else_expr),
+        Expr::CondShort {
+            cond, else_expr, ..
+        } => expr_repeatable(cond) && expr_repeatable(else_expr),
+        _ => false,
     }
 }

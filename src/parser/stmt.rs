@@ -114,6 +114,9 @@ impl Parser<'_> {
         if self.starts_declaration() {
             return Err(self.error("a declaration is not allowed as a statement"));
         }
+        if self.spec_word(&["__asm__", "__asm"]) || self.dialect.gnu() && self.spec_word(&["asm"]) {
+            return self.parse_asm_stmt();
+        }
         match self.current().kind {
             TokenKind::LBrace => Ok(Stmt::Compound(self.parse_compound()?)),
             TokenKind::KwReturn => self.parse_return(),
@@ -393,5 +396,100 @@ impl Parser<'_> {
             line: token.line,
             column: token.column,
         })
+    }
+}
+
+impl Parser<'_> {
+    /// `asm qualifiers ( template [: outputs [: inputs [: clobbers]]] ) ;`
+    /// (GCC manual, "Basic Asm" and "Extended Asm"). Operands and `asm goto`
+    /// are not supported; a template without operands is passed to LLVM.
+    fn parse_asm_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        let kw = self.advance();
+        loop {
+            if self.current().kind == TokenKind::KwVolatile
+                || self.current().kind == TokenKind::KwInline
+                || self.spec_word(&["__volatile__", "__volatile", "__inline__", "__inline"])
+            {
+                self.bump();
+                continue;
+            }
+            if self.current().kind == TokenKind::KwGoto {
+                return Err(self.error("asm goto is not supported"));
+            }
+            break;
+        }
+        self.expect_skip(TokenKind::LParen, "'('")?;
+        let raw = self.parse_asm_string("an asm template")?;
+        let mut extended = false;
+        let mut clobbers = Vec::new();
+        let mut sections = 0;
+        while self.current().kind == TokenKind::Colon {
+            self.bump();
+            extended = true;
+            sections += 1;
+            if sections <= 2 {
+                if !matches!(self.current().kind, TokenKind::Colon | TokenKind::RParen) {
+                    return Err(self.error("asm operands are not supported"));
+                }
+                continue;
+            }
+            if sections == 3 {
+                while self.current().kind == TokenKind::String {
+                    clobbers.push(
+                        String::from_utf8_lossy(&self.parse_asm_string("a clobber")?).into_owned(),
+                    );
+                    if !self.match_kind(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                continue;
+            }
+            return Err(self.error("asm goto labels are not supported"));
+        }
+        self.expect_skip(TokenKind::RParen, "')'")?;
+        self.expect_skip(TokenKind::Semi, "';'")?;
+        let mut template = Vec::with_capacity(raw.len());
+        let mut bytes = raw.iter().copied().peekable();
+        while let Some(byte) = bytes.next() {
+            match byte {
+                b'$' => template.extend_from_slice(b"$$"),
+                b'%' if extended => match bytes.next() {
+                    Some(b'%') => template.push(b'%'),
+                    _ => {
+                        return Err(self.error_at(
+                            kw.line,
+                            kw.column,
+                            "asm template operand references are not supported",
+                        ))
+                    }
+                },
+                _ => template.push(byte),
+            }
+        }
+        Ok(Stmt::Asm {
+            template,
+            clobbers,
+            line: kw.line,
+            column: kw.column,
+        })
+    }
+
+    fn parse_asm_string(&mut self, what: &str) -> Result<Vec<u8>, Diagnostic> {
+        if self.current().kind != TokenKind::String {
+            return Err(self.error(format!("expected a string literal for {what}")));
+        }
+        let mut bytes = Vec::new();
+        while self.current().kind == TokenKind::String {
+            let tok = self.advance();
+            if !matches!(lit_prefix(&tok.spelling), LitPrefix::None | LitPrefix::U8) {
+                return Err(self.error_at(
+                    tok.line,
+                    tok.column,
+                    format!("{what} must be a byte string literal"),
+                ));
+            }
+            bytes.extend(tok.bytes.expect("string token"));
+        }
+        Ok(bytes)
     }
 }
