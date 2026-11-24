@@ -48,6 +48,12 @@ sha256sum -c SHA256SUMS --ignore-missing     # Linux
 shasum -a 256 -c SHA256SUMS --ignore-missing # macOS
 ```
 
+Check that an `OK` line names the archive you downloaded: with
+`--ignore-missing`, a run that finds only other archives checks nothing
+you will use. Alternatively check the archive against its own `.sha256`
+file, for example
+`sha256sum -c hcc-1.0.0-linux-x86_64.tar.gz.sha256`.
+
 On Windows, in PowerShell, compare the printed hash with the archive's line
 in `SHA256SUMS`:
 

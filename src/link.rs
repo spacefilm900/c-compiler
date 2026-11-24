@@ -47,11 +47,19 @@ pub(crate) fn link(options: &Options) -> i32 {
             }
             LinkArg::File(input) => input,
         };
+        if is_foreign_source(input) {
+            let _ = writeln!(
+                io::stderr(),
+                "{input}: error: hcc --link takes C sources (.c, .i), LLVM IR, objects and \
+                 libraries; this file would be compiled by Clang, not hcc"
+            );
+            return 1;
+        }
         if !is_c_source(input) {
             // IR from hcc (or anywhere else) may use <threads.h> too. A file
             // that cannot be read is left for Clang to report.
             uses_threads |= ir_input_uses_threads(input);
-            clang_args.push(input.into());
+            clang_args.push(literal_path(input).into());
             continue;
         }
         let source = match read_source(input) {
@@ -170,6 +178,31 @@ pub(crate) fn is_c_source(path: &str) -> bool {
         .is_some_and(|ext| ext == "c" || ext == "i")
 }
 
+/// A source file in a language other than C that Clang would compile
+/// itself (C++, Objective-C, CUDA, OpenCL, headers, or preprocessed
+/// C++/Objective-C), so hcc would not check it. Assembly (`.s`, `.S`) and
+/// LLVM IR or bitcode are left to Clang, like objects and libraries.
+pub(crate) fn is_foreign_source(path: &str) -> bool {
+    const FOREIGN: [&str; 20] = [
+        "C", "cc", "cp", "cpp", "cxx", "c++", "CPP", "CC", "CXX", "ii", "m", "mm", "M", "mi",
+        "mii", "h", "hh", "hpp", "cu", "cl",
+    ];
+    Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| FOREIGN.contains(&ext))
+}
+
+/// `path` as Clang should see it: a relative name that starts with `@`
+/// would be read as a response file, so it becomes `./@...`.
+fn literal_path(path: &str) -> String {
+    if path.starts_with('@') {
+        format!("./{path}")
+    } else {
+        path.to_string()
+    }
+}
+
 /// Whether `path` is a textual LLVM IR input (`.ll`) that declares a C11
 /// `<threads.h>` function. Objects and archives are not read.
 fn ir_input_uses_threads(path: &str) -> bool {
@@ -211,11 +244,32 @@ const C11_THREAD_FUNCTIONS: [&str; 25] = [
 pub(crate) fn declares_c11_threads(ir: &str) -> bool {
     ir.lines()
         .filter(|line| line.starts_with("declare "))
-        .filter_map(|line| {
-            let name = &line[line.find('@')? + 1..];
-            Some(&name[..name.find('(')?])
-        })
-        .any(|name| C11_THREAD_FUNCTIONS.contains(&name))
+        .filter_map(|line| declared_name(&line[line.find('@')? + 1..]))
+        .any(|name| C11_THREAD_FUNCTIONS.contains(&name.as_str()))
+}
+
+/// The global name at the start of `text` (just after `@`): either a plain
+/// identifier ending at `(`, or a quoted one (`"thrd_yield"`) whose `\HH`
+/// escapes are decoded, as in the LLVM LangRef's identifier syntax.
+fn declared_name(text: &str) -> Option<String> {
+    let Some(quoted) = text.strip_prefix('"') else {
+        return Some(text[..text.find('(')?].to_string());
+    };
+    let body = &quoted[..quoted.find('"')?];
+    let bytes = body.as_bytes();
+    let mut name = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            let hex = body.get(index + 1..index + 3)?;
+            name.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            name.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(name).ok()
 }
 
 /// Whether the target needs `lib/threads.c`: its C library has no
@@ -274,12 +328,15 @@ impl Scratch {
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
-            let mut builder = std::fs::DirBuilder::new();
             #[cfg(unix)]
-            {
+            let builder = {
                 use std::os::unix::fs::DirBuilderExt;
+                let mut builder = std::fs::DirBuilder::new();
                 builder.mode(0o700);
-            }
+                builder
+            };
+            #[cfg(not(unix))]
+            let builder = std::fs::DirBuilder::new();
             match builder.create(&dir) {
                 Ok(()) => return Ok(Self { dir }),
                 Err(err) if err.kind() == io::ErrorKind::AlreadyExists => last_err = Some(err),
@@ -332,6 +389,11 @@ mod tests {
         assert!(!declares_c11_threads("declare i32 @call_once_more(ptr)\n"));
         // Only the C11 names: an application's `thrd_Custom` is not one.
         assert!(!declares_c11_threads("declare i32 @thrd_Custom()\n"));
+        // A quoted name is the same symbol (LangRef identifiers), escapes too.
+        assert!(declares_c11_threads("declare void @\"thrd_yield\"()\n"));
+        assert!(declares_c11_threads("declare void @\"thrd\\5Fyield\"()\n"));
+        assert!(!declares_c11_threads("declare void @\"thrd_Custom\"()\n"));
+        assert!(!declares_c11_threads("define void @\"thrd_yield\"() {\n"));
         assert!(!declares_c11_threads("declare i32 @mtx_lockless(ptr)\n"));
         assert!(declares_c11_threads("declare void @thrd_yield()\n"));
         assert!(!declares_c11_threads("declare i32 @printf(ptr, ...)\n"));
@@ -403,5 +465,23 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         assert!(threads_runtime().is_some());
+    }
+
+    #[test]
+    fn foreign_sources_and_response_file_names() {
+        for path in [
+            "main.cpp", "a.cc", "b.cxx", "c.C", "d.m", "e.mm", "f.h", "g.cu", "h.ii",
+        ] {
+            assert!(is_foreign_source(path), "{path}");
+        }
+        for path in [
+            "main.c", "main.i", "a.ll", "a.bc", "a.o", "libx.a", "x.so", "x.obj", "s.s", "s.S",
+            "noext",
+        ] {
+            assert!(!is_foreign_source(path), "{path}");
+        }
+        assert_eq!(literal_path("@main.o"), "./@main.o");
+        assert_eq!(literal_path("dir/@main.o"), "dir/@main.o");
+        assert_eq!(literal_path("main.o"), "main.o");
     }
 }

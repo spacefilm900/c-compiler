@@ -66,7 +66,8 @@ int main(void) {
 }
 ```
 
-Then:
+Then (from the release archive, use `bin/hcc` in place of `build/hcc`
+in both forms):
 
 ```sh
 build/hcc --link hello.c -o hello     # compile and link in one step
@@ -78,9 +79,10 @@ or in two steps:
 ```sh
 build/hcc hello.c -o hello.ll         # C to LLVM IR (target: arm64-apple-macos)
 clang hello.ll -o hello               # IR to a Mac program
+./hello
 ```
 
-This prints `Hello from the clean-room compiler on macOS`.
+Either way, `./hello` prints `Hello from the clean-room compiler on macOS`.
 Apple's Clang may warn `overriding the module target triple with
 arm64-apple-macosx26.0.0`: the `.ll` file says macOS 11.0 (the default
 minimum), and Clang uses the running system's version. The warning is

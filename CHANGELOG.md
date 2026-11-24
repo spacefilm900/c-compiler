@@ -46,6 +46,10 @@ milestones below summarise it, with the pull requests that made them.
 
 ### Changed
 
+- `hcc --link` refuses C++, Objective-C and other non-C sources that Clang
+  would compile itself, passes a file named `@...` as a file rather than
+  a Clang response file, and recognises quoted `<threads.h>` names in
+  `.ll` inputs.
 - `hcc --help` is grouped by topic and lists every option, the exit
   statuses and the targets.
 - Command-line errors say what is wrong (`hcc: error: unknown option

@@ -157,7 +157,10 @@ With `--link`, every `.c` input, and every `.i` file written by `hcc -E`, is
 compiled by hcc. (Output from another preprocessor starts with line
 markers such as `# 1 "main.c"`, which hcc does not accept.) Every other
 input (`.ll`, `.o`, `.a`, `.so`, `.obj`, `.lib`) goes to Clang as it is, so a
-program can mix hcc's code with objects from another compiler. hcc runs
+program can mix hcc's code with objects from another compiler. Sources in
+other languages that Clang would compile itself (C++ such as `.cpp`,
+Objective-C, headers) are refused, so nothing reaches the program
+unchecked by hcc. hcc runs
 `$HCC_CLANG` if it is set, else `clang` from `PATH`, with the target's LLVM
 triple. Clang never sees the C sources.
 

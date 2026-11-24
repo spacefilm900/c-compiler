@@ -77,7 +77,9 @@ design document was created wholly by the Grok Bot.
 
 ## Build and use
 
-`make` (or `cargo build --release`) writes `build/hcc`.
+`make` writes `build/hcc`: it runs `cargo build --release` and copies
+`target/release/hcc` there. With Cargo alone, use `target/release/hcc`
+in the commands below.
 `rust-toolchain.toml` pins Rust 1.85.1 with `rustfmt` and `clippy`.
 Emitting IR does not need Clang; running the result needs Clang/LLVM **18
 or newer** (opaque pointers, and LLVM 18's fix for passing `__int128` on
