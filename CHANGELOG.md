@@ -26,13 +26,20 @@ milestones below summarise it, with the pull requests that made them.
   supported target and the LLVM requirement.
 - `hcc --link`: compile each C source to IR and link it with the other
   inputs (`.ll`, `.o`, `.a`) into a program with Clang, passing `-O`, `-l`,
-  `-L`, `-Wl,` and `-pthread`. A program that uses `<threads.h>` gets
+  `-L`, `-Wl,` and `-pthread` in command-line order. A program that uses `<threads.h>` gets
   `-pthread`, and `lib/threads.c` where the C library has no `<threads.h>`
   (macOS, Windows, Linux before glibc 2.28), automatically.
 - Diagnostics show the source line and a caret under the column;
   `-fno-caret-diagnostics` turns that off.
-- A [user guide](docs/USER_GUIDE.md), this changelog,
-  [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+- The three C11 preprocessor features hcc lacked: trigraphs (replaced
+  under `-std=c11`, and under `-std=gnu11` with the new `-trigraphs`
+  option), `__DATE__` and `__TIME__` (UTC, or `SOURCE_DATE_EPOCH` for
+  reproducible builds), and the `_Pragma` operator, now carried out as a
+  `#pragma` line (`_Pragma("once")` takes effect) (#71).
+- A [user guide](docs/USER_GUIDE.md), a
+  [language reference](docs/LANGUAGE.md) (moved out of the README), this
+  changelog, [CONTRIBUTING.md](CONTRIBUTING.md),
+  [SECURITY.md](SECURITY.md) and [docs/RELEASING.md](docs/RELEASING.md).
 
 ### Changed
 

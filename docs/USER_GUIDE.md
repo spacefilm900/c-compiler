@@ -1,5 +1,14 @@
 # hcc user guide
 
+hcc, the Haviland C Compiler, was developed as a test of fully agentic
+development using a strong specification, readily available test suites and
+test data, and embedded software engineering practices such as configuration
+management, CI, agentic code review, structured testing including
+adversarial testing using an independent AI platform. It is written in Rust
+and was developed by a Grok Bot, that created the code, its own test suites
+and the majority of documentation without human involvement. There was human
+review at process level.
+
 hcc, the Haviland C Compiler, compiles C11 to textual LLVM IR. LLVM, through
 Clang, turns the IR into machine code. This guide covers installing hcc,
 compiling and linking programs, the options, the language dialects, the
@@ -148,6 +157,7 @@ standard output (or `-o FILE.i`).
 | `-U NAME` | Undefine a macro; `-D` and `-U` apply in order |
 | `-std=c11` | Strict ISO C11, the default |
 | `-std=gnu11` | C11 with the GNU extensions hcc supports (section 5) |
+| `-trigraphs` | Replace trigraphs under `-std=gnu11` too (`-std=c11` always does) |
 | `-fgnu89-inline` | GNU89 `inline` semantics |
 | `-target TRIPLE`, `--target=TRIPLE` | Compile for another target (section 6) |
 | `-isysroot DIR` | Take the C library headers from `DIR/usr/include` (`DIR/include` for Windows); on macOS the SDK, which `--link` passes to Clang too |
@@ -172,6 +182,11 @@ The C11 feature macros are described in section 9.
 **`-std=c11`** (the default) is ISO C11 (N1570). Code that breaks a C11
 constraint is an error.
 
+C11 makes some features optional. hcc supports all of them except complex
+numbers: variable-length arrays, `_Atomic` with `<stdatomic.h>`, and
+`<threads.h>` all work, so `__STDC_NO_VLA__`, `__STDC_NO_ATOMICS__` and
+`__STDC_NO_THREADS__` are not defined.
+
 **`-std=gnu11`** adds the GNU extensions that real programs (DOOM, Lua,
 SQLite, QuickJS, zlib, the Linux and macOS system headers) use, as GCC and
 Clang accept them in their GNU modes. Among them:
@@ -193,8 +208,17 @@ Clang accept them in their GNU modes. Among them:
   (comparing `void *` with a function pointer, pointer conversions that
   differ only in signedness or drop a qualifier).
 
-The full list, with the exact rules, is in the README's "GNU extensions"
-section.
+The full list, with the exact rules, is in
+[LANGUAGE.md](LANGUAGE.md#gnu-extensions).
+
+**Trigraphs** (`??=` for `#`, `??/` for `\`, and the other seven, C11
+5.2.1.1) are replaced under `-std=c11`. Under `-std=gnu11` they are left
+as written, as GCC does, unless you also pass `-trigraphs`.
+
+**`__DATE__` and `__TIME__`** give the time of compilation in UTC. For
+reproducible builds, set `SOURCE_DATE_EPOCH` to a number of seconds since
+1970-01-01 00:00:00 UTC; hcc then uses that time instead. A value that is
+not a plain decimal number (at most 253402300799) is an error.
 
 ## 6. Targets
 
@@ -264,10 +288,8 @@ file is not created.
 
 ## 9. Known limitations
 
-- **Complex numbers.** `_Complex` and `<complex.h>` are not supported;
-  `__STDC_NO_COMPLEX__` is defined, as C11 allows. `__STDC_NO_VLA__`,
-  `__STDC_NO_ATOMICS__` and `__STDC_NO_THREADS__` are not: those features
-  work.
+- **Complex numbers.** `_Complex` and `<complex.h>` are not supported
+  (C11 makes them optional; hcc defines `__STDC_NO_COMPLEX__`).
 - **No object files or debug information.** hcc writes LLVM IR only; Clang
   writes objects and programs. There is no `-c`, `-S` or `-g`.
 - **One translation unit per run**, except with `--link`.
@@ -276,11 +298,10 @@ file is not created.
 - **GNU attributes that change behaviour** are errors rather than ignored:
   `vector_size`, `cleanup`, `alias`, `ifunc`, `naked`, `weakref`. Nested
   functions are not supported.
-- **Preprocessor.** No trigraphs; `_Pragma` is not supported; `__DATE__`
-  and `__TIME__` are not defined (builds are reproducible).
-- **Source encoding.** Source files are UTF-8. Non-ASCII characters are
-  allowed in comments, character constants and string literals, not in
-  identifiers.
+- **Identifiers.** Universal character names (`\u00e9`) and other
+  non-ASCII characters are not accepted in identifiers (C11 6.4.2.1 and
+  6.4.3 allow UCNs there). Source files are UTF-8; non-ASCII characters
+  are allowed in comments, character constants and string literals.
 - **Label addresses.** `&&a - &&b` is not supported.
 - **Platforms.** The targets in section 6 only. A pointer is 64 bits on all
   of them.

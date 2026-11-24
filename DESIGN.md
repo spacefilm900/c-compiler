@@ -4,7 +4,7 @@ Main decisions for this compiler, taken from `PLAN.md`, `STATUS.md`, `README.md`
 
 ## Clean-room
 
-Frontend code (lexer, preprocessor, parser, semantic analysis, IR generation) is original. It is written from the C standard, the LLVM Language Reference, and the System V ABI. Allowed references, from `PLAN.md`, are those documents, Kaleidoscope-style tutorials, and other public specs. For the GNU-compatibility work, the GCC user manual's public documentation of builtins, attributes, and language extensions is also allowed. Clang and GCC source are not copied, translated, or closely paraphrased. Clang is a black-box oracle in the test harness and the LLVM backend that links the emitted `.ll` file. The compiler does not call into Clang's or GCC's frontend.
+Frontend code (lexer, preprocessor, parser, semantic analysis, IR generation) is original. It is written from the C standard, the LLVM Language Reference, and the platform ABIs (System V AMD64, Arm AAPCS64 with Apple's arm64 rules, and Windows x64). Allowed references, from `PLAN.md`, are those documents, Kaleidoscope-style tutorials, and other public specs. For the GNU-compatibility work, the GCC user manual's public documentation of builtins, attributes, and language extensions is also allowed. Clang and GCC source are not copied, translated, or closely paraphrased. Clang is a black-box oracle in the test harness and the LLVM backend that links the emitted `.ll` file. The compiler does not call into Clang's or GCC's frontend.
 
 Approved by the owner on 2026-11-09 (pull request 1). The rule is also in `PLAN.md` (repository since the initial commit on 2026-11-08) and `BOT.md`.
 
@@ -24,7 +24,7 @@ Approved by the owner on 2026-11-09 (pull request 1).
 
 ## Target
 
-The module triple is `x86_64-pc-linux-gnu`. That triple was in the imported compiler.
+The module triple is `x86_64-pc-linux-gnu`. That triple was in the imported compiler. It was the first target; each target added since (see [Platforms](#platforms)) has its own triple, data layout and calling convention (`src/target.rs`, `src/aapcs64.rs`, `src/win64.rs`). The rest of this section describes x86-64 Linux.
 
 Approved by the owner on 2026-11-09 (pull request 1).
 
@@ -50,7 +50,7 @@ Approved by the owner on 2026-11-10 (pull request 13).
 
 ## Preprocessor and include search
 
-The preprocessor is built in. It runs translation phases 2–4 before the parser: line splicing, comments, `#define` / `#undef` (object-like and function-like macros, `#`, `##`, `__VA_ARGS__`), `#if` / `#ifdef` / `#ifndef` / `#elif` / `#else` / `#endif`, `#include`, `#include_next`, `#error`, `#line`, `#pragma once`, and the null directive. `-E`, `-I`, `-D`, and `-U` are accepted. `-D` and `-U` apply in order, after the predefined macros. The nested-include limit is 200.
+The preprocessor is built in. It runs translation phases 1–4 before the parser: trigraph replacement (in strict C11, or with `-trigraphs`), line splicing, comments, `#define` / `#undef` (object-like and function-like macros, `#`, `##`, `__VA_ARGS__`), `#if` / `#ifdef` / `#ifndef` / `#elif` / `#else` / `#endif`, `#include`, `#include_next`, `#error`, `#line`, `#pragma once` (also as `_Pragma("once")`), `__DATE__` and `__TIME__` (from `SOURCE_DATE_EPOCH` when set), and the null directive. `-E`, `-I`, `-D`, and `-U` are accepted. `-D` and `-U` apply in order, after the predefined macros. The nested-include limit is 200.
 
 Approved by the owner on 2026-11-09 (pull request 8). That step's `include/` was a temporary stand-in for `stdio.h`, `stdlib.h`, and `string.h`, and the search stopped before `/usr/include`.
 
@@ -59,12 +59,12 @@ Search order in the current code (`src/pp/predefined.rs` and `src/pp/directive.r
 - `#include "file"` searches the including file's directory, then each `-I` directory, then every compiler `include/` directory, then the host directories.
 - `#include <file>` skips the including file's directory and uses the rest of that list.
 - Every compiler directory that contains `stddef.h` is appended, in order, and a path already listed is skipped: `include/` in the working directory, the crate's `include/`, then `include/` beside the executable and beside each of up to eight parent directories. A header missing from an earlier directory can come from a later compiler directory, still before the host directories.
-- The host directories, after every compiler directory, are `/usr/include/x86_64-linux-gnu` and `/usr/include`, when those directories exist.
+- The host directories, after every compiler directory, are `/usr/include/x86_64-linux-gnu` and `/usr/include` on x86-64 Linux, when those directories exist. The other targets use their own C library headers (the macOS SDK, the MinGW-w64 or MSVC headers, or `-isysroot`).
 - `#include_next` resumes after the directory that provided the current file. If that directory is not in the search list, the directive behaves like `#include`.
 
 ## Headers
 
-The compiler supplies the freestanding headers in `include/`: `stddef.h` (`size_t`, `ptrdiff_t`, `wchar_t`, `NULL`, `offsetof`, including glibc's `__need_*` protocol), `stdarg.h`, `stdbool.h`, and `limits.h` (the ISO limits for this LP64 target, with `char` signed). Those directories are searched before the C library.
+The compiler supplies the freestanding headers in `include/`: `stddef.h` (`size_t`, `ptrdiff_t`, `wchar_t`, `NULL`, `offsetof`, including glibc's `__need_*` protocol), `stdarg.h`, `stdbool.h`, `limits.h` (the ISO limits for the target), `float.h`, `stdatomic.h`, `threads.h`, `tgmath.h` and the other freestanding headers. Those directories are searched before the C library.
 
 The C library headers come from the host glibc. Programs can `#include` the host `stdio.h`, `stdlib.h`, `string.h`, `stdint.h`, `ctype.h`, and `assert.h`. The temporary `stdio.h`, `stdlib.h`, and `string.h` stand-ins are gone. Clang, when it compiles the same test, uses those same host headers. Predefined macros (`__x86_64__`, `__linux__`, `__LP64__`, `__GNUC__` 4.2.1, `__SIZE_TYPE__`, and the `__SIZEOF_*__` macros) select the LP64 path in those headers.
 
@@ -84,10 +84,11 @@ Approved by the owner on 2026-11-09 (pull request 9).
 
 ### CI
 
-`.github/workflows/ci.yml` runs on `push` and `pull_request`. Permissions are `contents: read`. A newer push to the same ref cancels the older run. The runner is `ubuntu-24.04`. Actions are pinned to commit SHAs.
+`.github/workflows/ci.yml` runs on pull requests and on pushes to `main`. Permissions are `contents: read`. A newer push to the same ref cancels the older run. The runner is `ubuntu-24.04`. Actions are pinned to commit SHAs.
 
-- `fmt, clippy, tests, harness` (20 minutes): Rust 1.85.1 with `rustfmt` and `clippy`, apt packages `clang`, `llvm`, `make`, and `python3`, a check that Clang's major version is at least 18, then `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo test --offline --lib`, `make`, and `python3 harness/run_tests.py`.
+- `fmt, clippy, tests, harness` (25 minutes): Rust 1.85.1 with `rustfmt` and `clippy`, apt packages `clang`, `llvm`, `make`, and `python3`, a check that Clang's major version is at least 18, then `cargo fmt --all -- --check`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo test --offline --lib`, `make`, and `python3 harness/run_tests.py`.
 - `writing-a-c-compiler suite` (30 minutes): the same toolchain, a cache of the fetched suite keyed by the pinned commit, `scripts/fetch_wacc_tests.sh`, `make`, and `python3 harness/run_wacc.py`.
+- Since then: one job each for the Windows x64 stand-in under Wine, Csmith, One True AWK, GCC torture, performance, DOOM, Lua, QuickJS, SQLite and zlib, and the other workflows listed in `README.md`.
 
 Completed runs are recorded in `STATUS.md`. The workflow file was approved by the owner on 2026-11-09 (pull request 1). The suite job was approved by the owner on 2026-11-09 (pull request 9).
 
@@ -104,10 +105,10 @@ Follow the C standard. Where the standard leaves a choice, follow the gcc and cl
 - The standard wins where Clang is more permissive. Dropping `const` on assignment, arithmetic on `void *`, a relational comparison of a pointer with an integer (`p < 0`), and an evaluated comma in a constant initializer are diagnostics. Equality with a null pointer constant (`p == 0`, `p != (void *)0`) is allowed.
 - A multi-character character constant such as `'ab'` has an implementation-defined value (C11 6.4.4.4). This subset rejects it. `STATUS.md` records that as a limitation. Clang accepts it as an `int`.
 - An implementation-defined choice that is recorded as matching Clang on this target: an out-of-range conversion to a signed type keeps the low bits and reads them as two's complement. An omitted `__VA_ARGS__` deletes a comma written as `, ## __VA_ARGS__`, matching Clang's `-std=c11`.
-- A completed enumeration is compatible with `int`, including when every enumerator is nonnegative. `STATUS.md` records that choice (C11 6.7.2.2). A value that does not fit in `int` is a diagnostic. gcc and clang use `unsigned int` when there is no negative enumerator, so this choice differs from that majority.
+- A completed enumeration whose values all fit in `int` is compatible with `unsigned int` when every value is nonnegative and with `int` when one is negative, as GCC and Clang do (C11 6.7.2.2p4 leaves the choice to the implementation). On the MSVC target it is `int`, as Clang does there. In strict C11 a value outside `int` is a diagnostic; under `-std=gnu11` the type widens to `unsigned int` or a 64-bit type. (Until the QuickJS work in step 14 the type was always `int`.)
 
 ## Platforms
 
-Only x86_64 Linux is supported today. The triple, the data layout, the integer ABI, and the host include directories are the System V AMD64 / glibc paths for that system.
+Six targets are supported: x86-64 Linux (System V AMD64), arm64 Linux (AAPCS64), arm64 and x86-64 macOS (Apple's arm64 rules and System V), and x64 Windows with the MinGW-w64 or MSVC headers (the Windows x64 convention). They were added in that order after x86-64 Linux: macOS on Apple Silicon first, because it is the owner's own device (reordered on 2026-11-12), then Linux on Arm, macOS on Intel and Windows x64. A pointer is 64 bits on every target.
 
-The forward plan is in `PLAN.md`. After the closed adversarial review, the order is a Csmith coverage campaign, then the opt-in GNU-compatibility cheap tier, then big programs on Linux x86_64 (DOOM via doomgeneric, then Lua and SQLite, each with a scorecard; middle-tier GNU features only on demand), then macOS on Apple Silicon, Linux ARM, macOS on Intel, and Windows x64. Variable-length arrays, old-style definitions, and `_Alignas` remain. The platform list was reordered on 2026-11-12 so that macOS ARM comes first, because it is the owner's own device. Performance tuning uses the timing CI already collects. C23, WebAssembly, and RISC-V come later.
+The plan is in `PLAN.md`: the C11 work, the GNU-compatibility layer, the big programs (DOOM, Lua, SQLite, QuickJS, zlib), the platforms and hardening are done, and Release 1.0 (step 15) is the last step. C23, WebAssembly and RISC-V may come later.
