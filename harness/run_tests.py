@@ -256,26 +256,36 @@ def test_source_date_epoch(tmp):
     src = tmp / "date_time.c"
     src.write_text("__DATE__ __TIME__\n")
 
-    def literals(cmd, epoch):
+    def preprocess(cmd, epoch):
+        """(exit status, the string literals printed, stderr)."""
         env = {**os.environ, "SOURCE_DATE_EPOCH": epoch}
         try:
             done = subprocess.run(cmd, env=env, capture_output=True, text=True,
-                                  timeout=TIMEOUT)
+                                  errors="replace", timeout=TIMEOUT)
         except (OSError, subprocess.TimeoutExpired) as e:
-            return "error", str(e)
-        return done.returncode == 0, re.findall(r'"[^"]*"', done.stdout)
+            return None, [], str(e)
+        return done.returncode, re.findall(r'"[^"]*"', done.stdout), done.stderr
 
     ours = [str(COMPILER), "-E", str(src)]
     ref = [CLANG, "-E", "-P", str(src)]
-    # The epoch, a leap day in a century year, and a one-digit day.
+    # The epoch, a leap day in a century year, a one-digit day, the maximum.
     for epoch in ("0", "951827696", "1772323200", "253402300799"):
-        got, expected = literals(ours, epoch), literals(ref, epoch)
-        if got != expected:
-            return f"SOURCE_DATE_EPOCH={epoch}: got {got}, expected {expected}"
-    for epoch in ("abc", "-1", " 5", "", "253402300800"):
-        got, expected = literals(ours, epoch)[0], literals(ref, epoch)[0]
-        if got is not False or expected is not False:
-            return f"SOURCE_DATE_EPOCH={epoch} must be rejected: ours ok={got}, clang ok={expected}"
+        got, expected = preprocess(ours, epoch), preprocess(ref, epoch)
+        if got[0] != 0 or expected[0] != 0:
+            return (f"SOURCE_DATE_EPOCH={epoch}: preprocessing failed: ours exit={got[0]} "
+                    f"{got[2][:200]!r}, clang exit={expected[0]} {expected[2][:200]!r}")
+        if len(got[1]) != 2 or got[1] != expected[1]:
+            return f"SOURCE_DATE_EPOCH={epoch}: got {got[1]}, expected {expected[1]}"
+    invalid = ["abc", "-1", " 5", "", "253402300800"]
+    if os.name == "posix":
+        invalid.append("1\udcff")  # byte 0xff: not valid UTF-8
+    for epoch in invalid:
+        got, expected = preprocess(ours, epoch), preprocess(ref, epoch)
+        # An ordinary diagnostic: exit status 1, no panic (101) or signal.
+        if got[0] != 1 or "panicked" in got[2]:
+            return f"SOURCE_DATE_EPOCH={epoch!r} must be rejected with exit 1: got exit={got[0]} {got[2][:200]!r}"
+        if not isinstance(expected[0], int) or expected[0] <= 0:
+            return f"SOURCE_DATE_EPOCH={epoch!r}: Clang did not reject it (exit={expected[0]})"
     return None
 
 

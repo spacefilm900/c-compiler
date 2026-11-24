@@ -656,6 +656,18 @@ fn pragma_operator_destringizes_and_applies_once() {
     )
     .unwrap();
     assert_eq!(squash(&text), "int z;");
+    // The operand is macro replaced before it must be a string literal,
+    // directly and from inside another macro.
+    std::fs::write(
+        dir.join("t.h"),
+        "#define TEXT \"once\"\n#define MARK _Pragma(TEXT)\nMARK\nint via_text;\n",
+    )
+    .unwrap();
+    let text = preprocess("#include <t.h>\n#include <t.h>\n", "t.c", &options).unwrap();
+    assert_eq!(text.matches("via_text").count(), 1, "{text}");
+    assert!(preprocess("#define TWO \"a\" \"b\"\n_Pragma(TWO)\n", "t.c", &options).is_err());
+    assert!(preprocess("#define N 1\n_Pragma(N)\n", "t.c", &options).is_err());
+    assert!(preprocess("_Pragma\n", "t.c", &options).is_err());
     assert!(preprocess("_Pragma(u8\"once\")\n", "t.c", &options).is_err());
     assert!(preprocess("_Pragma(\"once\"\n", "t.c", &options).is_err());
     let _ = std::fs::remove_dir_all(&dir);

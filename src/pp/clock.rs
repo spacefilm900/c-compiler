@@ -76,6 +76,16 @@ fn trigraph(third: u8) -> Option<char> {
 /// error.
 pub(super) fn translation_date_time(at: &PpToken) -> Result<(String, String), Diagnostic> {
     let seconds = match std::env::var("SOURCE_DATE_EPOCH") {
+        Err(std::env::VarError::NotUnicode(raw)) => {
+            return Err(error_at(
+                at,
+                format!(
+                    "environment variable SOURCE_DATE_EPOCH must be a number of seconds \
+                     from 0 to {MAX_EPOCH}, not '{}'",
+                    raw.to_string_lossy()
+                ),
+            ));
+        }
         Ok(text) => parse_epoch(&text).ok_or_else(|| {
             error_at(
                 at,
@@ -85,7 +95,7 @@ pub(super) fn translation_date_time(at: &PpToken) -> Result<(String, String), Di
                 ),
             )
         })?,
-        Err(_) => std::time::SystemTime::now()
+        Err(std::env::VarError::NotPresent) => std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs().min(MAX_EPOCH)),
     };
