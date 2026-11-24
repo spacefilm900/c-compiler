@@ -19,74 +19,160 @@ use crate::compile_and_exit;
 use crate::dialect::Dialect;
 use crate::pp::{preprocess, CliMacro, PpOptions};
 
-const USAGE: &str = "\
-usage: hcc [options] INPUT.c -o OUTPUT.ll
-       hcc -E [options] INPUT.c [-o OUTPUT.i]
-       hcc --dump-STAGE [options] INPUT.c [-o OUTPUT]
-options:
-  -I DIR          add DIR to the include search path
-  -D NAME[=text]  define NAME as text, or as 1 if text is omitted
-  -U NAME         undefine NAME
+/// The release version, from `Cargo.toml`.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The short usage shown after a command-line error.
+const SHORT_USAGE: &str = "\
+usage: hcc [options] FILE.c -o FILE.ll
+       hcc --link [options] FILE... -o PROGRAM
+       hcc -E [options] FILE.c [-o FILE.i]
+       hcc --dump-STAGE [options] FILE.c [-o FILE]";
+
+fn help_text() -> String {
+    format!(
+        "\
+hcc {VERSION}: the Haviland C Compiler, C11 to LLVM IR
+
+{SHORT_USAGE}
+
+hcc compiles one C translation unit to textual LLVM IR. LLVM 18 or newer
+(clang, or llc and opt) turns the IR into machine code; --link does that
+step for you.
+
+Output:
+  -o FILE         write the result to FILE
+  --link          compile each .c input to IR, then link the IR and any
+                  other inputs (.ll, .o, .a, ...) into an executable with
+                  clang ($HCC_CLANG, else clang on PATH); when the program
+                  uses <threads.h>, adds -pthread on POSIX targets and
+                  compiles and links lib/threads.c where the C library has
+                  no <threads.h> (macOS, Windows, older Linux)
   -E              preprocess only (also --dump-pp)
   --dump-tokens   stop after preprocessing and print the token stream
   --dump-ast      stop after parsing and print the syntax tree
   --dump-sema     stop after semantic analysis and print the checked tree
                   (types, conversions, constants, record layouts)
   --dump-ir       print the LLVM IR (to standard output unless -o is given)
+
+Linking (with --link only; passed to clang):
+  -O0, -O1, -O2, -O3, -Os, -Oz
+                  optimisation level for the IR and the program
+  -l NAME, -L DIR, -Wl,ARGS, -pthread, -static
+                  libraries, library directories and linker options
+
+Preprocessor:
+  -I DIR          add DIR to the include search path
+  -D NAME[=text]  define NAME as text, or as 1 if text is omitted
+  -U NAME         undefine NAME
+
+Language:
   -std=c11        strict ISO C11 (the default)
   -std=gnu11      C11 plus the GNU extensions this compiler supports
   -fgnu89-inline  GNU89 inline semantics: plain `inline` definitions are
                   external, `extern inline` ones are only for inlining
-  -target TRIPLE  compile for TRIPLE (also --target=TRIPLE): x86_64-linux-gnu,
-                  x86_64-apple-macos[VERSION], arm64-apple-macos[VERSION],
-                  aarch64-linux-gnu, x86_64-w64-windows-gnu (MinGW-w64),
-                  or x86_64-pc-windows-msvc;
-                  the default is the host
+
+Target:
+  -target TRIPLE  compile for TRIPLE (also --target=TRIPLE): {targets};
+                  the default is the host ({host})
   -isysroot DIR   find the C library headers under DIR/usr/include
                   (DIR/include for the Windows targets)
-  --time-phases   print frontend phase times as JSON on stderr
-  -h, --help      show this help
-Compile a C subset to textual LLVM IR.";
 
-struct Options {
-    input: String,
-    output: Option<String>,
+Diagnostics:
+  -fno-caret-diagnostics
+                  do not print the source line and a caret under messages
+
+Other:
+  --time-phases   print frontend phase times as JSON on stderr
+  --version       print the version, the default target and the targets
+  -h, --help      show this help
+
+Exit status: 0 success, 1 error in the program, 2 command-line error,
+3 internal compiler error. The user guide is docs/USER_GUIDE.md.",
+        targets = TARGET_LIST,
+        host = crate::target::Target::host().name(),
+    )
+}
+
+/// Every target `-target` accepts, by its canonical name.
+const TARGET_LIST: &str = "x86_64-linux-gnu, aarch64-linux-gnu, arm64-apple-macos[VERSION], \
+x86_64-apple-macos[VERSION], x86_64-w64-windows-gnu (MinGW-w64), x86_64-pc-windows-msvc";
+
+fn version_text() -> String {
+    let commit = option_env!("HCC_COMMIT")
+        .filter(|commit| !commit.is_empty())
+        .map(|commit| format!(" (commit {commit})"))
+        .unwrap_or_default();
+    format!(
+        "hcc {VERSION}{commit}\n\
+         Haviland C Compiler: C11 (and -std=gnu11) to textual LLVM IR\n\
+         default target: {}\n\
+         targets: {TARGET_LIST}\n\
+         backend: LLVM 18 or newer (opaque pointers); --link uses clang\n\
+         license: MIT",
+        crate::target::Target::host().name()
+    )
+}
+
+#[derive(Clone)]
+pub(crate) struct Options {
+    /// The source files (one, except with `--link`) and, with `--link`, the
+    /// other files passed to clang, in command-line order.
+    pub(crate) inputs: Vec<String>,
+    pub(crate) output: Option<String>,
     preprocess_only: bool,
     /// `--dump-tokens`, `--dump-ast`, `--dump-sema` or `--dump-ir`.
     dump: Option<crate::Stage>,
     time_phases: bool,
-    pp: PpOptions,
-    dialect: Dialect,
+    pub(crate) pp: PpOptions,
+    pub(crate) dialect: Dialect,
+    /// `--link`: compile, then link an executable with clang.
+    pub(crate) link: bool,
+    /// `-O`, `-l`, `-L`, `-Wl,` and the other options passed to clang
+    /// with `--link`, in order.
+    pub(crate) link_args: Vec<String>,
+    pub(crate) sysroot: Option<PathBuf>,
+    /// Print the source line and a caret under each diagnostic.
+    caret: bool,
 }
 
+impl Options {
+    fn input(&self) -> &str {
+        &self.inputs[0]
+    }
+}
+
+/// Run the compiler with the command-line `args` (`args[0]` is the program
+/// name). Returns the exit status.
 pub fn run(args: &[String]) -> i32 {
     if args.len() == 2 && (args[1] == "-h" || args[1] == "--help") {
-        println!("{USAGE}");
+        println!("{}", help_text());
         return 0;
+    }
+    if args.len() == 2 && args[1] == "--version" {
+        println!("{}", version_text());
+        return 0;
+    }
+    if args.len() == 1 {
+        let _ = writeln!(io::stderr(), "{SHORT_USAGE}\nRun 'hcc --help' for the options.");
+        return 2;
     }
     let options = match parse_args(args) {
         Ok(options) => options,
         Err(message) => {
-            let _ = writeln!(io::stderr(), "{message}");
+            let _ = writeln!(
+                io::stderr(),
+                "hcc: error: {message}\nRun 'hcc --help' for the options."
+            );
             return 2;
         }
     };
-    let source = match fs::read(&options.input) {
-        Ok(bytes) => match String::from_utf8(bytes) {
-            Ok(text) => text,
-            Err(_) => {
-                let _ = writeln!(
-                    io::stderr(),
-                    "{}: error: source is not valid UTF-8",
-                    options.input
-                );
-                return 1;
-            }
-        },
-        Err(err) => {
-            let _ = writeln!(io::stderr(), "{}: error: {err}", options.input);
-            return 1;
-        }
+    if options.link {
+        return crate::link::link(&options);
+    }
+    let source = match read_source(options.input()) {
+        Ok(text) => text,
+        Err(status) => return status,
     };
     if options.preprocess_only {
         return emit_preprocessed(&options, &source);
@@ -94,15 +180,10 @@ pub fn run(args: &[String]) -> i32 {
     if let Some(stage) = options.dump {
         return emit_dump(&options, &source, stage);
     }
-    let Some(output) = options.output.as_deref() else {
-        let _ = writeln!(io::stderr(), "{USAGE}");
-        return 2;
-    };
-    match compile_and_exit(&source, &options.input, &options.pp, options.dialect) {
-        Ok(mut compiled) => {
-            for warning in &compiled.warnings {
-                let _ = writeln!(io::stderr(), "{warning}");
-            }
+    let output = options.output.as_deref().expect("checked by parse_args");
+    match compile_source(&options, options.input(), &source) {
+        Ok(compiled) => {
+            let mut compiled = compiled;
             let start = std::time::Instant::now();
             let written = fs::write(output, &compiled.ir);
             compiled.times.write = start.elapsed();
@@ -117,11 +198,84 @@ pub fn run(args: &[String]) -> i32 {
                 }
             }
         }
-        Err(diag) => {
-            let _ = writeln!(io::stderr(), "{diag}");
-            error_status(&diag)
+        Err(status) => status,
+    }
+}
+
+/// Read a source file as UTF-8. On failure the message is printed and the
+/// exit status returned.
+pub(crate) fn read_source(path: &str) -> Result<String, i32> {
+    match fs::read(path) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(text) => Ok(text),
+            Err(_) => {
+                let _ = writeln!(io::stderr(), "{path}: error: source is not valid UTF-8");
+                Err(1)
+            }
+        },
+        Err(err) => {
+            let _ = writeln!(io::stderr(), "{path}: error: {err}");
+            Err(1)
         }
     }
+}
+
+/// Compile one translation unit and print its warnings, or print the
+/// error and return the exit status.
+pub(crate) fn compile_source(
+    options: &Options,
+    path: &str,
+    source: &str,
+) -> Result<crate::Output, i32> {
+    match compile_and_exit(source, path, &options.pp, options.dialect) {
+        Ok(compiled) => {
+            for warning in &compiled.warnings {
+                report(options, source, path, &warning.to_string(), &warning.0);
+            }
+            Ok(compiled)
+        }
+        Err(diag) => {
+            report(options, source, path, &diag.to_string(), &diag);
+            Err(error_status(&diag))
+        }
+    }
+}
+
+/// Print a diagnostic, then, unless `-fno-caret-diagnostics`, the source
+/// line it points at and a caret under its column.
+fn report(options: &Options, source: &str, path: &str, text: &str, diag: &crate::Diagnostic) {
+    let mut stderr = io::stderr().lock();
+    let _ = writeln!(stderr, "{text}");
+    if !options.caret {
+        return;
+    }
+    let file_text;
+    let text_of_file = if diag.filename == path {
+        Some(source)
+    } else {
+        file_text = fs::read_to_string(&diag.filename).ok();
+        file_text.as_deref()
+    };
+    if let Some(snippet) = text_of_file.and_then(|text| caret_snippet(text, diag.line, diag.column))
+    {
+        let _ = writeln!(stderr, "{snippet}");
+    }
+}
+
+/// The source line `line` (1-based) of `text` and, under it, a caret at
+/// byte column `column` (1-based). A tab before the column stays a tab so
+/// the caret lines up. `None` when the position is not in the text.
+pub(crate) fn caret_snippet(text: &str, line: usize, column: usize) -> Option<String> {
+    if line == 0 || column == 0 {
+        return None;
+    }
+    let source_line = text.split('\n').nth(line - 1)?.trim_end_matches('\r');
+    let before = source_line.get(..column - 1)?;
+    let pad: String = before
+        .chars()
+        .map(|ch| if ch == '\t' { '\t' } else { ' ' })
+        .collect();
+    Some(format!("{source_line}\n{pad}^"))
 }
 
 /// Exit status for a diagnostic that stopped compilation.
@@ -134,10 +288,10 @@ fn error_status(diag: &crate::Diagnostic) -> i32 {
 }
 
 fn emit_preprocessed(options: &Options, source: &str) -> i32 {
-    match preprocess(source, &options.input, &options.pp) {
+    match preprocess(source, options.input(), &options.pp) {
         Ok(text) => write_text(options, &text),
         Err(diag) => {
-            let _ = writeln!(io::stderr(), "{diag}");
+            report(options, source, options.input(), &diag.to_string(), &diag);
             1
         }
     }
@@ -146,15 +300,15 @@ fn emit_preprocessed(options: &Options, source: &str) -> i32 {
 /// `--dump-STAGE`: run the frontend up to the stage and write its dump.
 /// Warnings and errors are reported as in a normal compilation.
 fn emit_dump(options: &Options, source: &str, stage: crate::Stage) -> i32 {
-    match crate::dump_stage(source, &options.input, &options.pp, options.dialect, stage) {
+    match crate::dump_stage(source, options.input(), &options.pp, options.dialect, stage) {
         Ok(dumped) => {
             for warning in &dumped.warnings {
-                let _ = writeln!(io::stderr(), "{warning}");
+                report(options, source, options.input(), &warning.to_string(), &warning.0);
             }
             write_text(options, &dumped.ir)
         }
         Err(diag) => {
-            let _ = writeln!(io::stderr(), "{diag}");
+            report(options, source, options.input(), &diag.to_string(), &diag);
             error_status(&diag)
         }
     }
@@ -185,8 +339,32 @@ fn write_text(options: &Options, text: &str) -> i32 {
     }
 }
 
-fn parse_args(args: &[String]) -> Result<Options, String> {
-    let mut input = None;
+/// The value after an option such as `-o`, or an error naming the option.
+fn value_of(args: &[String], index: &mut usize, flag: &str) -> Result<String, String> {
+    *index += 1;
+    let value = args
+        .get(*index)
+        .cloned()
+        .ok_or_else(|| format!("missing argument to '{flag}'"))?;
+    *index += 1;
+    Ok(value)
+}
+
+/// An option passed to clang with `--link`, and whether it takes the next
+/// argument as its value.
+fn link_option(arg: &str) -> Option<bool> {
+    if matches!(arg, "-l" | "-L") {
+        return Some(true);
+    }
+    let attached = ["-l", "-L", "-Wl,"]
+        .iter()
+        .any(|prefix| arg.len() > prefix.len() && arg.starts_with(prefix));
+    let level = matches!(arg, "-O" | "-O0" | "-O1" | "-O2" | "-O3" | "-Os" | "-Oz");
+    (attached || level || matches!(arg, "-pthread" | "-static")).then_some(false)
+}
+
+pub(crate) fn parse_args(args: &[String]) -> Result<Options, String> {
+    let mut inputs = Vec::new();
     let mut output = None;
     let mut preprocess_only = false;
     let mut dump = None;
@@ -195,6 +373,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut dialect = Dialect::default();
     let mut target = crate::target::Target::build_default();
     let mut sysroot: Option<PathBuf> = None;
+    let mut link = false;
+    let mut link_args = Vec::new();
+    let mut caret = true;
     let mut index = 1;
     while index < args.len() {
         let arg = &args[index];
@@ -202,102 +383,109 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             index += 1;
             continue;
         }
-        if arg == "--time-phases" {
-            time_phases = true;
-            crate::timing::enable();
-            index += 1;
-            continue;
-        }
-        if arg == "-o" {
-            index += 1;
-            let Some(path) = args.get(index) else {
-                return Err(USAGE.to_string());
-            };
-            output = Some(path.clone());
-            index += 1;
-            continue;
-        }
-        if let Some(name) = arg.strip_prefix("-std=") {
-            dialect = Dialect::from_std(name)
-                .ok_or_else(|| format!("unsupported -std value '{name}'; use c11 or gnu11"))?;
-            index += 1;
-            continue;
-        }
-        if arg == "-fgnu89-inline" || arg == "-fno-gnu89-inline" {
-            pp.gnu89_inline = arg == "-fgnu89-inline";
-            index += 1;
-            continue;
-        }
-        if arg == "-target" || arg == "--target" {
-            index += 1;
-            let Some(triple) = args.get(index) else {
-                return Err(USAGE.to_string());
-            };
-            target = parse_target(triple)?;
-            index += 1;
-            continue;
-        }
-        if let Some(triple) = arg
-            .strip_prefix("--target=")
-            .or_else(|| arg.strip_prefix("-target="))
-        {
-            target = parse_target(triple)?;
-            index += 1;
-            continue;
-        }
-        if arg == "-isysroot" {
-            index += 1;
-            let Some(dir) = args.get(index) else {
-                return Err(USAGE.to_string());
-            };
-            sysroot = Some(PathBuf::from(dir));
-            index += 1;
-            continue;
-        }
-        if let Some(dir) = take_attached(arg, "-I", args, &mut index)? {
-            pp.include_dirs.push(PathBuf::from(dir));
-            continue;
-        }
-        if let Some(text) = take_attached(arg, "-D", args, &mut index)? {
-            pp.definitions.push(parse_define(&text)?);
-            continue;
-        }
-        if let Some(name) = take_attached(arg, "-U", args, &mut index)? {
-            if !is_macro_name(&name) {
-                return Err(format!("invalid macro name '{name}'"));
+        match arg.as_str() {
+            "--time-phases" => {
+                time_phases = true;
+                crate::timing::enable();
             }
-            pp.definitions.push(CliMacro::Undef(name));
-            continue;
+            "--link" => link = true,
+            "-fcaret-diagnostics" => caret = true,
+            "-fno-caret-diagnostics" => caret = false,
+            "-fgnu89-inline" | "-fno-gnu89-inline" => pp.gnu89_inline = arg == "-fgnu89-inline",
+            "-h" | "--help" | "--version" => {
+                return Err(format!("'{arg}' must be the only argument"));
+            }
+            "-o" => {
+                output = Some(value_of(args, &mut index, "-o")?);
+                continue;
+            }
+            "-target" | "--target" => {
+                target = parse_target(&value_of(args, &mut index, arg)?)?;
+                continue;
+            }
+            "-isysroot" => {
+                sysroot = Some(PathBuf::from(value_of(args, &mut index, "-isysroot")?));
+                continue;
+            }
+            _ => {
+                if let Some(name) = arg.strip_prefix("-std=") {
+                    dialect = Dialect::from_std(name).ok_or_else(|| {
+                        format!("unsupported -std value '{name}'; use c11 or gnu11")
+                    })?;
+                } else if let Some(triple) = arg
+                    .strip_prefix("--target=")
+                    .or_else(|| arg.strip_prefix("-target="))
+                {
+                    target = parse_target(triple)?;
+                } else if let Some(dir) = take_attached(arg, "-I", args, &mut index)? {
+                    pp.include_dirs.push(PathBuf::from(dir));
+                    continue;
+                } else if let Some(text) = take_attached(arg, "-D", args, &mut index)? {
+                    pp.definitions.push(parse_define(&text)?);
+                    continue;
+                } else if let Some(name) = take_attached(arg, "-U", args, &mut index)? {
+                    if !is_macro_name(&name) {
+                        return Err(format!("invalid macro name '{name}'"));
+                    }
+                    pp.definitions.push(CliMacro::Undef(name));
+                    continue;
+                } else if let Some(takes_value) = link_option(arg) {
+                    link_args.push(arg.clone());
+                    if takes_value {
+                        link_args.push(value_of(args, &mut index, arg)?);
+                        continue;
+                    }
+                } else if arg.starts_with('-') {
+                    return Err(format!("unknown option '{arg}'"));
+                } else {
+                    inputs.push(arg.clone());
+                }
+            }
         }
-        if arg.starts_with('-') {
-            return Err(USAGE.to_string());
-        }
-        if input.is_some() {
-            return Err(USAGE.to_string());
-        }
-        input = Some(arg.clone());
         index += 1;
     }
-    let Some(input) = input else {
-        return Err(USAGE.to_string());
-    };
+    if inputs.is_empty() {
+        return Err("no input file".to_string());
+    }
     if preprocess_only && dump.is_some() {
         return Err("-E and --dump-STAGE cannot be combined".to_string());
     }
-    if !preprocess_only && dump.is_none() && output.is_none() {
-        return Err(USAGE.to_string());
+    if link {
+        if preprocess_only || dump.is_some() {
+            return Err("--link cannot be combined with -E or --dump-STAGE".to_string());
+        }
+        if output.is_none() {
+            return Err("--link needs an output program name: -o PROGRAM".to_string());
+        }
+    } else {
+        if let Some(flag) = link_args.first() {
+            return Err(format!("'{flag}' is a link option; it needs --link"));
+        }
+        if inputs.len() > 1 {
+            return Err(format!(
+                "more than one input file ('{}' and '{}'); compile them one at a time, or use --link",
+                inputs[0], inputs[1]
+            ));
+        }
+        if !preprocess_only && dump.is_none() && output.is_none() {
+            return Err("no output file; use -o FILE.ll (or --dump-ir to print the IR)".to_string());
+        }
     }
     pp.target = target;
     pp.gnu = dialect.gnu();
     pp.system_dirs = crate::pp::system_dirs_for(target, sysroot.as_deref());
     Ok(Options {
-        input,
+        inputs,
         output,
         preprocess_only,
         dump,
         time_phases,
         pp,
         dialect,
+        link,
+        link_args,
+        sysroot,
+        caret,
     })
 }
 
@@ -333,11 +521,8 @@ fn dump_flag(arg: &str) -> Option<crate::Stage> {
 }
 
 fn parse_target(triple: &str) -> Result<crate::target::Target, String> {
-    crate::target::Target::parse(triple).ok_or_else(|| {
-        format!(
-            "unsupported target '{triple}'; use x86_64-linux-gnu, x86_64-apple-macos, arm64-apple-macos, or aarch64-linux-gnu"
-        )
-    })
+    crate::target::Target::parse(triple)
+        .ok_or_else(|| format!("unsupported target '{triple}'; use one of: {TARGET_LIST}"))
 }
 
 /// `-I dir` and `-Idir` are both accepted. The returned string is the payload
@@ -351,7 +536,7 @@ fn take_attached(
     if arg == flag {
         *index += 1;
         let Some(value) = args.get(*index) else {
-            return Err(USAGE.to_string());
+            return Err(format!("missing argument to '{flag}'"));
         };
         *index += 1;
         return Ok(Some(value.clone()));
@@ -753,5 +938,128 @@ mod tests {
         assert_eq!(compile(&["-std="]), 2);
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&out);
+    }
+
+    fn argv(list: &[&str]) -> Vec<String> {
+        std::iter::once("hcc")
+            .chain(list.iter().copied())
+            .map(String::from)
+            .collect()
+    }
+
+    #[test]
+    fn version_and_help() {
+        assert_eq!(run(&argv(&["--version"])), 0);
+        assert_eq!(run(&argv(&["-h"])), 0);
+        assert!(version_text().starts_with(&format!("hcc {VERSION}")));
+        assert!(version_text().contains(crate::target::Target::host().name()));
+        let help = help_text();
+        for flag in ["--link", "-fno-caret-diagnostics", "--version", "-std=gnu11", "-O2"] {
+            assert!(help.contains(flag), "{flag}");
+        }
+        // --version and --help stand alone.
+        let err = parse_args(&argv(&["--version", "a.c"])).err().expect("rejected");
+        assert!(err.contains("only argument"), "{err}");
+    }
+
+    #[test]
+    fn command_line_errors_say_what_is_wrong() {
+        let err = |list: &[&str]| parse_args(&argv(list)).err().expect("rejected");
+        assert_eq!(err(&["-o", "a.ll"]), "no input file");
+        assert_eq!(err(&["-frobnicate", "a.c"]), "unknown option '-frobnicate'");
+        assert_eq!(err(&["a.c", "-o"]), "missing argument to '-o'");
+        assert_eq!(err(&["a.c", "-I"]), "missing argument to '-I'");
+        assert!(err(&["a.c"]).contains("no output file"));
+        assert!(err(&["a.c", "b.c", "-o", "x.ll"]).contains("more than one input file"));
+        assert!(err(&["-lm", "a.c", "-o", "a.ll"]).contains("needs --link"));
+        assert!(err(&["-O2", "a.c", "-o", "a.ll"]).contains("needs --link"));
+        assert!(err(&["--link", "a.c"]).contains("-o PROGRAM"));
+        assert!(err(&["--link", "-E", "a.c", "-o", "a"]).contains("cannot be combined"));
+        assert!(err(&["-target", "mips-linux-gnu", "a.c", "-o", "a.ll"])
+            .contains("x86_64-pc-windows-msvc"));
+        // A bare run prints the short usage.
+        assert_eq!(run(&argv(&[])), 2);
+    }
+
+    #[test]
+    fn link_mode_collects_inputs_and_clang_options() {
+        let options = parse_args(&argv(&[
+            "--link", "main.c", "util.ll", "-O2", "-l", "m", "-lz", "-L", "/opt/lib",
+            "-Wl,--as-needed", "-pthread", "lib.a", "-o", "prog",
+        ]))
+        .expect("parsed");
+        assert!(options.link);
+        assert_eq!(options.inputs, ["main.c", "util.ll", "lib.a"]);
+        assert_eq!(
+            options.link_args,
+            ["-O2", "-l", "m", "-lz", "-L", "/opt/lib", "-Wl,--as-needed", "-pthread"]
+        );
+        assert_eq!(options.output.as_deref(), Some("prog"));
+    }
+
+    #[test]
+    fn caret_under_the_column() {
+        let text = "int a;\n\tint b = c;\r\nint é = d;\n";
+        assert_eq!(
+            caret_snippet(text, 2, 10).as_deref(),
+            Some("\tint b = c;\n\t        ^")
+        );
+        // Columns count bytes; the caret counts characters.
+        assert_eq!(
+            caret_snippet(text, 3, 10).as_deref(),
+            Some("int é = d;\n        ^")
+        );
+        assert_eq!(caret_snippet(text, 1, 7).as_deref(), Some("int a;\n      ^"));
+        assert!(caret_snippet(text, 0, 1).is_none());
+        assert!(caret_snippet(text, 9, 1).is_none());
+        assert!(caret_snippet(text, 1, 40).is_none());
+    }
+
+    /// `--link` end to end, when Clang is installed: a program from a C
+    /// file and an IR file, and a `<threads.h>` program.
+    #[test]
+    fn link_builds_and_runs_programs() {
+        let clang = std::env::var("HCC_CLANG").unwrap_or_else(|_| "clang".to_string());
+        if std::process::Command::new(&clang).arg("--version").output().is_err() {
+            eprintln!("skipped: no {clang}");
+            return;
+        }
+        if crate::target::Target::host() != crate::target::Target::X86_64Linux {
+            return;
+        }
+        let (src, out) = temp_paths();
+        let helper = out.with_extension("helper.c");
+        let helper_ll = out.with_extension("helper.ll");
+        let program = out.with_extension("prog");
+        std::fs::write(&helper, "int twice(int x) { return 2 * x; }\n").unwrap();
+        assert_eq!(
+            run(&argv(&[&helper.display().to_string(), "-o", &helper_ll.display().to_string()])),
+            0
+        );
+        std::fs::write(
+            &src,
+            "#include <threads.h>\nint twice(int);\nstatic int hits;\n\
+             static int body(void *arg) { hits = twice(*(int *)arg); return 0; }\n\
+             int main(void) { int v = 21; thrd_t t;\n\
+             if (thrd_create(&t, body, &v) != thrd_success) return 1;\n\
+             thrd_join(t, 0); return hits; }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            run(&argv(&[
+                "--link",
+                &src.display().to_string(),
+                &helper_ll.display().to_string(),
+                "-O1",
+                "-o",
+                &program.display().to_string(),
+            ])),
+            0
+        );
+        let status = std::process::Command::new(&program).status().unwrap();
+        assert_eq!(status.code(), Some(42));
+        for path in [&src, &helper, &helper_ll, &program] {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }

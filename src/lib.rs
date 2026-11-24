@@ -18,6 +18,7 @@ mod fp80;
 pub(crate) mod fxhash;
 pub mod irgen;
 pub mod lexer;
+mod link;
 pub mod parser;
 pub mod pp;
 pub mod sema;
