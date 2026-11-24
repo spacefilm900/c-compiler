@@ -2169,6 +2169,9 @@ struct __attribute__((packed, aligned(4))) R { char c; int i; };
 struct __attribute__((packed)) O { char c; struct Q q; };
 struct R r = {1, 7};
 struct O o = {1, {{1, 2, 3}, 9}};
+struct __attribute__((packed)) Q2 { int a; int b; };
+struct Q2 q2 = {3, 4};
+struct Q gq = {{1, 2, 3}, 5};
 struct P ps[2] = {{1, 0x11223344, 2.5}, {2, 0x55667788, -1.25}};
 static struct Q make(int k) { struct Q q = {{k, k + 1, k + 2}, k * 10}; return q; }
 static int cmps(double a, double b) {
@@ -2197,6 +2200,7 @@ int main(void) {
     printf("%x %g %x %d\n", ps[0].i, p->d, *ip & 0xff, (int)sizeof ps);
     printf("%d %d %d\n", make(3).b, make(4).a[2], (make(5)).a[0] + make(6).a[1]);
     printf("%d %d %d\n", r.i, o.q.b, (int)sizeof o);
+    printf("%d %d\n", q2.b, gq.b);
     int arr[4] = {4, 5, 6, 7};
     int (*pa)[4] = &arr;
     printf("%d %d %d\n", *&*arr, (*pa)[3], *(&arr[1] + 1));
@@ -2205,8 +2209,10 @@ int main(void) {
 "#;
     let ir = crate::compile_to_ir(source, "mixed.c").unwrap();
     assert!(ir.contains("fcmp ole") && ir.contains("fcmp oge"), "{ir}");
-    // ps[0].i, r.i (packed and aligned(4): offset 1) and o.q.b (a member
-    // inside a packed struct) are the unaligned int loads; p->d the double.
+    // ps[0].i, r.i (packed and aligned(4): offset 1), o.q.b (a member
+    // inside a packed struct) and q2.b (offset 4 in a packed struct, so
+    // only 1-aligned) are the unaligned int loads; p->d the double. gq.b,
+    // at offset 12 of an ordinary struct, keeps its alignment.
     let unaligned = |ty: &str| {
         ir.lines()
             .filter(|line| {
@@ -2215,7 +2221,7 @@ int main(void) {
             })
             .count()
     };
-    assert_eq!(unaligned("i32"), 3, "{ir}");
+    assert_eq!(unaligned("i32"), 4, "{ir}");
     assert_eq!(unaligned("double"), 1, "{ir}");
     assert_eq!(run_binary(&ir), run_reference(source));
 }

@@ -990,6 +990,137 @@ mod tests {
         assert_eq!(conv(-0.75, TypeName::UInt), Some(0));
     }
 
+    /// Runs `check` with `target` selected on this thread, then restores
+    /// the default.
+    fn on_target(target: crate::target::Target, check: impl FnOnce()) {
+        crate::target::set(target);
+        check();
+        crate::target::set(crate::target::Target::build_default());
+    }
+
+    #[test]
+    fn long_double_follows_the_target_format() {
+        // AArch64 Linux: IEEE binary128. x86-64 Linux: x87 80-bit with an
+        // explicit integer bit. MSVC: the same as double. Encodings from the
+        // AAPCS64, the System V psABI and the Intel SDM.
+        let ld = FloatKind::LongDouble;
+        let quad_one = 0x3FFFu128 << 112;
+        let quad_two = 0x4000u128 << 112;
+        let quad_1_5 = quad_one | (1u128 << 111);
+        on_target(crate::target::Target::Aarch64Linux, || {
+            assert_eq!(one_bits(ld), quad_one);
+            assert_eq!(min_normal_bits(ld), 1u128 << 112);
+            assert_eq!(plus_inf(ld), 0x7FFFu128 << 112);
+            assert_eq!(nan_bits(ld, 0, false), 0x7FFF8u128 << 108);
+            assert_eq!(llvm_bits(ld, quad_1_5 | 1), quad_1_5 | 1);
+            assert_eq!(negate(ld, quad_one), quad_one | (1u128 << 127));
+            assert!(real_is_zero(ld, 0) && real_is_zero(ld, 1u128 << 127));
+            assert!(!real_is_zero(ld, quad_one) && !real_is_zero(ld, 1));
+            assert_eq!(parse_hex("1", "8", 0, ld), Some(quad_1_5));
+            assert!(apply_cmp(FloatCmp::Eq, ld, quad_one, quad_one));
+            assert!(!apply_cmp(FloatCmp::Eq, ld, quad_one, quad_two));
+            assert!(apply_cmp(FloatCmp::Ne, ld, quad_one, quad_two));
+            assert!(!apply_cmp(FloatCmp::Ne, ld, quad_two, quad_two));
+            assert!(apply_cmp(FloatCmp::Lt, ld, quad_one, quad_two));
+            assert!(!apply_cmp(FloatCmp::Lt, ld, quad_two, quad_one));
+            assert_eq!(real_to_real(quad_1_5, ld, FloatKind::Float), 0x3FC0_0000);
+            assert_eq!(
+                real_to_real(quad_1_5, ld, FloatKind::Double),
+                0x3FF8_0000_0000_0000
+            );
+            assert_eq!(real_to_real(0x3FC0_0000, FloatKind::Float, ld), quad_1_5);
+            assert_eq!(
+                real_to_real(0x3FF8_0000_0000_0000, FloatKind::Double, ld),
+                quad_1_5
+            );
+            assert_eq!(real_to_real(quad_1_5, ld, ld), quad_1_5);
+        });
+        let x87_one = (0x3FFFu128 << 64) | (1u128 << 63);
+        let x87_1_5 = x87_one | (1u128 << 62);
+        on_target(crate::target::Target::X86_64Linux, || {
+            assert_eq!(one_bits(ld), x87_one);
+            assert_eq!(min_normal_bits(ld), (1u128 << 64) | (1u128 << 63));
+            assert_eq!(plus_inf(ld), (0x7FFFu128 << 64) | (1u128 << 63));
+            assert_eq!(nan_bits(ld, 0, false), (0x7FFFu128 << 64) | (3u128 << 62));
+            assert_eq!(llvm_bits(ld, x87_one | (1u128 << 100)), x87_one);
+            assert_eq!(negate(ld, x87_one), x87_one | (1u128 << 79));
+            assert!(!real_is_zero(ld, x87_one));
+            assert_eq!(parse_hex("1", "8", 0, ld), Some(x87_1_5));
+            assert_eq!(real_to_real(x87_1_5, ld, FloatKind::Float), 0x3FC0_0000);
+            assert_eq!(
+                real_to_real(x87_1_5, ld, FloatKind::Double),
+                0x3FF8_0000_0000_0000
+            );
+            assert_eq!(real_to_real(0x3FC0_0000, FloatKind::Float, ld), x87_1_5);
+        });
+        on_target(crate::target::Target::X86_64Windows { msvc: true }, || {
+            assert_eq!(one_bits(ld), 0x3FF0_0000_0000_0000);
+            assert_eq!(
+                real_to_real(0x3FF8_0000_0000_0000, FloatKind::Double, ld),
+                0x3FF8_0000_0000_0000
+            );
+        });
+        // float <-> double directly.
+        assert_eq!(
+            real_to_real(0x3FC0_0000, FloatKind::Float, FloatKind::Double),
+            0x3FF8_0000_0000_0000
+        );
+        assert_eq!(
+            real_to_real(0x3FF8_0000_0000_0000, FloatKind::Double, FloatKind::Float),
+            0x3FC0_0000
+        );
+    }
+
+    #[test]
+    fn wide_integer_conversions_and_exponent_limits() {
+        // 64- and 128-bit results are compared in the destination's width;
+        // a negative one comes back sign-extended to 128 bits, and every
+        // caller masks it.
+        let conv = |v: f64, dest: TypeName| {
+            real_to_int(u128::from(v.to_bits()), FloatKind::Double, dest)
+                .map(|bits| bits & dest.mask())
+        };
+        let two63 = 9_223_372_036_854_775_808.0f64;
+        assert_eq!(conv(two63, TypeName::LongLong), None);
+        assert_eq!(
+            conv(-two63, TypeName::LongLong),
+            Some(i64::MIN as u64 as u128)
+        );
+        assert_eq!(conv(-two63 * 2.0, TypeName::LongLong), None);
+        assert_eq!(
+            conv(1e18, TypeName::LongLong),
+            Some(1_000_000_000_000_000_000)
+        );
+        assert_eq!(
+            conv(-1e18, TypeName::LongLong),
+            Some((-1_000_000_000_000_000_000i64) as u64 as u128)
+        );
+        assert_eq!(conv(two63, TypeName::ULongLong), Some(1u128 << 63));
+        assert_eq!(conv(two63 * 2.0, TypeName::ULongLong), None);
+        assert_eq!(conv(-1.0, TypeName::ULongLong), None);
+        assert_eq!(conv(-0.5, TypeName::ULongLong), Some(0));
+        let two127 = 170141183460469231731687303715884105728.0f64;
+        assert_eq!(conv(two127, TypeName::Int128), None);
+        assert_eq!(conv(two63 * 4.0, TypeName::Int128), Some(1u128 << 65));
+        assert_eq!(conv(-two127, TypeName::Int128), Some(1u128 << 127));
+        assert_eq!(conv(two127, TypeName::UInt128), Some(1u128 << 127));
+        assert_eq!(conv(two127 * 2.0, TypeName::UInt128), None);
+        // Exponents: 100000 is kept, anything larger saturates by sign.
+        assert_eq!(parse_exponent("100000", false), Ok(100_000));
+        assert_eq!(parse_exponent("100000", true), Ok(-100_000));
+        assert_eq!(parse_exponent("100001", false), Err(false));
+        assert_eq!(parse_exponent("100001", true), Err(true));
+        assert_eq!(parse_exponent("999999999", false), Err(false));
+        assert_eq!(parse_exponent("1000000000", true), Err(true));
+        assert_eq!(parse_exponent("000000000000012", false), Ok(12));
+        // nan("0x...") takes hexadecimal digits of either case.
+        assert_eq!(parse_nan_tag("0xAbC"), Some(0xABC));
+        assert_eq!(parse_nan_tag("0Xf0"), Some(0xF0));
+        // Dropped digits that are all zero leave a tie, which goes to even.
+        let tie = format!("1{}8{}", "0".repeat(13), "0".repeat(29));
+        assert_eq!(hex_float_bits(&tie, "", -172, false), 1.0f64.to_bits());
+    }
+
     #[test]
     fn hex_constants_match_ieee_values() {
         assert_eq!(hex("", "0", 0, FloatKind::Double), 0);
