@@ -490,3 +490,30 @@ fn pragma_operator_is_applied_and_removed() {
     assert!(text.contains("int a;") && text.contains("int b;"), "{text}");
     assert!(preprocess("_Pragma(x) int a;\n", "t.c", &options).is_err());
 }
+
+#[test]
+fn strict_ansi_is_defined_only_for_strict_iso_c() {
+    // GCC manual, "Common Predefined Macros": `__STRICT_ANSI__` is defined
+    // for -std=c11 and not for -std=gnu11; glibc hides `fileno` and the rest
+    // of POSIX behind it.
+    let source = "#ifdef __STRICT_ANSI__\nstrict\n#else\ngnu\n#endif\n";
+    let strict = preprocess(source, "t.c", &PpOptions::default()).unwrap();
+    assert!(
+        strict.contains("strict") && !strict.contains("gnu"),
+        "{strict}"
+    );
+    let gnu = PpOptions {
+        gnu: true,
+        ..PpOptions::default()
+    };
+    let text = preprocess(source, "t.c", &gnu).unwrap();
+    assert!(text.contains("gnu") && !text.contains("strict"), "{text}");
+    // Through the whole front end the dialect sets it.
+    let probe = "#ifdef __STRICT_ANSI__\n#error strict\n#endif\nint x;\n";
+    assert!(
+        crate::compile_dialect(probe, "t.c", &PpOptions::default(), crate::Dialect::Gnu11).is_ok()
+    );
+    assert!(
+        crate::compile_dialect(probe, "t.c", &PpOptions::default(), crate::Dialect::C11).is_err()
+    );
+}

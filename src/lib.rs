@@ -128,6 +128,10 @@ fn compile_impl(
     let mut times = timing::PhaseTimes::default();
     timing::take_lex();
     let start = Instant::now();
+    let options = &PpOptions {
+        gnu: dialect.gnu(),
+        ..options.clone()
+    };
     let tokens = pp::preprocess_tokens(source, filename, options)?;
     times.lex = timing::take_lex();
     times.preprocess = start.elapsed().saturating_sub(times.lex);
