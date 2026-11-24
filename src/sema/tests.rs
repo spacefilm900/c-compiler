@@ -2208,3 +2208,122 @@ struct Outer { char lead; struct Inner inner; char tail; };
             .contains("bit-fields in a packed or aligned")
     );
 }
+
+#[test]
+fn address_constants_through_integer_pointers() {
+    // C11 6.6p9: `[]`, `->`, `.`, `&` and `*` may build an address constant
+    // from an integer constant cast to a pointer, the pre-offsetof idiom.
+    // Found by the coverage tests: these were rejected as not constant.
+    let ir = crate::compile_to_ir(
+        "struct S { int a; short b[4]; struct { char c; long d; } in; };\n\
+         long o1 = (long)&((struct S *)0)->b;\n\
+         short *o2 = &((struct S *)0)->b[2];\n\
+         struct S *o3 = &((struct S *)0x100)[1];\n\
+         short *o4 = ((struct S *)0x100)->b;\n\
+         char *o5 = &(*(struct S *)0x200).in.c;\n\
+         int *o6 = &*(int *)0;\n",
+        "t.c",
+    )
+    .unwrap();
+    assert!(ir.contains("@o1 = global i64 4"), "{ir}");
+    assert!(
+        ir.contains("@o2 = global ptr inttoptr (i64 8 to ptr)"),
+        "{ir}"
+    );
+    assert!(
+        ir.contains("@o3 = global ptr inttoptr (i64 288 to ptr)"),
+        "{ir}"
+    );
+    assert!(
+        ir.contains("@o4 = global ptr inttoptr (i64 260 to ptr)"),
+        "{ir}"
+    );
+    assert!(
+        ir.contains("@o5 = global ptr inttoptr (i64 528 to ptr)"),
+        "{ir}"
+    );
+    assert!(ir.contains("@o6 = global ptr null"), "{ir}");
+    // A label address still may not be offset, and an object's value is
+    // still not a constant.
+    assert!(sema_err("int x; int *p = &*(&x + (x - x));").contains("not a constant"));
+}
+
+#[test]
+fn atomic_builtin_argument_constraints() {
+    // C11 7.17: each generic function needs a pointer to a non-const
+    // atomic object; compare-exchange needs a pointer to a non-const,
+    // non-atomic object of the same type for `expected`.
+    let err = |body: &str| {
+        crate::compile_to_ir(
+            &format!(
+                "#include <stdatomic.h>\nconst atomic_int c; atomic_int x; atomic_bool b; atomic_flag f;\n\
+                 const atomic_flag cf; int e; long l; const int ce;\nvoid t(void) {{ {body}; }}\n"
+            ),
+            "t.c",
+        )
+        .unwrap_err()
+        .to_string()
+    };
+    let non_const = "must be a pointer to a non-const atomic type";
+    assert!(err("atomic_init(&c, 1)").contains(non_const));
+    assert!(err("atomic_store(&c, 1)").contains(non_const));
+    assert!(err("atomic_exchange(&c, 1)").contains(non_const));
+    assert!(err("atomic_compare_exchange_strong(&c, &e, 1)").contains(non_const));
+    assert!(err("atomic_fetch_add(&c, 1)").contains(non_const));
+    assert!(err("atomic_fetch_or(&c, 1)").contains(non_const));
+    assert!(err("atomic_flag_clear(&cf)").contains(non_const));
+    assert!(err("atomic_compare_exchange_strong(&x, e, 1)")
+        .contains("expected-value argument of __hcc_atomic_compare_exchange must be a pointer"));
+    assert!(
+        err("atomic_compare_exchange_strong(&x, &ce, 1)").contains("pointer to a non-const type")
+    );
+    assert!(err("atomic_compare_exchange_strong(&x, &l, 1)").contains("must be a pointer to 'int'"));
+    assert!(err("__hcc_atomic_compare_exchange(&x, &e, 1, 5, 5, &e)")
+        .contains("weak argument of __hcc_atomic_compare_exchange must be an integer"));
+    assert!(err("atomic_fetch_add(&b, 1)").contains("not applicable to _Atomic _Bool"));
+    assert!(err("atomic_fetch_sub(&b, 1)").contains("not applicable to _Atomic _Bool"));
+    assert!(err("__hcc_atomic_load(&x)").contains("expects 2 arguments, found 1"));
+    assert!(err("__hcc_atomic_is_lock_free(&x, 1)").contains("expects 1 argument, found 2"));
+}
+
+#[test]
+fn call_and_va_start_constraints() {
+    assert!(sema_err("int f(int, int); int g(void) { return f(1); }")
+        .contains("function 'f' expects 2 arguments, found 1"));
+    assert!(sema_err("int f(int, ...); int g(void) { return f(); }")
+        .contains("function 'f' expects at least 1 argument, found 0"));
+    // Through a function pointer the message has no name.
+    assert!(
+        sema_err("int (*fp)(int, int); int g(void) { return fp(1); }")
+            .contains("function expects 2 arguments, found 1")
+    );
+    assert!(
+        sema_err("int (*fp)(int, ...); int g(void) { return fp(); }")
+            .contains("function expects at least 1 argument, found 0")
+    );
+    assert!(sema_err("int (*fp)(int); int g(void) { return fp(1, 2); }")
+        .contains("function expects 1 argument, found 2"));
+    let ir_err = |src: &str| crate::compile_to_ir(src, "t.c").unwrap_err().to_string();
+    assert!(ir_err(
+        "#include <stdarg.h>\nvoid f(int a) { va_list ap; va_start(ap, a); va_end(ap); }\n"
+    )
+    .contains("va_start used in a function that is not variadic"));
+    assert!(ir_err("#include <stdarg.h>\nvoid f(int a, int b, ...) { va_list ap; va_start(ap, a); va_end(ap); }\n")
+        .contains("the second argument of va_start must be the last named parameter"));
+    assert!(
+        ir_err("int main(void) { return __builtin_popcount(1, 2); }\n")
+            .contains("expects 1 argument, found 2")
+    );
+    assert!(
+        ir_err("int main(void) { return __builtin_add_overflow(1, 2, 0); }\n")
+            .contains("must be a pointer to a non-const integer other than _Bool")
+    );
+    assert!(
+        ir_err("int main(void) { _Bool b; return __builtin_mul_overflow(1, 2, &b); }\n")
+            .contains("other than _Bool")
+    );
+    assert!(
+        ir_err("double sqrt(double); int main(void) { return sqrt(1.0, 2.0); }\n")
+            .contains("function 'sqrt' expects 1 argument, found 2")
+    );
+}

@@ -1263,3 +1263,7 @@ After pull request 1 was opened, the App reviewed the import:
 ## Clean-room reminder
 
 Frontend code was written from the C standard, the LLVM Language Reference, and the System V ABI. Clang and GCC source were not consulted. Clang is only the differential oracle and the linker/backend for emitted IR.
+
+## Hardening (step 14), coverage
+
+Line, function and branch coverage over the unit tests and every in-repo suite (`tools/quality/branch_coverage.sh`, nightly rustc for measurement only): 92.7% of lines, 96.3% of functions, 83.4% of branches (was 90.8 / 95.7 / 80.3 on `f51cc91`). Targeted tests for the worst gaps found and fixed six problems: `long double` division by a subnormal folded to zero, NaN operands and payloads not propagated in `long double` folding, `0.0/0.0` folding to the host's negative NaN, address constants built from integer pointers (the old `offsetof` idiom) rejected, and enumerator/bit-field errors worded as array-size errors. A `coverage` job joins the weekly workflow. Report: `reports/hardening/coverage.md`. Still to do in step 14: mutation testing, QuickJS then zlib.
