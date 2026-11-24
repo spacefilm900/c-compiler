@@ -640,7 +640,11 @@ pub(super) fn layout_union_members(
                     bit_offset: 0,
                     bit_width: Some(width),
                 });
-                size = size.max(member.size.max(1));
+                // A bit-field takes the bytes its width needs, not its
+                // declared type's size (Clang and GCC as black boxes:
+                // `union { char a; int : 3; }` is 1 byte); the union's
+                // alignment rounds the size up.
+                size = size.max(u64::from(width).div_ceil(8));
                 if member.named {
                     align = align.max(field_align);
                 }
