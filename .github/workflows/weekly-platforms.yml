@@ -11,10 +11,9 @@
 # Estimated cost per full run (private repo; GitHub's published per-minute
 # prices, Nov 2026; billing rounds each job up to whole minutes), from the
 # validation runs' measured times: arm64 Linux 7 min x $0.005, macOS 3 min
-# x $0.062, Windows 13 min x $0.010, sanitizers 14 min x $0.006: about
-# $0.44 a run, about $1.90 a month at one run a week. The coverage job adds
-# about 25 min x $0.006, about $0.15 a run and $0.65 a month. These are
-# estimates; docs/WEEKLY_PLATFORMS.md has the details.
+# x $0.062, Windows 13 min x $0.010, sanitizers 14 min x $0.006, coverage
+# 7 min x $0.006: about $0.48 a run, about $2.10 a month at one run a week.
+# These are estimates; docs/WEEKLY_PLATFORMS.md has the details.
 
 name: weekly-platforms
 
@@ -577,7 +576,7 @@ jobs:
     name: Coverage of hcc (lines, functions, branches; unit tests and suites)
     if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'coverage'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 20
     env:
       RESULTS: ${{ github.workspace }}/build/weekly/coverage
       TOOLCHAIN: nightly-2026-11-23

@@ -134,8 +134,9 @@ OUT=/tmp/cov tools/quality/branch_coverage.sh          # SUITES="tests wacc" for
 
 ## Weekly coverage job
 
-`weekly-platforms.yml` has a fifth job, `coverage` (Linux only, 45-minute cap,
-about $0.15 a run, about $0.65 a month), that runs the same script every Sunday
+`weekly-platforms.yml` has a fifth job, `coverage` (Linux only, 20-minute cap;
+the validation run 45292071189 took 6 min 36 s, about $0.04 a run and $0.18 a
+month), that runs the same script every Sunday
 and by hand (`gh workflow run weekly-platforms.yml -f jobs=coverage`). It puts the
 per-module table on the run's summary page and uploads the CSVs and lcov files.
 It is informational: it fails only when a suite does not finish. It is not part of
