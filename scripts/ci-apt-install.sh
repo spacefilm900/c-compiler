@@ -56,6 +56,12 @@ for pkg in "$@"; do
     unzip)
       command -v unzip >/dev/null 2>&1 || need="$need unzip"
       ;;
+    xz-utils)
+      command -v xz >/dev/null 2>&1 || need="$need xz-utils"
+      ;;
+    patch)
+      command -v patch >/dev/null 2>&1 || need="$need patch"
+      ;;
     *)
       need="$need $pkg"
       ;;

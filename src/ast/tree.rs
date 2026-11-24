@@ -162,6 +162,10 @@ pub enum Init {
         init: Box<Init>,
         line: usize,
         column: usize,
+        /// Expanded from a GNU range designator `[first ... last]`: the
+        /// same `init` is repeated for every index, so sema rejects a value
+        /// that reads a volatile object (GCC evaluates it once).
+        ranged: bool,
     },
 }
 
@@ -1055,6 +1059,17 @@ pub enum Stmt {
         line: usize,
         column: usize,
     },
+    /// A GNU `asm` statement without operands (GCC manual, "Basic Asm" and
+    /// "Extended Asm"): `asm("nop");` or `asm volatile("pause" ::: "memory");`.
+    /// `template` is already in LLVM inline-asm form (LLVM LangRef, "Inline
+    /// Assembler Expressions"): `$` doubled, and for extended asm `%%`
+    /// turned into `%`. `clobbers` are the clobber strings as written.
+    Asm {
+        template: Vec<u8>,
+        clobbers: Vec<String>,
+        line: usize,
+        column: usize,
+    },
 }
 
 impl Stmt {
@@ -1077,7 +1092,8 @@ impl Stmt {
             | Stmt::Continue { line, column }
             | Stmt::Label { line, column, .. }
             | Stmt::Goto { line, column, .. }
-            | Stmt::GotoPtr { line, column, .. } => (*line, *column),
+            | Stmt::GotoPtr { line, column, .. }
+            | Stmt::Asm { line, column, .. } => (*line, *column),
         }
     }
 }

@@ -742,7 +742,8 @@ pub(super) fn collect_slots(stmt: &Stmt, slots: &mut Vec<(String, CType, u32)>) 
         | Stmt::Break { .. }
         | Stmt::Continue { .. }
         | Stmt::Goto { .. }
-        | Stmt::GotoPtr { .. } => {}
+        | Stmt::GotoPtr { .. }
+        | Stmt::Asm { .. } => {}
     }
 }
 

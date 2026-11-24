@@ -1260,6 +1260,10 @@ After pull request 1 was opened, the App reviewed the import:
 
 `fuzz/` holds cargo-fuzz targets for the lexer, the preprocessor, the parser, the whole front end (optionally with `llvm-as` on every accepted module) and a preprocessing round trip; they need a nightly toolchain and stay out of the stable build and pull-request CI (`docs/FUZZING.md`, manual workflow `fuzz.yml`). Random-program runners: Csmith (existing), YARPGen (`tools/yarpgen_campaign.py`), and two new generators for constant folding and record layout. The first campaign on `90e83d9` (13.2 fuzzing hours, 11 million inputs; 3,210 Csmith, 2,000 YARPGen, 20,000 constant-folding and 10,000 layout programs) found no compiler bugs; see `reports/hardening/README.md`. Still to do in step 14: coverage over the whole test set, mutation testing, and QuickJS then zlib.
 
+## Hardening (step 14), QuickJS
+
+QuickJS 2026-06-04 (pinned tarball, SHA-256 checked by `scripts/fetch_quickjs.sh`) builds with hcc alone at `-O0` and `-O2`. `harness/run_quickjs.py` compares it with a Clang build: `qjsc -c` output 15/15 identical, the Makefile's 11 tests matching byte for byte, and test262 (83,558 runs at the pinned revision) failing exactly the same tests as the Clang build (58 at `-O2`, upstream's known list). Getting there found one wrong-code bug (a nonnegative enumeration's compatible type was `int`, not `unsigned int` as GCC and Clang use outside MSVC; an enum bit-field read back negative) and nine rejected constructs, now accepted: GNU struct self-casts, forward-named enums, nested flexible-array structs, zero-size records, range designators, operand-less `asm` statements, C11 `[static N]`/qualified parameter arrays, `offsetof` redefinition in `<stddef.h>`, and an aligned untagged typedef. 34 GCC torture tests now pass. A Linux-only `quickjs` CI job runs the comparison with test262 at `-O2`. Report: `reports/hardening/quickjs.md`.
+
 ## Clean-room reminder
 
 Frontend code was written from the C standard, the LLVM Language Reference, and the System V ABI. Clang and GCC source were not consulted. Clang is only the differential oracle and the linker/backend for emitted IR.
