@@ -54,7 +54,7 @@ The frontend was written from the C standard, the LLVM Language Reference, and t
 
 ## Design
 
-The decisions behind this compiler are in [DESIGN.md](DESIGN.md).
+The decisions behind this compiler are in [DESIGN.md](DESIGN.md). This document was created wholly by the Grok Bot.
 
 ## Build
 
