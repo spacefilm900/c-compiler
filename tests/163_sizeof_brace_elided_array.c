@@ -46,6 +46,34 @@ char q_strs[sizeof strs];
 enum { E_N1 = sizeof n1 / sizeof n1[0], E_M1 = sizeof m1 / sizeof m1[0] };
 _Static_assert(sizeof p1 / sizeof p1[0] == 2, "p1 has two elements");
 
+struct Q { const char *s; int n; };
+struct Q qs[] = {"a", 1, "b", 2, "c"};
+enum { E_QS = sizeof qs / sizeof qs[0] };
+_Static_assert(sizeof q_p1 == 16, "p1");
+_Static_assert(sizeof q_p2 == 16, "p2");
+_Static_assert(sizeof q_n1 == 40, "n1");
+_Static_assert(sizeof q_n2 == 40, "n2");
+_Static_assert(sizeof q_n3 == 60, "n3");
+_Static_assert(sizeof q_b1 == 12, "b1");
+_Static_assert(sizeof q_u1 == 24, "u1");
+_Static_assert(sizeof q_a1 == 32, "a1");
+_Static_assert(sizeof q_m1 == 40, "m1");
+_Static_assert(sizeof q_grid == 24, "grid");
+_Static_assert(sizeof q_d1 == 32, "d1");
+_Static_assert(sizeof q_mixed == 24, "mixed");
+_Static_assert(sizeof q_desig == 32, "desig");
+_Static_assert(sizeof q_strs == 12, "strs");
+_Static_assert(E_QS == 3, "qs");
+
+/* Items that are scalars whatever their operands are counted, so `W` is
+   an integer constant expression. */
+int more(void) {
+    int i = 0, j = 5, k = 1;
+    struct P w[] = {i++, j += 2, (char)3, k ? 1 : 2, (long)&k != 0};
+    enum { W = sizeof w / sizeof w[0] };
+    return W * 10 + w[1].x;
+}
+
 int local(void) {
     struct P lp[] = {1, 2, 3, 4, 5};
     char q[sizeof lp];
@@ -58,6 +86,7 @@ int main(void) {
     printf("%d %d %d %d %d %d\n", (int)sizeof q_u1, (int)sizeof q_a1, (int)sizeof q_m1, (int)sizeof q_grid,
            (int)sizeof q_d1, (int)sizeof q_mixed);
     printf("%d %d %d %d %d\n", E_N1, E_M1, local(), (int)sizeof q_desig, (int)sizeof q_strs);
+    printf("%d %d %s\n", E_QS, more(), qs[2].s);
     printf("%d %d %d %d\n", n2[1].c, n3[1].p.x, m1[1].p[0].y, mixed[2].x);
     return 0;
 }

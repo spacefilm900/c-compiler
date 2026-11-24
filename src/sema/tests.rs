@@ -1483,6 +1483,22 @@ fn union_bit_fields_take_the_bytes_of_their_width() {
 }
 
 #[test]
+fn parser_folds_sizeof_of_brace_elided_arrays() {
+    // tests/163: every bound, enumerator and _Static_assert there needs the
+    // parser to know the length of an array completed by a brace-elided or
+    // designated initializer (C11 6.7.9p20, p22; 6.6p6).
+    analyzed(include_str!("../../tests/163_sizeof_brace_elided_array.c"));
+    // A struct value's type is not known to the parser; such a length is
+    // left to semantic analysis, and `sizeof` of it in a bound is still
+    // rejected (a known limitation, reports/hardening/mutation.md).
+    let err = sema_err(
+        "struct P { int x, y; };\n\
+         int f(void) { struct P s = {1, 2}; struct P v[] = {s, s}; char q[sizeof v]; return sizeof q; }\n",
+    );
+    assert!(err.contains("incomplete type"), "{err}");
+}
+
+#[test]
 fn struct_layout_members_and_diagnostics() {
     let unit = analyzed(
         "\

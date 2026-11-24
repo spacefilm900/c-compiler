@@ -294,9 +294,9 @@ pub(super) fn infer_init_len(elem: &CType, init: &Init, env: Env) -> Option<u64>
 /// has two elements. Each element takes initializers one subobject at a
 /// time until all of its members are filled; a braced list takes one
 /// whole subobject. A designator `[k] =` moves to element `k` (6.7.9p17).
-/// Only items that are certainly scalars, braced lists, and string
-/// literals for character arrays are counted; for anything else (a struct
-/// value, a longer designator) the length depends on types the parser
+/// Only items that are certainly scalars, braced lists and string
+/// literals are counted; for anything else (a struct value, a longer
+/// designator) the length depends on types the parser
 /// does not have, and `None` leaves it to semantic analysis.
 fn elided_len(elem: &CType, items: &[Init], env: Env) -> Option<u64> {
     // Each designator `[k] = init` is replaced by `init`, with the element
@@ -365,7 +365,12 @@ fn fill_subobject(
         {
             return Some(pos + 1);
         }
-        Init::Expr(expr) if ty.is_scalar() => return certainly_scalar(expr).then_some(pos + 1),
+        // Any other string literal is a pointer: one scalar, reached by
+        // descending into an aggregate like any scalar.
+        Init::Expr(expr) if ty.is_scalar() => {
+            return (certainly_scalar(expr) || matches!(expr, Expr::Str { .. })).then_some(pos + 1);
+        }
+        Init::Expr(Expr::Str { .. }) => {}
         Init::Expr(expr) if !certainly_scalar(expr) => return None,
         Init::Expr(_) => {}
     }
