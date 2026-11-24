@@ -63,6 +63,8 @@ pub fn parse_with(
         structs: Vec::new(),
         llvm_names: HashSet::new(),
         next_struct: 0,
+        next_enum: 0,
+        file_decl_index: 0,
         defining: HashSet::new(),
         shadow_decl: None,
         va_list: None,
@@ -102,6 +104,12 @@ struct Parser<'a> {
     structs: Vec<StructRef>,
     llvm_names: HashSet<String>,
     next_struct: u32,
+    /// Identity of the next GNU forward-declared enumeration.
+    next_enum: u32,
+    /// Index in [`TranslationUnit::decls`] of the first declaration the
+    /// current file-scope declaration produces. A forward enum completed
+    /// here records it (see [`EnumRef`]).
+    file_decl_index: u32,
     /// Records whose member lists are being parsed. A nested definition of
     /// one of these tags is a redefinition, not a completion.
     defining: HashSet<u32>,
@@ -186,10 +194,10 @@ enum TagEntry {
     /// GNU mode: `enum E` named before any definition of `E` (C11
     /// 6.7.2.3p3 forbids it; GCC and Clang accept it with -std=gnu11, and
     /// QuickJS has `typedef enum OPCodeEnum OPCodeEnum;` ahead of the list).
-    /// Until the list is read the type is taken to be the one a nonnegative
-    /// enumeration gets ([`record::nonnegative_enum_type`]), and the
-    /// definition must then give that type, so the early uses stay right.
-    EnumForward,
+    /// Until the list is read the type is incomplete (the GCC manual,
+    /// "Incomplete `enum` Types"); the definition completes the shared
+    /// [`EnumRef`] in place, so earlier uses see the enumerated type.
+    EnumForward(EnumRef),
 }
 
 /// A name the parser has to know before semantic analysis.
@@ -219,6 +227,7 @@ impl Parser<'_> {
         self.push_tags();
         let mut decls = Vec::new();
         while self.current().kind != TokenKind::Eof {
+            self.file_decl_index = u32::try_from(decls.len()).unwrap_or(u32::MAX);
             decls.extend(self.parse_external()?);
         }
         self.pop_tags();
@@ -582,6 +591,8 @@ struct SpecFlags {
     enum_ty: bool,
     /// The enumerated type when it is not `int` (GNU extension).
     enum_base: Option<TypeName>,
+    /// A GNU forward-declared enumeration ([`CType::Enum`]).
+    enum_forward: Option<CType>,
     line: usize,
     column: usize,
     /// `_Atomic ( type-name )` (C11 6.7.2.4). The type is already atomic.

@@ -1278,7 +1278,7 @@ impl Parser<'_> {
                     self.check_vla_bound_types(param)?;
                 }
             }
-            CType::Void | CType::Int(_) | CType::Float(_) | CType::Struct(_) => {}
+            CType::Void | CType::Int(_) | CType::Float(_) | CType::Struct(_) | CType::Enum(_) => {}
         }
         Ok(())
     }

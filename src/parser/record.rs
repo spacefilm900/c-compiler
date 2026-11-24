@@ -258,8 +258,9 @@ impl Parser<'_> {
         }
     }
 
-    /// An enum specifier. Returns where it starts and the enumerated type.
-    pub(super) fn parse_enum_specifier(&mut self) -> Result<(usize, usize, TypeName), Diagnostic> {
+    /// An enum specifier. Returns where it starts and the enumerated type: a
+    /// [`CType::Int`], or a [`CType::Enum`] for a GNU forward declaration.
+    pub(super) fn parse_enum_specifier(&mut self) -> Result<(usize, usize, CType), Diagnostic> {
         let kw = self.advance();
         let (tag, line, column) = if self.current().kind == TokenKind::Ident {
             let tag_tok = self.advance();
@@ -322,8 +323,8 @@ impl Parser<'_> {
                 return Err(self.error_at(kw.line, kw.column, "expected an enum tag or '{'"));
             };
             return match self.lookup_tag(&tag) {
-                Some(TagEntry::Enum(base)) => Ok((line, column, base)),
-                Some(TagEntry::EnumForward) => Ok((line, column, nonnegative_enum_type())),
+                Some(TagEntry::Enum(base)) => Ok((line, column, CType::Int(base))),
+                Some(TagEntry::EnumForward(handle)) => Ok((line, column, CType::Enum(handle))),
                 Some(TagEntry::EnumOpen) => Err(self.error_at(
                     line,
                     column,
@@ -335,20 +336,22 @@ impl Parser<'_> {
                     format!("'{tag}' defined as a different tag type"),
                 )),
                 None if self.dialect.gnu() => {
+                    let handle = EnumRef::new(self.next_enum, tag.clone());
+                    self.next_enum += 1;
                     self.tags
                         .last_mut()
                         .expect("tag scope")
-                        .insert(tag, TagEntry::EnumForward);
-                    Ok((line, column, nonnegative_enum_type()))
+                        .insert(tag, TagEntry::EnumForward(handle.clone()));
+                    Ok((line, column, CType::Enum(handle)))
                 }
                 None => Err(self.error_at(line, column, format!("incomplete enum '{tag}'"))),
             };
         }
-        let mut forward = false;
+        let mut forward = None;
         if let Some(tag) = &tag {
             match self.lookup_tag_current(tag) {
-                Some(TagEntry::EnumForward) => {
-                    forward = true;
+                Some(TagEntry::EnumForward(handle)) => {
+                    forward = Some(handle);
                     self.tags.last_mut().expect("tag scope").insert(
                         tag.clone(),
                         fixed.map_or(TagEntry::EnumOpen, TagEntry::Enum),
@@ -379,17 +382,8 @@ impl Parser<'_> {
         self.bump();
         let base = self.parse_enumerators(fixed)?;
         self.expect_skip(TokenKind::RBrace, "'}'")?;
-        if forward && base != nonnegative_enum_type() {
-            return Err(self.error_at(
-                line,
-                column,
-                format!(
-                    "enum '{}' was used before its definition as '{}', but its type is '{}'",
-                    tag.as_deref().unwrap_or_default(),
-                    crate::ast::CType::Int(nonnegative_enum_type()).display(),
-                    crate::ast::CType::Int(base).display()
-                ),
-            ));
+        if let Some(handle) = forward {
+            handle.complete(base, self.file_decl_index);
         }
         if let Some(tag) = &tag {
             self.tags
@@ -397,7 +391,7 @@ impl Parser<'_> {
                 .expect("tag scope")
                 .insert(tag.clone(), TagEntry::Enum(base));
         }
-        Ok((line, column, base))
+        Ok((line, column, CType::Int(base)))
     }
 
     /// The enumerator list; returns the enumerated type.
