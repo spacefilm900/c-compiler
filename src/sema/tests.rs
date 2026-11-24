@@ -629,6 +629,14 @@ int main(void) { return f(1); }
     );
 }
 
+fn analyzed_gnu(source: &str) -> TranslationUnit {
+    let dialect = crate::Dialect::Gnu11;
+    let tokens = lex(source, "gnu.c").unwrap();
+    let mut unit = crate::parser::parse_dialect(&tokens, "gnu.c", dialect).unwrap();
+    analyze_dialect(&mut unit, "gnu.c", &tokens, dialect).unwrap();
+    unit
+}
+
 fn analyzed(source: &str) -> TranslationUnit {
     let tokens = lex(source, "ok.c").unwrap();
     let mut unit = parse(&tokens, "ok.c").unwrap();
@@ -1056,6 +1064,254 @@ char a32[((int)(-1u >> 28)) + 3]; int s32 = sizeof a32;
     ];
     for (i, want) in bounds.iter().enumerate() {
         assert_eq!(value(format!("s{i}")), u128::from(*want), "s{i}");
+    }
+}
+
+#[test]
+fn folds_shifts_limits_and_conditionals_like_clang() {
+    // A second mutation pass (reports/hardening/mutation.md) found shift
+    // counts of 0 and unsigned counts, values at exactly INT_MAX/INT_MIN,
+    // unsigned negation and `?:` operand types untested. Every value is what
+    // Clang prints; `bN` bounds go through the parser's ICE folder and the
+    // `hN` initializers through sema's.
+    // `?:` with an omitted middle operand is GNU, so this is gnu11.
+    let unit = analyzed_gnu(
+        r#"
+int h0 = 0 << 3;
+int h1 = 1 << 0;
+int h2 = 1 << 2u;
+int h3 = 8u >> 1u;
+int h4 = -8 >> 1;
+int h5 = 1u << 31 >> 30;
+int h6 = 5 >> 0;
+int h7 = (unsigned char)1 << 3;
+int h8 = 1L << 40 >> 38;
+int h9 = -1 >> 31;
+int h10 = 1 << 30 >> 29;
+int h11 = 2147483647 + 0;
+int h12 = -2147483647 - 1 + 0;
+int h13 = 2147483646 + 1;
+int h14 = (-2147483647 - 1) / 1;
+int h15 = (-2147483647 - 1) / -2;
+int h16 = 7 / -1;
+int h17 = -7 % -1;
+int h18 = (-2147483647 - 1) % 2;
+int h19 = -(0u);
+int h20 = -1u;
+int h21 = -(unsigned char)1;
+int h22 = ~0u;
+int h23 = ~(unsigned char)0;
+int h24 = ~5;
+int h25 = - -3;
+int h26 = -(unsigned short)2;
+int h27 = 5 | 3;
+int h28 = 5u | 3u;
+int h29 = 6L | 3;
+int h30 = 5 ^ 3;
+int h31 = -1 < 0u;
+int h32 = 1 <= 1;
+int h33 = -1 < 1;
+int h34 = 2u < 2u;
+int h35 = 2u <= 2u;
+int h36 = (long long)-1 < 0;
+int h37 = -1L < 0u;
+int h38 = 1 <= 0;
+int h39 = 3 > 3;
+int h40 = 3 >= 3;
+int h41 = -1 > -2;
+int h42 = 4294967295u > 1;
+int h43 = (unsigned char)256 ? 1 : 2;
+int h44 = (unsigned char)257 ? 1 : 2;
+int h45 = (unsigned char)256 ?: 7;
+int h46 = (unsigned short)65536 ?: 9;
+int h47 = (char)3 ?: 4;
+int h48 = !(unsigned char)256;
+int h49 = !(unsigned short)1;
+int h50 = sizeof(1 ? (char)1 : (char)2);
+int h51 = sizeof(1 ? 1 : 2L);
+int h52 = sizeof(0 ? 1 : 2.0);
+int h53 = sizeof(1 ? 1 : 2.0f);
+int h54 = sizeof((char)1 ?: (char)2);
+int h55 = sizeof(0 ?: 1L);
+int h56 = sizeof(1 ?: 2.0);
+int h57 = sizeof(1 ? (void *)0 : 0);
+int h58 = (int)(4294967295u + 2u);
+int h59 = (unsigned char)300 + 0;
+int h60 = (signed char)200 + 0;
+int h61 = (short)40000 + 0;
+int h62 = (unsigned short)70000 + 0;
+int h63 = 3 * -4;
+int h64 = -12 / 5;
+int h65 = -12 % 5;
+int h66 = 12u / 5u;
+int h67 = 12u % 5u;
+int h68 = 4294967295u * 2u;
+int h69 = 0u - 1u;
+int h70 = 2147483647 - -1L > 0;
+int h71 = 1 ? 2 : (1 / 0);
+int h72 = 0 ? (1 / 0) : 3;
+int h73 = 0 && (1 / 0);
+int h74 = 1 || (1 / 0);
+char b0[(0 << 3) + 3]; int t0 = sizeof b0;
+char b1[(1 << 0) + 3]; int t1 = sizeof b1;
+char b2[(1 << 2u) + 3]; int t2 = sizeof b2;
+char b3[(8u >> 1u) + 3]; int t3 = sizeof b3;
+char b4[(1u << 31 >> 30) + 3]; int t4 = sizeof b4;
+char b5[(5 >> 0) + 3]; int t5 = sizeof b5;
+char b6[((unsigned char)1 << 3) + 3]; int t6 = sizeof b6;
+char b7[(1L << 40 >> 38) + 3]; int t7 = sizeof b7;
+char b8[(-1 >> 31) + 3]; int t8 = sizeof b8;
+char b9[(1 << 30 >> 29) + 3]; int t9 = sizeof b9;
+char b10[(-7 % -1) + 3]; int t10 = sizeof b10;
+char b11[((-2147483647 - 1) % 2) + 3]; int t11 = sizeof b11;
+char b12[(-(0u)) + 3]; int t12 = sizeof b12;
+char b13[(-1u) + 3]; int t13 = sizeof b13;
+char b14[(-(unsigned char)1) + 3]; int t14 = sizeof b14;
+char b15[(~0u) + 3]; int t15 = sizeof b15;
+char b16[(~(unsigned char)0) + 3]; int t16 = sizeof b16;
+char b17[(- -3) + 3]; int t17 = sizeof b17;
+char b18[(-(unsigned short)2) + 3]; int t18 = sizeof b18;
+char b19[(5 | 3) + 3]; int t19 = sizeof b19;
+char b20[(5u | 3u) + 3]; int t20 = sizeof b20;
+char b21[(6L | 3) + 3]; int t21 = sizeof b21;
+char b22[(5 ^ 3) + 3]; int t22 = sizeof b22;
+char b23[(-1 < 0u) + 3]; int t23 = sizeof b23;
+char b24[(1 <= 1) + 3]; int t24 = sizeof b24;
+char b25[(-1 < 1) + 3]; int t25 = sizeof b25;
+char b26[(2u < 2u) + 3]; int t26 = sizeof b26;
+char b27[(2u <= 2u) + 3]; int t27 = sizeof b27;
+char b28[((long long)-1 < 0) + 3]; int t28 = sizeof b28;
+char b29[(-1L < 0u) + 3]; int t29 = sizeof b29;
+char b30[(1 <= 0) + 3]; int t30 = sizeof b30;
+char b31[(3 > 3) + 3]; int t31 = sizeof b31;
+char b32[(3 >= 3) + 3]; int t32 = sizeof b32;
+char b33[(-1 > -2) + 3]; int t33 = sizeof b33;
+char b34[(4294967295u > 1) + 3]; int t34 = sizeof b34;
+char b35[((unsigned char)256 ? 1 : 2) + 3]; int t35 = sizeof b35;
+char b36[((unsigned char)257 ? 1 : 2) + 3]; int t36 = sizeof b36;
+char b37[((unsigned char)256 ?: 7) + 3]; int t37 = sizeof b37;
+char b38[((unsigned short)65536 ?: 9) + 3]; int t38 = sizeof b38;
+char b39[((char)3 ?: 4) + 3]; int t39 = sizeof b39;
+char b40[(!(unsigned char)256) + 3]; int t40 = sizeof b40;
+char b41[(!(unsigned short)1) + 3]; int t41 = sizeof b41;
+char b42[(sizeof(1 ? (char)1 : (char)2)) + 3]; int t42 = sizeof b42;
+char b43[(sizeof(1 ? 1 : 2L)) + 3]; int t43 = sizeof b43;
+char b44[(sizeof(0 ? 1 : 2.0)) + 3]; int t44 = sizeof b44;
+char b45[(sizeof(1 ? 1 : 2.0f)) + 3]; int t45 = sizeof b45;
+char b46[(sizeof((char)1 ?: (char)2)) + 3]; int t46 = sizeof b46;
+char b47[(sizeof(0 ?: 1L)) + 3]; int t47 = sizeof b47;
+char b48[(sizeof(1 ?: 2.0)) + 3]; int t48 = sizeof b48;
+char b49[(sizeof(1 ? (void *)0 : 0)) + 3]; int t49 = sizeof b49;
+char b50[((int)(4294967295u + 2u)) + 3]; int t50 = sizeof b50;
+char b51[((unsigned char)300 + 0) + 3]; int t51 = sizeof b51;
+char b52[(-12 / 5) + 3]; int t52 = sizeof b52;
+char b53[(-12 % 5) + 3]; int t53 = sizeof b53;
+char b54[(12u / 5u) + 3]; int t54 = sizeof b54;
+char b55[(12u % 5u) + 3]; int t55 = sizeof b55;
+char b56[(4294967295u * 2u) + 3]; int t56 = sizeof b56;
+char b57[(0u - 1u) + 3]; int t57 = sizeof b57;
+char b58[(2147483647 - -1L > 0) + 3]; int t58 = sizeof b58;
+char b59[(1 ? 2 : (1 / 0)) + 3]; int t59 = sizeof b59;
+char b60[(0 ? (1 / 0) : 3) + 3]; int t60 = sizeof b60;
+char b61[(0 && (1 / 0)) + 3]; int t61 = sizeof b61;
+char b62[(1 || (1 / 0)) + 3]; int t62 = sizeof b62;
+"#,
+    );
+    let value = |name: String| {
+        unit.globals
+            .iter()
+            .find(|global| global.name == name)
+            .unwrap()
+            .int_init()
+            .unwrap()
+    };
+    let globals: [i32; 75] = [
+        0,
+        1,
+        4,
+        4,
+        -4,
+        2,
+        5,
+        8,
+        4,
+        -1,
+        2,
+        2147483647,
+        -2147483648,
+        2147483647,
+        -2147483648,
+        1073741824,
+        -7,
+        0,
+        0,
+        0,
+        -1,
+        -1,
+        -1,
+        -1,
+        -6,
+        3,
+        -2,
+        7,
+        7,
+        7,
+        6,
+        0,
+        1,
+        1,
+        0,
+        1,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        1,
+        2,
+        1,
+        7,
+        9,
+        3,
+        1,
+        0,
+        4,
+        8,
+        8,
+        4,
+        4,
+        8,
+        8,
+        8,
+        1,
+        44,
+        -56,
+        -25536,
+        4464,
+        -12,
+        -2,
+        -2,
+        2,
+        2,
+        -2,
+        -1,
+        1,
+        2,
+        3,
+        0,
+        1,
+    ];
+    for (i, want) in globals.iter().enumerate() {
+        assert_eq!(value(format!("h{i}")), u128::from(*want as u32), "h{i}");
+    }
+    let bounds: [u32; 63] = [
+        3, 4, 7, 7, 5, 8, 11, 7, 2, 5, 3, 3, 3, 2, 2, 2, 2, 6, 1, 10, 10, 10, 9, 3, 4, 4, 3, 4, 4,
+        4, 3, 3, 4, 4, 4, 5, 4, 10, 12, 6, 4, 3, 7, 11, 11, 7, 7, 11, 11, 11, 4, 47, 1, 1, 5, 5, 1,
+        2, 4, 5, 6, 3, 4,
+    ];
+    for (i, want) in bounds.iter().enumerate() {
+        assert_eq!(value(format!("t{i}")), u128::from(*want), "t{i}");
     }
 }
 
