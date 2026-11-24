@@ -1152,6 +1152,20 @@ int h71 = 1 ? 2 : (1 / 0);
 int h72 = 0 ? (1 / 0) : 3;
 int h73 = 0 && (1 / 0);
 int h74 = 1 || (1 / 0);
+int h75 = 2 < 2;
+int h76 = -1 < -1;
+int h77 = -2 < -1;
+int h78 = -2 <= -3;
+int h79 = -2 > -2;
+int h80 = -2 >= -1;
+int h81 = (2147483646 + 1) - 2147483640;
+int h82 = (-2147483647 - 1) + 2147483647 + 2;
+int h83 = 1 && 0;
+int h84 = 1 && 2;
+int h85 = 0 || 0;
+int h86 = 0 || 3;
+int h87 = !0;
+int h88 = !5;
 char b0[(0 << 3) + 3]; int t0 = sizeof b0;
 char b1[(1 << 0) + 3]; int t1 = sizeof b1;
 char b2[(1 << 2u) + 3]; int t2 = sizeof b2;
@@ -1215,6 +1229,20 @@ char b59[(1 ? 2 : (1 / 0)) + 3]; int t59 = sizeof b59;
 char b60[(0 ? (1 / 0) : 3) + 3]; int t60 = sizeof b60;
 char b61[(0 && (1 / 0)) + 3]; int t61 = sizeof b61;
 char b62[(1 || (1 / 0)) + 3]; int t62 = sizeof b62;
+char b63[(2 < 2) + 3]; int t63 = sizeof b63;
+char b64[(-1 < -1) + 3]; int t64 = sizeof b64;
+char b65[(-2 < -1) + 3]; int t65 = sizeof b65;
+char b66[(-2 <= -3) + 3]; int t66 = sizeof b66;
+char b67[(-2 > -2) + 3]; int t67 = sizeof b67;
+char b68[(-2 >= -1) + 3]; int t68 = sizeof b68;
+char b69[((2147483646 + 1) - 2147483640) + 3]; int t69 = sizeof b69;
+char b70[((-2147483647 - 1) + 2147483647 + 2) + 3]; int t70 = sizeof b70;
+char b71[(1 && 0) + 3]; int t71 = sizeof b71;
+char b72[(1 && 2) + 3]; int t72 = sizeof b72;
+char b73[(0 || 0) + 3]; int t73 = sizeof b73;
+char b74[(0 || 3) + 3]; int t74 = sizeof b74;
+char b75[(!0) + 3]; int t75 = sizeof b75;
+char b76[(!5) + 3]; int t76 = sizeof b76;
 "#,
     );
     let value = |name: String| {
@@ -1225,7 +1253,7 @@ char b62[(1 || (1 / 0)) + 3]; int t62 = sizeof b62;
             .int_init()
             .unwrap()
     };
-    let globals: [i32; 75] = [
+    let globals: [i32; 89] = [
         0,
         1,
         4,
@@ -1301,14 +1329,28 @@ char b62[(1 || (1 / 0)) + 3]; int t62 = sizeof b62;
         3,
         0,
         1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        7,
+        1,
+        0,
+        1,
+        0,
+        1,
+        1,
+        0,
     ];
     for (i, want) in globals.iter().enumerate() {
         assert_eq!(value(format!("h{i}")), u128::from(*want as u32), "h{i}");
     }
-    let bounds: [u32; 63] = [
+    let bounds: [u32; 77] = [
         3, 4, 7, 7, 5, 8, 11, 7, 2, 5, 3, 3, 3, 2, 2, 2, 2, 6, 1, 10, 10, 10, 9, 3, 4, 4, 3, 4, 4,
         4, 3, 3, 4, 4, 4, 5, 4, 10, 12, 6, 4, 3, 7, 11, 11, 7, 7, 11, 11, 11, 4, 47, 1, 1, 5, 5, 1,
-        2, 4, 5, 6, 3, 4,
+        2, 4, 5, 6, 3, 4, 3, 3, 4, 3, 3, 3, 10, 4, 3, 4, 3, 4, 4, 3,
     ];
     for (i, want) in bounds.iter().enumerate() {
         assert_eq!(value(format!("t{i}")), u128::from(*want), "t{i}");
