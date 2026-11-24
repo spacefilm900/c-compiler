@@ -70,10 +70,11 @@ impl Sema<'_> {
         match expr {
             Expr::Var { name, .. } => matches!(
                 self.lookup(name),
-                Some(Symbol::Var(var)) if type_mentions_volatile(&var.ty, 0)
+                Some(Symbol::Var(var)) if type_mentions_volatile(&var.ty, &mut HashSet::new())
             ),
             Expr::Cast { ty_name, expr, .. } => {
-                type_mentions_volatile(ty_name, 0) || self.expr_mentions_volatile(expr)
+                type_mentions_volatile(ty_name, &mut HashSet::new())
+                    || self.expr_mentions_volatile(expr)
             }
             Expr::Bin { left, right, .. } | Expr::Comma { left, right, .. } => {
                 self.expr_mentions_volatile(left) || self.expr_mentions_volatile(right)
@@ -1659,22 +1660,29 @@ pub(super) fn classify_init(ty: &CType, mut stores: Vec<ElemStore>) -> CheckedIn
     CheckedInit::Aggregate(stores)
 }
 
-/// `volatile` on the type, its pointee or element type, or a member.
-fn type_mentions_volatile(ty: &CType, depth: u32) -> bool {
-    if depth > 8 {
+/// `volatile` on the type, its pointee or element type, or a member, at any
+/// depth. Pointer and array chains are finite; a record reached again (a
+/// self-referential struct) has already been searched.
+fn type_mentions_volatile(ty: &CType, seen: &mut HashSet<usize>) -> bool {
+    let mut ty = ty;
+    loop {
+        if ty.is_volatile() {
+            return true;
+        }
+        match ty.pointee().or_else(|| ty.array_elem()) {
+            Some(inner) => ty = inner,
+            None => break,
+        }
+    }
+    let Some(record) = ty.struct_ref() else {
+        return false;
+    };
+    if !seen.insert(record.body_key()) {
         return false;
     }
-    if ty.is_volatile() {
-        return true;
-    }
-    if let Some(inner) = ty.pointee().or_else(|| ty.array_elem()) {
-        return type_mentions_volatile(inner, depth + 1);
-    }
-    ty.struct_ref()
-        .and_then(StructRef::fields)
-        .is_some_and(|fields| {
-            fields
-                .iter()
-                .any(|field| type_mentions_volatile(&field.ty, depth + 1))
-        })
+    record.fields().is_some_and(|fields| {
+        fields
+            .iter()
+            .any(|field| type_mentions_volatile(&field.ty, seen))
+    })
 }

@@ -1208,9 +1208,18 @@ fn quickjs_gnu_extensions_and_their_limits() {
     )
     .is_ok());
     // A value is evaluated once (GCC); repeating a volatile read would not be.
-    for value in ["v", "*p", "v + 1", "*(volatile int *)&n", "s.m"] {
+    for value in [
+        "v",
+        "*p",
+        "v + 1",
+        "*(volatile int *)&n",
+        "s.m",
+        "*********q",
+        "r->next->m",
+    ] {
         let source = format!(
             "volatile int v; volatile int *p; int n; struct {{ volatile int m; }} s;\n\
+             volatile int *********q; struct R {{ struct R *next; volatile int m; }} *r;\n\
              int f(void) {{ int a[2] = {{ [0 ... 1] = {value} }}; return a[1]; }}"
         );
         assert!(
@@ -1219,7 +1228,8 @@ fn quickjs_gnu_extensions_and_their_limits() {
         );
     }
     assert!(sema_dialect(
-        "int n; int f(void) { int a[2] = { [0 ... 1] = n + 1 }; return a[1]; }",
+        "int n; struct L { struct L *next; int m; } *l;\n\
+         int f(void) { int a[2] = { [0 ... 1] = n + l->next->m }; return a[1]; }",
         Gnu11
     )
     .is_ok());
