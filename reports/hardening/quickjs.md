@@ -77,7 +77,7 @@ binary against Clang's, and for `tests/gnu/` also rejected under
 | 3 | GNU cast of a struct or union to its own type, `(JSValue)v`, rejected | accepted in gnu11 as a copy of the value | `tests/gnu/18_record_self_cast.c` |
 | 4 | `typedef enum E E;` before the enumerator list rejected | GNU forward enum; taken to have the type a nonnegative enum gets, and the definition must agree | `tests/gnu/19_forward_enum.c` |
 | 5 | A struct ending in a flexible array member as a member of another struct rejected | allowed in gnu11 (GCC manual, "Arrays of Length Zero") | `tests/gnu/20_zero_size_records.c` |
-| 6 | A record of only zero-length arrays (size 0) rejected | allowed in gnu11, including `= {}` | `tests/gnu/20_zero_size_records.c` |
+| 6 | A record of only zero-length arrays (size 0) rejected | allowed in gnu11, including `= {}`; rejected for the MSVC target, where Clang lays such a record out with size 4 (the Windows stand-in caught this) | `tests/gnu/20_zero_size_records.c` |
 | 7 | Range designators `[a ... b] = v` unsupported | expanded per index at parse time; a value with side effects is rejected rather than evaluated more than once | `tests/gnu/21_range_designators.c` |
 | 8 | `static` and qualifiers in a parameter's array brackets (`double fields[static 9]`) unsupported | C11 6.7.6.2p1 / 6.7.6.3p7: qualifiers go to the adjusted pointer; misplaced uses are diagnosed | `tests/161_array_param_qualifiers.c` |
 | 9 | `asm` statements unsupported | statements without operands: `call void asm sideeffect` with the clobbers (and x86's implicit `dirflag`/`fpsr`/`flags`, as in Clang's IR for the same statement); operands and `asm goto` are diagnosed | `tests/gnu/both/07_asm_statements.c` |
@@ -93,4 +93,6 @@ Clang. The other nine add GNU extensions or C11 syntax that hcc rejected.
 `tests/external/quickjs` keyed on both pins and runs
 `run_quickjs.py --opt O0 --opt O2 --test262 O2`.
 
-CI_PLACEHOLDER
+On pull request 65 the job took 4 min 34 s (5 billed Linux minutes, about
+$0.03 a run at $0.006 a minute), well inside the cap and the $30 a month
+budget. macOS and Windows do not run it.
