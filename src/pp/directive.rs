@@ -200,6 +200,18 @@ impl Processor {
 
     pub(super) fn do_pragma(&mut self, at: &PpToken) -> Result<(), Diagnostic> {
         let line = self.take_line()?;
+        self.apply_pragma(at, &line)
+    }
+
+    /// Carry out a pragma, from a `#pragma` line or a `_Pragma` operator.
+    /// `once` is the only pragma this implementation acts on; every other
+    /// one, `STDC` pragmas included, is ignored (C11 6.10.6p1 lets an
+    /// implementation ignore the ones it does not recognize).
+    pub(super) fn apply_pragma(
+        &mut self,
+        at: &PpToken,
+        line: &[PpToken],
+    ) -> Result<(), Diagnostic> {
         if line.first().is_some_and(|tok| tok.spelling == "once") {
             if line.len() != 1 {
                 return Err(error_at(&line[1], "extra tokens after #pragma once"));
@@ -257,6 +269,7 @@ impl Processor {
             found_dir: Some(found_dir),
             system,
         });
+        let text = self.phase_one(&text);
         let mut included = crate::timing::lexing(|| lex_source(&text, &display, file_id))?;
         // A header that does not end in a new-line must not continue into the
         // next line of the file that included it. Clang treats that end of
