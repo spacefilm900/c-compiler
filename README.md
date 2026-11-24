@@ -168,6 +168,11 @@ CodeRabbit reviews every pull request, configured by `.coderabbit.yaml`.
   test results; `DESIGN.md`: design decisions
 - `CHANGELOG.md`, `docs/release-notes/`: release history and notes
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Outside contributions are welcome,
+but are reviewed slowly.
+
 ## Licence
 
 hcc is MIT (see [LICENSE](LICENSE)). The programs it is tested on are

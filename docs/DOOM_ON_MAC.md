@@ -200,7 +200,7 @@ Then type `./tools/mac/play_doom.sh --wad ` (with a space at the end),
 location for you), and press Return. It looks like this:
 
 ```sh
-./tools/mac/play_doom.sh --wad /Users/keith/Documents/DOOM.WAD
+./tools/mac/play_doom.sh --wad ~/Documents/DOOM.WAD
 ```
 
 The script also downloads Freedoom: Phase 2, which plays like DOOM II:
