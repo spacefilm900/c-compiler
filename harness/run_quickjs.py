@@ -264,6 +264,9 @@ def test262(exe: Path, tag: str, threads: int) -> dict:
     source tree because its paths are relative to it."""
     errors = Path(tempfile.mkdtemp(prefix="t262-")) / "errors.txt"
     shutil.copy(SRC / "test262_errors.txt", errors)
+    # The copy seeds the known failures. Its mtime is set to the epoch, so
+    # only a run that rewrote the file (-u) counts as completed.
+    os.utime(errors, (0, 0))
     conf = SRC / f"test262-hcc-{tag}.conf"
     conf.write_text(
         "".join(f"errorfile={errors}\n" if line.startswith("errorfile=") else line
@@ -275,10 +278,18 @@ def test262(exe: Path, tag: str, threads: int) -> dict:
         conf.unlink(missing_ok=True)
     lines = text(res).strip().splitlines()
     summary = next((ln for ln in reversed(lines) if ln.startswith("Result:")), lines[-1] if lines else "")
+    rewritten = errors.is_file() and errors.stat().st_mtime_ns > 0
     failing = sorted(set(errors.read_text().splitlines())) if errors.is_file() else []
     shutil.rmtree(errors.parent, ignore_errors=True)
     return {"rc": res["rc"], "summary": summary, "failing": failing, "seconds": res["seconds"],
-            "timed_out": res["timed_out"]}
+            "timed_out": res["timed_out"],
+            "completed": test262_completed(res, summary, rewritten)}
+
+
+def test262_completed(res: dict, summary: str, rewritten: bool) -> bool:
+    """A run that was killed by a signal, timed out, printed no result line
+    or never rewrote its errors file is incomplete, whatever it failed."""
+    return res["rc"] >= 0 and not res["timed_out"] and summary.startswith("Result:") and rewritten
 
 
 def level(opt: str, out: Path, jobs: int, with_test262: bool, threads: int) -> dict:
@@ -315,7 +326,7 @@ def level(opt: str, out: Path, jobs: int, with_test262: bool, threads: int) -> d
             "only_clang_fails": sorted(set(ref["failing"]) - set(ours["failing"])),
             "only_ours_fails": sorted(set(ours["failing"]) - set(ref["failing"])),
         }
-        result["test262"]["match"] = (not ours["timed_out"] and not ref["timed_out"]
+        result["test262"]["match"] = (ours["completed"] and ref["completed"]
                                       and ref["failing"] == ours["failing"])
     result["full"] = b["build"] == "full"
     result["match"] = (all(r["match"] for r in rows) and not result["qjsc"]["differ"]
@@ -375,6 +386,12 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=ROOT / "build" / "quickjs", help="work directory")
     ap.add_argument("--json", type=Path, help="write the full results here")
     args = ap.parse_args()
+    # Child processes run with cwd=SRC, so every path under --out must be absolute.
+    args.out = args.out.resolve()
+    opts = args.opt or ["O0", "O2"]
+    missing = sorted(set(args.test262) - set(opts))
+    if missing:
+        ap.error(f"--test262 {' '.join(missing)} is not among the built levels {' '.join(opts)}; add --opt")
     if not (SRC / "quickjs.c").is_file():
         print(f"QuickJS sources not found under {SRC}; run scripts/fetch_quickjs.sh", file=sys.stderr)
         return 2
@@ -383,7 +400,7 @@ def main() -> int:
         return 2
     args.out.mkdir(parents=True, exist_ok=True)
     levels = []
-    for opt in args.opt or ["O0", "O2"]:
+    for opt in opts:
         res = level(opt, args.out, args.jobs, opt in args.test262, args.threads)
         print(summary(res), flush=True)
         levels.append(res)

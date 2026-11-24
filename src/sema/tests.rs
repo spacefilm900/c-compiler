@@ -1197,9 +1197,52 @@ fn quickjs_gnu_extensions_and_their_limits() {
     assert!(gnu_err("void g(int n) { int a[4] = { [0 ... n] = 3 }; }")
         .contains("nonnegative integer constant"));
     assert!(gnu_err("int a[1 << 22] = { [0 ... (1 << 21)] = 1 };").contains("too large"));
+    // The budget covers the expanded tree, so nested ranges multiply.
+    assert!(
+        gnu_err("int a[1048576][1048576] = { [0 ... 1048575] = { [0 ... 1048575] = 1 } };")
+            .contains("too large")
+    );
+    assert!(sema_dialect(
+        "struct S { int x[4]; }; struct S a[3] = { [0 ... 2] = { .x = { [0 ... 3] = 5 } } };",
+        Gnu11
+    )
+    .is_ok());
+    // A value is evaluated once (GCC); repeating a volatile read would not be.
+    for value in ["v", "*p", "v + 1", "*(volatile int *)&n", "s.m"] {
+        let source = format!(
+            "volatile int v; volatile int *p; int n; struct {{ volatile int m; }} s;\n\
+             int f(void) {{ int a[2] = {{ [0 ... 1] = {value} }}; return a[1]; }}"
+        );
+        assert!(
+            gnu_err(&source).contains("must not read a volatile object"),
+            "{value}"
+        );
+    }
+    assert!(sema_dialect(
+        "int n; int f(void) { int a[2] = { [0 ... 1] = n + 1 }; return a[1]; }",
+        Gnu11
+    )
+    .is_ok());
+    // An endpoint is checked as a 64-bit value on every target, including
+    // the MSVC one, where `long` is 32 bits and would wrap 2^32 to 0.
+    for target in [
+        crate::target::Target::X86_64Linux,
+        crate::target::Target::X86_64Windows { msvc: true },
+    ] {
+        let saved = crate::target::current();
+        crate::target::set(target);
+        let err = gnu_err("int a[1] = { [4294967296LL ... 4294967296LL] = 7 };");
+        crate::target::set(saved);
+        assert!(err.contains("out of range"), "{target:?}: {err}");
+    }
     assert!(sema_dialect("int a[4] = { [1 ... 2] = 3 };", C11).is_err());
     // Zero-size records are GNU only.
     assert!(sema_dialect("struct Z { char a[0]; }; struct Z z = {};", Gnu11).is_ok());
+    assert!(sema_dialect("struct Z { char a[0]; }; struct Z z = {0};", Gnu11).is_ok());
+    for init in ["{1, 2}", "{1}", "{{0}}"] {
+        let source = format!("struct Z {{ char a[0]; }}; struct Z z = {init};");
+        assert!(gnu_err(&source).contains("excess elements"), "{init}");
+    }
     assert!(sema_dialect("struct Z { char a[0]; };", C11)
         .unwrap_err()
         .contains("array size must be positive"));
@@ -1218,6 +1261,13 @@ fn quickjs_gnu_extensions_and_their_limits() {
     assert!(gnu_err("void f(int x) { asm(\"\" : : \"r\"(x)); }").contains("operands"));
     assert!(gnu_err("void f(void) { asm(\"%0\" :::); }").contains("operand references"));
     assert!(gnu_err("void f(void) { asm goto(\"\" :::: l); l:; }").contains("asm goto"));
+    // A comma in the clobber list must be followed by another clobber.
+    assert!(gnu_err("void f(void) { asm(\"\" ::: \"memory\",); }").contains("clobber"));
+    assert!(sema_dialect(
+        "void f(void) { asm(\"\" ::: \"memory\", \"cc\"); asm(\"\" :::); }",
+        Gnu11
+    )
+    .is_ok());
 }
 
 #[test]

@@ -118,6 +118,28 @@ class VerdictAndSummary(unittest.TestCase):
         self.assertEqual(run_quickjs.first_difference(b"a", b"a\n"), "same lines, different bytes")
         self.assertIn("<end>", run_quickjs.first_difference(b"a\nb", b"a"))
 
+    def test_test262_run_counts_only_when_complete(self) -> None:
+        ok = {"rc": 1, "timed_out": False}
+        self.assertTrue(run_quickjs.test262_completed(ok, "Result: 3/9 errors", True))
+        self.assertFalse(run_quickjs.test262_completed({"rc": -11, "timed_out": False}, "Result: x", True))
+        self.assertFalse(run_quickjs.test262_completed({"rc": 124, "timed_out": True}, "Result: x", True))
+        self.assertFalse(run_quickjs.test262_completed(ok, "Segmentation fault", True))
+        self.assertFalse(run_quickjs.test262_completed(ok, "Result: 3/9 errors", False))
+
+    def test_test262_levels_must_be_built(self) -> None:
+        saved = sys.argv
+        sys.argv = ["run_quickjs.py", "--test262", "O3"]
+        try:
+            with self.assertRaises(SystemExit) as cm, open(os.devnull, "w") as null:
+                stderr, sys.stderr = sys.stderr, null
+                try:
+                    run_quickjs.main()
+                finally:
+                    sys.stderr = stderr
+            self.assertEqual(cm.exception.code, 2)
+        finally:
+            sys.argv = saved
+
     def test_native_modules_are_built_as_shared_libraries(self) -> None:
         self.assertIn("-DJS_SHARED_LIBRARY", run_quickjs.unit_flags(True))
         self.assertNotIn("-DJS_SHARED_LIBRARY", run_quickjs.unit_flags(False))

@@ -680,6 +680,7 @@ impl Dumper {
                 init,
                 line,
                 column,
+                ..
             } => {
                 let text = designators
                     .iter()

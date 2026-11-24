@@ -162,6 +162,10 @@ pub enum Init {
         init: Box<Init>,
         line: usize,
         column: usize,
+        /// Expanded from a GNU range designator `[first ... last]`: the
+        /// same `init` is repeated for every index, so sema rejects a value
+        /// that reads a volatile object (GCC evaluates it once).
+        ranged: bool,
     },
 }
 

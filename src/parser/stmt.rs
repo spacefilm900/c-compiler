@@ -434,12 +434,17 @@ impl Parser<'_> {
                 continue;
             }
             if sections == 3 {
-                while self.current().kind == TokenKind::String {
-                    clobbers.push(
-                        String::from_utf8_lossy(&self.parse_asm_string("a clobber")?).into_owned(),
-                    );
-                    if !self.match_kind(TokenKind::Comma) {
-                        break;
+                // An empty list, or strings separated by commas: a comma
+                // must be followed by another clobber.
+                if self.current().kind == TokenKind::String {
+                    loop {
+                        clobbers.push(
+                            String::from_utf8_lossy(&self.parse_asm_string("a clobber")?)
+                                .into_owned(),
+                        );
+                        if !self.match_kind(TokenKind::Comma) {
+                            break;
+                        }
                     }
                 }
                 continue;

@@ -11,6 +11,7 @@ impl Sema<'_> {
         line: usize,
         column: usize,
     ) -> Result<Shaped, Diagnostic> {
+        self.check_range_values(init)?;
         // A compound literal inside this initializer shapes its own
         // initializer, with its own union member choices.
         let outer = std::mem::take(&mut self.union_choice);
@@ -20,6 +21,82 @@ impl Sema<'_> {
         let overridden = std::mem::replace(&mut self.overridden, outer_overridden);
         let (ty, stores) = shaped?;
         Ok((ty, stores, overridden))
+    }
+
+    /// A GNU range designator's value is evaluated once (GCC manual,
+    /// "Designated Inits"), but the parser repeats it for every index. That
+    /// is only the same when no repetition can be observed, so a value that
+    /// reads through a volatile-qualified type is rejected. The parser
+    /// already rejects calls, assignments and other side effects.
+    fn check_range_values(&self, init: &Init) -> Result<(), Diagnostic> {
+        match init {
+            Init::Expr(_) => Ok(()),
+            Init::List { items, .. } => items
+                .iter()
+                .try_for_each(|item| self.check_range_values(item)),
+            Init::Designated {
+                init,
+                ranged,
+                line,
+                column,
+                ..
+            } => {
+                if *ranged && self.init_mentions_volatile(init) {
+                    return self.err(
+                        *line,
+                        *column,
+                        "a range designator's value must not read a volatile object",
+                    );
+                }
+                self.check_range_values(init)
+            }
+        }
+    }
+
+    fn init_mentions_volatile(&self, init: &Init) -> bool {
+        match init {
+            Init::Expr(expr) => self.expr_mentions_volatile(expr),
+            Init::List { items, .. } => items.iter().any(|item| self.init_mentions_volatile(item)),
+            Init::Designated { init, .. } => self.init_mentions_volatile(init),
+        }
+    }
+
+    /// Whether `expr` names a variable, or casts to a type, with `volatile`
+    /// anywhere in its type. Conservative: `volatile int *p` is rejected even
+    /// when only `p` itself is read.
+    fn expr_mentions_volatile(&self, expr: &Expr) -> bool {
+        // The parser admits only these forms in a range value
+        // (`parser::expr::expr_repeatable`).
+        match expr {
+            Expr::Var { name, .. } => matches!(
+                self.lookup(name),
+                Some(Symbol::Var(var)) if type_mentions_volatile(&var.ty, 0)
+            ),
+            Expr::Cast { ty_name, expr, .. } => {
+                type_mentions_volatile(ty_name, 0) || self.expr_mentions_volatile(expr)
+            }
+            Expr::Bin { left, right, .. } | Expr::Comma { left, right, .. } => {
+                self.expr_mentions_volatile(left) || self.expr_mentions_volatile(right)
+            }
+            Expr::Unary { expr, .. }
+            | Expr::Decay { expr, .. }
+            | Expr::Member { base: expr, .. } => self.expr_mentions_volatile(expr),
+            Expr::Index { base, index, .. } => {
+                self.expr_mentions_volatile(base) || self.expr_mentions_volatile(index)
+            }
+            Expr::Cond {
+                cond,
+                then_expr,
+                else_expr,
+                ..
+            } => [cond, then_expr, else_expr]
+                .iter()
+                .any(|expr| self.expr_mentions_volatile(expr)),
+            Expr::CondShort {
+                cond, else_expr, ..
+            } => self.expr_mentions_volatile(cond) || self.expr_mentions_volatile(else_expr),
+            _ => false,
+        }
     }
 
     /// C11 6.7.9p4: every expression in the initializer of an object with
@@ -429,9 +506,16 @@ impl Sema<'_> {
             }
         }
         // A GNU zero-size record (no members, or only zero-length arrays)
-        // has nothing to initialize; `{}` reaches here as `{0}`.
+        // has nothing to initialize. `{}` reaches here as `{0}`, and the
+        // universal zero initializer `{0}` is accepted too; any other
+        // element initializes nothing that exists, so it is excess.
         if ty.size() == Some(0) {
-            return Ok(());
+            let zero = matches!(items.as_slice(), [Init::Expr(Expr::Int { bits: 0, .. })]);
+            if items.is_empty() || zero {
+                return Ok(());
+            }
+            let (line, column) = init_pos(&items[0]);
+            return self.err(line, column, "excess elements in struct initializer");
         }
         let mut pos = 0usize;
         for field in &fields {
@@ -579,6 +663,7 @@ impl Sema<'_> {
                 init,
                 line,
                 column,
+                ..
             } = item
             {
                 let (child, mut frames_at) =
@@ -1572,4 +1657,24 @@ pub(super) fn classify_init(ty: &CType, mut stores: Vec<ElemStore>) -> CheckedIn
         return CheckedInit::Scalar(stores.remove(0).expr);
     }
     CheckedInit::Aggregate(stores)
+}
+
+/// `volatile` on the type, its pointee or element type, or a member.
+fn type_mentions_volatile(ty: &CType, depth: u32) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    if ty.is_volatile() {
+        return true;
+    }
+    if let Some(inner) = ty.pointee().or_else(|| ty.array_elem()) {
+        return type_mentions_volatile(inner, depth + 1);
+    }
+    ty.struct_ref()
+        .and_then(StructRef::fields)
+        .is_some_and(|fields| {
+            fields
+                .iter()
+                .any(|field| type_mentions_volatile(&field.ty, depth + 1))
+        })
 }

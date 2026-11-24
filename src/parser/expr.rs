@@ -370,6 +370,12 @@ impl Parser<'_> {
                 }
             }
         }
+        // Each chain gets its own copy of the value, so a nested range
+        // (`[0 ... n] = { [0 ... m] = 1 }`) multiplies: the budget covers
+        // the whole expanded tree, not one level.
+        if ranged && chains.len().saturating_mul(init_weight(&init)) > RANGE_DESIGNATOR_LIMIT {
+            return Err(self.error_at(line, column, "range designator is too large"));
+        }
         Ok(chains
             .into_iter()
             .map(|designators| Init::Designated {
@@ -377,6 +383,7 @@ impl Parser<'_> {
                 init: Box::new(init.clone()),
                 line,
                 column,
+                ranged,
             })
             .collect())
     }
@@ -426,10 +433,12 @@ impl Parser<'_> {
             return Ok(DesignatorPart::Range {
                 first,
                 last,
+                // `long long`, not `long`: the bounds are checked against
+                // 64 bits, and `long` is 32 bits on Windows.
                 ty: if ty.is_signed() {
-                    TypeName::Long
+                    TypeName::LongLong
                 } else {
-                    TypeName::ULong
+                    TypeName::ULongLong
                 },
                 line: bracket.line,
                 column: bracket.column,
@@ -1304,6 +1313,18 @@ pub(super) enum DesignatorPart {
 
 /// Range designators expand to one item per index; this caps the expansion.
 const RANGE_DESIGNATOR_LIMIT: usize = 1 << 20;
+
+/// Items in an initializer tree after range expansion, for the expansion
+/// budget. Saturates.
+fn init_weight(init: &Init) -> usize {
+    match init {
+        Init::Expr(_) => 1,
+        Init::List { items, .. } => items
+            .iter()
+            .fold(1usize, |sum, item| sum.saturating_add(init_weight(item))),
+        Init::Designated { init, .. } => init_weight(init).saturating_add(1),
+    }
+}
 
 /// Whether an initializer may be repeated for every index of a range
 /// designator. GCC evaluates the value once, so a value that could have a
