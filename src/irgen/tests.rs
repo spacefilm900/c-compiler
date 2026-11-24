@@ -2256,6 +2256,13 @@ struct W { union U u; struct B b; char tail[3]; };
 struct W w1 = {.u.q[1] = 0xaabbccddeeff0011ull, .b = {7, 1, 2, 3, 31, 1}, .tail = "xy"};
 struct W w2 = {.u = {.p = &h}, .b.d = 511, .tail[2] = 'z'};
 union X { struct B b; unsigned int w[3]; };
+union U u6 = {.q = {0x1111111111111111ull, 2}, .q[0] = (unsigned long long)&g};
+union U u7 = {.raw = {1, 2, 3, 4, 5, 6, 7, 8, 9}, .raw[3] = 0};
+struct BP { int a : 3; int *p; int b : 5; long long c : 40; };
+struct BP bp[2] = {{1, &g, 2, 3}, {-1, &h, -2, -3}};
+union BU { struct BP s; unsigned char raw[32]; };
+union BU bu = {.s = {3, &h, 7, 0x7fffffffffll}};
+struct BW { union U u; int k : 4; } bw = {.u.p = &g, .k = 5};
 union X x1 = {.b = {7, 127, 8191, 511, 31, 7}};
 union X x2 = {.w = {0xffffffffu, 1, 2}, .w[1] = 0x80000000u};
 static void dump(const char *name, const void *p, unsigned long n) {
@@ -2277,6 +2284,11 @@ int main(void) {
     dump("w1", &w1, sizeof w1);
     printf("w2 %d\n", w2.u.p == &h);
     dump("w2b", &w2.b, sizeof w2.b + 3);
+    printf("u6 %d %d\n", u6.q[0] == (unsigned long long)&g, (int)u6.q[1]);
+    dump("u7", &u7, sizeof u7);
+    printf("bp %d %d %d %lld %d %d %d %lld\n", bp[0].a, bp[0].p == &g, bp[0].b, bp[0].c, bp[1].a, bp[1].p == &h, bp[1].b, bp[1].c);
+    printf("bu %d %d %d %lld\n", bu.s.a, bu.s.p == &h, bu.s.b, bu.s.c);
+    printf("bw %d %d\n", bw.u.p == &g, bw.k);
     dump("x1", &x1, sizeof x1);
     dump("x2", &x2, sizeof x2);
     return 0;
