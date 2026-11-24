@@ -1,0 +1,212 @@
+# Release builds of hcc for the four platforms PLAN.md step 15 names:
+# Linux x86-64, Linux arm64, macOS on Apple Silicon and Windows x64.
+#
+# - A pushed tag vX.Y.Z (made only with the owner's approval) builds every
+#   archive, checks that the tag matches Cargo.toml's version, and creates a
+#   DRAFT GitHub release with the archives and SHA256SUMS. Publishing the
+#   draft is a separate, manual step.
+# - Actions > release > Run workflow (or `gh workflow run release.yml`)
+#   builds the same archives as workflow artifacts, with no release.
+# - A pull request that changes this file does the same dry run, so the
+#   workflow is checked before it is needed. Nothing else triggers it.
+#
+# Estimated cost per run (private repo; GitHub's per-minute prices, Nov
+# 2026; jobs rounded up to whole minutes): Linux x86-64 4 min x $0.006,
+# Linux arm64 4 min x $0.005, macOS 4 min x $0.062, Windows 6 min x $0.010,
+# draft release 1 min x $0.006: about $0.37 a run.
+#
+# Linux binaries are static (musl), so they run on any distribution. The
+# Windows binary is built with the MSVC toolchain and targets
+# x86_64-pc-windows-msvc by default; -target x86_64-w64-windows-gnu
+# selects MinGW-w64.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths: ['.github/workflows/release.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-musl
+            exe: hcc
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
+            exe: hcc
+          - name: macos-arm64
+            os: macos-26
+            rust_target: aarch64-apple-darwin
+            exe: hcc
+          - name: windows-x86_64
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            exe: hcc.exe
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+          targets: ${{ matrix.rust_target }}
+
+      - name: Version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "HCC_COMMIT=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_ENV"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${version}" >&2
+            exit 1
+          fi
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = Linux ]; then
+            # Static musl binaries (rustc ships the musl C runtime), and
+            # Clang 18 or newer for the smoke test.
+            scripts/ci-apt-install.sh clang musl-tools
+          fi
+          cargo build --release --locked --target "${{ matrix.rust_target }}"
+
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          name="hcc-${{ steps.version.outputs.version }}-${{ matrix.name }}"
+          stage="dist/${name}"
+          mkdir -p "${stage}/bin" "${stage}/lib" "${stage}/docs"
+          cp "target/${{ matrix.rust_target }}/release/${{ matrix.exe }}" "${stage}/bin/"
+          cp -R include "${stage}/include"
+          cp lib/threads.c "${stage}/lib/"
+          cp LICENSE README.md CHANGELOG.md SECURITY.md "${stage}/"
+          cp docs/USER_GUIDE.md "${stage}/docs/"
+          cp "docs/release-notes/v${{ steps.version.outputs.version }}.md" "${stage}/RELEASE_NOTES.md"
+          cd dist
+          if [ "${{ runner.os }}" = Windows ]; then
+            archive="${name}.zip"
+            7z a -tzip -bd "${archive}" "${name}" >/dev/null
+          else
+            archive="${name}.tar.gz"
+            tar -czf "${archive}" "${name}"
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${archive}" > "${archive}.sha256"
+          else
+            shasum -a 256 "${archive}" > "${archive}.sha256"
+          fi
+          cat "${archive}.sha256"
+          echo "archive=${archive}" >> "$GITHUB_OUTPUT"
+          echo "stage=${stage}" >> "$GITHUB_OUTPUT"
+
+      # The Visual Studio developer environment (INCLUDE, LIB, PATH), as
+      # vcvars64.bat sets it: the MSVC target's headers and linker.
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+            if ($_ -match '^(INCLUDE|LIB|LIBPATH|PATH|VCToolsInstallDir|WindowsSdkDir|UCRTVersion)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+
+      - name: Smoke test the packaged compiler
+        run: |
+          set -euo pipefail
+          hcc="${{ steps.package.outputs.stage }}/bin/${{ matrix.exe }}"
+          "${hcc}" --version
+          "${hcc}" --version | grep -q "hcc ${{ steps.version.outputs.version }}"
+          work="$(mktemp -d)"
+          printf '#include <stdio.h>\nint main(void) { printf("hello from hcc\\n"); return 0; }\n' > "${work}/hello.c"
+          "${hcc}" "${work}/hello.c" -o "${work}/hello.ll"
+          grep -q 'define i32 @main' "${work}/hello.ll"
+          clang --version | head -n 1
+          "${hcc}" --link "${work}/hello.c" -O2 -o "${work}/hello${{ runner.os == 'Windows' && '.exe' || '' }}"
+          "${work}/hello${{ runner.os == 'Windows' && '.exe' || '' }}" | tee "${work}/out.txt"
+          grep -q 'hello from hcc' "${work}/out.txt"
+          # <threads.h>: the C library's on Linux, lib/threads.c from the
+          # archive on macOS and Windows.
+          cp tests/hosted/08_threads.c "${work}/threads.c"
+          "${hcc}" --link "${work}/threads.c" -o "${work}/threads${{ runner.os == 'Windows' && '.exe' || '' }}"
+          "${work}/threads${{ runner.os == 'Windows' && '.exe' || '' }}"
+
+      - name: Upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            dist/${{ steps.package.outputs.archive }}
+            dist/${{ steps.package.outputs.archive }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  draft-release:
+    name: draft GitHub release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Download archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums and draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          cat ./*.sha256 | sort -k 2 > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          cat SHA256SUMS
+          version="${TAG#v}"
+          gh release create "${TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --draft \
+            --verify-tag \
+            --title "hcc ${version}" \
+            --notes-file "../docs/release-notes/${TAG}.md" \
+            ./*.tar.gz ./*.zip SHA256SUMS

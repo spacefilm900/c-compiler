@@ -2,9 +2,9 @@
 
 The program is `hcc`, the Haviland C Compiler. `make` writes `build/hcc`.
 
-## Next phase: hardening
+## Next phase: Release 1.0
 
-The C11 and platform work is closed out (step 13 of `PLAN.md`: adversarial rounds v0.7–v0.9, 969/969 at `-O0` and `-O2`, and the weekly platform tests of pull request 61). The current phase is step 14, hardening: fuzzing the compiler itself with `cargo-fuzz`, Csmith (and YARPGen, if it builds) at a much larger scale than CI, coverage and mutation testing, and a new big program (QuickJS, then zlib). Release 1.0 (step 15) follows. Fuzzing and large campaigns run locally or as an optional job, not in standard pull-request CI.
+Hardening (step 14 of `PLAN.md`) is closed: fuzzing, the large Csmith and YARPGen campaigns, coverage and mutation testing, QuickJS and zlib (pull requests 63–67). The current phase is step 15, Release 1.0: version numbers and `hcc --version`, a changelog, a user guide, clearer `--help` and messages, automatic linking of `lib/threads.c`, tagged release builds with checksums, and the project files. Issue #68 (GNU forward-declared enums) is fixed first. A tag or release is made only with the owner's approval.
 
 ## Current milestone
 
@@ -1263,6 +1263,10 @@ After pull request 1 was opened, the App reviewed the import:
 ## Hardening (step 14), zlib
 
 zlib 1.3.1 (pinned, SHA-256 checked by `scripts/fetch_zlib.sh`) builds with hcc alone at `-O0` and `-O2`. `harness/run_zlib.py` runs zlib's `example` and `minigzip` tests on both the hcc and Clang builds and a 60-case compression round trip (10 inputs, 6 levels and strategies). Both builds write identical gzip streams, and each inflates the other's output. It found one hcc bug: `__STRICT_ANSI__` was defined under `-std=gnu11`, which hid glibc's POSIX declarations (`fileno`). A Linux-only `zlib` CI job runs the comparison. Report: `reports/hardening/zlib.md`.
+
+## Release 1.0 (step 15), release preparation
+
+Version **1.0.0** (`Cargo.toml`). `hcc --version` prints the version, the Git commit (from `build.rs`, or `HCC_COMMIT`), the default target, the six targets and the LLVM requirement. `hcc --help` is grouped by topic and lists the exit statuses. Command-line errors print one reason (`hcc: error: unknown option '-x'`, `missing argument to '-o'`, `no input file`, `more than one input file`, `'-O2' is a link option; it needs --link`) and exit 2. Diagnostics print the source line and a caret under the column (`-fno-caret-diagnostics` turns that off). `--link` (`src/link.rs`) compiles each `.c` input to IR in a temporary directory and links the IR and the other inputs with Clang (`$HCC_CLANG` or `clang`, with the target's triple), passing `-O*`, `-l`, `-L`, `-Wl,`, `-pthread` and `-static`; when the IR declares a `<threads.h>` function it adds `-pthread` on POSIX targets and compiles and links `lib/threads.c` where the target's C library has no `<threads.h>` (macOS, Windows, Linux without it), the same choice `include/threads.h` makes. Checked locally: a two-file program with a `<threads.h>` worker, and the shim path through a sysroot without `threads.h` (the runtime's `thrd_create` linked in). New files: `CHANGELOG.md` (Keep a Changelog), `docs/USER_GUIDE.md`, `CONTRIBUTING.md`, `SECURITY.md`, `docs/release-notes/v1.0.0.md`, and `.github/workflows/release.yml`: on a `v*` tag it builds static musl Linux x86-64 and arm64 binaries, a macOS arm64 binary and a Windows x64 (MSVC) binary, smoke-tests each archive (`--version`, IR, `--link` hello world and a `<threads.h>` program), and creates a draft release with the archives and `SHA256SUMS`; by hand, or on a pull request that changes the workflow, it builds the archives only (about $0.37 a run). `LICENSE` is MIT, Copyright (c) 2026 Keith Haviland. Tagging `v1.0.0` and publishing the draft release are the owner's decision.
 
 ## Hardening (step 14), first campaign
 

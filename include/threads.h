@@ -10,7 +10,7 @@
    prototypes, and lib/threads.c is a small original runtime over
    pthreads (POSIX) or the Win32 thread API (Windows). Compile and
    link lib/threads.c with the program, and on POSIX also pass
-   -pthread. The shim does not include <pthread.h>, because this
+   -pthread (hcc --link does both). The shim does not include <pthread.h>, because this
    compiler rejects glibc's aligned typedef of pthread typedefs; the
    needed POSIX functions are declared in the runtime with a
    layout-tolerant storage typ for mutexes and condition variables.

@@ -154,7 +154,10 @@ pub fn run(args: &[String]) -> i32 {
         return 0;
     }
     if args.len() == 1 {
-        let _ = writeln!(io::stderr(), "{SHORT_USAGE}\nRun 'hcc --help' for the options.");
+        let _ = writeln!(
+            io::stderr(),
+            "{SHORT_USAGE}\nRun 'hcc --help' for the options."
+        );
         return 2;
     }
     let options = match parse_args(args) {
@@ -303,7 +306,13 @@ fn emit_dump(options: &Options, source: &str, stage: crate::Stage) -> i32 {
     match crate::dump_stage(source, options.input(), &options.pp, options.dialect, stage) {
         Ok(dumped) => {
             for warning in &dumped.warnings {
-                report(options, source, options.input(), &warning.to_string(), &warning.0);
+                report(
+                    options,
+                    source,
+                    options.input(),
+                    &warning.to_string(),
+                    &warning.0,
+                );
             }
             write_text(options, &dumped.ir)
         }
@@ -468,7 +477,9 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Options, String> {
             ));
         }
         if !preprocess_only && dump.is_none() && output.is_none() {
-            return Err("no output file; use -o FILE.ll (or --dump-ir to print the IR)".to_string());
+            return Err(
+                "no output file; use -o FILE.ll (or --dump-ir to print the IR)".to_string(),
+            );
         }
     }
     pp.target = target;
@@ -954,11 +965,19 @@ mod tests {
         assert!(version_text().starts_with(&format!("hcc {VERSION}")));
         assert!(version_text().contains(crate::target::Target::host().name()));
         let help = help_text();
-        for flag in ["--link", "-fno-caret-diagnostics", "--version", "-std=gnu11", "-O2"] {
+        for flag in [
+            "--link",
+            "-fno-caret-diagnostics",
+            "--version",
+            "-std=gnu11",
+            "-O2",
+        ] {
             assert!(help.contains(flag), "{flag}");
         }
         // --version and --help stand alone.
-        let err = parse_args(&argv(&["--version", "a.c"])).err().expect("rejected");
+        let err = parse_args(&argv(&["--version", "a.c"]))
+            .err()
+            .expect("rejected");
         assert!(err.contains("only argument"), "{err}");
     }
 
@@ -984,15 +1003,36 @@ mod tests {
     #[test]
     fn link_mode_collects_inputs_and_clang_options() {
         let options = parse_args(&argv(&[
-            "--link", "main.c", "util.ll", "-O2", "-l", "m", "-lz", "-L", "/opt/lib",
-            "-Wl,--as-needed", "-pthread", "lib.a", "-o", "prog",
+            "--link",
+            "main.c",
+            "util.ll",
+            "-O2",
+            "-l",
+            "m",
+            "-lz",
+            "-L",
+            "/opt/lib",
+            "-Wl,--as-needed",
+            "-pthread",
+            "lib.a",
+            "-o",
+            "prog",
         ]))
         .expect("parsed");
         assert!(options.link);
         assert_eq!(options.inputs, ["main.c", "util.ll", "lib.a"]);
         assert_eq!(
             options.link_args,
-            ["-O2", "-l", "m", "-lz", "-L", "/opt/lib", "-Wl,--as-needed", "-pthread"]
+            [
+                "-O2",
+                "-l",
+                "m",
+                "-lz",
+                "-L",
+                "/opt/lib",
+                "-Wl,--as-needed",
+                "-pthread"
+            ]
         );
         assert_eq!(options.output.as_deref(), Some("prog"));
     }
@@ -1009,7 +1049,10 @@ mod tests {
             caret_snippet(text, 3, 10).as_deref(),
             Some("int é = d;\n        ^")
         );
-        assert_eq!(caret_snippet(text, 1, 7).as_deref(), Some("int a;\n      ^"));
+        assert_eq!(
+            caret_snippet(text, 1, 7).as_deref(),
+            Some("int a;\n      ^")
+        );
         assert!(caret_snippet(text, 0, 1).is_none());
         assert!(caret_snippet(text, 9, 1).is_none());
         assert!(caret_snippet(text, 1, 40).is_none());
@@ -1020,7 +1063,11 @@ mod tests {
     #[test]
     fn link_builds_and_runs_programs() {
         let clang = std::env::var("HCC_CLANG").unwrap_or_else(|_| "clang".to_string());
-        if std::process::Command::new(&clang).arg("--version").output().is_err() {
+        if std::process::Command::new(&clang)
+            .arg("--version")
+            .output()
+            .is_err()
+        {
             eprintln!("skipped: no {clang}");
             return;
         }
@@ -1033,7 +1080,11 @@ mod tests {
         let program = out.with_extension("prog");
         std::fs::write(&helper, "int twice(int x) { return 2 * x; }\n").unwrap();
         assert_eq!(
-            run(&argv(&[&helper.display().to_string(), "-o", &helper_ll.display().to_string()])),
+            run(&argv(&[
+                &helper.display().to_string(),
+                "-o",
+                &helper_ll.display().to_string()
+            ])),
             0
         );
         std::fs::write(

@@ -243,7 +243,9 @@ mod tests {
         assert!(declares_c11_threads("declare i32 @mtx_lock(ptr)\n"));
         // A definition, or a name that only starts the same, is not a use
         // of the C library's threads.
-        assert!(!declares_c11_threads("define i32 @thrd_create(ptr %0) {\n}\n"));
+        assert!(!declares_c11_threads(
+            "define i32 @thrd_create(ptr %0) {\n}\n"
+        ));
         assert!(!declares_c11_threads("declare i32 @call_once_more(ptr)\n"));
         assert!(!declares_c11_threads("declare i32 @printf(ptr, ...)\n"));
     }
@@ -262,11 +264,17 @@ mod tests {
             crate::target::WINDOWS_GNU,
             crate::target::WINDOWS_MSVC,
         ] {
-            assert!(needs_threads_runtime(target, std::slice::from_ref(&with)), "{target:?}");
+            assert!(
+                needs_threads_runtime(target, std::slice::from_ref(&with)),
+                "{target:?}"
+            );
         }
         for target in [Target::X86_64Linux, Target::Aarch64Linux] {
             assert!(!needs_threads_runtime(target, std::slice::from_ref(&with)));
-            assert!(needs_threads_runtime(target, std::slice::from_ref(&without)));
+            assert!(needs_threads_runtime(
+                target,
+                std::slice::from_ref(&without)
+            ));
         }
         // The compiler's own <threads.h> is not the C library's.
         assert!(needs_threads_runtime(

@@ -1,8 +1,51 @@
-# Clean-room C compiler → LLVM IR
+# hcc: the Haviland C Compiler
 
-The program is `hcc`, the Haviland C Compiler. It is a small C compiler that emits textual LLVM IR. LLVM (`clang`, and optionally `opt` / `llc`) optimizes that IR and generates native code. This milestone is a C subset: enough to lex, preprocess, parse, check, and run functions and file-scope objects of the LP64 integer types, with prototypes, pointers, arrays, string literals, `const`, `volatile`, and `restrict`, calls to variadic library functions such as `printf`, simple structs and unions passed and returned by value, `float` and `double`, typedefs, enumerations, `_Bool`, function pointers, arithmetic, bitwise and shift operators, `++`/`--`, compound assignment, `?:`, the comma operator, `sizeof`, casts, branches, loops, `switch`, and calls. A built-in preprocessor runs before the parser. Hello world compiles from `#include <stdio.h>`, and that header is the host's. It is not a full C compiler.
+**hcc** is a clean-room C11 compiler written in Rust. It compiles C to
+textual LLVM IR, and Clang/LLVM turns that IR into programs for Linux,
+macOS and Windows. It builds and runs DOOM, Lua, SQLite, QuickJS and zlib
+with the same results as Clang.
+
+**Version 1.0.0.** [User guide](docs/USER_GUIDE.md) ·
+[Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) ·
+[Security](SECURITY.md) · [Design](DESIGN.md) · [Licence: MIT](LICENSE)
+
+## Quick start
+
+```sh
+make                                   # builds build/hcc (Rust 1.85+, no dependencies)
+build/hcc --link hello.c -o hello      # compile and link (needs Clang 18+)
+./hello
+
+build/hcc hello.c -o hello.ll          # or just emit LLVM IR
+clang -w -O2 hello.ll -o hello
+```
+
+Release archives for Linux x86-64, Linux arm64, macOS on Apple Silicon and
+Windows x64 hold a ready-built `bin/hcc` with its headers; see the
+[user guide](docs/USER_GUIDE.md#1-install).
+
+## What it does
+
+- **C11** (N1570) in full, except the optional complex types: VLAs,
+  `_Atomic` and `<stdatomic.h>`, `<threads.h>`, `_Generic`, `_Alignas`,
+  `_Thread_local`, `_Static_assert`, Unicode literals, K&R definitions and
+  `<tgmath.h>`. Strict by default (`-std=c11`).
+- **GNU C** with `-std=gnu11`: statement expressions, `typeof`,
+  attributes, labels as values, `__int128`, case ranges and the builtins
+  that real code and system headers use.
+- **Targets**: x86-64 and arm64 Linux, arm64 and x86-64 macOS, and x64
+  Windows (MSVC and MinGW-w64), each with its platform calling convention
+  (`-target TRIPLE`).
+- **Tested against Clang** as a black-box oracle: hand-written
+  differential tests, the Writing a C Compiler suite, the GCC torture
+  tests, Csmith and YARPGen random programs, independent adversarial test
+  kits, fuzzing, coverage and mutation testing, and big programs with
+  scorecards.
 
 **Play DOOM on a Mac:** [docs/DOOM_ON_MAC.md](docs/DOOM_ON_MAC.md) is a step-by-step guide for an Apple Silicon Mac. One command, `./tools/mac/play_doom.sh`, builds DOOM with this compiler and opens it in a window.
+
+The rest of this README is the detailed reference: how the project is
+built and tested, and exactly what the compiler accepts.
 
 ## Why Rust
 
@@ -35,9 +78,13 @@ Local execution used Debian Clang/LLVM **19.1.7**. Put that install's `bin` dire
 
 ```sh
 build/hcc [options] INPUT.c -o OUTPUT.ll
+build/hcc --link [options] INPUT... -o PROGRAM
 build/hcc -E [options] INPUT.c [-o OUTPUT.i]
 build/hcc --dump-STAGE [options] INPUT.c [-o OUTPUT]
+build/hcc --version
 ```
+
+`hcc --help` lists every option; the [user guide](docs/USER_GUIDE.md#4-options) explains them. `--link` compiles each `.c` input to IR and links it, with any other inputs, into a program with Clang (`$HCC_CLANG` or `clang`), passing `-O`, `-l`, `-L`, `-Wl,` and `-pthread`; when the program uses `<threads.h>` it adds `-pthread` and, where the C library has no `<threads.h>`, `lib/threads.c`. Command-line errors exit 2 with a one-line reason.
 
 Options are `-I DIR` (also `-IDIR`), `-D NAME[=text]` (also `-DNAME=text`; a bare `-DNAME` defines `NAME` as `1`), `-U NAME`, and `-E`. `-D` and `-U` apply in order, after the predefined macros.
 
@@ -47,7 +94,7 @@ Options are `-I DIR` (also `-IDIR`), `-D NAME[=text]` (also `-DNAME=text`; a bar
 
 For debugging, `--dump-tokens`, `--dump-ast`, `--dump-sema` and `--dump-ir` stop after that stage and print its dump (to standard output, or to `-o FILE`); `--dump-pp` is another spelling of `-E`. The formats and a triage guide are in [docs/DEBUGGING.md](docs/DEBUGGING.md), and `tools/reduce/reduce.py` shrinks a failing program.
 
-On success the command exits 0 and writes a textual LLVM IR module, or the preprocessed text when `-E` is set. On failure it exits non-zero, prints one diagnostic to stderr (`file:line:column: error: ...`), and does not create the output file. A diagnostic in an included file names that file.
+On success the command exits 0 and writes a textual LLVM IR module, or the preprocessed text when `-E` is set. On failure it exits non-zero, prints one diagnostic to stderr (`file:line:column: error: ...`, followed by the source line and a caret unless `-fno-caret-diagnostics` is given), and does not create the output file. A diagnostic in an included file names that file.
 
 ```sh
 clang -w output.ll -o program
@@ -179,19 +226,21 @@ The parser or checker rejects a `static` or `extern` declaration in a `for` head
 ## Layout
 
 - `src/` — Rust frontend (`pp`, `lexer`, `parser`, `ast`, `sema`, `irgen`, `driver`)
-- `include/` — headers the compiler supplies (`stddef.h`, `stdarg.h`, `stdbool.h`, `limits.h`)
+- `include/` — headers the compiler supplies (`stddef.h`, `stdarg.h`, `stdbool.h`, `limits.h`, `float.h`, `stdatomic.h`, `threads.h`, `tgmath.h`, ...)
+- `lib/threads.c` — the C11 threads runtime for targets whose C library has none
 - `build/hcc` — release binary produced by `make` (not committed)
 - `tests/` — C programs for the differential harness; `tests/inc/` holds headers those programs include
 - `harness/run_tests.py` — Clang oracle
 - `src/target.rs`, `src/aapcs64.rs` — target selection and the Arm 64-bit calling convention
 - `harness/run_arm64_ir.py`, `harness/run_cross.py`, `harness/arm64/` — arm64 checks without a Mac; `tests/arm64/` holds the arm64 calling-convention programs
-- `docs/USER_GUIDE_MACOS.md` — building and using the compiler on a Mac (draft)
+- `docs/USER_GUIDE.md` — the user guide; `docs/USER_GUIDE_MACOS.md` — building and using the compiler on a Mac
+- `CHANGELOG.md`, `docs/release-notes/` — release history and notes; `.github/workflows/release.yml` — release builds on a version tag
 - `docs/DOOM_ON_MAC.md`, `tools/mac/play_doom.sh`, `harness/doom/dg_sdl.c` — playing DOOM, built with this compiler, in an SDL2 window on a Mac
 - `harness/run_doom.py`, `harness/doom/` — DOOM harness and its headless backend
 - `harness/run_lua.py`, `harness/lua/` — Lua harness and its workload scripts
 - `harness/run_sqlite.py`, `harness/sqlite/` — SQLite harness and its SQL workloads
 - `reports/` — scorecards and campaign reports (`reports/doom/` for DOOM, `reports/lua/` for Lua, `reports/sqlite/` for SQLite)
-- `PLAN.md` — staged plan (unchanged starter plan)
+- `PLAN.md` — the staged plan
 - `STATUS.md` — what this milestone actually does
 - `DESIGN.md` — design decisions
 - `LICENSE` — MIT licence for this compiler
