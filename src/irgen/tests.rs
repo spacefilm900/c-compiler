@@ -2151,3 +2151,71 @@ struct Pair f(void) {
     let section = def.find(" section ").expect(def);
     assert!(ret < feat && feat < section, "{def}");
 }
+
+#[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "builds and runs x86_64 Linux code"
+)]
+fn float_compares_mixed_conditions_and_packed_members_match_clang() {
+    // Mutation testing (reports/hardening/mutation.md) found no unit test
+    // that used a floating `<=` or `>=`, a mixed int/double condition, a
+    // member of a struct rvalue or a member at an unaligned offset; the
+    // harness was the only guard. Clang runs the same source as the oracle.
+    let source = r#"int printf(const char *, ...);
+struct __attribute__((packed)) P { char c; int i; double d; };
+struct Q { int a[3]; int b; };
+struct __attribute__((packed, aligned(4))) R { char c; int i; };
+struct __attribute__((packed)) O { char c; struct Q q; };
+struct R r = {1, 7};
+struct O o = {1, {{1, 2, 3}, 9}};
+struct P ps[2] = {{1, 0x11223344, 2.5}, {2, 0x55667788, -1.25}};
+static struct Q make(int k) { struct Q q = {{k, k + 1, k + 2}, k * 10}; return q; }
+static int cmps(double a, double b) {
+    return (a == b) | (a != b) << 1 | (a < b) << 2 | (a > b) << 3 | (a <= b) << 4 | (a >= b) << 5;
+}
+static int fcmps(float a, float b) {
+    return (a == b) | (a != b) << 1 | (a < b) << 2 | (a > b) << 3 | (a <= b) << 4 | (a >= b) << 5;
+}
+static int conds(int i, double d) {
+    int r = 0;
+    if (i < d) r |= 1;
+    if (d <= i) r |= 2;
+    if (i >= d && d > 0) r |= 4;
+    while (d > i) { r += 8; d -= 1.0; }
+    return r;
+}
+int main(void) {
+    double nan = 0.0 / 0.0;
+    double vals[] = {1.0, 2.0, -0.0, 0.0, nan};
+    for (int i = 0; i < 5; i++)
+        for (int j = 0; j < 5; j++)
+            printf("%d %d ", cmps(vals[i], vals[j]), fcmps((float)vals[i], (float)vals[j]));
+    printf("\n%d %d %d %d\n", conds(1, 1.5), conds(2, 1.5), conds(2, 2.0), conds(-1, 3.0));
+    struct P *p = &ps[1];
+    int *ip = &p->i;
+    printf("%x %g %x %d\n", ps[0].i, p->d, *ip & 0xff, (int)sizeof ps);
+    printf("%d %d %d\n", make(3).b, make(4).a[2], (make(5)).a[0] + make(6).a[1]);
+    printf("%d %d %d\n", r.i, o.q.b, (int)sizeof o);
+    int arr[4] = {4, 5, 6, 7};
+    int (*pa)[4] = &arr;
+    printf("%d %d %d\n", *&*arr, (*pa)[3], *(&arr[1] + 1));
+    return 0;
+}
+"#;
+    let ir = crate::compile_to_ir(source, "mixed.c").unwrap();
+    assert!(ir.contains("fcmp ole") && ir.contains("fcmp oge"), "{ir}");
+    // ps[0].i, r.i (packed and aligned(4): offset 1) and o.q.b (a member
+    // inside a packed struct) are the unaligned int loads; p->d the double.
+    let unaligned = |ty: &str| {
+        ir.lines()
+            .filter(|line| {
+                let line = line.trim();
+                line.contains(&format!("= load {ty}, ptr %t")) && line.ends_with(", align 1")
+            })
+            .count()
+    };
+    assert_eq!(unaligned("i32"), 3, "{ir}");
+    assert_eq!(unaligned("double"), 1, "{ir}");
+    assert_eq!(run_binary(&ir), run_reference(source));
+}
