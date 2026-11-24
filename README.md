@@ -247,3 +247,7 @@ The parser or checker rejects a `static` or `extern` declaration in a `for` head
 ## Licence
 
 The compiler is MIT (see [LICENSE](LICENSE)). The Writing a C Compiler test suite is third-party (MIT, Copyright (c) 2023 Nora Sandler), downloaded at a pinned commit and not stored in this repo (see [tests/external/README.md](tests/external/README.md)). So are doomgeneric (GPL-2.0), the Freedoom game data (BSD), Lua 5.4.7 with its test suite (MIT), and the SQLite 3.54.1 amalgamation (public domain), which are test inputs only.
+
+---
+
+*This README.md was created by the Grok Bot with limited human review.*
