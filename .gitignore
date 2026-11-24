@@ -17,6 +17,7 @@ platform.info
 tests/external/doomgeneric/
 tests/external/freedoom/
 tests/external/lua/
+tests/external/quickjs/
 
 tests/external/sqlite/
 tests/external/zlib/

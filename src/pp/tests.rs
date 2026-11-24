@@ -517,3 +517,27 @@ fn pragma_operator_is_applied_and_removed() {
     assert!(text.contains("int a;") && text.contains("int b;"), "{text}");
     assert!(preprocess("_Pragma(x) int a;\n", "t.c", &options).is_err());
 }
+
+#[test]
+fn if_expression_errors_name_the_problem() {
+    // Coverage found every one of these #if diagnostics untested.
+    assert!(pp_err("#if 1.5\n#endif\n").contains("floating constant in preprocessor expression"));
+    assert!(pp_err("#if 1u2\n#endif\n").contains("invalid integer constant"));
+    assert!(pp_err("#if 0x\n#endif\n").contains("invalid hexadecimal constant"));
+    assert!(pp_err("#if 1 2\n#endif\n").contains("extra tokens in preprocessor expression"));
+    assert!(pp_err("#if 1 ? 2\n#endif\n").contains("expected ':'"));
+    assert!(pp_err("#if (1\n#endif\n").contains("expected ')'"));
+    assert!(pp_err("#if 1 +\n#endif\n").contains("expected an expression"));
+    assert!(pp_err("#if\n#endif\n").contains("expected an expression"));
+    assert!(pp_err("#if = 1\n#endif\n").contains("invalid token '='"));
+    assert!(pp_err("#if 1 = 1\n#endif\n").contains("extra tokens"));
+    assert!(pp_err("#if 1 << -1\n#endif\n").contains("negative shift count"));
+    assert!(pp_err("#if 1 % 0\n#endif\n").contains("division by zero"));
+    // The comma operator is not allowed in a constant expression (C11 6.6p3).
+    assert!(pp_err("#if (1, 2)\n#endif\n").contains("expected ')'"));
+    // Unsigned arithmetic: one unsigned operand converts the other.
+    let text = pp(
+        "#if -1 > 0u && ~0u / 2 == 0x7fffffffffffffff && +1 && (6u ^ 3u | 8u) == 13\nyes\n#endif\n",
+    );
+    assert!(text.contains("yes"), "{text}");
+}

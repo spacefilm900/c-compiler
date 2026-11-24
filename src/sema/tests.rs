@@ -1164,6 +1164,123 @@ fn deep_union_diamond_still_initializes() {
 }
 
 #[test]
+fn quickjs_gnu_extensions_and_their_limits() {
+    use crate::Dialect::{Gnu11, C11};
+    let gnu_err = |source: &str| sema_dialect(source, Gnu11).unwrap_err();
+    // A struct or union cast to its own type: GNU only.
+    let cast = "struct S { int a; }; int f(struct S s) { return ((const struct S)s).a; }";
+    assert!(sema_dialect(cast, Gnu11).is_ok());
+    assert!(sema_dialect(cast, C11)
+        .unwrap_err()
+        .contains("is not supported"));
+    assert!(gnu_err(
+        "struct S { int a; }; struct T { int a; }; \
+                     int f(struct S s) { return ((struct T)s).a; }"
+    )
+    .contains("is not supported"));
+    // A forward-named enum must end up with the type it was assumed to have.
+    assert!(sema_dialect("typedef enum E E; enum E { A, B }; E e = B;", Gnu11).is_ok());
+    assert!(sema_dialect("typedef enum E E; enum E { A };", C11)
+        .unwrap_err()
+        .contains("incomplete enum"));
+    assert!(gnu_err("typedef enum E E; enum E { A = -1 };")
+        .contains("was used before its definition as 'unsigned int', but its type is 'int'"));
+    // Range designators: constant nonnegative bounds, a nonempty range, and
+    // a value without side effects.
+    assert!(sema_dialect("int a[4] = { [1 ... 2] = 3 };", Gnu11).is_ok());
+    assert!(
+        gnu_err("int f(void); void g(void) { int a[3] = { [0 ... 2] = f() }; }")
+            .contains("must have no side effects")
+    );
+    assert!(gnu_err("int a[4] = { [2 ... 1] = 3 };").contains("empty range designator"));
+    assert!(gnu_err("int a[4] = { [-1 ... 1] = 3 };").contains("nonnegative integer constant"));
+    assert!(gnu_err("void g(int n) { int a[4] = { [0 ... n] = 3 }; }")
+        .contains("nonnegative integer constant"));
+    assert!(gnu_err("int a[1 << 22] = { [0 ... (1 << 21)] = 1 };").contains("too large"));
+    // The budget covers the expanded tree, so nested ranges multiply.
+    assert!(
+        gnu_err("int a[1048576][1048576] = { [0 ... 1048575] = { [0 ... 1048575] = 1 } };")
+            .contains("too large")
+    );
+    assert!(sema_dialect(
+        "struct S { int x[4]; }; struct S a[3] = { [0 ... 2] = { .x = { [0 ... 3] = 5 } } };",
+        Gnu11
+    )
+    .is_ok());
+    // A value is evaluated once (GCC); repeating a volatile read would not be.
+    for value in [
+        "v",
+        "*p",
+        "v + 1",
+        "*(volatile int *)&n",
+        "s.m",
+        "*********q",
+        "r->next->m",
+    ] {
+        let source = format!(
+            "volatile int v; volatile int *p; int n; struct {{ volatile int m; }} s;\n\
+             volatile int *********q; struct R {{ struct R *next; volatile int m; }} *r;\n\
+             int f(void) {{ int a[2] = {{ [0 ... 1] = {value} }}; return a[1]; }}"
+        );
+        assert!(
+            gnu_err(&source).contains("must not read a volatile object"),
+            "{value}"
+        );
+    }
+    assert!(sema_dialect(
+        "int n; struct L { struct L *next; int m; } *l;\n\
+         int f(void) { int a[2] = { [0 ... 1] = n + l->next->m }; return a[1]; }",
+        Gnu11
+    )
+    .is_ok());
+    // An endpoint is checked as a 64-bit value on every target, including
+    // the MSVC one, where `long` is 32 bits and would wrap 2^32 to 0.
+    for target in [
+        crate::target::Target::X86_64Linux,
+        crate::target::Target::X86_64Windows { msvc: true },
+    ] {
+        let saved = crate::target::current();
+        crate::target::set(target);
+        let err = gnu_err("int a[1] = { [4294967296LL ... 4294967296LL] = 7 };");
+        crate::target::set(saved);
+        assert!(err.contains("out of range"), "{target:?}: {err}");
+    }
+    assert!(sema_dialect("int a[4] = { [1 ... 2] = 3 };", C11).is_err());
+    // Zero-size records are GNU only.
+    assert!(sema_dialect("struct Z { char a[0]; }; struct Z z = {};", Gnu11).is_ok());
+    assert!(sema_dialect("struct Z { char a[0]; }; struct Z z = {0};", Gnu11).is_ok());
+    for init in ["{1, 2}", "{1}", "{{0}}"] {
+        let source = format!("struct Z {{ char a[0]; }}; struct Z z = {init};");
+        assert!(gnu_err(&source).contains("excess elements"), "{init}");
+    }
+    assert!(sema_dialect("struct Z { char a[0]; };", C11)
+        .unwrap_err()
+        .contains("array size must be positive"));
+    // Array parameter qualifiers and `static`, in both dialects.
+    sema_ok("int f(int a[static const 2]) { return a[1]; }");
+    assert!(sema_err("int f(int a[const 2]) { a = 0; return 0; }").contains("const"));
+    assert!(sema_err("int f(int a[static]);").contains("requires a size"));
+    assert!(sema_err("int f(int a[2][static 2]);").contains("outermost array type"));
+    assert!(sema_err("int a[static 2];").contains("outermost array type"));
+    // asm statements: no operands, no goto.
+    assert!(sema_dialect(
+        "void f(void) { __asm__ volatile(\"\" ::: \"memory\"); }",
+        C11
+    )
+    .is_ok());
+    assert!(gnu_err("void f(int x) { asm(\"\" : : \"r\"(x)); }").contains("operands"));
+    assert!(gnu_err("void f(void) { asm(\"%0\" :::); }").contains("operand references"));
+    assert!(gnu_err("void f(void) { asm goto(\"\" :::: l); l:; }").contains("asm goto"));
+    // A comma in the clobber list must be followed by another clobber.
+    assert!(gnu_err("void f(void) { asm(\"\" ::: \"memory\",); }").contains("clobber"));
+    assert!(sema_dialect(
+        "void f(void) { asm(\"\" ::: \"memory\", \"cc\"); asm(\"\" :::); }",
+        Gnu11
+    )
+    .is_ok());
+}
+
+#[test]
 fn switch_diagnostics() {
     sema_ok(
         "\
@@ -2206,5 +2323,124 @@ struct Outer { char lead; struct Inner inner; char tail; };
     assert!(
         sema_err("struct S { char c; int x __attribute__((packed)); unsigned int b : 5; _Alignas(16) int tail; };")
             .contains("bit-fields in a packed or aligned")
+    );
+}
+
+#[test]
+fn address_constants_through_integer_pointers() {
+    // C11 6.6p9: `[]`, `->`, `.`, `&` and `*` may build an address constant
+    // from an integer constant cast to a pointer, the pre-offsetof idiom.
+    // Found by the coverage tests: these were rejected as not constant.
+    let ir = crate::compile_to_ir(
+        "struct S { int a; short b[4]; struct { char c; long d; } in; };\n\
+         long o1 = (long)&((struct S *)0)->b;\n\
+         short *o2 = &((struct S *)0)->b[2];\n\
+         struct S *o3 = &((struct S *)0x100)[1];\n\
+         short *o4 = ((struct S *)0x100)->b;\n\
+         char *o5 = &(*(struct S *)0x200).in.c;\n\
+         int *o6 = &*(int *)0;\n",
+        "t.c",
+    )
+    .unwrap();
+    assert!(ir.contains("@o1 = global i64 4"), "{ir}");
+    assert!(
+        ir.contains("@o2 = global ptr inttoptr (i64 8 to ptr)"),
+        "{ir}"
+    );
+    assert!(
+        ir.contains("@o3 = global ptr inttoptr (i64 288 to ptr)"),
+        "{ir}"
+    );
+    assert!(
+        ir.contains("@o4 = global ptr inttoptr (i64 260 to ptr)"),
+        "{ir}"
+    );
+    assert!(
+        ir.contains("@o5 = global ptr inttoptr (i64 528 to ptr)"),
+        "{ir}"
+    );
+    assert!(ir.contains("@o6 = global ptr null"), "{ir}");
+    // A label address still may not be offset, and an object's value is
+    // still not a constant.
+    assert!(sema_err("int x; int *p = &*(&x + (x - x));").contains("not a constant"));
+}
+
+#[test]
+fn atomic_builtin_argument_constraints() {
+    // C11 7.17: each generic function needs a pointer to a non-const
+    // atomic object; compare-exchange needs a pointer to a non-const,
+    // non-atomic object of the same type for `expected`.
+    let err = |body: &str| {
+        crate::compile_to_ir(
+            &format!(
+                "#include <stdatomic.h>\nconst atomic_int c; atomic_int x; atomic_bool b; atomic_flag f;\n\
+                 const atomic_flag cf; int e; long l; const int ce;\nvoid t(void) {{ {body}; }}\n"
+            ),
+            "t.c",
+        )
+        .unwrap_err()
+        .to_string()
+    };
+    let non_const = "must be a pointer to a non-const atomic type";
+    assert!(err("atomic_init(&c, 1)").contains(non_const));
+    assert!(err("atomic_store(&c, 1)").contains(non_const));
+    assert!(err("atomic_exchange(&c, 1)").contains(non_const));
+    assert!(err("atomic_compare_exchange_strong(&c, &e, 1)").contains(non_const));
+    assert!(err("atomic_fetch_add(&c, 1)").contains(non_const));
+    assert!(err("atomic_fetch_or(&c, 1)").contains(non_const));
+    assert!(err("atomic_flag_clear(&cf)").contains(non_const));
+    assert!(err("atomic_compare_exchange_strong(&x, e, 1)")
+        .contains("expected-value argument of __hcc_atomic_compare_exchange must be a pointer"));
+    assert!(
+        err("atomic_compare_exchange_strong(&x, &ce, 1)").contains("pointer to a non-const type")
+    );
+    assert!(err("atomic_compare_exchange_strong(&x, &l, 1)").contains("must be a pointer to 'int'"));
+    assert!(err("__hcc_atomic_compare_exchange(&x, &e, 1, 5, 5, &e)")
+        .contains("weak argument of __hcc_atomic_compare_exchange must be an integer"));
+    assert!(err("atomic_fetch_add(&b, 1)").contains("not applicable to _Atomic _Bool"));
+    assert!(err("atomic_fetch_sub(&b, 1)").contains("not applicable to _Atomic _Bool"));
+    assert!(err("__hcc_atomic_load(&x)").contains("expects 2 arguments, found 1"));
+    assert!(err("__hcc_atomic_is_lock_free(&x, 1)").contains("expects 1 argument, found 2"));
+}
+
+#[test]
+fn call_and_va_start_constraints() {
+    assert!(sema_err("int f(int, int); int g(void) { return f(1); }")
+        .contains("function 'f' expects 2 arguments, found 1"));
+    assert!(sema_err("int f(int, ...); int g(void) { return f(); }")
+        .contains("function 'f' expects at least 1 argument, found 0"));
+    // Through a function pointer the message has no name.
+    assert!(
+        sema_err("int (*fp)(int, int); int g(void) { return fp(1); }")
+            .contains("function expects 2 arguments, found 1")
+    );
+    assert!(
+        sema_err("int (*fp)(int, ...); int g(void) { return fp(); }")
+            .contains("function expects at least 1 argument, found 0")
+    );
+    assert!(sema_err("int (*fp)(int); int g(void) { return fp(1, 2); }")
+        .contains("function expects 1 argument, found 2"));
+    let ir_err = |src: &str| crate::compile_to_ir(src, "t.c").unwrap_err().to_string();
+    assert!(ir_err(
+        "#include <stdarg.h>\nvoid f(int a) { va_list ap; va_start(ap, a); va_end(ap); }\n"
+    )
+    .contains("va_start used in a function that is not variadic"));
+    assert!(ir_err("#include <stdarg.h>\nvoid f(int a, int b, ...) { va_list ap; va_start(ap, a); va_end(ap); }\n")
+        .contains("the second argument of va_start must be the last named parameter"));
+    assert!(
+        ir_err("int main(void) { return __builtin_popcount(1, 2); }\n")
+            .contains("expects 1 argument, found 2")
+    );
+    assert!(
+        ir_err("int main(void) { return __builtin_add_overflow(1, 2, 0); }\n")
+            .contains("must be a pointer to a non-const integer other than _Bool")
+    );
+    assert!(
+        ir_err("int main(void) { _Bool b; return __builtin_mul_overflow(1, 2, &b); }\n")
+            .contains("other than _Bool")
+    );
+    assert!(
+        ir_err("double sqrt(double); int main(void) { return sqrt(1.0, 2.0); }\n")
+            .contains("function 'sqrt' expects 1 argument, found 2")
     );
 }

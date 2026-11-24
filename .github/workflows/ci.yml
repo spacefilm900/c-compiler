@@ -75,7 +75,7 @@ jobs:
           python3 harness/run_tests.py
 
       - name: Csmith campaign script tests
-        run: python3 -m unittest tools/test_csmith_campaign.py tools/test_run_doom.py tools/test_run_lua.py tools/test_run_sqlite.py tools/test_perf_tools.py tools/test_abi_fuzz.py tools/test_hardening_tools.py
+        run: python3 -m unittest tools/test_csmith_campaign.py tools/test_run_doom.py tools/test_run_lua.py tools/test_run_quickjs.py tools/test_run_sqlite.py tools/test_perf_tools.py tools/test_abi_fuzz.py tools/test_hardening_tools.py
 
       - name: Stage dump golden tests and reducer unit tests
         run: |
@@ -476,6 +476,47 @@ jobs:
           scripts/fetch_lua.sh
           make
           python3 harness/run_lua.py --opt O0 --opt O2 --run-jobs "$(nproc)"
+
+  quickjs:
+    name: quickjs tests and test262
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.85.1"
+          components: rustfmt, clippy
+
+      - name: Install Clang, LLVM, make, Python, xz and patch
+        run: |
+          set -euo pipefail
+          scripts/ci-apt-install.sh clang llvm make python3 xz-utils patch
+          major="$(clang --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          if [ -z "${major}" ] || [ "${major}" -lt 18 ]; then
+            echo "Clang/LLVM >= 18 is required. Got: $(clang --version | head -n 1)" >&2
+            exit 1
+          fi
+
+      - name: Cache the QuickJS 2026-06-04 release and test262
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: tests/external/quickjs
+          key: quickjs-2026-06-04-b376e839b322978313d929fd20663b11ba58b75df5a46c126dd19ea2fa70ad2a-test262-5c8206929d81b2d3d727ca6aac56c18358c8d790-d2bb9b620c0697ea1052ffb67cc77ad6a3bdb9ff0c9cfba95ac7f4f64b98014a-${{ runner.os }}
+
+      # Both builds at -O0 and -O2: qjsc output, the Makefile's tests, and
+      # test262 (about 83,500 tests) at -O2 only, to keep the job short.
+      - name: Build QuickJS both ways and compare qjsc output, its tests, and test262
+        run: |
+          set -euo pipefail
+          scripts/fetch_quickjs.sh
+          make
+          python3 harness/run_quickjs.py --opt O0 --opt O2 --test262 O2 --jobs "$(nproc)" --threads "$(nproc)"
 
   sqlite:
     name: sqlite shell workloads

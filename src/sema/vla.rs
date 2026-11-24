@@ -248,6 +248,7 @@ impl VmWalk {
                 });
             }
             Stmt::GotoPtr { .. }
+            | Stmt::Asm { .. }
             | Stmt::Return { .. }
             | Stmt::Expr { .. }
             | Stmt::Break { .. }

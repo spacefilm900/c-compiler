@@ -349,6 +349,9 @@ impl Parser<'_> {
         // (C11 7.1.3: `__x` or `_X`), which a program does not name; any
         // other tag is still diagnosed. The typedef must also be the only
         // declarator, so no other typedef name shares the raised record.
+        // glibc's <pthread.h> puts the attribute after an untagged record,
+        // `typedef struct { ... } T __attribute__((__aligned__));`, with a
+        // size that is not a multiple of the alignment; that keeps its size.
         if let Some(align) = self.attrs_align(&attrs)? {
             let only = first && self.current().kind == TokenKind::Semi;
             if let Some(handle) = raisable_record(specs, &ty, align).filter(|_| only) {
@@ -1134,7 +1137,11 @@ fn raisable_record<'a>(specs: &'a Specs, ty: &CType, align: u32) -> Option<&'a S
         && same
         && reserved
         && handle.align() < align
-        && size % u64::from(align) == 0)
+        // With no tag the typedef is the record's only name, so raising
+        // the record is exact even when the size is not a multiple of the
+        // new alignment: GCC and Clang keep the size (glibc's
+        // `__pthread_unwind_buf_t` is 104 bytes aligned to 16).
+        && (tag.is_empty() || size % u64::from(align) == 0))
         .then_some(handle)
 }
 
