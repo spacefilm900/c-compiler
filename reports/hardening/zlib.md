@@ -40,9 +40,10 @@ about 11 s.
 
 | Found as | Fix | Test |
 | --- | --- | --- |
-| `minigzip.c` failed to compile under `-std=gnu11`: `fileno` undeclared. hcc defined `__STRICT_ANSI__` in every mode, so glibc hid its POSIX declarations from GNU-mode programs. The GCC manual defines `__STRICT_ANSI__` only for `-ansi` or a strict `-std`. | defined only for `-std=c11` | `tests/gnu/22_no_strict_ansi.c` (an `#error` under `__STRICT_ANSI__`, so strict C11 rejects it), `pp::tests::strict_ansi_is_defined_only_for_strict_iso_c` |
+| `minigzip.c` failed to compile under `-std=gnu11`: `fileno` undeclared. hcc defined `__STRICT_ANSI__` in every mode, so glibc hid its POSIX declarations from GNU-mode programs. The GCC manual defines `__STRICT_ANSI__` only for `-ansi` or a strict `-std`. | defined only for `-std=c11` | `tests::strict_ansi_follows_the_dialect` (through `compile_dialect`), `pp::tests::strict_ansi_is_defined_only_for_strict_iso_c` |
 
-Regression check of that change: harness 209/209, stage dumps 24/24, IR
+Regression check of that change: harness 209/209 (208/208 after review moved
+the `__STRICT_ANSI__` probe from `tests/gnu/` into a unit test), stage dumps 24/24, IR
 checks on all targets, AArch64 209/209, Apple arm64 207 + 2 known, Intel
 macOS 205 + 2 known, Lua and SQLite PASS at both levels, WACC 1,384, GCC
 torture 1,378 passed with no unexpected result, the challenge kits 490/490.

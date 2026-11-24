@@ -252,6 +252,9 @@ def main() -> int:
     if not (SRC / "zlib.h").is_file():
         print(f"zlib sources not found under {SRC}; run scripts/fetch_zlib.sh", file=sys.stderr)
         return 2
+    # The tests run from temporary directories, so a relative --out would
+    # no longer find the executables.
+    args.out = args.out.resolve()
     args.out.mkdir(parents=True, exist_ok=True)
     levels = []
     for opt in args.opt or ["O0", "O2"]:

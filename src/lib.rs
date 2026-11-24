@@ -689,4 +689,15 @@ mod tests {
         .ir;
         assert!(ir.contains("define i32 @impl()"), "{ir}");
     }
+
+    /// GCC manual, "Common Predefined Macros": `__STRICT_ANSI__` is defined
+    /// for a strict `-std` only. hcc defined it under `-std=gnu11` as well,
+    /// and glibc then hid `fileno` from zlib's minigzip.c. This goes through
+    /// `compile_dialect`, which must hand the dialect to the preprocessor.
+    #[test]
+    fn strict_ansi_follows_the_dialect() {
+        let probe = "#ifdef __STRICT_ANSI__\n#error strict\n#endif\nint x;\n";
+        gnu_ok(probe);
+        assert!(strict_err(probe).contains("strict"));
+    }
 }
