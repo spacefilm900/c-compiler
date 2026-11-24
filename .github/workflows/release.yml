@@ -109,8 +109,10 @@ jobs:
           cp "target/${{ matrix.rust_target }}/release/${{ matrix.exe }}" "${stage}/bin/"
           cp -R include "${stage}/include"
           cp lib/threads.c "${stage}/lib/"
-          cp LICENSE README.md CHANGELOG.md SECURITY.md "${stage}/"
-          cp docs/USER_GUIDE.md "${stage}/docs/"
+          cp LICENSE README.md CHANGELOG.md SECURITY.md CONTRIBUTING.md "${stage}/"
+          # The user guide and the documents it links to.
+          cp docs/USER_GUIDE.md docs/USER_GUIDE_MACOS.md docs/LANGUAGE.md \
+            docs/DEBUGGING.md "${stage}/docs/"
           cp "docs/release-notes/v${{ steps.version.outputs.version }}.md" "${stage}/RELEASE_NOTES.md"
           cd dist
           if [ "${{ runner.os }}" = Windows ]; then

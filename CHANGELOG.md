@@ -48,6 +48,11 @@ milestones below summarise it, with the pull requests that made them.
 - Command-line errors say what is wrong (`hcc: error: unknown option
   '-x'`, `missing argument to '-o'`, `no input file`, `more than one input
   file`) instead of printing the whole usage text.
+- `-o -` writes the IR, the preprocessed text or a dump to standard
+  output, as other compilers do, instead of a file named `-`; `--link`
+  rejects it.
+- `&&a - &&b` (a difference of GNU label addresses) is reported as not
+  supported, instead of as arithmetic on `void *`.
 
 ### Fixed
 

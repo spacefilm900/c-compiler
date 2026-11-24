@@ -26,6 +26,21 @@ It describes version 1.0.0; `hcc --version` prints the version you have.
 - [9. Known limitations](#9-known-limitations)
 - [10. Troubleshooting](#10-troubleshooting)
 
+**A few terms used in this guide:**
+
+- **LLVM IR**: LLVM's intermediate representation, a portable,
+  human-readable text form of a program (`.ll` files) that LLVM turns into
+  machine code.
+- **Translation unit**: one `.c` file together with everything it
+  `#include`s; hcc compiles one at a time.
+- **Target triple**: the name of the machine and system to compile for,
+  such as `x86_64-linux-gnu` or `arm64-apple-macos`.
+- **Data layout**: the sizes and alignments of types on a target, written
+  at the top of each IR file so LLVM lays out memory the same way.
+- **ABI** (application binary interface): a platform's rules for how
+  functions pass arguments and return values and how data is laid out, so
+  code from different compilers can call each other.
+
 ## 1. Install
 
 hcc needs **Clang/LLVM 18 or newer** to turn its IR into programs. Emitting
@@ -55,6 +70,16 @@ Check the download, then unpack it anywhere:
 sha256sum -c hcc-1.0.0-linux-x86_64.tar.gz.sha256   # macOS: shasum -a 256 -c ...
 tar -xzf hcc-1.0.0-linux-x86_64.tar.gz
 export PATH="$PWD/hcc-1.0.0-linux-x86_64/bin:$PATH"
+hcc --version
+```
+
+On Windows, unpack the `.zip` (Explorer's "Extract All", or
+`Expand-Archive` in PowerShell) and add its `bin` folder to `PATH` for the
+current PowerShell session:
+
+```powershell
+Expand-Archive hcc-1.0.0-windows-x86_64.zip -DestinationPath .
+$env:Path = "$PWD\hcc-1.0.0-windows-x86_64\bin;$env:Path"
 hcc --version
 ```
 
@@ -110,7 +135,8 @@ On Windows the program is `hello.exe`.
 
 **One file to IR.** `hcc FILE.c -o FILE.ll` compiles one translation unit.
 The output is an LLVM IR module for the target, with its triple and data
-layout, which `clang`, `llc` and `opt` accept.
+layout, which `clang`, `llc` and `opt` accept. `-o -` writes the IR (or,
+with `-E`, the preprocessed text) to standard output instead of a file.
 
 **Several files.** Compile each to IR, then link the `.ll` files (and any
 `.o` or library) with Clang:
@@ -235,6 +261,21 @@ to link it.
 | Windows x64, MinGW-w64 | `x86_64-w64-windows-gnu` | Win64 ABI, MinGW-w64 headers (`/usr/x86_64-w64-mingw32` or `-isysroot`) |
 | Windows x64, MSVC | `x86_64-pc-windows-msvc` | Win64 ABI, MSVC and Windows SDK headers from `INCLUDE` (a Visual Studio developer prompt) or `-isysroot` |
 
+Type sizes in bytes, as hcc lays them out for each target (`char` is 1 and
+`long long`, pointers and `size_t` are 8 everywhere):
+
+| Target | `long` | `long double` | `wchar_t` | plain `char` |
+| --- | --- | --- | --- | --- |
+| `x86_64-linux-gnu` | 8 | 16 (x87 80-bit) | 4 | signed |
+| `aarch64-linux-gnu` | 8 | 16 (128-bit IEEE) | 4 | unsigned |
+| `arm64-apple-macos` | 8 | 8 (same as `double`) | 4 | signed |
+| `x86_64-apple-macos` | 8 | 16 (x87 80-bit) | 4 | signed |
+| `x86_64-w64-windows-gnu` | 4 | 16 (x87 80-bit) | 2 | signed |
+| `x86_64-pc-windows-msvc` | 4 | 8 (same as `double`) | 2 | signed |
+
+So `long` is 4 bytes on the Windows targets and 8 elsewhere; use
+`long long` or `<stdint.h>` types for a 64-bit integer everywhere.
+
 Other spellings of the same triples are accepted (`x86_64-pc-linux-gnu`,
 `aarch64-apple-darwin`, `x86_64-w64-mingw32`, ...). On Windows, run hcc
 from a "x64 Native Tools Command Prompt for VS" (or after `vcvars64.bat`)
@@ -322,3 +363,7 @@ file is not created.
 | Undefined `thrd_*` or `mtx_*` symbols when linking by hand | Compile and link `lib/threads.c` (section 7), or use `--link`. |
 | `internal compiler error` (exit status 3) | A bug in hcc. Please report it (see [CONTRIBUTING.md](../CONTRIBUTING.md)) with the source, the command line and `hcc --version`. `tools/reduce/reduce.py` in the source tree can shrink the source first. |
 | A program behaves differently from a Clang build | Build it with `clang -std=c11` (or `-std=gnu11`) too and compare; if hcc is wrong, that is a bug worth reporting with the smallest program that shows it. |
+
+---
+
+*This user guide was created by the Grok Bot with limited human review.*

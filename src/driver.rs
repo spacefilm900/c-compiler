@@ -202,18 +202,12 @@ pub fn run(args: &[String]) -> i32 {
         Ok(compiled) => {
             let mut compiled = compiled;
             let start = std::time::Instant::now();
-            let written = fs::write(output, &compiled.ir);
+            let status = write_to(Some(output), &compiled.ir);
             compiled.times.write = start.elapsed();
             if options.time_phases {
                 let _ = writeln!(io::stderr(), "time-phases: {}", compiled.times.to_json());
             }
-            match written {
-                Ok(()) => 0,
-                Err(err) => {
-                    let _ = writeln!(io::stderr(), "{output}: error: {err}");
-                    1
-                }
-            }
+            status
         }
         Err(status) => status,
     }
@@ -371,7 +365,13 @@ fn emit_dump(options: &Options, source: &str, stage: crate::Stage) -> i32 {
 
 /// Write `text` to `-o FILE`, or to standard output.
 fn write_text(options: &Options, text: &str) -> i32 {
-    if let Some(output) = &options.output {
+    write_to(options.output.as_deref(), text)
+}
+
+/// Write `text` to `output`, or to standard output when there is no `-o`
+/// or it is `-o -`, as with other compilers. Returns the exit status.
+fn write_to(output: Option<&str>, text: &str) -> i32 {
+    if let Some(output) = output.filter(|path| *path != "-") {
         match fs::write(output, text) {
             Ok(()) => 0,
             Err(err) => {
@@ -521,6 +521,12 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Options, String> {
         }
         if time_phases {
             return Err("--time-phases cannot be combined with --link".to_string());
+        }
+        if output.as_deref() == Some("-") {
+            return Err(
+                "--link cannot write a program to standard output; name it with -o PROGRAM"
+                    .to_string(),
+            );
         }
     } else {
         if let Some(flag) = link_args.first() {
@@ -1050,6 +1056,7 @@ mod tests {
         assert!(err(&["-O2", "a.c", "-o", "a.ll"]).contains("needs --link"));
         assert!(err(&["--link", "a.c"]).contains("-o PROGRAM"));
         assert!(err(&["--link", "-E", "a.c", "-o", "a"]).contains("cannot be combined"));
+        assert!(err(&["--link", "a.c", "-o", "-"]).contains("standard output"));
         assert!(err(&["--link", "--time-phases", "a.c", "-o", "a"])
             .contains("--time-phases cannot be combined with --link"));
         assert!(err(&["-target", "mips-linux-gnu", "a.c", "-o", "a.ll"])
@@ -1227,5 +1234,23 @@ mod tests {
         assert_eq!(compile(&["-trigraphs", "-std=gnu11"]), 0);
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn dash_output_is_standard_output() {
+        // `-o -` writes to standard output, as other compilers do, rather
+        // than to a file named `-` in the working directory.
+        let (src, _) = temp_paths();
+        std::fs::write(&src, "int main(void) { return 0; }\n").unwrap();
+        let path = src.display().to_string();
+        let dash = std::path::Path::new("-");
+        let existed = dash.exists();
+        assert_eq!(run(&argv(&[&path, "-o", "-"])), 0);
+        assert_eq!(run(&argv(&["-E", &path, "-o", "-"])), 0);
+        assert_eq!(run(&argv(&["--dump-tokens", &path, "-o", "-"])), 0);
+        if !existed {
+            assert!(!dash.exists());
+        }
+        let _ = std::fs::remove_file(&src);
     }
 }
