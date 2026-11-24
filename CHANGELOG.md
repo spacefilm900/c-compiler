@@ -40,6 +40,9 @@ milestones below summarise it, with the pull requests that made them.
   [language reference](docs/LANGUAGE.md) (moved out of the README), this
   changelog, [CONTRIBUTING.md](CONTRIBUTING.md),
   [SECURITY.md](SECURITY.md) and [docs/RELEASING.md](docs/RELEASING.md).
+- Dependabot version updates, weekly, for the GitHub Actions and Cargo
+  dependencies (`.github/dependabot.yml`). Vulnerabilities are reported
+  through GitHub private vulnerability reporting (SECURITY.md).
 
 ### Changed
 

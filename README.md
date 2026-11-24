@@ -152,6 +152,8 @@ Job tokens have read-only access to the repository contents.
   ([docs/RELEASING.md](docs/RELEASING.md)).
 
 CodeRabbit reviews every pull request, configured by `.coderabbit.yaml`.
+Dependabot (`.github/dependabot.yml`) proposes weekly updates to the
+pinned actions and the Cargo dependencies.
 
 ## Key files
 

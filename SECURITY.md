@@ -28,12 +28,15 @@ command line as trusted.
 
 ## Reporting
 
-Contact the maintainer, Keith Haviland, privately through GitHub (a
-private security advisory on the repository, where that is enabled), not
-in a public issue. Please include the input, the command line and
-`hcc --version`. You should get a first answer within a week. A fix goes
-into the next patch release, and the advisory credits you unless you ask
-otherwise.
+Please report a vulnerability privately, not in a public issue. Use
+GitHub's private vulnerability reporting: on the repository's **Security**
+tab, choose **Report a vulnerability**. Include the input, the command line
+and `hcc --version`.
+
+Security fixes are made for the supported versions above (1.0.x). hcc is
+maintained by one person, so responses are best effort: there is no fixed
+response time. A fix goes into the next patch release, and the advisory
+credits you unless you ask otherwise.
 
 ## Verifying a release
 
