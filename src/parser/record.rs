@@ -183,6 +183,16 @@ impl Parser<'_> {
         // GNU C gives an empty struct, or one of only zero-length arrays,
         // size 0 (GCC manual, "Structures with No Members" and "Arrays of
         // Length Zero"); ISO C has no such type.
+        // MSVC lays a zero-size record out differently (Clang's IR for the
+        // MSVC target gives such a struct size 4 and alignment 1); hcc
+        // keeps it to the targets where the size is 0.
+        if size == 0 && self.dialect.gnu() && crate::target::current().is_msvc() {
+            return Err(self.error_at(
+                line,
+                column,
+                format!("{word} '{label}' has size 0, which the MSVC target does not support"),
+            ));
+        }
         if size == 0 && !self.dialect.gnu() {
             return Err(self.error_at(line, column, format!("{word} '{label}' has size 0")));
         }
