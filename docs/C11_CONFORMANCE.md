@@ -16,7 +16,8 @@ the stated target, and nothing more.
 - **Probes.** `conformance/run/` holds 34 programs, one or more per clause.
   Each program checks itself (`CHECK(...)`) and prints values whose exact
   form the standard leaves to the implementation. `harness/run_conformance.py`
-  generates 20 more programs at the minimum translation limits of 5.2.4.1.
+  generates 20 more programs at the minimum translation limits of 5.2.4.1
+  (19 limit programs and an `#include` nesting test).
   `conformance/diag/` holds 254 cases, one per `//==` marker, grouped by
   clause. 234 are constraint or syntax violations, which the standard
   requires a diagnostic for. The other 20, marked `[policy]`, are not:
@@ -29,8 +30,10 @@ the stated target, and nothing more.
   Both builds must succeed. The two programs must exit with the same status
   and print the same output, and no `CHECK` may fail.
 - **Violations.** The standard requires a diagnostic for every constraint
-  or syntax violation (5.1.1.3). An error or a warning from hcc counts. A
-  crash, a signal or a timeout does not. Clang's result (error, warning or
+  or syntax violation (5.1.1.3), and a warning would satisfy that. The
+  runner is stricter: hcc must reject the program (a non-zero exit), which
+  is this project's rule for invalid programs. For a `[policy]` case a
+  warning is enough. A crash, a signal or a timeout never counts. Clang's result (error, warning or
   nothing) is recorded but is not required. Where the standard and Clang
   differ, the standard wins.
 - **Run it.** `python3 harness/run_conformance.py` (add `--json FILE` for
@@ -74,7 +77,7 @@ were both bugs (see the [changes](#changes-made-by-the-audit)).
 | 5.1.1 | Translation environment, translation phases | 1 | - | - | pass |
 | 5.1.2 | Execution environments (hosted `main`, `argv`) | 1 | - | - | pass |
 | 5.2.1-5.2.2 | Character sets, escape semantics | 1 | - | - | pass |
-| 5.2.4.1 | Translation limits (minimums) | 21 | - | - | pass |
+| 5.2.4.1 | Translation limits (minimums) | 20 | - | - | pass |
 | 5.2.4.2 | `<limits.h>` and `<float.h>` values | 1 | - | - | pass |
 | 6.2 | Concepts: scopes, linkage, name spaces, storage duration, types, representation, compatibility, alignment | 5 | - | - | pass |
 | 6.3 | Conversions | 1 | - | - | pass |
@@ -88,7 +91,7 @@ were both bugs (see the [changes](#changes-made-by-the-audit)).
 | 6.11 | Future language directions | - | - | - | not applicable |
 | 7 | Library: the freestanding headers, the hosted headers as far as they need the compiler | 3 | 2 | 2 | pass |
 
-The 5.2.4.1 row counts the 20 generated programs plus the `#include`
+The 5.2.4.1 row counts the 19 generated limit programs plus the `#include`
 nesting test. All of them are at or above the standard's minimums: 127
 nesting levels of blocks, 63 of parenthesised expressions, 63 of
 conditional inclusion, 15 of `#include`, 12 pointer, array and function

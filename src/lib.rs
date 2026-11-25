@@ -571,6 +571,7 @@ mod tests {
             ("void f(void) { _Noreturn int main(void); }", "'main' cannot be declared '_Noreturn'"),
             ("void f(register int r, int a[sizeof &r]);", "address of register variable 'r'"),
             ("void f(void) { register int r = 0; int *p = &_Generic(0, int: r); (void)p; }", "address of register variable 'r'"),
+            ("void f(void) { register int r = 0; int x = 0; int *p = &_Generic(0, double: x, default: _Generic(0, int: r, default: x)); (void)p; }", "address of register variable 'r'"),
             ("struct s { int m; }; void f(void) { register struct s v; int *p = &_Generic(0, int: v).m; (void)p; }", "address of register variable 'v'"),
         ] {
             let Err(err) = compile(source, Dialect::C11) else {
@@ -593,6 +594,7 @@ mod tests {
             "int main(void); void g(void) { int main(void); }",
             // An unselected association may name a register object.
             "void f(void) { register int r = 0; int x = 0; int *p = &_Generic(0, int: x, double: r); (void)p; (void)r; }",
+            "void f(void) { register int r = 0; int x = 0; int *p = &_Generic(0, int: x, default: _Generic(0, int: r, default: x)); (void)p; (void)r; }",
         ] {
             compile(source, Dialect::C11).unwrap_or_else(|err| panic!("{source}: {err}"));
         }

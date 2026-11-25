@@ -199,7 +199,9 @@ impl Sema<'_> {
             if i != index {
                 // Constraints are checked, but unselected associations are
                 // not evaluated and must not leave IR artifacts behind
-                // (C11 6.5.1.1p3).
+                // (C11 6.5.1.1p3). An enclosing `&` does not apply to
+                // them, so its deferred register check is dropped.
+                clear_addr_of_register(&mut assoc.expr);
                 let saved = self.begin_unevaluated();
                 let checked = self.check_expr(&mut assoc.expr);
                 self.end_unevaluated(saved);
@@ -1374,5 +1376,22 @@ pub(super) fn is_integer_zero(expr: &Expr) -> bool {
     match eval_const_expr(expr) {
         Ok(value) => value.ty.is_integer() && (value.bits & value.ty.mask()) == 0,
         Err(_) => false,
+    }
+}
+
+/// Drop the `&`-of-`register` marks the parser left on the selections in
+/// an unselected association: its result is not the operand of that `&`.
+fn clear_addr_of_register(expr: &mut Expr) {
+    match expr {
+        Expr::Generic { assocs, .. } => {
+            for assoc in assocs {
+                assoc.addr_of_register = None;
+                clear_addr_of_register(&mut assoc.expr);
+            }
+        }
+        Expr::Member {
+            base, arrow: false, ..
+        } => clear_addr_of_register(base),
+        _ => {}
     }
 }
