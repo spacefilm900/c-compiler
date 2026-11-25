@@ -10,8 +10,8 @@ with one build of hcc. The results below are recorded against that commit.
 - **Toolchain:** Rust 1.85.1, Clang and LLVM 19.1.7 (the oracle and the
   linker), GCC 14.2.0 (the second reference for Csmith and the v0.6 kit).
 
-The commit that adds this page changes only documentation: this report,
-`README.md` and `STATUS.md`. It changes no source, harness or test file,
+The commits after `2e80ec0` change only documentation: this report,
+`README.md`, `STATUS.md` and `docs/release-notes/v1.0.0.md`. It changes no source, harness or test file,
 so these results hold for the pull request's final head. Run
 `git diff --stat 2e80ec0 HEAD` to check.
 
