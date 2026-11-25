@@ -547,6 +547,45 @@ mod tests {
     }
 
     #[test]
+    fn conformance_audit_constraints() {
+        // Constraint violations the C11 conformance audit found accepted.
+        for (source, message) in [
+            ("#define F(a) __VA_ARGS__\n", "__VA_ARGS__ can only appear"),
+            ("#define O __VA_ARGS__\n", "__VA_ARGS__ can only appear"),
+            ("#undef __LINE__\n", "undefining builtin macro '__LINE__'"),
+            ("#undef __STDC_VERSION__\n", "undefining builtin macro"),
+            ("auto int a;", "'auto' is not allowed at file scope"),
+            ("register int a;", "'register' is not allowed at file scope"),
+            ("register int f(void) { return 0; }", "'register' is not allowed at file scope"),
+            ("inline int main(void) { return 0; }", "'main' cannot be declared 'inline'"),
+            ("_Noreturn int main(void);", "'main' cannot be declared '_Noreturn'"),
+            ("typedef int F(void); F f { return 0; }", "cannot take its function type from a typedef"),
+            ("void f(void) { register int r = 0; int *p = &r; (void)p; }", "address of register variable 'r'"),
+            ("struct s { int m; }; void f(void) { register struct s v; int *p = &v.m; (void)p; }", "address of register variable 'v'"),
+            ("void f(register int r) { int *p = &r; (void)p; }", "address of register variable 'r'"),
+            ("void f(r) register int r; { int *p = &r; (void)p; }", "address of register variable 'r'"),
+            ("typedef int A[3]; _Atomic A a;", "cannot be applied to an array type"),
+        ] {
+            let Err(err) = compile(source, Dialect::C11) else {
+                panic!("{source}: accepted");
+            };
+            let err = err.to_string();
+            assert!(err.contains(message), "{source}: {err}");
+        }
+        // Still accepted: a shadowing declaration, a variadic macro, other
+        // #undefs, and a function declared (not defined) through a typedef.
+        for source in [
+            "void f(void) { register int r = 1; { int r = 2; int *p = &r; (void)p; } (void)r; }",
+            "void f(register int r) { int *p; { int r; p = &r; } (void)p; }",
+            "#define W(x, ...) g(x, __VA_ARGS__)\n",
+            "#undef NDEBUG\n#undef __GNUC__\nint main(void) { return 0; }",
+            "typedef int F(void); F f; int f(void) { return 0; }",
+        ] {
+            compile(source, Dialect::C11).unwrap_or_else(|err| panic!("{source}: {err}"));
+        }
+    }
+
+    #[test]
     fn tentative_array_definition_gets_one_element() {
         // C11 6.9.2p5 EXAMPLE 2.
         let out = compile("int i[]; const int c[]; int *p = i;", Dialect::C11).unwrap();

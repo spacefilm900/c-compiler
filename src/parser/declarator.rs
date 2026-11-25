@@ -193,6 +193,7 @@ impl Parser<'_> {
                 arg_reg: String::new(),
                 star_array: false,
                 unadjusted: CType::from_name(TypeName::Int),
+                register: false,
             });
             if self.match_kind(TokenKind::Comma) {
                 continue;
@@ -235,6 +236,7 @@ impl Parser<'_> {
                     arg_reg: String::new(),
                     star_array: false,
                     unadjusted,
+                    register: specs.register,
                 });
             }
             return Err(self.error(format!(
@@ -280,6 +282,7 @@ impl Parser<'_> {
             arg_reg: String::new(),
             star_array,
             unadjusted,
+            register: specs.register,
         })
     }
 
@@ -535,6 +538,7 @@ impl Parser<'_> {
                         arg_reg: String::new(),
                         star_array: false,
                         unadjusted: ty.clone(),
+                        register: false,
                     })
                     .collect(),
                 prototype: func.prototype,

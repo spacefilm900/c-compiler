@@ -66,6 +66,11 @@ impl Parser<'_> {
         if kr_def {
             self.parse_kr_declaration_list(&mut params)?;
         }
+        for param in &params {
+            if let (true, Some(name)) = (param.register, &param.name) {
+                self.mark_register(name);
+            }
+        }
         for param in &mut params {
             star_out_nested_fn_vlas(&mut param.ty);
             star_out_nested_fn_vlas(&mut param.unadjusted);
@@ -431,6 +436,35 @@ impl Parser<'_> {
         Ok(())
     }
 
+    /// Record that `name`, just bound in the current scope, was declared
+    /// `register`.
+    pub(super) fn mark_register(&mut self, name: &str) {
+        if let Some(set) = self.register_names.last_mut() {
+            set.insert(name.to_string());
+        }
+    }
+
+    /// The `register` object an `&` operand names, if any: the object
+    /// itself or a member of it reached with `.` (C11 6.5.3.2p1).
+    pub(super) fn register_operand<'e>(&self, expr: &'e Expr) -> Option<&'e str> {
+        match expr {
+            Expr::Var { name, .. } => {
+                let depth = self
+                    .names
+                    .iter()
+                    .rposition(|scope| scope.contains_key(name))?;
+                self.register_names
+                    .get(depth)
+                    .is_some_and(|set| set.contains(name))
+                    .then_some(name.as_str())
+            }
+            Expr::Member {
+                base, arrow: false, ..
+            } => self.register_operand(base),
+            _ => None,
+        }
+    }
+
     pub(super) fn bind_ordinary(
         &mut self,
         name: &str,
@@ -438,6 +472,9 @@ impl Parser<'_> {
         line: usize,
         column: usize,
     ) -> Result<(), Diagnostic> {
+        if let Some(set) = self.register_names.last_mut() {
+            set.remove(name);
+        }
         let scope = self.names.last_mut().expect("name scope");
         match scope.get(name) {
             Some(NameBinding::Ordinary(old)) => {
@@ -962,6 +999,9 @@ impl Parser<'_> {
             declarator.line,
             declarator.column,
         )?;
+        if specs.register {
+            self.mark_register(&declarator.name);
+        }
         let init = if self.match_kind(TokenKind::Assign) {
             Some(self.parse_initializer()?)
         } else {
@@ -1089,6 +1129,7 @@ impl Parser<'_> {
                 }
                 params[index].ty = ty;
                 params[index].unadjusted = unadjusted;
+                params[index].register = specs.register;
                 params[index].line = named.line;
                 params[index].column = named.column;
                 self.bind_ordinary(

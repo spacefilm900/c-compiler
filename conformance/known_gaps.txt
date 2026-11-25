@@ -1,0 +1,5 @@
+# Probes hcc is known to fail, one per line: FILE | DESCRIPTION | REASON.
+# harness/run_conformance.py reports them as KNOWN and does not fail on
+# them; a listed probe that passes is reported so its line can be removed.
+6.7-declarations.c | an inline external definition referring to a static object | 6.7.4p3 not diagnosed: the parser decides which definitions are inline definitions only at the end of the unit and does not track linkage of the names a body uses
+6.7-declarations.c | an inline external definition defining a modifiable static | 6.7.4p3 not diagnosed, for the same reason

@@ -60,6 +60,7 @@ pub fn parse_with(
         tags: Vec::new(),
         param_array_quals_ok: false,
         names: Vec::new(),
+        register_names: Vec::new(),
         structs: Vec::new(),
         llvm_names: HashSet::new(),
         next_struct: 0,
@@ -100,6 +101,9 @@ struct Parser<'a> {
     /// typedef name starts a declaration, an enumeration constant is an
     /// integer constant. Innermost scope last.
     names: Vec<HashMap<String, NameBinding>>,
+    /// The names in each scope of `names` that were declared `register`
+    /// (C11 6.5.3.2p1 forbids taking their address).
+    register_names: Vec<HashSet<String>>,
     /// Completed structs and unions, in definition order.
     structs: Vec<StructRef>,
     llvm_names: HashSet<String>,
@@ -264,7 +268,17 @@ impl Parser<'_> {
             self.parse_static_assert()?;
             return Ok(Vec::new());
         }
+        let specs_at = (self.current().line, self.current().column);
         let specs = self.parse_specs(SpecPlace::Declaration)?;
+        // C11 6.9p2: no `auto` or `register` in an external declaration.
+        if specs.plain_storage {
+            let kind = if specs.register { "register" } else { "auto" };
+            return Err(self.error_at(
+                specs_at.0,
+                specs_at.1,
+                format!("'{kind}' is not allowed at file scope"),
+            ));
+        }
         self.apply_shadow(&specs)?;
         if self.current().kind == TokenKind::Semi {
             self.finish_tag_only(&specs)?;
@@ -276,7 +290,27 @@ impl Parser<'_> {
         if specs.storage == Storage::Typedef {
             return self.finish_typedefs(specs, first);
         }
+        // C11 6.7.4p4: in a hosted environment `main` has no function
+        // specifier.
+        if first.name == "main" && first.is_function() {
+            if let Some((spec, line, column)) = specs.func_spec {
+                return Err(self.error_at(
+                    line,
+                    column,
+                    format!("'main' cannot be declared '{spec}'"),
+                ));
+            }
+        }
         if self.is_function_definition(&first) {
+            // C11 6.9.1p2: the function type of a definition comes from its
+            // declarator, not from a typedef.
+            if matches!(specs.ty.peel(), CType::Func(_)) {
+                return Err(self.error_at(
+                    first.line,
+                    first.column,
+                    "a function definition cannot take its function type from a typedef",
+                ));
+            }
             let ty = decl_kind_type(&first.kind);
             self.bind_ordinary(&first.name, Some(ty), first.line, first.column)?;
             return Ok(vec![self.finish_definition(specs, first)?]);

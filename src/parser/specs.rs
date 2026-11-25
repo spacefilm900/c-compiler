@@ -189,7 +189,22 @@ impl Parser<'_> {
         if !flags.any {
             return Err(self.error(format!("expected a type, found {}", found(self.current()))));
         }
-        let ty = self.resolve_type(&flags)?.with_quals(flags.quals);
+        let base = self.resolve_type(&flags)?;
+        // C11 6.7.3p3: the type modified by the `_Atomic` qualifier is not
+        // an array or a function type (here, one named by a typedef).
+        if flags.quals.is_atomic && (base.is_array() || base.is_func()) {
+            let what = if base.is_array() {
+                "an array"
+            } else {
+                "a function"
+            };
+            return Err(self.error_at(
+                flags.line,
+                flags.column,
+                format!("the _Atomic qualifier cannot be applied to {what} type"),
+            ));
+        }
+        let ty = base.with_quals(flags.quals);
         let shadow_decl = self.shadow_decl.take();
         // A lone `union tag;` is a declaration and may hide an outer struct.
         // A parameter, member, or type name has no such form: the visible tag

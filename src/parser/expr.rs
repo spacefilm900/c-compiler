@@ -233,6 +233,13 @@ impl Parser<'_> {
             TokenKind::Amp => {
                 self.bump();
                 let expr = self.parse_unary()?;
+                if let Some(name) = self.register_operand(&expr) {
+                    return Err(self.error_at(
+                        token.line,
+                        token.column,
+                        format!("address of register variable '{name}' requested"),
+                    ));
+                }
                 Ok(Expr::unary(UnaryOp::Addr, expr, token.line, token.column))
             }
             TokenKind::Star => {

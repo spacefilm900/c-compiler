@@ -82,6 +82,16 @@ impl Processor {
                 "'defined' cannot be used as a macro name",
             ));
         }
+        // C11 6.10.8p2: the predefined macro names of 6.10.8.1 are not the
+        // subject of a #undef.
+        if PREDEFINED_FIXED.contains(&line[0].spelling.as_str())
+            && !self.files[at.file_id as usize].system
+        {
+            return Err(error_at(
+                &line[0],
+                format!("undefining builtin macro '{}'", line[0].spelling),
+            ));
+        }
         self.macros
             .insert(line[0].spelling.clone(), MacroEntry::Undefined);
         Ok(())
@@ -1037,6 +1047,17 @@ pub(super) fn parse_function_header(
     })
 }
 
+/// The macros of C11 6.10.8.1 that a program cannot #undef.
+const PREDEFINED_FIXED: [&str; 7] = [
+    "__DATE__",
+    "__FILE__",
+    "__LINE__",
+    "__STDC__",
+    "__STDC_HOSTED__",
+    "__STDC_VERSION__",
+    "__TIME__",
+];
+
 pub(super) fn normalize_body(mut body: Vec<PpToken>) -> Vec<PpToken> {
     if let Some(first) = body.first_mut() {
         first.leading_space = false;
@@ -1061,6 +1082,17 @@ pub(super) fn validate_body(
     }
     if body.last().is_some_and(|tok| tok.spelling == "##") {
         return Err(error_at(at, "'##' at the end of a macro replacement list"));
+    }
+    // C11 6.10.3p5: `__VA_ARGS__` belongs only to a variadic macro.
+    if !variadic
+        && body
+            .iter()
+            .any(|tok| tok.kind == PpKind::Ident && tok.spelling == "__VA_ARGS__")
+    {
+        return Err(error_at(
+            at,
+            "__VA_ARGS__ can only appear in the expansion of a variadic macro",
+        ));
     }
     let Some(params) = params else {
         return Ok(());
