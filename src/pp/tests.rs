@@ -367,7 +367,65 @@ fn prefixed_character_constants_in_if() {
 fn utf8_literals_pass_through() {
     let text = pp("const char *s = \"Ä€\"; /* é */ int c = L'é';\n");
     assert_eq!(squash(&text), "const char *s = \"Ä€\"; int c = L'é';");
-    assert!(pp_err("int café;\n").contains("non-ASCII"));
+    // C11 6.4.2.1 and Annex D: `café` is an identifier, and the same one
+    // as `caf\u00e9` (stored as UTF-8).
+    assert_eq!(squash(&pp("int café;\n")), "int café;");
+}
+
+#[test]
+fn universal_character_names_in_identifiers() {
+    // A UCN and the UTF-8 character name one identifier, for macros too.
+    let text = pp("#define caf\\u00e9 1\nint x = café + caf\\U000000E9;\n#ifdef café\nint defined_too;\n#endif\n");
+    assert_eq!(squash(&text), "int x = 1 + 1; int defined_too;");
+    // A line splice inside a UCN goes in phase 2, before tokens are formed.
+    assert_eq!(squash(&pp("int a\\u00\\\ne9;\n")), "int aé;");
+    // Pasting and stringizing: the pasted name is the same identifier, and
+    // `#` gives a string with the same characters (UTF-8 in the literal).
+    let text = pp("#define P(a, b) a ## b\n#define S(x) #x\n#define xé 7\nint y = P(x, \\u00e9); const char *s = S(\\u00e9t\\u00e9);\n");
+    assert_eq!(squash(&text), "int y = 7; const char *s = \"été\";");
+    // Annex D.2: a combining mark may follow, but not start, an identifier.
+    assert_eq!(squash(&pp("int x\\u0301;\n")), "int x\u{301};");
+    assert!(pp_err("int \\u0301x;\n").contains("not allowed at the start of an identifier"));
+    assert!(pp_err("int \u{301}x;\n").contains("not allowed at the start of an identifier"));
+    // 6.4.3p2: no basic characters, controls or surrogates; nothing above
+    // U+10FFFF. Annex D.1 also leaves out `$`, `@`, `` ` `` and U+00A0.
+    for (source, want) in [
+        (
+            "int a\\u0041;\n",
+            "cannot be written as a universal character name",
+        ),
+        (
+            "int a\\u0009;\n",
+            "cannot be written as a universal character name",
+        ),
+        ("int a\\uD800;\n", "not a valid universal character name"),
+        (
+            "int a\\U00110000;\n",
+            "not a valid universal character name",
+        ),
+        ("int a\\u0024;\n", "not allowed in an identifier"),
+        ("int a\\u00A0;\n", "not allowed in an identifier"),
+        ("int a\\u00D7;\n", "not allowed in an identifier"),
+        ("int a\u{D7};\n", "not allowed in an identifier"),
+        ("int x = 1 \u{D7} 2;\n", "unexpected character U+00D7"),
+    ] {
+        assert!(
+            pp_err(source).contains(want),
+            "{source:?}: {}",
+            pp_err(source)
+        );
+    }
+    // A backslash not followed by a complete UCN is an ordinary token.
+    assert!(squash(&pp("#define S(x) #x\nS(a\\u12)\n")).contains("\"a\\u12\""));
+    // `-D` names may be extended identifiers too.
+    let mut options = PpOptions::default();
+    options.system_dirs.clear();
+    options.definitions.push(CliMacro::Define {
+        name: "café".to_string(),
+        replacement: Some("3".to_string()),
+    });
+    let text = preprocess("int v = caf\\u00e9;\n", "t.c", &options).unwrap();
+    assert_eq!(squash(&text), "int v = 3;");
 }
 
 #[test]

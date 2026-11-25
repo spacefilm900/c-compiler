@@ -50,6 +50,10 @@ __DATE__ and __TIME__ are also compared with Clang's (`-E`) under fixed
 SOURCE_DATE_EPOCH values, and an invalid value must be rejected by both
 (label pp/source_date_epoch).
 
+Identifiers with universal character names or UTF-8 characters that C11
+forbids (6.4.3p2, Annex D) must be rejected by both this compiler and
+Clang, with an ordinary diagnostic (label lex/ucn_constraints).
+
 Env: CC_UNDER_TEST, CLANG (default "clang"), TIMEOUT (seconds, default 10),
 KNOWN_FAILURES (optional file of test labels, one per line, '#' comments:
 those tests may fail without failing the run; the macOS job uses
@@ -289,6 +293,35 @@ def test_source_date_epoch(tmp):
     return None
 
 
+# C11 6.4.3p2 and Annex D: each must be rejected (strict C11, both compilers).
+UCN_INVALID = {
+    "basic_char": "int a\\u0041;\n",            # U+0041 is 'A'
+    "control": "int a\\u0009;\n",
+    "dollar": "int a\\u0024b;\n",               # allowed by 6.4.3, not by D.1
+    "surrogate": "int a\\uD800;\n",
+    "too_large": "int a\\U00110000;\n",
+    "initial_combining_ucn": "int \\u0301x;\n",   # D.2
+    "initial_combining_utf8": "int \u0301x;\n",
+    "not_in_annex_d": "int a\\u00D7;\n",        # multiplication sign
+    "utf8_not_in_annex_d": "int a\u00d7b;\n",
+}
+
+
+def test_ucn_constraints(tmp):
+    """Identifiers that C11 forbids are rejected by both compilers."""
+    problems = []
+    for name, text in UCN_INVALID.items():
+        src = tmp / f"ucn_{name}.c"
+        src.write_bytes(text.encode("utf-8"))
+        rc, _, err = run([str(COMPILER), str(src), "-o", str(tmp / f"ucn_{name}.ll")])
+        if rc != 1 or b"panicked" in err or b"error:" not in err:
+            problems.append(f"{name}: this compiler exit={rc} {err.decode(errors='replace')[:160]!r}")
+        crc, _, _ = run([CLANG, "-std=c11", "-fsyntax-only", str(src)])
+        if not isinstance(crc, int) or crc <= 0:
+            problems.append(f"{name}: Clang accepted it (exit={crc})")
+    return "; ".join(problems) or None
+
+
 def main():
     tests = sorted((ROOT / "tests").glob("*.c"))
     hosted = sorted((ROOT / "tests" / "hosted").glob("*.c"))
@@ -328,7 +361,7 @@ def main():
                 f"Clang/LLVM >= {MIN_CLANG_MAJOR} is required (LLVM 15-17 split an "
                 f"i128 argument between a register and the stack); got: {major}"
             )
-    total = len(tests) + len(hosted) + len(posix) + len(crosses) + len(gnu) + len(both) + 1
+    total = len(tests) + len(hosted) + len(posix) + len(crosses) + len(gnu) + len(both) + 2
     if problems:
         for t in tests:
             print(f"FAIL {t.name}: " + "; ".join(problems))
@@ -341,6 +374,7 @@ def main():
         for t in both:
             print(f"FAIL gnu/both/{t.name}: " + "; ".join(problems))
         print("FAIL pp/source_date_epoch: " + "; ".join(problems))
+        print("FAIL lex/ucn_constraints: " + "; ".join(problems))
         print(f"\n0/{total} passed")
         return 1
     known = known_failures()
@@ -385,6 +419,7 @@ def main():
         for t in both:
             report(f"gnu/both/{t.name}", test_both(t, tmp))
         report("pp/source_date_epoch", test_source_date_epoch(tmp))
+        report("lex/ucn_constraints", test_ucn_constraints(tmp))
     unexpected = total - passed - len(expected_failures)
     if known:
         print(f"\n{passed}/{total} passed, {len(expected_failures)} known failures, "

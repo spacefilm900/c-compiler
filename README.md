@@ -38,9 +38,10 @@ Windows x64 hold a ready-built `bin/hcc` with its headers; see the
   (`_Complex`). The compiler does support the harder parts: variable-length
   arrays, `_Atomic` and `<stdatomic.h>`, `<threads.h>`, `_Generic`,
   `_Alignas`, `_Thread_local`, `_Static_assert`, Unicode literals,
-  old-style K&R function definitions and `<tgmath.h>`. By default hcc
-  follows the standard strictly (`-std=c11`). The few remaining gaps are
-  listed under [known limitations](docs/USER_GUIDE.md#9-known-limitations).
+  universal character names in identifiers, old-style K&R function
+  definitions and `<tgmath.h>`. By default hcc follows the standard
+  strictly (`-std=c11`). Its other limitations are listed under
+  [known limitations](docs/USER_GUIDE.md#9-known-limitations).
 - **GNU C** with `-std=gnu11`: statement expressions, `typeof`,
   attributes, labels as values, `__int128`, case ranges and the builtins
   that real code and system headers use.

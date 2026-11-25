@@ -394,12 +394,14 @@ fn vol_attr(ty: &CType) -> &'static str {
     }
 }
 
+/// The IR label of C label `name` (quoted when `name` is an extended
+/// identifier).
 fn c_label(name: &str) -> String {
-    format!("C.{name}")
+    llvm_name_text(&format!("C.{name}"))
 }
 
 fn c_label_via_ptr(name: &str) -> String {
-    format!("{}.via_ptr", c_label(name))
+    llvm_name_text(&format!("C.{name}.via_ptr"))
 }
 
 /// `@name` when `name` matches LLVM's unquoted identifier pattern, otherwise
@@ -409,6 +411,18 @@ fn llvm_global(name: &str) -> String {
         format!("@{name}")
     } else {
         format!("@{}", llvm_string(name))
+    }
+}
+
+/// `name` as it follows `@` or `%` in IR: unchanged when it matches the
+/// unquoted identifier pattern, else a quoted string (LLVM Language
+/// Reference, "Identifiers"), so an extended C identifier such as `état`
+/// is `"\C3\A9tat"`. The quoted and unquoted forms name the same symbol.
+pub(crate) fn llvm_name_text(name: &str) -> String {
+    if name.is_empty() || is_unquoted_llvm_name(name) || name.starts_with('"') {
+        name.to_string()
+    } else {
+        llvm_string(name)
     }
 }
 

@@ -27,6 +27,7 @@ pub mod target;
 mod target_tests;
 pub mod timing;
 pub mod token;
+pub mod ucn;
 pub mod win64;
 
 pub use diag::{Diagnostic, Warning};
