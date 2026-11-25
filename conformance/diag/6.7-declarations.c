@@ -33,7 +33,7 @@ signed unsigned int x;
 typedef int T; unsigned T x;
 //== 6.7.2p2 three longs
 long long long x;
-//== 6.7.2p3 _Complex not supported (an optional feature, 6.10.8.3)
+//== 6.7.2p3 [policy] _Complex not supported (an optional feature, 6.10.8.3)
 double _Complex z;
 //== 6.7.2.1p2 a member of incomplete type
 struct s { struct undefined u; };

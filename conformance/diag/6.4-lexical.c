@@ -19,19 +19,19 @@ int c = '\x';
 int \u0041bc;
 //== 6.4.3 a universal character name for a surrogate
 int a\ud800;
-//== 6.4.3 a universal character name that is not valid in an identifier (D.1)
+//== 6.4.3 [policy] a universal character name that is not valid in an identifier (D.1)
 int a\u00d7;
-//== 6.4.5 a universal character name out of range in a string
+//== 6.4.5 [policy] a universal character name out of range in a string
 const char *s = "\U00110000";
-//== 6.4.5 concatenating differently prefixed wide strings
+//== 6.4.5 [policy] concatenating differently prefixed wide strings
 const void *s = u"a" U"b";
 //== 6.4.8 a pp-number that is not a valid constant
 int x = 0xe+1;
 //== 6.4.8 another invalid pp-number
 int x = 1.2.3;
-//== 6.4.9 an unterminated comment
+//== 6.4.9 [policy] an unterminated comment
 int x; /* never closed
-//== 6.4 an unterminated string literal
+//== 6.4 [policy] an unterminated string literal
 const char *s = "abc;
 //== 6.4p3 a stray character
 int x = 1 @ 2;

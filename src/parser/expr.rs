@@ -232,7 +232,7 @@ impl Parser<'_> {
             TokenKind::KwAlignof => self.parse_alignof(token.line, token.column),
             TokenKind::Amp => {
                 self.bump();
-                let expr = self.parse_unary()?;
+                let mut expr = self.parse_unary()?;
                 if let Some(name) = self.register_operand(&expr) {
                     return Err(self.error_at(
                         token.line,
@@ -240,6 +240,7 @@ impl Parser<'_> {
                         format!("address of register variable '{name}' requested"),
                     ));
                 }
+                self.mark_generic_register(&mut expr, token.line, token.column);
                 Ok(Expr::unary(UnaryOp::Addr, expr, token.line, token.column))
             }
             TokenKind::Star => {
@@ -617,6 +618,7 @@ impl Parser<'_> {
                 expr,
                 line: token.line,
                 column: token.column,
+                addr_of_register: None,
             });
             if !self.match_kind(TokenKind::Comma) {
                 break;

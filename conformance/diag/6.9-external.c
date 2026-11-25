@@ -17,7 +17,7 @@ int h(a) int a; int a; { return a; }
 int h(a) int a, b; { return a; }
 //== 6.9.1p6 an initializer on an identifier-list parameter
 int h(a) int a = 1; { return a; }
-//== 6.9.2p3 a static tentative definition of incomplete type
+//== 6.9.2p3 [policy] a static tentative definition of incomplete type
 static int a[];
 //== 6.9.1p2 a definition with a storage class other than extern or static
 register int h(void) { return 0; }

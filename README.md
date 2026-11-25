@@ -35,10 +35,11 @@ Windows x64 hold a ready-built `bin/hcc` with its headers; see the
 ## What it does
 
 - **C11** (N1570), except the optional complex number types (`_Complex`).
-  A clause-by-clause audit of clauses 5 to 7, with 308 probe programs
-  compared against `clang -std=c11 -pedantic-errors`, passes 306 of them.
-  The 2 that fail are one known gap: the inline-definition constraints of
-  6.7.4p3 are not diagnosed ([docs/C11_CONFORMANCE.md](docs/C11_CONFORMANCE.md)).
+  A clause-by-clause audit of clauses 5 to 7 has 288 probes: 54 programs
+  and 234 constraint or syntax violations, compared against
+  `clang -std=c11 -pedantic-errors`. hcc passes 286 of them. The 2 that
+  fail are one known gap: the inline-definition constraints of 6.7.4p3 are
+  not diagnosed ([docs/C11_CONFORMANCE.md](docs/C11_CONFORMANCE.md)).
   This is not a formal certification. The compiler supports the harder
   parts: variable-length
   arrays, `_Atomic` and `<stdatomic.h>`, `<threads.h>`, `_Generic`,
@@ -176,7 +177,7 @@ Each one says what it counts.
 
 | Check | Scope | Result |
 | --- | --- | --- |
-| C11 conformance probes | N1570 clauses 5 to 7: 54 programs and 254 constraint violations, x86-64 Linux | 306 of 308 pass, 2 known gaps |
+| C11 conformance probes | N1570 clauses 5 to 7: 54 programs and 234 constraint or syntax violations, x86-64 Linux; 20 more cases the standard leaves undefined are counted apart | 286 of 288 pass, 2 known gaps; all 20 others diagnosed |
 | Differential harness | the programs in `tests/`, x86-64 Linux | 230 of 230 |
 | Writing a C Compiler suite | chapters 1 to 18 (19 and 20 inspect the book's own assembly) | 1,384 of 1,384 run, 233 skipped |
 | Csmith | 3,000 generated programs (seeds 200001 to 203000); a program counts once GCC and Clang agree on it | 2,775 compared at `-O0` and 2,774 at `-O2`, 0 mismatches |

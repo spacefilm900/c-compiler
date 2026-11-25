@@ -290,21 +290,11 @@ impl Parser<'_> {
         if specs.storage == Storage::Typedef {
             return self.finish_typedefs(specs, first);
         }
-        // C11 6.7.4p4: in a hosted environment `main` has no function
-        // specifier.
-        if first.name == "main" && first.is_function() {
-            if let Some((spec, line, column)) = specs.func_spec {
-                return Err(self.error_at(
-                    line,
-                    column,
-                    format!("'main' cannot be declared '{spec}'"),
-                ));
-            }
-        }
+        self.reject_main_func_spec(&specs, &first)?;
         if self.is_function_definition(&first) {
             // C11 6.9.1p2: the function type of a definition comes from its
             // declarator, not from a typedef.
-            if matches!(specs.ty.peel(), CType::Func(_)) {
+            if !first.own_function {
                 return Err(self.error_at(
                     first.line,
                     first.column,
@@ -318,6 +308,7 @@ impl Parser<'_> {
         let mut decls = vec![self.finish_file_decl(&specs, first)?];
         while self.match_kind(TokenKind::Comma) {
             let next = self.parse_named_decl(base.clone())?;
+            self.reject_main_func_spec(&specs, &next)?;
             if next.is_function() && self.current().kind == TokenKind::LBrace {
                 return Err(self.error("a function definition cannot follow another declarator"));
             }
@@ -325,6 +316,17 @@ impl Parser<'_> {
         }
         self.expect_skip(TokenKind::Semi, "';'")?;
         Ok(decls)
+    }
+
+    /// C11 6.7.4p4: in a hosted environment no declaration of `main`, at
+    /// file or block scope, has a function specifier.
+    fn reject_main_func_spec(&self, specs: &Specs, decl: &NamedDecl) -> Result<(), Diagnostic> {
+        match specs.func_spec {
+            Some((spec, line, column)) if decl.name == "main" && decl.is_function() => {
+                Err(self.error_at(line, column, format!("'main' cannot be declared '{spec}'")))
+            }
+            _ => Ok(()),
+        }
     }
 
     fn lookup_name(&self, name: &str) -> Option<NameBinding> {
@@ -691,6 +693,9 @@ struct NamedDecl {
     attrs: Vec<Attr>,
     /// First VLA id this declarator allocated, if any.
     vla_from: Option<crate::ast::VlaId>,
+    /// The declarator's own derivation makes the name a function (C11
+    /// 6.9.1p2); false when the function type comes from a typedef.
+    own_function: bool,
 }
 
 impl NamedDecl {

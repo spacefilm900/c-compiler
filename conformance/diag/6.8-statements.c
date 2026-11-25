@@ -10,7 +10,7 @@ void h(int n, int v) { switch (v) { int a[n]; case 1: a[0] = 1; } }
 //== 6.8.4.2p3 duplicate case values
 void h(int v) { switch (v) { case 1: case 1: ; } }
 //== 6.8.4.2p3 duplicate case values after conversion
-void h(unsigned char v) { switch (v) { case 1: case 257 - 256: ; } }
+void h(unsigned int v) { switch (v) { case -1: case 0xffffffffu: ; } }
 //== 6.8.4.2p3 two default labels
 void h(int v) { switch (v) { default: ; default: ; } }
 //== 6.8.4.2p1 a switch on a floating value

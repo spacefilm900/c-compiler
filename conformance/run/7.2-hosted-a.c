@@ -31,7 +31,7 @@ int main(void) {
     volatile double z = 0.0;
     volatile double q = 1.0 / z;
     CHECK(isinf(q) && fetestexcept(FE_DIVBYZERO));
-    int64_t big = INT64_C(-1234567890123);
+    int64_t big = -INT64_C(1234567890123);
     char buf[64];
     snprintf(buf, sizeof buf, "%" PRId64 " %" PRIu32 " %" PRIxMAX, big, (uint32_t)7, (uintmax_t)255);
     CHECK(strcmp(buf, "-1234567890123 7 ff") == 0);
@@ -46,10 +46,20 @@ int main(void) {
     CHECK(math_errhandling & (MATH_ERRNO | MATH_ERREXCEPT));
     /* setjmp.h */
     volatile int count = 0;
-    int r = setjmp(env);
-    count++;
-    if (r == 0)
+    volatile int r = -1;
+    switch (setjmp(env)) {              /* 7.13.1.1p4: a permitted context */
+    case 0:
+        count++;
         jump(3);
+        break;
+    case 3:
+        count++;
+        r = 3;
+        break;
+    default:
+        r = -2;
+        break;
+    }
     CHECK(r == 3 && count == 2);
     /* signal.h */
     CHECK(signal(SIGINT, handler) != SIG_ERR);

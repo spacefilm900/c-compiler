@@ -17,16 +17,22 @@ the stated target, and nothing more.
   Each program checks itself (`CHECK(...)`) and prints values whose exact
   form the standard leaves to the implementation. `harness/run_conformance.py`
   generates 20 more programs at the minimum translation limits of 5.2.4.1.
-  `conformance/diag/` holds 254 constraint and syntax violations, one per
-  `//==` case, grouped by clause.
+  `conformance/diag/` holds 254 cases, one per `//==` marker, grouped by
+  clause. 234 are constraint or syntax violations, which the standard
+  requires a diagnostic for. The other 20, marked `[policy]`, are not:
+  they are undefined behaviour (such as an invalid `##` paste or
+  `#line 0`), implementation-defined (concatenating `u"a" U"b"`), or an
+  optional feature hcc does not provide (`_Complex`). hcc diagnoses them
+  by choice, and they are counted separately.
 - **Programs.** hcc compiles each program to IR, and Clang compiles and
   links that IR. `clang -std=c11 -pedantic-errors` builds the same source.
   Both builds must succeed. The two programs must exit with the same status
   and print the same output, and no `CHECK` may fail.
 - **Violations.** The standard requires a diagnostic for every constraint
-  or syntax violation (5.1.1.3). An error or a warning from hcc counts.
-  Clang's result (error, warning or nothing) is recorded but is not
-  required. Where the standard and Clang differ, the standard wins.
+  or syntax violation (5.1.1.3). An error or a warning from hcc counts. A
+  crash, a signal or a timeout does not. Clang's result (error, warning or
+  nothing) is recorded but is not required. Where the standard and Clang
+  differ, the standard wins.
 - **Run it.** `python3 harness/run_conformance.py` (add `--json FILE` for
   the full results). CI runs it on every pull request, together with
   `tools/check_docs.py`. That script compiles the language claims in
@@ -47,36 +53,40 @@ the stated target, and nothing more.
 
 ## Result
 
-On the head of the 1.0 pre-tag pull request: **306 of 308 probes pass**.
-All 54 programs pass, and 252 of 254 violations are diagnosed. The two
-probes that fail are known gaps, listed in `conformance/known_gaps.txt`
-and described [below](#known-gaps). On the same 254 violations, Clang
-reports an error for 248, warns for 4, accepts 1 (`_Complex`, which Clang
-supports and hcc does not), and for one (`#line 0`) did not finish within
-the runner's 10-second limit.
+On the head of the 1.0 pre-tag pull request: **286 of 288 probes pass**.
+The 288 are the 54 programs and the 234 required diagnostics. All 54
+programs pass, and 232 of the 234 required diagnostics are given. The two
+that are not are known gaps, listed in `conformance/known_gaps.txt` and
+described [below](#known-gaps). On the 234, Clang reports an error for 231
+and warns for 3.
 
-The audit found 13 constraint violations that hcc accepted, and 2 bugs in
-accepted programs. All but two of the 13 were fixed in the same pull
-request (see the [changes](#changes-made-by-the-audit)).
+hcc also diagnoses all 20 `[policy]` cases. On those, Clang reports an
+error for 17 and warns for 1. It accepts `_Complex`, which Clang supports
+and hcc does not. For `#line 0` it did not finish within the runner's
+10-second limit.
 
-| Clause | Subject | Programs | Violations | Result |
-| --- | --- | ---: | ---: | --- |
-| 5.1.1 | Translation environment, translation phases | 1 | - | pass |
-| 5.1.2 | Execution environments (hosted `main`, `argv`) | 1 | - | pass |
-| 5.2.1-5.2.2 | Character sets, escape semantics | 1 | - | pass |
-| 5.2.4.1 | Translation limits (minimums) | 21 | - | pass |
-| 5.2.4.2 | `<limits.h>` and `<float.h>` values | 1 | - | pass |
-| 6.2 | Concepts: scopes, linkage, name spaces, storage duration, types, representation, compatibility, alignment | 5 | - | pass |
-| 6.3 | Conversions | 1 | - | pass |
-| 6.4 | Lexical elements | 6 | 19 | pass |
-| 6.5 | Expressions | 5 | 61 | pass |
-| 6.6 | Constant expressions | 1 | 14 | pass |
-| 6.7 | Declarations | 5 | 88 | 86 of 88 violations (see gaps) |
-| 6.8 | Statements and blocks | 1 | 23 | pass |
-| 6.9 | External definitions | 1 | 13 | pass |
-| 6.10 | Preprocessing directives | 2 | 32 | pass |
-| 6.11 | Future language directions | - | - | not applicable |
-| 7 | Library: the freestanding headers, the hosted headers as far as they need the compiler | 3 | 4 | pass |
+The audit found 12 constraint violations that hcc accepted, and 2 bugs in
+accepted programs. 10 of the 12 were fixed in the same pull request, as
+were both bugs (see the [changes](#changes-made-by-the-audit)).
+
+| Clause | Subject | Programs | Required diagnostics | `[policy]` cases | Result |
+| --- | --- | ---: | ---: | ---: | --- |
+| 5.1.1 | Translation environment, translation phases | 1 | - | - | pass |
+| 5.1.2 | Execution environments (hosted `main`, `argv`) | 1 | - | - | pass |
+| 5.2.1-5.2.2 | Character sets, escape semantics | 1 | - | - | pass |
+| 5.2.4.1 | Translation limits (minimums) | 21 | - | - | pass |
+| 5.2.4.2 | `<limits.h>` and `<float.h>` values | 1 | - | - | pass |
+| 6.2 | Concepts: scopes, linkage, name spaces, storage duration, types, representation, compatibility, alignment | 5 | - | - | pass |
+| 6.3 | Conversions | 1 | - | - | pass |
+| 6.4 | Lexical elements | 6 | 14 | 5 | pass |
+| 6.5 | Expressions | 5 | 61 | 0 | pass |
+| 6.6 | Constant expressions | 1 | 14 | 0 | pass |
+| 6.7 | Declarations | 5 | 88 | 1 | 86 of 88 required (see gaps) |
+| 6.8 | Statements and blocks | 1 | 23 | 0 | pass |
+| 6.9 | External definitions | 1 | 11 | 1 | pass |
+| 6.10 | Preprocessing directives | 2 | 21 | 11 | pass |
+| 6.11 | Future language directions | - | - | - | not applicable |
+| 7 | Library: the freestanding headers, the hosted headers as far as they need the compiler | 3 | 2 | 2 | pass |
 
 The 5.2.4.1 row counts the 20 generated programs plus the `#include`
 nesting test. All of them are at or above the standard's minimums: 127
@@ -122,10 +132,12 @@ identifiers (with the Annex D ranges and the 6.4.3 restrictions), the type
 of every integer constant suffix and base combination, hexadecimal
 floating constants, character constants (including multi-character ones,
 see below), every string literal prefix with concatenation, digraphs, and
-pp-numbers. Diagnosed: constants too large for any type, bad suffixes,
-`08`, a hex float with no exponent, empty character constants,
-out-of-range escapes, invalid UCNs, mixed wide prefixes, `0xe+1`,
-unterminated comments and literals, and stray characters.
+pp-numbers. Diagnosed as required: constants too large for any type, bad
+suffixes, `08`, a hex float with no exponent, empty character constants,
+out-of-range escapes, UCNs that 6.4.3 forbids, `0xe+1`, and stray
+characters. Also diagnosed, as `[policy]` cases: a UCN outside the Annex D
+identifier ranges, a UCN above U+10FFFF in a string, `u"a" U"b"`, and
+unterminated comments and string literals.
 
 **6.5 Expressions.** `_Generic`, subscripting with either operand order,
 argument promotions and default promotions for variadic calls, compound
@@ -171,8 +183,9 @@ including jumps into the scope of a VLA and a label with no statement
 after it (C11 needs a statement; C23 changed this).
 
 **6.9 External definitions.** K&R definitions with promoted parameters, a
-static function used before its definition, and `extern inline`. All 13
-constraint probes are diagnosed.
+static function used before its definition, and `extern inline`. All 11
+required probes are diagnosed, and so is the `[policy]` case, a static
+tentative definition of incomplete type (undefined by 6.9.2p3).
 
 **6.10 Preprocessing.** `#if` arithmetic in `intmax_t` and `uintmax_t`,
 unknown identifiers as 0, skipped groups that are not tokenised as
@@ -180,8 +193,12 @@ directives, macro-expanded `#include`, identical redefinition, `#` and
 `##`, `__VA_ARGS__`, `#line` changing `__LINE__` and `__FILE__`, the
 `STDC` pragmas, the null directive, and the predefined macros. The
 examples of 6.10.3.3 to 6.10.3.5 (EXAMPLE 3 to 7) are checked by a probe
-and by unit tests. All 32 violation probes are diagnosed, including
-`#error`.
+and by unit tests. All 21 required probes are diagnosed, including
+`#error`. So are the 11 `[policy]` cases, which the standard leaves
+undefined: a `##` that does not form a token, `#line` 0, a `#line` above
+2147483647 or not a number, an `#include` of neither form, an unterminated
+macro invocation, `_Pragma` without a string, an unknown directive, and
+`#define` or `#undef` of `defined` or a predefined macro.
 
 **7 Library.** All nine freestanding headers compile and work, and
 including a header twice is harmless. The hosted probes use
@@ -207,25 +224,32 @@ Two accepted programs were handled wrongly. Both are fixed:
   names that both the macro name and the `)` carry.
 - **6.9.2p2 tentative definitions.** `int a[];` at file scope, with no
   later size, was rejected. It now gets one element, with a warning, as
-  in 6.9.2 EXAMPLE 2. With internal linkage it is still a diagnostic
-  (6.9.2p3).
+  in 6.9.2 EXAMPLE 2. With internal linkage (`static int a[];`) it is
+  still an error. 6.9.2p3 makes that undefined; Clang gives a warning.
 
 These constraint violations were accepted silently. Each is now a
 diagnostic:
 
 - `__VA_ARGS__` in a macro that is not variadic (6.10.3p5).
-- `#undef` of `__LINE__`, `__FILE__`, `__DATE__`, `__TIME__`, `__STDC__`,
-  `__STDC_HOSTED__` or `__STDC_VERSION__` (6.10.8p2), outside system
-  headers.
 - `auto` or `register` at file scope, function definitions included
   (6.9p2, 6.9.1p4).
-- `inline` or `_Noreturn` on `main` (6.7.4p4).
+- `inline` or `_Noreturn` on any declaration of `main`, at file or block
+  scope (6.7.4p4).
 - A function definition whose function type comes from a typedef
-  (6.9.1p2).
+  (6.9.1p2): `F f { ... }`. `F *make(void) { ... }`, where the typedef is
+  only the pointed-to type, is still accepted.
 - `&` applied to an object declared `register`, or to a member of one
-  (6.5.3.2p1). This covers parameters too.
+  (6.5.3.2p1). This covers parameters, from the point where each is
+  declared, and a `_Generic` selection whose selected association names
+  such an object.
 - The `_Atomic` qualifier on an array or function type named by a typedef
   (6.7.3p3).
+
+Two undefined constructs are now diagnosed too (6.10.8p2), outside system
+headers. One is `#undef` of `__LINE__`, `__FILE__`, `__DATE__`,
+`__TIME__`, `__STDC__`, `__STDC_HOSTED__` or `__STDC_VERSION__`. The other
+is `#define` of `__LINE__` or `__FILE__`. A `#define` of the other five
+was already an error.
 
 Multi-character character constants (`'ab'`, 6.4.4.4p10) were rejected.
 The standard allows them, with an implementation-defined value. They are

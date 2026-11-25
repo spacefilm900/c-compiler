@@ -206,6 +206,13 @@ impl Sema<'_> {
                 checked?;
             }
         }
+        if let Some((name, line, column)) = &assocs[index].addr_of_register {
+            return self.err(
+                *line,
+                *column,
+                format!("address of register variable '{name}' requested"),
+            );
+        }
         *expr = assocs.swap_remove(index).expr;
         self.check_expr(expr)
     }

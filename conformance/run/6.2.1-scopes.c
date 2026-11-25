@@ -17,8 +17,8 @@ int main(void) {
         CHECK(x == 1);
     }
     {
-        int x = x + 0 == 0 ? 3 : 3;  /* 6.2.1p7: scope starts after the declarator */
-        CHECK(x == 3);
+        int x[3] = { sizeof x / sizeof x[0] };  /* 6.2.1p7: scope starts after the declarator */
+        CHECK(x[0] == 3);
     }
     tag.tag = 4;
     CHECK(tag.tag == 4);

@@ -554,6 +554,8 @@ mod tests {
             ("#define O __VA_ARGS__\n", "__VA_ARGS__ can only appear"),
             ("#undef __LINE__\n", "undefining builtin macro '__LINE__'"),
             ("#undef __STDC_VERSION__\n", "undefining builtin macro"),
+            ("#define __LINE__ 3\n", "redefining builtin macro '__LINE__'"),
+            ("#define __FILE__ \"x\"\n", "redefining builtin macro '__FILE__'"),
             ("auto int a;", "'auto' is not allowed at file scope"),
             ("register int a;", "'register' is not allowed at file scope"),
             ("register int f(void) { return 0; }", "'register' is not allowed at file scope"),
@@ -565,6 +567,11 @@ mod tests {
             ("void f(register int r) { int *p = &r; (void)p; }", "address of register variable 'r'"),
             ("void f(r) register int r; { int *p = &r; (void)p; }", "address of register variable 'r'"),
             ("typedef int A[3]; _Atomic A a;", "cannot be applied to an array type"),
+            ("inline int helper(void), main(void);", "'main' cannot be declared 'inline'"),
+            ("void f(void) { _Noreturn int main(void); }", "'main' cannot be declared '_Noreturn'"),
+            ("void f(register int r, int a[sizeof &r]);", "address of register variable 'r'"),
+            ("void f(void) { register int r = 0; int *p = &_Generic(0, int: r); (void)p; }", "address of register variable 'r'"),
+            ("struct s { int m; }; void f(void) { register struct s v; int *p = &_Generic(0, int: v).m; (void)p; }", "address of register variable 'v'"),
         ] {
             let Err(err) = compile(source, Dialect::C11) else {
                 panic!("{source}: accepted");
@@ -580,6 +587,12 @@ mod tests {
             "#define W(x, ...) g(x, __VA_ARGS__)\n",
             "#undef NDEBUG\n#undef __GNUC__\nint main(void) { return 0; }",
             "typedef int F(void); F f; int f(void) { return 0; }",
+            // The typedef is only the function a returned pointer points to.
+            "typedef int F(void); F *make(void) { return 0; }",
+            "typedef int F(void); F *(make)(void) { return 0; }",
+            "int main(void); void g(void) { int main(void); }",
+            // An unselected association may name a register object.
+            "void f(void) { register int r = 0; int x = 0; int *p = &_Generic(0, int: x, double: r); (void)p; (void)r; }",
         ] {
             compile(source, Dialect::C11).unwrap_or_else(|err| panic!("{source}: {err}"));
         }

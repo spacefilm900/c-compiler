@@ -53,6 +53,14 @@ impl Processor {
                 "'defined' cannot be used as a macro name",
             ));
         }
+        // C11 6.10.8p2: nor are they the subject of a #define (undefined
+        // behaviour; diagnosed, as for #undef).
+        if PREDEFINED_FIXED.contains(&name.as_str()) && !self.files[at.file_id as usize].system {
+            return Err(error_at(
+                &line[0],
+                format!("redefining builtin macro '{name}'"),
+            ));
+        }
         let rest = &line[1..];
         let parsed = if rest
             .first()

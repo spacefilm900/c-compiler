@@ -23,6 +23,7 @@ impl Parser<'_> {
             }
         };
         let layer = self.derive(base, &raw, line, column)?;
+        let own_function = names_function(&raw);
         let (param_tags, param_names) = match &layer {
             Layer::Function {
                 introduced,
@@ -52,6 +53,7 @@ impl Parser<'_> {
             symbol,
             attrs: Vec::new(),
             vla_from: (self.vla_next != vla_before).then_some(VlaId(vla_before)),
+            own_function,
         })
     }
 
@@ -272,6 +274,10 @@ impl Parser<'_> {
         };
         if let Some((name, line, column)) = &named {
             self.bind_ordinary(name, Some(ty.clone()), *line, *column)?;
+            // Later parameters in the same list can see it (C11 6.5.3.2p1).
+            if specs.register {
+                self.mark_register(name);
+            }
         }
         Ok(Param {
             name: named.map(|(name, _, _)| name),
@@ -798,6 +804,19 @@ pub(super) fn decl_kind_type(kind: &DeclKind) -> CType {
             *variadic,
             *prototype,
         ),
+    }
+}
+
+/// Whether the declarator itself makes the declared identifier a function:
+/// the derivation applied directly to the name is a parameter list.
+/// `*make(void)` does; `make`, with a function typedef as its type, does not.
+pub(super) fn names_function(raw: &RawDecl) -> bool {
+    match raw {
+        RawDecl::Func(inner, _) if matches!(**inner, RawDecl::Named(..)) => true,
+        RawDecl::Pointer(_, inner) | RawDecl::Array(inner, _, _) | RawDecl::Func(inner, _) => {
+            names_function(inner)
+        }
+        RawDecl::Named(..) | RawDecl::Abstract(..) => false,
     }
 }
 

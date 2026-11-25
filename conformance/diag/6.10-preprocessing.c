@@ -34,7 +34,7 @@
 int a;
 //== 6.10.2p1 #include of a missing header
 #include <no/such/header.h>
-//== 6.10.2p4 #include with a bad form
+//== 6.10.2p4 [policy] #include with a bad form
 #include no_quotes
 //== 6.10.3p2 a non-identical macro redefinition
 #define M 1
@@ -52,7 +52,7 @@ int x = F(1, 2);
 #define F(a) __VA_ARGS__
 //== 6.10.3p6 a duplicate macro parameter
 #define F(a, a) a
-//== 6.10.3p10 an unterminated macro invocation
+//== 6.10.3p10 [policy] an unterminated macro invocation
 #define F(a) a
 int x = F(1;
 //== 6.10.3.2p1 # not followed by a parameter
@@ -61,24 +61,24 @@ int x = F(1;
 #define F(a) ## a
 //== 6.10.3.3p1 ## at the end of a replacement list
 #define F(a) a ##
-//== 6.10.3.3p3 pasting that does not form a valid token
+//== 6.10.3.3p3 [policy] pasting that does not form a valid token
 #define CAT(a, b) a ## b
 int x = CAT(+, -) 1;
-//== 6.10.3.5p2 defining defined
+//== 6.10.3.5p2 [policy] defining defined
 #define defined 1
-//== 6.10.8p2 defining __STDC__
+//== 6.10.8p2 [policy] defining __STDC__
 #define __STDC__ 2
-//== 6.10.8p2 undefining __LINE__
+//== 6.10.8p2 [policy] undefining __LINE__
 #undef __LINE__
-//== 6.10.4p3 #line with zero
+//== 6.10.4p3 [policy] #line with zero
 #line 0
-//== 6.10.4p3 #line out of range
+//== 6.10.4p3 [policy] #line out of range
 #line 2147483648
-//== 6.10.4p3 #line with a non-number
+//== 6.10.4p3 [policy] #line with a non-number
 #line abc
 //== 6.10.5 #error
 #error this must stop translation
-//== 6.10.9 _Pragma with a non-string operand
+//== 6.10.9 [policy] _Pragma with a non-string operand
 _Pragma(1)
-//== 6.10 an invalid directive name in an active group
+//== 6.10 [policy] an invalid directive name in an active group
 #frobnicate

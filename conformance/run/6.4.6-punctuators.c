@@ -9,9 +9,6 @@ int main(void) <%
     CHECK(sizeof STR(<:) == 3);           /* a digraph is spelled as written when stringised */
     int CAT(x, y) = 4;
     CHECK(xy == 4);
-    int i = 1;
-    i = i+++i;                             /* 6.4p4: longest match: (i++) + i */
-    (void)i;
     int j = 2, k = 3;
     CHECK(j+++k == 5 && j == 3);
     CHECK(5 // comment

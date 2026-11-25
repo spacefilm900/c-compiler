@@ -465,6 +465,25 @@ impl Parser<'_> {
         }
     }
 
+    /// For `&_Generic(...)`: record on each association that names a
+    /// `register` object that its address would be taken. Semantic
+    /// analysis reports it only if that association is selected.
+    pub(super) fn mark_generic_register(&self, expr: &mut Expr, line: usize, column: usize) {
+        match expr {
+            Expr::Generic { assocs, .. } => {
+                for assoc in assocs {
+                    let name = self.register_operand(&assoc.expr).map(str::to_string);
+                    assoc.addr_of_register = name.map(|name| (name, line, column));
+                    self.mark_generic_register(&mut assoc.expr, line, column);
+                }
+            }
+            Expr::Member {
+                base, arrow: false, ..
+            } => self.mark_generic_register(base, line, column),
+            _ => {}
+        }
+    }
+
     pub(super) fn bind_ordinary(
         &mut self,
         name: &str,
@@ -859,6 +878,7 @@ impl Parser<'_> {
         let mut items = Vec::new();
         loop {
             let declarator = self.parse_named_decl(base.clone())?;
+            self.reject_main_func_spec(&specs, &declarator)?;
             if declarator.is_function() {
                 if self.current().kind == TokenKind::LBrace {
                     return Err(self.error_at(
