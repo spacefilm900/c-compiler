@@ -232,7 +232,15 @@ impl Parser<'_> {
             TokenKind::KwAlignof => self.parse_alignof(token.line, token.column),
             TokenKind::Amp => {
                 self.bump();
-                let expr = self.parse_unary()?;
+                let mut expr = self.parse_unary()?;
+                if let Some(name) = self.register_operand(&expr) {
+                    return Err(self.error_at(
+                        token.line,
+                        token.column,
+                        format!("address of register variable '{name}' requested"),
+                    ));
+                }
+                self.mark_generic_register(&mut expr, token.line, token.column);
                 Ok(Expr::unary(UnaryOp::Addr, expr, token.line, token.column))
             }
             TokenKind::Star => {
@@ -610,6 +618,7 @@ impl Parser<'_> {
                 expr,
                 line: token.line,
                 column: token.column,
+                addr_of_register: None,
             });
             if !self.match_kind(TokenKind::Comma) {
                 break;
@@ -1106,6 +1115,23 @@ impl Parser<'_> {
             }
             TokenKind::Int => {
                 self.bump();
+                // C11 6.4.4.4p10: implementation-defined, so a warning (as
+                // GCC and Clang give), and another past four bytes.
+                let chars = crate::lexer::char_constant_length(&token.spelling);
+                if chars > 1 {
+                    self.warn_at(
+                        token.line,
+                        token.column,
+                        "multi-character character constant",
+                    );
+                }
+                if chars > 4 {
+                    self.warn_at(
+                        token.line,
+                        token.column,
+                        "character constant too long for its type",
+                    );
+                }
                 Ok(Expr::int(
                     token.value.expect("int token"),
                     token.int_ty.expect("int token type"),

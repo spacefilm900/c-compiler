@@ -42,6 +42,17 @@ milestones below summarise it, with the pull requests that made them.
   name and through `##`. Invalid UCNs and characters outside Annex D are
   diagnostics. The LLVM symbol is the quoted UTF-8 name, so extended
   names link with Clang and GCC objects on every target.
+- Multi-character character constants (`'ab'`, C11 6.4.4.4p10), with the
+  value GCC and Clang give on every target (each byte shifted in from the
+  right, the last four kept, as an `int`) and their warnings. A
+  multi-character `L`, `u` or `U` constant is a diagnostic, as in Clang.
+- [docs/C11_CONFORMANCE.md](docs/C11_CONFORMANCE.md): a clause-by-clause
+  audit of N1570 clauses 5 to 7. Its 288 probes, 54 programs and 234
+  constraint or syntax violations (`conformance/`, run by
+  `harness/run_conformance.py`), are compared with
+  `clang -std=c11 -pedantic-errors`. 286 pass, and the other 2 are a
+  known gap (6.7.4p3). CI runs the probes, and `tools/check_docs.py`, which
+  compiles the language claims in the documentation.
 - A [user guide](docs/USER_GUIDE.md), a
   [language reference](docs/LANGUAGE.md) (moved out of the README), this
   changelog, [CONTRIBUTING.md](CONTRIBUTING.md),
@@ -66,9 +77,33 @@ milestones below summarise it, with the pull requests that made them.
   rejects it.
 - `&&a - &&b` (a difference of GNU label addresses) is reported as not
   supported, instead of as arithmetic on `void *`.
+- The README's C11 statement now says what the conformance audit shows.
+  The README also gives the scope and denominator of each test figure
+  (mutation testing, Csmith, YARPGen), has a per-target table of what is
+  tested natively, under emulation and with the fallback threads runtime,
+  and has a clean-room provenance section. DESIGN.md states the tie-break
+  rule as it is applied: the standard, then the ABI documents, then a
+  written-down manual decision, with Clang as the CI oracle.
+- CI actions updated by Dependabot (#72-#75): `actions/checkout` v7.0.1,
+  `actions/cache` v6.1.0, `actions/upload-artifact` v7.0.2 and
+  `actions/download-artifact` v8.0.2, each pinned to its commit.
 
 ### Fixed
 
+- Rescanning (C11 6.10.3.4p2): a macro no longer stays "being replaced"
+  after rescanning has read past the end of its replacement list, so
+  6.10.3.5's `f(2)(9)` is `2*9*g`, not `2*f(9)`.
+- A file-scope `int a[];` that is never completed is a one-element array,
+  with a warning (6.9.2p2), instead of an error.
+- These constraint violations, which were accepted, are now diagnostics:
+  `__VA_ARGS__` in a macro that is not variadic (6.10.3p5); `auto` or
+  `register` at file scope (6.9p2); `inline` or `_Noreturn` on `main`
+  (6.7.4p4); a function definition whose function type comes from a
+  typedef (6.9.1p2); `&` of a `register` object or of a member of one
+  (6.5.3.2p1); and the `_Atomic` qualifier on an array or function
+  typedef (6.7.3p3). `#undef` of the predefined macros of 6.10.8.1, and
+  `#define` of `__LINE__` and `__FILE__`, are now errors too (undefined
+  behaviour, 6.10.8p2).
 - `#` no longer puts a `\` before a lone `\` token (only inside string
   literals and character constants, C11 6.10.3.2).
 - GNU forward-declared enums (`typedef enum E E;` before `enum E { ... }`)

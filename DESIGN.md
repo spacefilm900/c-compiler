@@ -4,7 +4,7 @@ Main decisions for this compiler, taken from `PLAN.md`, `STATUS.md`, `README.md`
 
 ## Clean-room
 
-Frontend code (lexer, preprocessor, parser, semantic analysis, IR generation) is original. It is written from the C standard, the LLVM Language Reference, and the platform ABIs (System V AMD64, Arm AAPCS64 with Apple's arm64 rules, and Windows x64). Allowed references, from `PLAN.md`, are those documents, Kaleidoscope-style tutorials, and other public specs. For the GNU-compatibility work, the GCC user manual's public documentation of builtins, attributes, and language extensions is also allowed. Clang and GCC source are not copied, translated, or closely paraphrased. Clang is a black-box oracle in the test harness and the LLVM backend that links the emitted `.ll` file. The compiler does not call into Clang's or GCC's frontend.
+The README's [clean-room provenance](README.md#clean-room-provenance) section states the rule and what it does and does not show. Frontend code (lexer, preprocessor, parser, semantic analysis, IR generation) is original. It is written from the C standard, the LLVM Language Reference, and the platform ABIs (System V AMD64, Arm AAPCS64 with Apple's arm64 rules, and Windows x64). Allowed references, from `PLAN.md`, are those documents, Kaleidoscope-style tutorials, and other public specs. For the GNU-compatibility work, the GCC user manual's public documentation of builtins, attributes, and language extensions is also allowed. Clang and GCC source are not copied, translated, or closely paraphrased. Clang is a black-box oracle in the test harness and the LLVM backend that links the emitted `.ll` file. The compiler does not call into Clang's or GCC's frontend.
 
 Approved by the owner on 2026-11-09 (pull request 1). The rule is also in `PLAN.md` (repository since the initial commit on 2026-11-08) and `BOT.md`.
 
@@ -98,12 +98,12 @@ Completed runs are recorded in `STATUS.md`. The workflow file was approved by th
 
 ## Tie-break
 
-Follow the C standard. Where the standard leaves a choice, follow the gcc and clang majority.
+The C standard (N1570) comes first, then the platform's ABI document. Where those leave a choice (implementation-defined behaviour, or a layout or calling-convention detail the ABI document does not settle), the choice is made by hand and written down, here, in `docs/LANGUAGE.md` or in `STATUS.md`, with the reason. The usual reason is to match what GCC and Clang do on that target, so that objects link and programs behave the same. Clang is the oracle in the harness and in CI. GCC is run by hand as a second black box when the two might differ, and is not part of CI.
 
-`STATUS.md` and the git history do not record a separate approval date for this rule. The oracle in the harness and in CI is Clang. gcc is not run there. Cases those files already record:
+The first version of this rule was "follow the gcc and clang majority". With only two compilers that is not a majority rule, so in practice it meant agreement with Clang, checked by CI. The rule above says what was actually done. `STATUS.md` and the git history do not record a separate approval date for it. Cases those files already record:
 
 - The standard wins where Clang is more permissive. Dropping `const` on assignment, arithmetic on `void *`, a relational comparison of a pointer with an integer (`p < 0`), and an evaluated comma in a constant initializer are diagnostics. Equality with a null pointer constant (`p == 0`, `p != (void *)0`) is allowed.
-- A multi-character character constant such as `'ab'` has an implementation-defined value (C11 6.4.4.4). This subset rejects it. `STATUS.md` records that as a limitation. Clang accepts it as an `int`.
+- A multi-character character constant such as `'ab'` has an implementation-defined value (C11 6.4.4.4p10). hcc gives it the value GCC and Clang give on every hcc target (each byte shifted in from the right, the last four kept, as an `int`) and warns. Multi-character `L`, `u` and `U` constants are diagnostics, as in Clang.
 - An implementation-defined choice that is recorded as matching Clang on this target: an out-of-range conversion to a signed type keeps the low bits and reads them as two's complement. An omitted `__VA_ARGS__` deletes a comma written as `, ## __VA_ARGS__`, matching Clang's `-std=c11`.
 - A completed enumeration whose values all fit in `int` is compatible with `unsigned int` when every value is nonnegative and with `int` when one is negative, as GCC and Clang do (C11 6.7.2.2p4 leaves the choice to the implementation). On the MSVC target it is `int`, as Clang does there. In strict C11 a value outside `int` is a diagnostic; under `-std=gnu11` the type widens to `unsigned int` or a 64-bit type. (Until the QuickJS work in step 14 the type was always `int`.)
 
@@ -112,3 +112,10 @@ Follow the C standard. Where the standard leaves a choice, follow the gcc and cl
 Six targets are supported: x86-64 Linux (System V AMD64), arm64 Linux (AAPCS64), arm64 and x86-64 macOS (Apple's arm64 rules and System V), and x64 Windows with the MinGW-w64 or MSVC headers (the Windows x64 convention). They were added in that order after x86-64 Linux: macOS on Apple Silicon first, because it is the owner's own device (reordered on 2026-11-12), then Linux on Arm, macOS on Intel and Windows x64. A pointer is 64 bits on every target.
 
 The plan is in `PLAN.md`: the C11 work, the GNU-compatibility layer, the big programs (DOOM, Lua, SQLite, QuickJS, zlib), the platforms and hardening are done, and Release 1.0 (step 15) is the last step. C23, WebAssembly and RISC-V may come later.
+
+## After 1.0
+
+Two pieces of restructuring are planned after the 1.0 release. They are not part of it:
+
+- **Split the history from the design.** This file and `STATUS.md` mix the current design with the record of how it was reached, step by step. The plan is to keep the current decisions here and in `docs/LANGUAGE.md`, and to move the step-by-step history to its own document.
+- **One record-layout model.** Struct and union layout is computed in `src/ast/record.rs` with separate rules for System V, AAPCS64 and Apple arm64, and MSVC, and with GNU `packed` and `aligned` on top. The calling-convention code then classifies the laid-out records again in `src/abi.rs`, `src/aapcs64.rs` and `src/win64.rs`. The plan is a single layout description per target that both use, checked automatically against the layouts in the emitted IR. The layout fuzzer (`tools/layout_fuzz.py`) and the ABI pair tests are the safety net for that change.

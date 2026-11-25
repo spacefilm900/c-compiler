@@ -529,6 +529,11 @@ pub struct GenericAssoc {
     pub expr: Expr,
     pub line: usize,
     pub column: usize,
+    /// Set when the selection is the operand of `&` and this association
+    /// names a `register` object: the `register` name and the position of
+    /// the `&`. Taking the address is an error only if this association is
+    /// the one selected (C11 6.5.1.1p3, 6.5.3.2p1).
+    pub addr_of_register: Option<(String, usize, usize)>,
 }
 
 /// Which `<stdarg.h>` operation a [`Expr::VaOp`] performs.
@@ -942,6 +947,9 @@ pub struct Param {
     /// parameter (C11 6.7.6.3 / 6.9.1) are still evaluated on entry after
     /// the parameter itself has become a pointer.
     pub unadjusted: CType,
+    /// Declared with `register`, so its address cannot be taken
+    /// (C11 6.5.3.2p1).
+    pub register: bool,
 }
 
 #[derive(Debug, Clone)]

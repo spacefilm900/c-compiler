@@ -936,11 +936,13 @@ impl Parser<'_> {
     pub(super) fn push_tags(&mut self) {
         self.tags.push(HashMap::new());
         self.names.push(HashMap::new());
+        self.register_names.push(HashSet::new());
     }
 
     pub(super) fn pop_tags(&mut self) {
         self.tags.pop();
         self.names.pop();
+        self.register_names.pop();
     }
 
     /// C11 6.7.2.1: a struct with a flexible array member, and any union that

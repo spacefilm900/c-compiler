@@ -352,7 +352,9 @@ fn syntax_errors_name_the_problem() {
     assert!(
         parse_err("struct S { _Alignas(8) int x : 3; };").contains("not allowed on a bit-field")
     );
-    assert!(parse_err("register _Alignas(16) int a;").contains("not allowed on a register"));
+    assert!(parse_err("void f(void) { register _Alignas(16) int a; }")
+        .contains("not allowed on a register"));
+    assert!(parse_err("register int a;").contains("not allowed at file scope"));
     assert!(parsed("_Thread_local int x;\n").contains("global int x"));
     assert!(parse_err("_Thread_local int f(void);").contains("not allowed on a function"));
     assert!(parse_err("int main(void) { _Thread_local int x; }")

@@ -53,6 +53,29 @@ fn hides_recursive_macros_and_rescans() {
 }
 
 #[test]
+fn rescan_ends_with_the_replacement_list() {
+    // C11 6.10.3.5p5: `f(2)(9)` is `2*9*g`. The `f` that `g(9)` produces is
+    // replaced, because the `(9)` that ends g's invocation is past the end
+    // of f's replacement list.
+    let text = pp("#define f(a) a*g\n#define g(a) f(a)\nf(2)(9)\n");
+    assert_eq!(squash(&text).trim(), "2*9*g", "{text}");
+    // A `)` produced inside the enclosing expansion keeps it painted.
+    let text = pp("#define f(a) a g(9)\n#define g(a) f(a)\nf(2)\n");
+    assert_eq!(squash(&text).trim(), "2 f(9)", "{text}");
+    // The rest of 6.10.3.5p5's EXAMPLE 3.
+    let text = pp("#define x 3\n#define f(a) f(x * (a))\n#undef x\n#define x 2\n#define g f\n#define z z[0]\n#define h g(~\n#define m(a) a(w)\n#define w 0,1\n#define t(a) a\n#define p() int\n#define q(x) x\n#define r(x,y) x ## y\n#define str(x) # x\nf(y+1) + f(f(z)) % t(t(g)(0) + t)(1);\ng(x+(3,4)-w) | h 5) & m\n(f)^m(m);\np() i[q()] = { q(1), r(2,3), r(4,), r(,5), r(,) };\nchar c[2][6] = { str(hello), str() };\n");
+    let flat = squash(&text);
+    for want in [
+        "f(2 * (y+1)) + f(2 * (f(2 * (z[0])))) % f(2 * (0)) + t(1);",
+        "f(2 * (2+(3,4)-0,1)) | f(2 * (~ 5)) & f(2 * (0,1))^m(0,1);",
+        "int i[] = { 1, 23, 4, 5, };",
+        "char c[2][6] = { \"hello\", \"\" };",
+    ] {
+        assert!(flat.contains(want), "{want} not in {flat}");
+    }
+}
+
+#[test]
 fn stringifies_and_pastes() {
     let text = pp("#define STR(x) #x\n#define XSTR(x) STR(x)\n#define N 40\nconst char *a = STR(a + b);\nconst char *b = XSTR(N);\nconst char *c = STR();\n#define CAT(a, b) a ## b\n#define CAT3(a, b, c) a ## b ## c\nint CAT(x, y) = CAT3(1, 2, 3);\n");
     assert!(text.contains("\"a + b\""), "{text}");

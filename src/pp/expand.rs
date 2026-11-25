@@ -172,8 +172,17 @@ impl Processor {
                     };
                     self.note_expansion(&tok)?;
                     self.index = lparen;
-                    let args = self.collect_args(&mac, &tok)?;
-                    let repl = self.substitute(&mac, &args, &tok)?;
+                    let (args, rparen_hide) = self.collect_args(&mac, &tok)?;
+                    // C11 6.10.3.4p2: a macro stops being "the macro being
+                    // replaced" once rescanning reads past the end of its
+                    // replacement list. An invocation whose `)` came from
+                    // outside an enclosing expansion is therefore painted
+                    // only with the names both the macro name and the `)`
+                    // carry, so in 6.10.3.5p5's `f(2)(9)` the `f` that `g(9)`
+                    // produces is replaced again (`2*9*g`).
+                    let mut inv = tok;
+                    inv.hide = hide_intersection(&inv.hide, &rparen_hide);
+                    let repl = self.substitute(&mac, &args, &inv)?;
                     self.splice(repl);
                     return Ok(true);
                 }
@@ -415,7 +424,7 @@ impl Processor {
         &mut self,
         mac: &Macro,
         inv: &PpToken,
-    ) -> Result<Collected, Diagnostic> {
+    ) -> Result<(Collected, Hide), Diagnostic> {
         self.index += 1;
         let named = mac.params.as_ref().map(Vec::len).unwrap_or(0);
         let mut parts = vec![Part {
@@ -430,7 +439,8 @@ impl Processor {
                 parts.last_mut().unwrap().tokens.push(tok);
             } else if tok.is_rparen() {
                 if depth == 0 {
-                    break;
+                    let rparen_hide = Rc::clone(&tok.hide);
+                    return Ok((self.finish_args(mac, inv, named, parts)?, rparen_hide));
                 }
                 depth -= 1;
                 parts.last_mut().unwrap().tokens.push(tok);
@@ -443,7 +453,6 @@ impl Processor {
                 parts.last_mut().unwrap().tokens.push(tok);
             }
         }
-        self.finish_args(mac, inv, named, parts)
     }
 
     pub(super) fn finish_args(

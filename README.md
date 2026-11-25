@@ -34,8 +34,14 @@ Windows x64 hold a ready-built `bin/hcc` with its headers; see the
 
 ## What it does
 
-- Full **C11** (N1570) support, except the optional complex number types
-  (`_Complex`). The compiler does support the harder parts: variable-length
+- **C11** (N1570), except the optional complex number types (`_Complex`).
+  A clause-by-clause audit of clauses 5 to 7 has 288 probes: 54 programs
+  and 234 constraint or syntax violations, compared against
+  `clang -std=c11 -pedantic-errors`. hcc passes 286 of them. The 2 that
+  fail are one known gap: the inline-definition constraints of 6.7.4p3 are
+  not diagnosed ([docs/C11_CONFORMANCE.md](docs/C11_CONFORMANCE.md)).
+  This is not a formal certification. The compiler supports the harder
+  parts: variable-length
   arrays, `_Atomic` and `<stdatomic.h>`, `<threads.h>`, `_Generic`,
   `_Alignas`, `_Thread_local`, `_Static_assert`, Unicode literals,
   universal character names in identifiers, old-style K&R function
@@ -52,7 +58,8 @@ Windows x64 hold a ready-built `bin/hcc` with its headers; see the
   differential tests, the Writing a C Compiler suite, the GCC torture
   tests, Csmith and YARPGen random programs, independent adversarial test
   kits, fuzzing, coverage and mutation testing, and big programs with
-  scorecards.
+  scorecards. [Test evidence](#test-evidence) gives the numbers, with what
+  each one counts.
 
 **Play DOOM on a Mac:** [docs/DOOM_ON_MAC.md](docs/DOOM_ON_MAC.md) is a
 step-by-step guide for an Apple Silicon Mac. One command,
@@ -65,16 +72,61 @@ or C++. It gives memory safety without a garbage collector, and Cargo
 builds a single binary from the standard library alone. There are no
 crates.io dependencies, so a checkout builds without fetching packages.
 
-hcc was written from the C standard, the LLVM Language Reference and the
-platform ABIs: the System V AMD64 ABI, the Arm AAPCS64 with Apple's arm64
-rules, and the Windows x64 calling convention. It is not derived from
-Clang or GCC. Clang is used only as a black-box oracle in the tests and as
-the LLVM backend that turns hcc's IR into programs.
-
 ## Design
 
 The decisions behind this compiler are in [DESIGN.md](DESIGN.md). That
 design document was created wholly by the Grok Bot.
+
+## Clean-room provenance
+
+hcc's compiler code was written only from public specifications:
+
+- the C11 standard (the N1570 draft),
+- the LLVM Language Reference,
+- the platform ABI documents: the System V AMD64 ABI, the Arm AAPCS64
+  with Apple's arm64 rules, and the Microsoft x64 calling convention,
+- the public GCC manual, for what GNU extensions and attributes mean.
+
+Clang and GCC were used only as black boxes, to see what a program
+compiles to and what it prints. No compiler's or C library's source code was
+read, copied or adapted while hcc was written, and none is in this
+repository.
+Clang is also the back end that turns hcc's LLVM IR into programs; hcc
+does not call Clang's or GCC's front end. The test programs and suites
+(Csmith, YARPGen, the GCC torture tests, the Writing a C Compiler suite,
+the adversarial kits, and the big programs) are test inputs, and nothing
+from them is in the compiler.
+
+This records how the work was done. It is not a legal opinion or a
+certification. The code was written by an AI agent, and the model behind
+it was trained on public data that may include compiler source. The rules
+above govern what was consulted during development; they cannot show what
+the model learnt in training. The rules are in `PLAN.md` and
+[CONTRIBUTING.md](CONTRIBUTING.md), and [DESIGN.md](DESIGN.md#clean-room)
+gives the history. Where the standard and the ABI documents leave a
+choice, DESIGN.md's [tie-break rule](DESIGN.md#tie-break) says how it was
+made.
+
+## Platforms
+
+Six targets. The pull-request CI runs on x86-64 Linux and native arm64
+Linux. The other targets are checked there through stand-ins, and on
+their real platforms by the weekly and manual workflows
+([docs/WEEKLY_PLATFORMS.md](docs/WEEKLY_PLATFORMS.md)).
+
+| Target | Every pull request | Real platform | `<threads.h>` |
+| --- | --- | --- | --- |
+| Linux x86-64 | native (`ubuntu-24.04`): every suite | the same | glibc |
+| Linux arm64 | native (`ubuntu-24.04-arm`) quick job, and the harness under qemu | native nightly (full suites) and weekly | glibc |
+| macOS arm64 | emulated: IR and Mach-O checks with `llc`, and the harness under qemu with Apple's calling convention | native `macos-26` after merges; weekly `macos-15` | fallback runtime (`lib/threads.c`) |
+| macOS x86-64 | emulated: IR and Mach-O checks, and a Linux stand-in for the harness and random ABI pairs | native `macos-26-intel`, by hand only | fallback runtime |
+| Windows x64, MinGW-w64 | emulated: the harness and random ABI pairs under Wine | native `windows-latest` (MSYS2), weekly and by hand | fallback runtime |
+| Windows x64, MSVC | emulated: the MSVC type model under Wine, and IR and COFF checks | native `windows-latest` (MSVC and UCRT), weekly and by hand | fallback runtime |
+
+The fallback runtime is hcc's own small `<threads.h>` implementation over
+POSIX threads or the Win32 API. The adversarial kits' thread cases on
+those platforms compare hcc's build of it with Clang's build of the same
+runtime, not with an independent C11 threads library.
 
 ## Build and use
 
@@ -116,6 +168,26 @@ and `make perf`; QuickJS and zlib with `harness/run_quickjs.py` and
 `harness/run_cross.py` and `harness/windows_x64.py` run the differential
 tests for arm64 under qemu and for Windows under Wine.
 
+### Test evidence
+
+The first seven rows come from the release-candidate rerun on commit
+`2e80ec0` ([reports/release-1.0/README.md](reports/release-1.0/README.md)).
+Mutation testing and coverage come from the hardening and quality work on
+earlier commits ([reports/hardening/](reports/hardening/README.md)). Each
+row says what it counts.
+
+| Check | Scope | Result |
+| --- | --- | --- |
+| C11 conformance probes | N1570 clauses 5 to 7: 54 programs and 234 constraint or syntax violations, x86-64 Linux; 20 more cases the standard leaves undefined are counted apart | 286 of 288 pass, 2 known gaps; all 20 others diagnosed |
+| Differential harness | the programs in `tests/`, x86-64 Linux | 230 of 230 |
+| Writing a C Compiler suite | chapters 1 to 18 (19 and 20 inspect the book's own assembly) | 1,384 of 1,384 run, 233 skipped |
+| GCC torture tests (`execute`) | 1,746 executed | 1,412 passed, 334 listed known failures, 0 unexpected |
+| Csmith | 3,000 generated programs (seeds 200001 to 203000); a program counts once GCC and Clang agree on it | 2,775 compared at `-O0` and 2,774 at `-O2`, 0 mismatches |
+| YARPGen 2 | 2,000 generated programs (seeds 1 to 2000), about 8,000 lines each; a program counts once Clang's reference run completes | 1,651 compared, 0 mismatches (2 timeouts under load matched when re-run) |
+| Adversarial kits | v0.6 (724 cases), v0.7 (65), v0.8 (80), v0.9 (100), each at `-O0` and `-O2` | all 969 pass at both levels |
+| Mutation testing | 7 selected files (constant folding, static images, record layout, IR for expressions) | 92.9% of 1,429 viable mutants caught: 96 missed, 5 timeouts |
+| Coverage | hcc's Rust code, over the unit tests and every in-repo suite | 92.7% of lines, 83.4% of branches |
+
 ### Big programs
 
 Each is built twice, with hcc and with Clang, at `-O0` and `-O2`, and the
@@ -135,9 +207,9 @@ two builds must behave identically:
 
 ## CI and CodeRabbit
 
-Every action is pinned to a commit: `actions/checkout` v4.4.0,
-`dtolnay/rust-toolchain` v1 (Rust 1.85.1), `actions/cache` v4.2.4,
-`actions/upload-artifact` v4.6.2 and `actions/download-artifact` v4.3.0.
+Every action is pinned to a commit: `actions/checkout` v7.0.1,
+`dtolnay/rust-toolchain` v1 (Rust 1.85.1), `actions/cache` v6.1.0,
+`actions/upload-artifact` v7.0.2 and `actions/download-artifact` v8.0.2.
 Job tokens have read-only access to the repository contents.
 
 - `ci.yml`, on pull requests and pushes to `main` (not for documentation

@@ -547,6 +547,113 @@ mod tests {
     }
 
     #[test]
+    fn conformance_audit_constraints() {
+        // Constraint violations the C11 conformance audit found accepted.
+        for (source, message) in [
+            ("#define F(a) __VA_ARGS__\n", "__VA_ARGS__ can only appear"),
+            ("#define O __VA_ARGS__\n", "__VA_ARGS__ can only appear"),
+            ("#undef __LINE__\n", "undefining builtin macro '__LINE__'"),
+            ("#undef __STDC_VERSION__\n", "undefining builtin macro"),
+            ("#define __LINE__ 3\n", "redefining builtin macro '__LINE__'"),
+            ("#define __FILE__ \"x\"\n", "redefining builtin macro '__FILE__'"),
+            ("auto int a;", "'auto' is not allowed at file scope"),
+            ("register int a;", "'register' is not allowed at file scope"),
+            ("register int f(void) { return 0; }", "'register' is not allowed at file scope"),
+            ("inline int main(void) { return 0; }", "'main' cannot be declared 'inline'"),
+            ("_Noreturn int main(void);", "'main' cannot be declared '_Noreturn'"),
+            ("typedef int F(void); F f { return 0; }", "cannot take its function type from a typedef"),
+            ("void f(void) { register int r = 0; int *p = &r; (void)p; }", "address of register variable 'r'"),
+            ("struct s { int m; }; void f(void) { register struct s v; int *p = &v.m; (void)p; }", "address of register variable 'v'"),
+            ("void f(register int r) { int *p = &r; (void)p; }", "address of register variable 'r'"),
+            ("void f(r) register int r; { int *p = &r; (void)p; }", "address of register variable 'r'"),
+            ("typedef int A[3]; _Atomic A a;", "cannot be applied to an array type"),
+            ("inline int helper(void), main(void);", "'main' cannot be declared 'inline'"),
+            ("void f(void) { _Noreturn int main(void); }", "'main' cannot be declared '_Noreturn'"),
+            ("void f(register int r, int a[sizeof &r]);", "address of register variable 'r'"),
+            ("void f(void) { register int r = 0; int *p = &_Generic(0, int: r); (void)p; }", "address of register variable 'r'"),
+            ("void f(void) { register int r = 0; int x = 0; int *p = &_Generic(0, double: x, default: _Generic(0, int: r, default: x)); (void)p; }", "address of register variable 'r'"),
+            ("struct s { int m; }; void f(void) { register struct s v; int *p = &_Generic(0, int: v).m; (void)p; }", "address of register variable 'v'"),
+        ] {
+            let Err(err) = compile(source, Dialect::C11) else {
+                panic!("{source}: accepted");
+            };
+            let err = err.to_string();
+            assert!(err.contains(message), "{source}: {err}");
+        }
+        // Still accepted: a shadowing declaration, a variadic macro, other
+        // #undefs, and a function declared (not defined) through a typedef.
+        for source in [
+            "void f(void) { register int r = 1; { int r = 2; int *p = &r; (void)p; } (void)r; }",
+            "void f(register int r) { int *p; { int r; p = &r; } (void)p; }",
+            "#define W(x, ...) g(x, __VA_ARGS__)\n",
+            "#undef NDEBUG\n#undef __GNUC__\nint main(void) { return 0; }",
+            "typedef int F(void); F f; int f(void) { return 0; }",
+            // The typedef is only the function a returned pointer points to.
+            "typedef int F(void); F *make(void) { return 0; }",
+            "typedef int F(void); F *(make)(void) { return 0; }",
+            "int main(void); void g(void) { int main(void); }",
+            // An unselected association may name a register object.
+            "void f(void) { register int r = 0; int x = 0; int *p = &_Generic(0, int: x, double: r); (void)p; (void)r; }",
+            "void f(void) { register int r = 0; int x = 0; int *p = &_Generic(0, int: x, default: _Generic(0, int: r, default: x)); (void)p; (void)r; }",
+        ] {
+            compile(source, Dialect::C11).unwrap_or_else(|err| panic!("{source}: {err}"));
+        }
+    }
+
+    #[test]
+    fn tentative_array_definition_gets_one_element() {
+        // C11 6.9.2p5 EXAMPLE 2.
+        let out = compile("int i[]; const int c[]; int *p = i;", Dialect::C11).unwrap();
+        assert!(
+            out.ir.contains("@i = global [1 x i32] zeroinitializer"),
+            "{}",
+            out.ir
+        );
+        assert!(
+            out.ir.contains("@c = constant [1 x i32] zeroinitializer"),
+            "{}",
+            out.ir
+        );
+        let text: Vec<String> = out.warnings.iter().map(|w| w.to_string()).collect();
+        assert_eq!(
+            text.iter()
+                .filter(|w| w.contains("tentative array definition assumed to have one element"))
+                .count(),
+            2,
+            "{text:?}"
+        );
+        // A later definition still completes it, and internal linkage
+        // needs a complete type (6.9.2p3).
+        let out = compile("int i[]; int i[3] = {1};", Dialect::C11).unwrap();
+        assert!(out.ir.contains("@i = global [3 x i32]"), "{}", out.ir);
+        assert!(out.warnings.is_empty());
+        assert!(compile("static int s[];", Dialect::C11).is_err());
+        assert!(compile("extern int e[]; int *q = e;", Dialect::C11).is_ok());
+    }
+
+    #[test]
+    fn multi_character_constants_warn() {
+        let out = compile("int a = 'ab'; int b = 'abcde'; int c = 'a';", Dialect::C11).unwrap();
+        let text: Vec<String> = out.warnings.iter().map(|w| w.to_string()).collect();
+        assert_eq!(
+            text.iter()
+                .filter(|w| w.contains("multi-character character constant"))
+                .count(),
+            2,
+            "{text:?}"
+        );
+        assert_eq!(
+            text.iter()
+                .filter(|w| w.contains("too long for its type"))
+                .count(),
+            1,
+            "{text:?}"
+        );
+        assert!(out.ir.contains("@a = global i32 24930"), "{}", out.ir);
+        assert!(out.ir.contains("@b = global i32 1650680933"), "{}", out.ir);
+    }
+
+    #[test]
     fn attributes_change_layout_and_warn_when_unknown() {
         gnu_ok("struct __attribute__((packed)) P { char c; int i; }; _Static_assert(sizeof(struct P) == 5, \"\");");
         gnu_ok("struct A { char c; } __attribute__((aligned(8))); _Static_assert(_Alignof(struct A) == 8 && sizeof(struct A) == 8, \"\");");

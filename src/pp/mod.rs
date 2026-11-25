@@ -287,6 +287,25 @@ fn hide_with(hide: &Hide, name: &str) -> Hide {
     Rc::new(set)
 }
 
+/// The names in both hide sets.
+fn hide_intersection(left: &Hide, right: &Hide) -> Hide {
+    if Rc::ptr_eq(left, right) || left.is_empty() {
+        return Rc::clone(left);
+    }
+    if right.is_empty() {
+        return Rc::clone(right);
+    }
+    if left.iter().all(|name| right.contains(name)) {
+        return Rc::clone(left);
+    }
+    Rc::new(
+        left.iter()
+            .filter(|name| right.contains(*name))
+            .cloned()
+            .collect(),
+    )
+}
+
 fn hide_union(left: &Hide, right: &Hide) -> Hide {
     if left.is_empty() {
         return Rc::clone(right);
