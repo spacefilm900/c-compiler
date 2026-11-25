@@ -170,19 +170,21 @@ tests for arm64 under qemu and for Windows under Wine.
 
 ### Test evidence
 
-The numbers below come from the release-candidate rerun
-([reports/release-1.0/README.md](reports/release-1.0/README.md)) and from
-the hardening campaigns ([reports/hardening/](reports/hardening/README.md)).
-Each one says what it counts.
+The first seven rows come from the release-candidate rerun on commit
+`2e80ec0` ([reports/release-1.0/README.md](reports/release-1.0/README.md)).
+Mutation testing and coverage come from the hardening and quality work on
+earlier commits ([reports/hardening/](reports/hardening/README.md)). Each
+row says what it counts.
 
 | Check | Scope | Result |
 | --- | --- | --- |
 | C11 conformance probes | N1570 clauses 5 to 7: 54 programs and 234 constraint or syntax violations, x86-64 Linux; 20 more cases the standard leaves undefined are counted apart | 286 of 288 pass, 2 known gaps; all 20 others diagnosed |
 | Differential harness | the programs in `tests/`, x86-64 Linux | 230 of 230 |
 | Writing a C Compiler suite | chapters 1 to 18 (19 and 20 inspect the book's own assembly) | 1,384 of 1,384 run, 233 skipped |
+| GCC torture tests (`execute`) | 1,746 executed | 1,412 passed, 334 listed known failures, 0 unexpected |
 | Csmith | 3,000 generated programs (seeds 200001 to 203000); a program counts once GCC and Clang agree on it | 2,775 compared at `-O0` and 2,774 at `-O2`, 0 mismatches |
-| YARPGen 2 | 2,000 generated programs (seeds 1 to 2000), about 8,000 lines each | 1,694 compared, 0 mismatches |
-| Adversarial kits | v0.6 (724 cases), v0.7 (65), v0.8 (80), v0.9 (100), each at `-O0` and `-O2` | see the rerun report |
+| YARPGen 2 | 2,000 generated programs (seeds 1 to 2000), about 8,000 lines each; a program counts once Clang's reference run completes | 1,651 compared, 0 mismatches (2 timeouts under load matched when re-run) |
+| Adversarial kits | v0.6 (724 cases), v0.7 (65), v0.8 (80), v0.9 (100), each at `-O0` and `-O2` | all 969 pass at both levels |
 | Mutation testing | 7 selected files (constant folding, static images, record layout, IR for expressions) | 92.9% of 1,429 viable mutants caught: 96 missed, 5 timeouts |
 | Coverage | hcc's Rust code, over the unit tests and every in-repo suite | 92.7% of lines, 83.4% of branches |
 
