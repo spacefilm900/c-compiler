@@ -42,9 +42,6 @@ impl Scanner<'_> {
             let line = self.line;
             let column = self.column;
             let byte = self.bytes[self.index];
-            if byte >= 128 {
-                return self.fail(line, column, "non-ASCII characters are not supported");
-            }
             if byte == b' ' || byte == b'\t' || byte == 0x0B || byte == 0x0C {
                 self.bump();
                 self.pending_space = true;
@@ -63,7 +60,10 @@ impl Scanner<'_> {
                 self.block_comment(line, column)?;
                 continue;
             }
-            if is_ident_start(byte) {
+            if is_ident_start(byte)
+                || byte >= 128
+                || (byte == b'\\' && self.extended_char().is_some())
+            {
                 self.ident(line, column)?;
                 continue;
             }
@@ -126,10 +126,42 @@ impl Scanner<'_> {
         }
     }
 
+    /// An identifier (6.4.2.1). Besides the basic characters it may hold
+    /// universal character names and UTF-8 characters from Annex D; the
+    /// spelling keeps them as UTF-8, so both forms name one identifier.
     pub(super) fn ident(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
         let mut spelling = String::new();
-        while self.peek_byte_logical().is_some_and(is_ident_continue) {
-            spelling.push(self.next_logical().unwrap().0 as char);
+        loop {
+            if self.peek_byte_logical().is_some_and(is_ident_continue) {
+                spelling.push(self.next_logical().unwrap().0 as char);
+                continue;
+            }
+            let Some((code, len, ucn)) = self.extended_char() else {
+                break;
+            };
+            let initial = spelling.is_empty();
+            if (ucn && !crate::ucn::valid_ucn_value(code))
+                || !crate::ucn::allowed_in_identifier(code, initial)
+            {
+                self.skip_splices();
+                let (at_line, at_column) = (self.line, self.column);
+                if initial && !ucn && !crate::ucn::allowed_in_identifier(code, false) {
+                    return self.fail(
+                        at_line,
+                        at_column,
+                        &format!("unexpected character U+{code:04X} outside a string, character constant or comment"),
+                    );
+                }
+                return self.fail(
+                    at_line,
+                    at_column,
+                    &crate::ucn::identifier_error(code, initial, ucn),
+                );
+            }
+            for _ in 0..len {
+                self.next_logical();
+            }
+            spelling.push(char::from_u32(code).expect("checked above"));
         }
         if matches!(spelling.as_str(), "L" | "u" | "U" | "u8") {
             if self.peek_byte_logical() == Some(b'"') {
@@ -166,6 +198,19 @@ impl Scanner<'_> {
                     spelling.push(self.next_logical().unwrap().0 as char);
                 }
                 continue;
+            }
+            // A pp-number may hold identifier characters (6.4.8), so a
+            // valid UCN or UTF-8 identifier character stays in the token.
+            if let Some((code, len, ucn)) = self.extended_char() {
+                if (!ucn || crate::ucn::valid_ucn_value(code))
+                    && crate::ucn::allowed_in_identifier(code, false)
+                {
+                    for _ in 0..len {
+                        self.next_logical();
+                    }
+                    spelling.push(char::from_u32(code).expect("checked above"));
+                    continue;
+                }
             }
             break;
         }
@@ -296,6 +341,29 @@ impl Scanner<'_> {
             leading_space: false,
             hide: hide_empty(),
         });
+    }
+
+    /// A universal character name or a UTF-8 character at the cursor, as
+    /// (code point, logical bytes, written as a UCN), or `None`. Line
+    /// splices inside a UCN are skipped (they go in translation phase 2).
+    pub(super) fn extended_char(&self) -> Option<(u32, usize, bool)> {
+        let mut buf = [0u8; 10];
+        let filled = self.peek_logical_into(&mut buf);
+        let buf = &buf[..filled];
+        if let Some((code, len)) = crate::ucn::parse_ucn(buf) {
+            return Some((code, len, true));
+        }
+        let first = *buf.first()?;
+        if first < 0x80 {
+            return None;
+        }
+        let len = match first {
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            _ => 4,
+        };
+        let ch = std::str::from_utf8(buf.get(..len)?).ok()?.chars().next()?;
+        Some((u32::from(ch), len, false))
     }
 
     pub(super) fn fail<T>(

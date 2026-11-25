@@ -56,13 +56,6 @@ struct Lexer<'a> {
 impl Lexer<'_> {
     fn run(mut self) -> Result<Vec<Token>, Diagnostic> {
         while let Some(byte) = self.peek() {
-            if byte >= 128 {
-                return self.fail(
-                    self.line,
-                    self.column,
-                    "non-ASCII characters are not supported",
-                );
-            }
             if is_whitespace(byte) {
                 self.bump();
                 continue;
@@ -77,7 +70,7 @@ impl Lexer<'_> {
                 self.block_comment(line, column)?;
                 continue;
             }
-            if is_ident_start(byte) {
+            if is_ident_start(byte) || byte >= 128 || self.extended_char().is_some() {
                 self.ident(line, column)?;
                 continue;
             }
@@ -220,12 +213,59 @@ impl Lexer<'_> {
         self.fail(line, column, "unterminated block comment")
     }
 
+    /// A universal character name or a UTF-8 character at the cursor, as
+    /// (code point, bytes, written as a UCN), or `None`.
+    fn extended_char(&self) -> Option<(u32, usize, bool)> {
+        let rest = &self.bytes[self.index..];
+        if let Some((code, len)) = crate::ucn::parse_ucn(rest) {
+            return Some((code, len, true));
+        }
+        if rest.first().is_some_and(|byte| *byte >= 0x80) {
+            let ch = self.source[self.index..].chars().next()?;
+            return Some((u32::from(ch), ch.len_utf8(), false));
+        }
+        None
+    }
+
+    /// An identifier, keyword or encoding prefix. Universal character names
+    /// and UTF-8 characters from C11 Annex D are stored as UTF-8, so both
+    /// spellings name the same identifier.
     fn ident(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
         let start = self.index;
-        while self.peek().is_some_and(is_ident_cont) {
-            self.bump();
+        let mut owned: Option<String> = None;
+        loop {
+            if self.peek().is_some_and(is_ident_cont) {
+                let byte = self.bump();
+                if let Some(text) = owned.as_mut() {
+                    text.push(byte as char);
+                }
+                continue;
+            }
+            let Some((code, len, ucn)) = self.extended_char() else {
+                break;
+            };
+            let initial = self.index == start;
+            if (ucn && !crate::ucn::valid_ucn_value(code))
+                || !crate::ucn::allowed_in_identifier(code, initial)
+            {
+                let message = if initial && !ucn && !crate::ucn::allowed_in_identifier(code, false)
+                {
+                    format!("unexpected character U+{code:04X} outside a string, character constant or comment")
+                } else {
+                    crate::ucn::identifier_error(code, initial, ucn)
+                };
+                return self.fail(self.line, self.column, message);
+            }
+            let text = owned.get_or_insert_with(|| self.source[start..self.index].to_string());
+            text.push(char::from_u32(code).expect("checked above"));
+            for _ in 0..len {
+                self.bump();
+            }
         }
-        let spelling = &self.source[start..self.index];
+        let owned_spelling = owned;
+        let spelling = owned_spelling
+            .as_deref()
+            .unwrap_or(&self.source[start..self.index]);
         // Encoding prefixes (C11 6.4.4.4, 6.4.5). The prefix is not a
         // separate token: it is recognized only when the quote is the next
         // byte. `u8` names a character constant only in C23, so that form
@@ -1450,7 +1490,18 @@ mod tests {
         assert!(err("0x1.0").contains("requires an exponent"));
         assert!(err("/* unterminated").contains("unterminated block comment"));
         assert!(err("#include <stdio.h>").contains("preprocessor directives"));
-        assert!(err("int café").contains("non-ASCII"));
+        // Extended identifiers (C11 6.4.2.1, 6.4.3, Annex D): UTF-8 and a
+        // UCN spell the same identifier.
+        let ident = tokens("int café caf\\u00e9 \\U0001F600x");
+        assert_eq!(ident[1].kind, TokenKind::Ident);
+        assert_eq!(ident[1].spelling, "café");
+        assert_eq!(ident[2].spelling, "café");
+        assert_eq!(ident[3].spelling, "\u{1F600}x");
+        assert!(err("int \\u0301x").contains("not allowed at the start of an identifier"));
+        assert!(err("int a\\u0041").contains("cannot be written as a universal character name"));
+        assert!(err("int a\\uDC00").contains("not a valid universal character name"));
+        assert!(err("int a\u{D7}").contains("not allowed in an identifier"));
+        assert!(err("int x = 1 \u{D7} 2;").contains("unexpected character U+00D7"));
         // UTF-8 source characters and universal character names (C11 6.4.3)
         // are code points, encoded for each prefix.
         assert_eq!(

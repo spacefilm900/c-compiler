@@ -1109,10 +1109,14 @@ pub(super) fn body_tokens(source: &str) -> Result<Vec<PpToken>, Diagnostic> {
 }
 
 pub(super) fn is_ident_text(text: &str) -> bool {
-    let mut chars = text.bytes();
-    match chars.next() {
-        Some(b) if b.is_ascii_alphabetic() || b == b'_' => {}
-        _ => return false,
-    }
-    chars.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    let mut chars = text.chars();
+    let ok = |ch: char, initial: bool| {
+        ch == '_'
+            || if ch.is_ascii() {
+                ch.is_ascii_alphabetic() || (!initial && ch.is_ascii_digit())
+            } else {
+                crate::ucn::allowed_in_identifier(u32::from(ch), initial)
+            }
+    };
+    chars.next().is_some_and(|ch| ok(ch, true)) && chars.all(|ch| ok(ch, false))
 }

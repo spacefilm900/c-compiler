@@ -216,6 +216,17 @@ numbers: variable-length arrays, `_Atomic` with `<stdatomic.h>`, and
 `<threads.h>` all work, so `__STDC_NO_VLA__`, `__STDC_NO_ATOMICS__` and
 `__STDC_NO_THREADS__` are not defined.
 
+**Identifiers** may contain universal character names (`\u00e9`,
+`\U0001F600`) and, as in GCC and Clang, the same characters written
+directly in UTF-8: `caf\u00e9` and `café` are one identifier, macro and
+symbol. The characters allowed are those of C11 Annex D, and a combining
+mark (Annex D.2) cannot start an identifier. A UCN for a basic character
+(`\u0041`), a control character, a surrogate (`\uD800`) or a value above
+U+10FFFF is an error (6.4.3). The symbol in the object file is the UTF-8
+name, as Clang and GCC write it, so such functions and variables link with
+code from those compilers. `hcc -E` writes extended identifiers in UTF-8,
+whichever way they were spelt.
+
 **`-std=gnu11`** adds the GNU extensions that real programs (DOOM, Lua,
 SQLite, QuickJS, zlib, the Linux and macOS system headers) use, as GCC and
 Clang accept them in their GNU modes. Among them:
@@ -342,10 +353,9 @@ file is not created.
 - **GNU attributes that change behaviour** are errors rather than ignored:
   `vector_size`, `cleanup`, `alias`, `ifunc`, `naked`, `weakref`. Nested
   functions are not supported.
-- **Identifiers.** Universal character names (`\u00e9`) and other
-  non-ASCII characters are not accepted in identifiers (C11 6.4.2.1 and
-  6.4.3 allow UCNs there). Source files are UTF-8; non-ASCII characters
-  are allowed in comments, character constants and string literals.
+- **Source files are UTF-8.** Outside comments, literals and identifiers
+  (section 5), a non-ASCII character is an error; Clang's treatment of
+  Unicode spaces such as U+00A0 as white space is not copied.
 - **Label addresses.** `&&a - &&b` is not supported.
 - **Platforms.** The targets in section 6 only. A pointer is 64 bits on all
   of them.

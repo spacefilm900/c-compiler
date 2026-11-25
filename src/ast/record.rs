@@ -224,7 +224,7 @@ impl StructRef {
 
     /// LLVM type name without the leading `%`, such as `struct.Node`.
     pub fn llvm_name(&self) -> String {
-        self.data.borrow().llvm_name.clone()
+        crate::irgen::llvm_name_text(&self.data.borrow().llvm_name)
     }
 
     /// Name used in IR, including an incomplete struct that has no body yet.
@@ -244,7 +244,7 @@ impl StructRef {
         if tag.is_empty() {
             format!("opaque.anon.{}", self.id)
         } else {
-            format!("opaque.{tag}.{}", self.id)
+            crate::irgen::llvm_name_text(&format!("opaque.{tag}.{}", self.id))
         }
     }
 

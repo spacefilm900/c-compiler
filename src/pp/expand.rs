@@ -633,8 +633,11 @@ pub(super) fn stringify(arg: &[PpToken], at: &PpToken) -> PpToken {
             text.push(' ');
         }
         first = false;
+        // 6.10.3.2p2: `\` goes before each `"` and `\` of a string literal
+        // or character constant only; a lone `\` token stays as it is.
+        let quoted = matches!(tok.kind, PpKind::String | PpKind::Char);
         for ch in tok.spelling.chars() {
-            if ch == '\\' || ch == '"' {
+            if quoted && (ch == '\\' || ch == '"') {
                 text.push('\\');
             }
             text.push(ch);

@@ -36,6 +36,12 @@ milestones below summarise it, with the pull requests that made them.
   option), `__DATE__` and `__TIME__` (UTC, or `SOURCE_DATE_EPOCH` for
   reproducible builds), and the `_Pragma` operator, now carried out as a
   `#pragma` line (`_Pragma("once")` takes effect) (#71).
+- Universal character names in identifiers (C11 6.4.2.1, 6.4.3, Annex D),
+  and the same characters written directly in UTF-8, as GCC and Clang
+  accept them: `caf\u00e9` and `café` are one identifier, also as a macro
+  name and through `##`. Invalid UCNs and characters outside Annex D are
+  diagnostics. The LLVM symbol is the quoted UTF-8 name, so extended
+  names link with Clang and GCC objects on every target.
 - A [user guide](docs/USER_GUIDE.md), a
   [language reference](docs/LANGUAGE.md) (moved out of the README), this
   changelog, [CONTRIBUTING.md](CONTRIBUTING.md),
@@ -63,6 +69,8 @@ milestones below summarise it, with the pull requests that made them.
 
 ### Fixed
 
+- `#` no longer puts a `\` before a lone `\` token (only inside string
+  literals and character constants, C11 6.10.3.2).
 - GNU forward-declared enums (`typedef enum E E;` before `enum E { ... }`)
   are incomplete until their definition, as in GCC and Clang, and may then
   take any enumerated type (#68, #69).
