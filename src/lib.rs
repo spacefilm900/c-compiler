@@ -547,6 +547,28 @@ mod tests {
     }
 
     #[test]
+    fn multi_character_constants_warn() {
+        let out = compile("int a = 'ab'; int b = 'abcde'; int c = 'a';", Dialect::C11).unwrap();
+        let text: Vec<String> = out.warnings.iter().map(|w| w.to_string()).collect();
+        assert_eq!(
+            text.iter()
+                .filter(|w| w.contains("multi-character character constant"))
+                .count(),
+            2,
+            "{text:?}"
+        );
+        assert_eq!(
+            text.iter()
+                .filter(|w| w.contains("too long for its type"))
+                .count(),
+            1,
+            "{text:?}"
+        );
+        assert!(out.ir.contains("@a = global i32 24930"), "{}", out.ir);
+        assert!(out.ir.contains("@b = global i32 1650680933"), "{}", out.ir);
+    }
+
+    #[test]
     fn attributes_change_layout_and_warn_when_unknown() {
         gnu_ok("struct __attribute__((packed)) P { char c; int i; }; _Static_assert(sizeof(struct P) == 5, \"\");");
         gnu_ok("struct A { char c; } __attribute__((aligned(8))); _Static_assert(_Alignof(struct A) == 8 && sizeof(struct A) == 8, \"\");");

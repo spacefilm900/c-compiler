@@ -43,6 +43,49 @@ pub fn lex_shared(source: &str, filename: &Rc<str>) -> Result<Vec<Token>, Diagno
     .run()
 }
 
+/// The number of characters (source characters and escapes) in the
+/// spelling of an unprefixed character constant, such as 2 for `'ab'` or
+/// `'\\0a'`; 0 for anything else. The spelling is one the lexer accepted.
+pub fn char_constant_length(spelling: &str) -> usize {
+    let Some(body) = spelling
+        .strip_prefix('\'')
+        .and_then(|rest| rest.strip_suffix('\''))
+    else {
+        return 0;
+    };
+    let bytes = body.as_bytes();
+    let (mut index, mut count) = (0, 0);
+    while index < bytes.len() {
+        count += 1;
+        if bytes[index] != b'\\' {
+            index += body[index..].chars().next().map_or(1, char::len_utf8);
+            continue;
+        }
+        index += 1;
+        match bytes.get(index) {
+            Some(b'0'..=b'7') => {
+                let digits = bytes[index..]
+                    .iter()
+                    .take(3)
+                    .take_while(|b| (b'0'..=b'7').contains(b))
+                    .count();
+                index += digits;
+            }
+            Some(b'x') => {
+                index += 1;
+                index += bytes[index..]
+                    .iter()
+                    .take_while(|b| b.is_ascii_hexdigit())
+                    .count();
+            }
+            Some(b'u') => index += 5,
+            Some(b'U') => index += 9,
+            _ => index += 1,
+        }
+    }
+    count
+}
+
 struct Lexer<'a> {
     source: &'a str,
     filename: &'a Rc<str>,
@@ -789,7 +832,7 @@ impl Lexer<'_> {
         wchar: bool,
     ) -> Result<(), Diagnostic> {
         self.bump();
-        let value = self.char_body(line, column, bits)?;
+        let value = self.char_body(line, column, bits, wchar)?;
         let spelling = self.source[start..self.index].to_string();
         let ty = if wchar {
             crate::target::current().wchar_type()
@@ -804,7 +847,13 @@ impl Lexer<'_> {
 
     /// The one character of a character constant after the opening quote,
     /// and the closing quote, as a code unit of `bits` bits.
-    fn char_body(&mut self, line: usize, column: usize, bits: u32) -> Result<u32, Diagnostic> {
+    fn char_body(
+        &mut self,
+        line: usize,
+        column: usize,
+        bits: u32,
+        wide: bool,
+    ) -> Result<u32, Diagnostic> {
         if matches!(self.peek(), None | Some(b'\n' | b'\r')) {
             return self.fail(line, column, "unterminated character constant");
         }
@@ -817,11 +866,14 @@ impl Lexer<'_> {
             if matches!(self.peek(), None | Some(b'\n' | b'\r')) {
                 return self.fail(line, column, "unterminated character constant");
             }
-            return self.fail(
-                line,
-                column,
-                "multi-character character constants are not supported",
-            );
+            // C11 6.4.4.4p11 leaves a wide multi-character constant
+            // implementation-defined; like Clang, hcc rejects one.
+            let message = if wide {
+                "wide character literals may not contain multiple characters"
+            } else {
+                "Unicode character literals may not contain multiple characters"
+            };
+            return self.fail(line, column, message);
         }
         let units = self.encode_units(ch, bits, at_line, at_column, false)?;
         self.bump();
@@ -846,19 +898,46 @@ impl Lexer<'_> {
     }
 
     /// An integer character constant has type `int` (C11 6.4.4.4).
-    /// One source character or one escape is accepted. A hex or octal escape
-    /// must fit in `unsigned char`; Clang rejects a wider escape on this target.
-    /// The value is that byte converted from `char` to `int`. Where `char` is
-    /// signed (x86_64, Apple arm64), 128..255 are negative. A character outside ASCII needs more than one
-    /// UTF-8 byte and is diagnosed.
+    /// Each source character or escape is one byte: a hex or octal escape
+    /// must fit in `unsigned char`, and a character outside ASCII (more than
+    /// one UTF-8 byte) is diagnosed, as Clang does. With one character the
+    /// value is that byte converted from `char` to `int`; where `char` is
+    /// signed (x86_64, Apple arm64), 128..255 are negative.
+    ///
+    /// More than one character is a multi-character constant, whose value
+    /// C11 6.4.4.4p10 leaves implementation-defined. hcc's choice, the same
+    /// as GCC's and Clang's on every hcc target: the bytes in order, each
+    /// shifted in from the right (`'ab'` is `0x6162`), keeping the last
+    /// four, read as an `int`. The parser warns about it
+    /// ([`char_constant_length`]).
     fn char_constant(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
         let start = self.index;
         self.bump();
-        let value = self.char_body(line, column, 8)?;
+        if matches!(self.peek(), None | Some(b'\n' | b'\r')) {
+            return self.fail(line, column, "unterminated character constant");
+        }
+        if self.peek() == Some(b'\'') {
+            return self.fail(line, column, "empty character constant");
+        }
+        let mut value: u32 = 0;
+        let mut count = 0usize;
+        while self.peek() != Some(b'\'') {
+            if matches!(self.peek(), None | Some(b'\n' | b'\r')) {
+                return self.fail(line, column, "unterminated character constant");
+            }
+            let (at_line, at_column) = (self.line, self.column);
+            let ch = self.read_source_char(line, column, false)?;
+            let unit = self.encode_units(ch, 8, at_line, at_column, false)?[0];
+            value = (value << 8) | (unit & 0xff);
+            count += 1;
+        }
+        self.bump();
         let spelling = self.source[start..self.index].to_string();
-        // Plain `char` is unsigned on AArch64 Linux, so there the byte is
-        // zero-extended instead.
-        let bits = if crate::target::current().char_is_signed() {
+        let bits = if count > 1 {
+            u64::from(value)
+        } else if crate::target::current().char_is_signed() {
+            // Plain `char` is unsigned on AArch64 Linux, so there the byte
+            // is zero-extended instead.
             crate::ast::sign_extend(u128::from(value), 8) as u32 as u64
         } else {
             u64::from(value & 0xff)
@@ -868,6 +947,7 @@ impl Lexer<'_> {
     }
 
     /// One source character or one escape (C11 6.4.4.4, 6.4.3).
+    /// See also [`char_constant_length`], which counts them in a spelling.
     ///
     /// `string` selects the diagnostic for a missing closer. The escape set is
     /// shared by character constants and string literals. A multibyte source
@@ -1450,7 +1530,32 @@ mod tests {
         assert_eq!(tokens(r"'\\'")[0].value, Some(u64::from(b'\\')));
         assert_eq!(tokens(r"'\?'")[0].value, Some(u64::from(b'?')));
         assert!(err("''").contains("empty character constant"));
-        assert!(err("'ab'").contains("multi-character"));
+        // Multi-character constants (C11 6.4.4.4p10): the bytes shifted in
+        // from the right, the last four kept, as an `int` (GCC and Clang).
+        assert_eq!(tokens("'ab'")[0].value, Some(0x6162));
+        assert_eq!(tokens("'abcd'")[0].value, Some(0x6162_6364));
+        assert_eq!(tokens("'abcde'")[0].value, Some(0x6263_6465));
+        assert_eq!(tokens(r"'\0a'")[0].value, Some(0x61));
+        assert_eq!(tokens(r"'\xff\xfe'")[0].value, Some(0xfffe));
+        assert_eq!(tokens(r"'\377\377\377\377'")[0].value, Some(0xffff_ffff));
+        assert_eq!(tokens("'ab'")[0].int_ty, Some(TypeName::Int));
+        assert!(err("'a\u{e9}'").contains("character too large"));
+        assert!(
+            err("L'ab'").contains("wide character literals may not contain multiple characters")
+        );
+        assert!(
+            err("u'ab'").contains("Unicode character literals may not contain multiple characters")
+        );
+        assert!(
+            err("U'ab'").contains("Unicode character literals may not contain multiple characters")
+        );
+        assert_eq!(char_constant_length("'a'"), 1);
+        assert_eq!(char_constant_length(r"'\0a'"), 2);
+        assert_eq!(char_constant_length(r"'\x41\101\n'"), 3);
+        assert_eq!(char_constant_length(r"'\u00e9'"), 1);
+        assert_eq!(char_constant_length("'abcde'"), 5);
+        assert_eq!(char_constant_length("L'a'"), 0);
+        assert_eq!(char_constant_length("42"), 0);
         assert!(err(r"'\x100'").contains("hex escape sequence out of range"));
         assert!(err(r"'\400'").contains("octal escape sequence out of range"));
         assert!(err(r"'\q'").contains("unknown escape sequence"));

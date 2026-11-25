@@ -1106,6 +1106,23 @@ impl Parser<'_> {
             }
             TokenKind::Int => {
                 self.bump();
+                // C11 6.4.4.4p10: implementation-defined, so a warning (as
+                // GCC and Clang give), and another past four bytes.
+                let chars = crate::lexer::char_constant_length(&token.spelling);
+                if chars > 1 {
+                    self.warn_at(
+                        token.line,
+                        token.column,
+                        "multi-character character constant",
+                    );
+                }
+                if chars > 4 {
+                    self.warn_at(
+                        token.line,
+                        token.column,
+                        "character constant too long for its type",
+                    );
+                }
                 Ok(Expr::int(
                     token.value.expect("int token"),
                     token.int_ty.expect("int token type"),
