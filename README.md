@@ -135,9 +135,9 @@ two builds must behave identically:
 
 ## CI and CodeRabbit
 
-Every action is pinned to a commit: `actions/checkout` v4.4.0,
-`dtolnay/rust-toolchain` v1 (Rust 1.85.1), `actions/cache` v4.2.4,
-`actions/upload-artifact` v4.6.2 and `actions/download-artifact` v4.3.0.
+Every action is pinned to a commit: `actions/checkout` v7.0.1,
+`dtolnay/rust-toolchain` v1 (Rust 1.85.1), `actions/cache` v6.1.0,
+`actions/upload-artifact` v7.0.2 and `actions/download-artifact` v8.0.2.
 Job tokens have read-only access to the repository contents.
 
 - `ci.yml`, on pull requests and pushes to `main` (not for documentation
