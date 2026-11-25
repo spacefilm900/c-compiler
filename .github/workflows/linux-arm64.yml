@@ -186,7 +186,7 @@ jobs:
       # the cached trees (a key may not exceed 512 characters). Keyed by
       # architecture as well: the Csmith cache holds a built binary.
       - name: Cache the pinned sources
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ matrix.cache }}
           key: ${{ matrix.key }}-${{ hashFiles('scripts/fetch_*.sh') }}-${{ runner.os }}-${{ runner.arch }}
