@@ -403,17 +403,21 @@ The rebuild reuses hcc's tests unchanged, so the two builds can be compared. The
 
 | Taken from hcc | What it is | Notes |
 | --- | --- | --- |
-| `tests/` (the `.c` programs and `gnu/`, `hosted/`, `posix/`, `xabi/`, `arm64/`, `inc/`, `data/`) | the differential harness programs | written for hcc but compared against Clang, so they work for any compiler; `tests/adversarial/` is held out (12.2) |
-| `harness/` runners | `run_tests.py`, `run_wacc.py`, `run_gcc_torture.py`, `run_csmith.py`, `run_conformance.py`, `run_doom.py`, `run_lua.py`, `run_sqlite.py`, `run_quickjs.py`, `run_zlib.py`, `run_onetrueawk.py`, `run_awk_extra.py`, `run_cross.py` and the platform runners | the rebuild starts with **empty** known-failure lists of its own; hcc's lists are kept for comparison only |
+| `tests/` (the `.c` programs and `gnu/`, `hosted/`, `posix/`, `xabi/`, `arm64/`, `inc/`, `data/`) | the differential harness programs | written for hcc but compared against Clang, so they work for any compiler; `tests/adversarial/` and the regression tests listed in 12.2 are held out until M3 |
+| `harness/` runners | `run_tests.py`, `run_wacc.py`, `run_gcc_torture.py`, `run_csmith.py`, `run_conformance.py`, `run_doom.py`, `run_lua.py`, `run_sqlite.py`, `run_quickjs.py`, `run_zlib.py`, `run_onetrueawk.py`, `run_awk_extra.py`, `run_cross.py` and the platform runners | the runners are used unchanged; the known-failure lists are not (see below) |
 | `conformance/` | the C11 probes and diagnostic cases | the rebuild adds its own probes beside them and never edits these |
 | `scripts/fetch_*.sh` | the fetch scripts, with their pins and checksums | |
 | `tools/csmith_campaign.py`, `tools/yarpgen_campaign.py`, `tools/abi_fuzz.py`, `tools/layout_fuzz.py`, `tools/constfold_fuzz.py`, `tools/perf_guard.py`, `tools/perf_scorecard.py`, `tools/bench_compile.py`, `tools/platform/` | campaign, fuzzing and timing tools | black-box tools that drive a compiler through its command line |
+
+**Known-failure lists are the rebuild's own.** hcc's lists (`harness/*known_failures*.txt`, `conformance/known_gaps.txt`) are kept for comparison only. The rebuild starts with empty lists in its own directory outside `testkit/`, pointed to by the runners' options or environment variables, or, where a runner reads a fixed path, by replacing that one list file and recording the replacement in `testkit/SHA256SUMS`. Every entry needs an issue and a reason, and once a suite's milestone gate has passed, its list only shrinks.
 
 Not reused, because they test hcc's insides rather than its behaviour: hcc's unit tests (they live inside `src/`), `harness/dumps/` (hcc's own dump formats; the rebuild writes its own golden dumps) and `fuzz/` (compiler code). The rebuild writes its own versions of these.
 
 ### 12.2 Held-out material
 
 The adversarial kits v0.6 to v0.9 are held out. The builder does not read their cases before the milestone gate that runs them (M3), so that their first-run scores mean the same as hcc's. They are run, frozen, then fixed. After M3 they are ordinary regression suites. Earlier kits v0.1 to v0.5 are contained in v0.6, which grew from 87 cases to 724.
+
+hcc's regression tests for the kits' failures are held out with them, because they reveal the cases: `tests/128` to `tests/136`, `tests/157` to `tests/159`, and `tests/hosted/01` to `tests/hosted/04` (added in pull requests 21 to 25 and 58 to 60), and `docs/adversarial/`. They join the test kit at M3.
 
 ### 12.3 Fetched suites and programs
 
@@ -477,7 +481,7 @@ The comparison is one report, `reports/rebuild-comparison/README.md` in the rebu
 
 - One milestone is several small pull requests, each with a clear purpose, its tests and its documentation.
 - Every bug gets a regression test that fails first, then the fix.
-- Known-failure lists only shrink. Adding an entry needs a reason in the pull request and an issue.
+- Known-failure lists only shrink once a suite's milestone gate has passed (12.1). Adding an entry needs a reason in the pull request and an issue.
 - A refactor that should not change output proves it: the IR of the whole test corpus is byte-identical before and after (hcc did this over 13,148 compilations).
 - Gaps and bugs are GitHub Issues with labels, not lists inside `STATUS.md`.
 
@@ -504,7 +508,8 @@ The comparison is one report, `reports/rebuild-comparison/README.md` in the rebu
 | Risk | Effect | Mitigation |
 | --- | --- | --- |
 | The builder reads hcc's source, or hcc's code leaks in through memory or notes | the comparison is unfair and the rebuild is not independent | rule 4.3; the builder starts with no memory of hcc; the provenance section; the owner may ask for an outside provenance review |
-| The builder tunes to the held-out kits | first-run scores look better than they are | the kits are held out until M3 (12.2); frozen first runs; new reviewer rounds at every milestone |
+| The builder tunes to the held-out kits | first-run scores look better than they are | the kits and hcc's regression tests for them are held out until M3 (12.2); frozen first runs; new reviewer rounds at every milestone |
+| This specification's lessons point at the defect families the kits found (for example record layout) | the rebuild's first-run scores are partly informed by hcc's results | intended: applying lessons is the experiment; the comparison report says so next to the scores |
 | The early quality gates slow the first milestones | the rebuild takes longer, and the comparison favours hcc on time | gates start at realistic levels (80% line coverage in M1) and rise; their time cost is measured, not hidden |
 | CI cost grows with the gates from day one | the budget is exceeded | the limits in 7.2; expensive work weekly or local; a public repository if the owner agrees; the monthly report |
 | CodeRabbit's rate limit and GitHub errors stall merges | idle time | small pull requests, batched review requests, the web-page fallback of 3.3 |
