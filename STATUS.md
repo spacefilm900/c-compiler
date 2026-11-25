@@ -6,6 +6,19 @@ The program is `hcc`, the Haviland C Compiler. `make` writes `build/hcc`.
 
 Hardening (step 14 of `PLAN.md`) is closed: fuzzing, the large Csmith and YARPGen campaigns, coverage and mutation testing, QuickJS and zlib (pull requests 63–67). The current phase is step 15, Release 1.0: version numbers and `hcc --version`, a changelog, a user guide, clearer `--help` and messages, automatic linking of `lib/threads.c`, tagged release builds with checksums, and the project files. Issue #68 (GNU forward-declared enums) is fixed first. A tag or release is made only with the owner's approval.
 
+## Pre-tag audit (before v1.0.0)
+
+The last pull request before the tag answers an outside review of the 1.0 candidate:
+
+- Multi-character constants are accepted (6.4.4.4p10), with GCC's and Clang's value and warning.
+- LANGUAGE.md says `[a ... b]` needs `-std=gnu11`. `tools/check_docs.py` compiles the documentation's language claims in CI.
+- DESIGN.md states the tie-break rule as it is applied: the standard, then the ABI documents, then a written-down manual decision, with Clang as the CI oracle. It also gains an "After 1.0" section.
+- The README gives the scope and denominator of each figure, and has a per-target platform table and a clean-room provenance section. The release notes carry the same information.
+- `docs/C11_CONFORMANCE.md` audits N1570 clauses 5 to 7. It has 308 probes (54 programs and 254 diagnostic cases); 306 pass and 2 are a known gap. The audit found and fixed two wrong behaviours: macro rescanning past the end of a replacement list, and the 6.9.2p2 tentative definition `int a[];`. It also found 13 accepted constraint violations: 11 now give diagnostics, and the 2 inline-definition cases of 6.7.4p3 remain a known gap. CI runs the probes.
+- `reports/release-1.0/README.md` records the rerun of every suite on the release-candidate commit.
+
+Unit tests: 366. Harness: 230/230.
+
 ## Current milestone
 
 **Flexible array members, `u`/`U`/`u8` literals, `long double` aggregate returns, and nested bit-field initializers, on top of variadic definitions, `goto`, designated initializers, bit-fields, and `volatile`.** A function may be defined with `...`. `<stdarg.h>` implements `va_list`, `va_start`, `va_arg`, `va_end`, and `va_copy` with `__builtin_va_list` and the matching builtins. `va_arg` follows the System V AMD64 register-save area: general registers at offsets 0..48, XMM registers at 48..176, then the overflow area. `float` promotes to `double`. An aggregate uses the same classification as a call. `llvm.va_start`, `llvm.va_end`, and `llvm.va_copy` are emitted; LLVM's `va_arg` instruction is not. `goto` and labels are function scope, including a forward jump. Designated initializers (`.field` and `[const]`) are accepted, and the next positional initializer continues at the next subobject. Bit-fields pack least-significant bit first in a storage unit of the declared type. `volatile` is `load volatile` and `store volatile`.

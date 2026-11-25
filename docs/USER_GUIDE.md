@@ -209,7 +209,14 @@ The C11 feature macros are described in section 9.
 ## 5. Dialects: -std=c11 and -std=gnu11
 
 **`-std=c11`** (the default) is ISO C11 (N1570). Code that breaks a C11
-constraint is an error.
+constraint is an error. [C11_CONFORMANCE.md](C11_CONFORMANCE.md) is a
+clause-by-clause audit of clauses 5 to 7 and lists the one known gap.
+
+A **multi-character character constant** such as `'ab'` is accepted with a
+warning. Its value is implementation-defined (6.4.4.4p10); hcc gives the
+value GCC and Clang give: each byte is shifted in from the right and the
+last four are kept, so `'ab'` is `0x6162`. `L'ab'`, `u'ab'` and `U'ab'`
+are errors, as in Clang.
 
 C11 makes some features optional. hcc supports all of them except complex
 numbers: variable-length arrays, `_Atomic` with `<stdatomic.h>`, and
@@ -330,8 +337,10 @@ prog.c:4:12: error: use of undeclared identifier 'cuont'
            ^
 ```
 
-A message in an included header names that header. Warnings (only GNU
-extensions produce them) do not stop compilation. On an error the output
+A message in an included header names that header. Warnings do not stop
+compilation. Most come from GNU extensions; strict C11 warns only for a
+multi-character constant and for a file-scope `int a[];` that is never
+given a size (it becomes one element, 6.9.2). On an error the output
 file is not created.
 
 | Exit status | Meaning |
@@ -357,6 +366,9 @@ file is not created.
   (section 5), a non-ASCII character is an error; Clang's treatment of
   Unicode spaces such as U+00A0 as white space is not copied.
 - **Label addresses.** `&&a - &&b` is not supported.
+- **Inline definitions.** An inline definition of an external function
+  that defines a modifiable `static` object, or uses an identifier with
+  internal linkage, is not diagnosed (C11 6.7.4p3 requires a diagnostic).
 - **Platforms.** The targets in section 6 only. A pointer is 64 bits on all
   of them.
 - **A GNU forward-declared enum completed inside a function body** counts as
