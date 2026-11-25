@@ -7,16 +7,10 @@ pub(super) fn default_system_dirs() -> Vec<PathBuf> {
     system_dirs_for(Target::build_default(), None)
 }
 
-/// The `#include <...>` search list for `target`.
-///
-/// The compiler's own headers (stddef.h, stdarg.h, stdbool.h, limits.h,
-/// float.h) come before the C library, the same way a hosted compiler
-/// searches its builtin include directory first. The C library is the
-/// host's on x86_64 Linux and AArch64 Linux (the Debian/Ubuntu multiarch
-/// cross directory when compiling for AArch64 on another host). For macOS
-/// it is the SDK: `sysroot` (`-isysroot`), else `$SDKROOT`, else, on a Mac,
-/// the path `xcrun --show-sdk-path` prints.
-pub fn system_dirs_for(target: Target, sysroot: Option<&Path>) -> Vec<PathBuf> {
+/// The compiler's own header directory (`include/`), as a list of at most
+/// one: `./include`, the source tree's, or the first `include/` above the
+/// executable that has every header the compiler provides.
+pub fn compiler_include_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     push_compiler(&mut dirs, PathBuf::from("include"));
     push_compiler(
@@ -31,6 +25,20 @@ pub fn system_dirs_for(target: Target, sysroot: Option<&Path>) -> Vec<PathBuf> {
             dir = current.parent().map(Path::to_path_buf);
         }
     }
+    dirs
+}
+
+/// The `#include <...>` search list for `target`.
+///
+/// The compiler's own headers (stddef.h, stdarg.h, stdbool.h, limits.h,
+/// float.h) come before the C library, the same way a hosted compiler
+/// searches its builtin include directory first. The C library is the
+/// host's on x86_64 Linux and AArch64 Linux (the Debian/Ubuntu multiarch
+/// cross directory when compiling for AArch64 on another host). For macOS
+/// it is the SDK: `sysroot` (`-isysroot`), else `$SDKROOT`, else, on a Mac,
+/// the path `xcrun --show-sdk-path` prints.
+pub fn system_dirs_for(target: Target, sysroot: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs = compiler_include_dirs();
     let mut library: Vec<PathBuf> = Vec::new();
     match target {
         Target::X86_64Linux => {

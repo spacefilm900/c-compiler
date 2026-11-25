@@ -1,9 +1,15 @@
 [package]
 name = "hcc"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 publish = false
-description = "Haviland C Compiler (hcc): a clean-room C subset compiler that emits textual LLVM IR"
+description = "Haviland C Compiler (hcc): a clean-room C11 compiler that emits textual LLVM IR"
+authors = ["Keith Haviland"]
+license = "MIT"
+repository = "https://github.com/spacefilm900/c-compiler"
+readme = "README.md"
+rust-version = "1.85"
+build = "build.rs"
 
 [[bin]]
 name = "hcc"

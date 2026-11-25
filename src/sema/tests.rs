@@ -3328,6 +3328,23 @@ fn call_and_va_start_constraints() {
     );
 }
 
+#[test]
+fn label_address_differences_name_the_limitation() {
+    let dialect = crate::Dialect::Gnu11;
+    let source = "int main(void) { a: b: return (int)(&&a - &&b); }";
+    let tokens = lex(source, "gnu.c").unwrap();
+    let mut unit = crate::parser::parse_dialect(&tokens, "gnu.c", dialect).unwrap();
+    let err = analyze_dialect(&mut unit, "gnu.c", &tokens, dialect)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("differences between label addresses are not supported"),
+        "{err}"
+    );
+    // A label address is still a `void *` elsewhere.
+    analyzed_gnu("int main(void) { void *p = &&a; a: return p == &&a; }");
+}
+
 /// Issue #68: a GNU forward-declared enum is an incomplete type until its
 /// definition (GCC manual, "Incomplete `enum` Types"), then the enumerated
 /// type everywhere, including through earlier typedefs and pointers. The

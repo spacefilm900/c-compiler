@@ -1,0 +1,12 @@
+# Dependabot version updates: weekly pull requests for the pinned GitHub
+# Actions in .github/workflows and for the Cargo dependencies.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"

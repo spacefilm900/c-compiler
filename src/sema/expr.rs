@@ -619,6 +619,15 @@ impl Sema<'_> {
             return Ok(left_ty);
         }
         if op == BinOp::Sub && left_ty.is_pointer() && right_ty.is_pointer() {
+            // GNU label addresses (`&&a - &&b`, used for compact dispatch
+            // tables) are `void *`; their difference is not implemented.
+            if matches!(left, Expr::LabelAddr { .. }) || matches!(right, Expr::LabelAddr { .. }) {
+                return self.err(
+                    line,
+                    column,
+                    "differences between label addresses are not supported",
+                );
+            }
             if !loose_pointers(&left_ty, &right_ty) {
                 return self.err(
                     line,
