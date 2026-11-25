@@ -74,6 +74,12 @@ jobs:
           make
           python3 harness/run_tests.py
 
+      - name: C11 conformance probes and documentation claims
+        run: |
+          set -euo pipefail
+          python3 harness/run_conformance.py
+          python3 tools/check_docs.py
+
       - name: Csmith campaign script tests
         run: python3 -m unittest tools/test_csmith_campaign.py tools/test_run_doom.py tools/test_run_lua.py tools/test_run_quickjs.py tools/test_run_sqlite.py tools/test_perf_tools.py tools/test_abi_fuzz.py tools/test_hardening_tools.py
 
