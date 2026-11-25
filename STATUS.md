@@ -2,7 +2,20 @@
 
 The program is `hcc`, the Haviland C Compiler. `make` writes `build/hcc`.
 
-## Next phase: Release 1.0
+## Release 1.0.1 (in preparation)
+
+v1.0.0 was released on 2026-11-25 from `d848f46`
+(https://github.com/spacefilm900/c-compiler/releases/tag/v1.0.0). 1.0.1 is
+being prepared as a bug-fix release (`Cargo.toml` 1.0.1,
+`docs/release-notes/v1.0.1.md`). It fixes one missing diagnostic: in a K&R
+definition, a later declaration in the parameter declaration list could
+take the address of a `register` parameter, as in
+`void f(r, a) register int r; int a[sizeof &r]; {}` (C11 6.5.3.2p1). The
+download instructions now use `SHA256SUMS`, because the release publishes
+no per-archive `.sha256` files. The next step in `PLAN.md` is step 16, an
+improved specification for a fresh rebuild.
+
+## Release 1.0
 
 Hardening (step 14 of `PLAN.md`) is closed: fuzzing, the large Csmith and YARPGen campaigns, coverage and mutation testing, QuickJS and zlib (pull requests 63–67). The current phase is step 15, Release 1.0: version numbers and `hcc --version`, a changelog, a user guide, clearer `--help` and messages, automatic linking of `lib/threads.c`, tagged release builds with checksums, and the project files. Issue #68 (GNU forward-declared enums) is fixed first. A tag or release is made only with the owner's approval.
 
@@ -1279,7 +1292,7 @@ zlib 1.3.1 (pinned, SHA-256 checked by `scripts/fetch_zlib.sh`) builds with hcc 
 
 ## Release 1.0 (step 15), release preparation
 
-Version **1.0.0** (`Cargo.toml`). `hcc --version` prints the version, the Git commit (from `build.rs`, or `HCC_COMMIT`), the default target, the six targets and the LLVM requirement. `hcc --help` is grouped by topic and lists the exit statuses. Command-line errors print one reason (`hcc: error: unknown option '-x'`, `missing argument to '-o'`, `no input file`, `more than one input file`, `'-O2' is a link option; it needs --link`) and exit 2. Diagnostics print the source line and a caret under the column (`-fno-caret-diagnostics` turns that off). `--link` (`src/link.rs`) compiles each `.c` input to IR in a new private temporary directory, keeps inputs and Clang options in command-line order, and links the IR and the other inputs with Clang (`$HCC_CLANG` or `clang`, with the target's triple), passing `-O*`, `-l`, `-L`, `-Wl,`, `-pthread` and `-static`; when the IR declares a `<threads.h>` function it adds `-pthread` on POSIX targets and compiles and links `lib/threads.c` where the target's C library has no `<threads.h>` (macOS, Windows, Linux without it), the same choice `include/threads.h` makes. Checked locally: a two-file program with a `<threads.h>` worker, and the shim path through a sysroot without `threads.h` (the runtime's `thrd_create` linked in). New files: `CHANGELOG.md` (Keep a Changelog), `docs/USER_GUIDE.md`, `CONTRIBUTING.md`, `SECURITY.md`, `docs/release-notes/v1.0.0.md`, and `.github/workflows/release.yml`: on a `v*` tag it builds static musl Linux x86-64 and arm64 binaries, a macOS arm64 binary and a Windows x64 (MSVC) binary, smoke-tests each archive (`--version`, IR, `--link` hello world and a `<threads.h>` program), and uploads one `release-bundle` artifact with the archives and `SHA256SUMS`; the workflow only reads the repository, and the GitHub release is created by hand from the bundle (`docs/RELEASING.md`). By hand, or on a pull request that changes the workflow, it does the same dry run (about $0.37 a run). `LICENSE` is MIT, Copyright (c) 2026 Keith Haviland. Tagging `v1.0.0` and publishing the draft release are the owner's decision.
+Version **1.0.1** (`Cargo.toml`; 1.0.0 was released on 2026-11-25). `hcc --version` prints the version, the Git commit (from `build.rs`, or `HCC_COMMIT`), the default target, the six targets and the LLVM requirement. `hcc --help` is grouped by topic and lists the exit statuses. Command-line errors print one reason (`hcc: error: unknown option '-x'`, `missing argument to '-o'`, `no input file`, `more than one input file`, `'-O2' is a link option; it needs --link`) and exit 2. Diagnostics print the source line and a caret under the column (`-fno-caret-diagnostics` turns that off). `--link` (`src/link.rs`) compiles each `.c` input to IR in a new private temporary directory, keeps inputs and Clang options in command-line order, and links the IR and the other inputs with Clang (`$HCC_CLANG` or `clang`, with the target's triple), passing `-O*`, `-l`, `-L`, `-Wl,`, `-pthread` and `-static`; when the IR declares a `<threads.h>` function it adds `-pthread` on POSIX targets and compiles and links `lib/threads.c` where the target's C library has no `<threads.h>` (macOS, Windows, Linux without it), the same choice `include/threads.h` makes. Checked locally: a two-file program with a `<threads.h>` worker, and the shim path through a sysroot without `threads.h` (the runtime's `thrd_create` linked in). New files: `CHANGELOG.md` (Keep a Changelog), `docs/USER_GUIDE.md`, `CONTRIBUTING.md`, `SECURITY.md`, `docs/release-notes/v1.0.0.md`, and `.github/workflows/release.yml`: on a `v*` tag it builds static musl Linux x86-64 and arm64 binaries, a macOS arm64 binary and a Windows x64 (MSVC) binary, smoke-tests each archive (`--version`, IR, `--link` hello world and a `<threads.h>` program), and uploads one `release-bundle` artifact with the archives and `SHA256SUMS`; the workflow only reads the repository, and the GitHub release is created by hand from the bundle (`docs/RELEASING.md`). By hand, or on a pull request that changes the workflow, it does the same dry run (about $0.37 a run). `LICENSE` is MIT, Copyright (c) 2026 Keith Haviland. Tagging `v1.0.0` and publishing the draft release are the owner's decision.
 
 ## Hardening (step 14), first campaign
 

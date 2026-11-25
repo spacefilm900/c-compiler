@@ -570,6 +570,9 @@ mod tests {
             ("inline int helper(void), main(void);", "'main' cannot be declared 'inline'"),
             ("void f(void) { _Noreturn int main(void); }", "'main' cannot be declared '_Noreturn'"),
             ("void f(register int r, int a[sizeof &r]);", "address of register variable 'r'"),
+            ("void f(r, a) register int r; int a[sizeof &r]; {}", "address of register variable 'r'"),
+            ("void f(r, a) register int r, a[sizeof &r]; {}", "address of register variable 'r'"),
+            ("void f(r, a) register int r; int *a; { a = &r; }", "address of register variable 'r'"),
             ("void f(void) { register int r = 0; int *p = &_Generic(0, int: r); (void)p; }", "address of register variable 'r'"),
             ("void f(void) { register int r = 0; int x = 0; int *p = &_Generic(0, double: x, default: _Generic(0, int: r, default: x)); (void)p; }", "address of register variable 'r'"),
             ("struct s { int m; }; void f(void) { register struct s v; int *p = &_Generic(0, int: v).m; (void)p; }", "address of register variable 'v'"),
@@ -590,6 +593,9 @@ mod tests {
             "typedef int F(void); F f; int f(void) { return 0; }",
             // The typedef is only the function a returned pointer points to.
             "typedef int F(void); F *make(void) { return 0; }",
+            // A K&R parameter that is not register may have its address taken.
+            "void f(r, a) int r; int a[sizeof &r]; { (void)a; }",
+            "void f(r, a) register int r; int *a; { int s; a = &s; (void)r; }",
             "typedef int F(void); F *(make)(void) { return 0; }",
             "int main(void); void g(void) { int main(void); }",
             // An unselected association may name a register object.

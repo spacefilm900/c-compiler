@@ -1158,6 +1158,11 @@ impl Parser<'_> {
                     named.line,
                     named.column,
                 )?;
+                // C11 6.5.3.2p1: later declarators in the list may not take
+                // its address either (`int a[sizeof &r];`).
+                if specs.register {
+                    self.mark_register(&named.name);
+                }
                 if self.match_kind(TokenKind::Comma) {
                     continue;
                 }

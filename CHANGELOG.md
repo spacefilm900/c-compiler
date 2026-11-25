@@ -9,7 +9,21 @@ for each target.
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-11-24
+## [1.0.1] - Unreleased
+
+### Fixed
+
+- In an old-style (K&R) definition, a later declaration in the
+  parameter declaration list can no longer take the address of a
+  `register` parameter (C11 6.5.3.2p1). For example,
+  `void f(r, a) register int r; int a[sizeof &r]; {}` was accepted and is
+  now an error.
+- The user guide and SECURITY.md say to check a download against
+  `SHA256SUMS`. They no longer mention per-archive `.sha256` files, which
+  the release does not publish.
+- The date of 1.0.0 is now 2026-11-25, the day it was released.
+
+## [1.0.0] - 2026-11-25
 
 The first release. hcc is a clean-room C11 compiler written in Rust that
 emits textual LLVM IR, with builds for Linux x86-64, Linux arm64, macOS on
@@ -151,5 +165,6 @@ milestones below summarise it, with the pull requests that made them.
   `_Generic`, `_Static_assert`, compound literals and Unicode literals;
   the Writing a C Compiler test suite passes.
 
-[Unreleased]: https://github.com/spacefilm900/c-compiler/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/spacefilm900/c-compiler/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/spacefilm900/c-compiler/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/spacefilm900/c-compiler/releases/tag/v1.0.0

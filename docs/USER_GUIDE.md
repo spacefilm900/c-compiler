@@ -13,7 +13,7 @@ hcc, the Haviland C Compiler, compiles C11 to textual LLVM IR. LLVM, through
 Clang, turns the IR into machine code. This guide covers installing hcc,
 compiling and linking programs, the options, the language dialects, the
 targets, the known limitations, and what to do when something goes wrong.
-It describes version 1.0.0; `hcc --version` prints the version you have.
+It describes version 1.0.1; `hcc --version` prints the version you have.
 
 - [1. Install](#1-install)
 - [2. First program](#2-first-program)
@@ -54,22 +54,22 @@ IR alone needs nothing else.
 
 ### From a release archive
 
-Each release has one archive per platform, with a `.sha256` file and a
-`SHA256SUMS` list:
+Each release has one archive per platform and a `SHA256SUMS` list of
+their checksums:
 
 | Archive | Runs on |
 | --- | --- |
-| `hcc-1.0.0-linux-x86_64.tar.gz` | 64-bit Intel/AMD Linux (static binary, any distribution) |
-| `hcc-1.0.0-linux-arm64.tar.gz` | 64-bit Arm Linux (static binary) |
-| `hcc-1.0.0-macos-arm64.tar.gz` | Macs with Apple Silicon (M1 or later), macOS 11 or later |
-| `hcc-1.0.0-windows-x86_64.zip` | 64-bit Windows 10 or later |
+| `hcc-1.0.1-linux-x86_64.tar.gz` | 64-bit Intel/AMD Linux (static binary, any distribution) |
+| `hcc-1.0.1-linux-arm64.tar.gz` | 64-bit Arm Linux (static binary) |
+| `hcc-1.0.1-macos-arm64.tar.gz` | Macs with Apple Silicon (M1 or later), macOS 11 or later |
+| `hcc-1.0.1-windows-x86_64.zip` | 64-bit Windows 10 or later |
 
 Check the download, then unpack it anywhere:
 
 ```sh
-sha256sum -c hcc-1.0.0-linux-x86_64.tar.gz.sha256   # macOS: shasum -a 256 -c ...
-tar -xzf hcc-1.0.0-linux-x86_64.tar.gz
-export PATH="$PWD/hcc-1.0.0-linux-x86_64/bin:$PATH"
+sha256sum -c SHA256SUMS --ignore-missing   # macOS: shasum -a 256 -c SHA256SUMS --ignore-missing
+tar -xzf hcc-1.0.1-linux-x86_64.tar.gz
+export PATH="$PWD/hcc-1.0.1-linux-x86_64/bin:$PATH"
 hcc --version
 ```
 
@@ -78,8 +78,8 @@ On Windows, unpack the `.zip` (Explorer's "Extract All", or
 current PowerShell session:
 
 ```powershell
-Expand-Archive hcc-1.0.0-windows-x86_64.zip -DestinationPath .
-$env:Path = "$PWD\hcc-1.0.0-windows-x86_64\bin;$env:Path"
+Expand-Archive hcc-1.0.1-windows-x86_64.zip -DestinationPath .
+$env:Path = "$PWD\hcc-1.0.1-windows-x86_64\bin;$env:Path"
 hcc --version
 ```
 
@@ -88,7 +88,7 @@ threads runtime in `lib/` next to its `bin/` directory.
 
 On macOS, a browser download is quarantined. If macOS refuses to open
 `hcc`, clear the flag once, from the directory you unpacked it in:
-`xattr -d com.apple.quarantine hcc-1.0.0-macos-arm64/bin/hcc`.
+`xattr -d com.apple.quarantine hcc-1.0.1-macos-arm64/bin/hcc`.
 
 ### From source
 

@@ -12,7 +12,7 @@ management, CI, automated code review, and structured test approaches
 including adversarial testing by another AI model, with regular human
 input at process level.
 
-**Version 1.0.0.** [User guide](docs/USER_GUIDE.md) ·
+**Version 1.0.1.** [User guide](docs/USER_GUIDE.md) ·
 [Language reference](docs/LANGUAGE.md) · [Changelog](CHANGELOG.md) ·
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) ·
 [Design](DESIGN.md) · [Licence: MIT](LICENSE)
