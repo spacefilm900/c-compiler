@@ -517,12 +517,45 @@ impl Sema<'_> {
                         continue;
                     };
                     let info = var.global.as_ref().expect("global");
-                    if incomplete_array.is_none()
-                        && var.ty.is_array()
+                    let mut ty = var.ty.clone();
+                    if var.ty.is_array()
                         && var.ty.array_len().is_none()
                         && !matches!(info.state, GlobalState::Declared)
                     {
-                        incomplete_array = Some(var.name.clone());
+                        // C11 6.9.2p2 and EXAMPLE 2: a tentative definition
+                        // of an array of unknown size with external linkage
+                        // that is still incomplete at the end of the unit
+                        // gets one element from the implicit `= {0}`. With
+                        // internal linkage the type must not be incomplete
+                        // (6.9.2p3).
+                        match one_element(&var.ty) {
+                            Some(done)
+                                if matches!(info.state, GlobalState::Tentative)
+                                    && info.linkage == Linkage::External =>
+                            {
+                                let (line, column) = unit
+                                    .decls
+                                    .iter()
+                                    .find_map(|decl| match decl {
+                                        TopDecl::Global(global) if &global.name == name => {
+                                            Some((global.line, global.column))
+                                        }
+                                        _ => None,
+                                    })
+                                    .unwrap_or((1, 1));
+                                self.warn(
+                                    line,
+                                    column,
+                                    "tentative array definition assumed to have one element",
+                                );
+                                ty = done;
+                            }
+                            _ => {
+                                if incomplete_array.is_none() {
+                                    incomplete_array = Some(var.name.clone());
+                                }
+                            }
+                        }
                     }
                     let init = match &info.state {
                         GlobalState::Declared => None,
@@ -535,9 +568,13 @@ impl Sema<'_> {
                     // for file-scope declarations.
                     attrs.thread_local = attrs.thread_local || info.thread_local;
                     attrs.align = attrs.align.max(info.alignas);
+                    let init = match (&info.state, init) {
+                        (GlobalState::Tentative, Some(_)) => Some(zero_const(&ty)),
+                        (_, init) => init,
+                    };
                     globals.push(IrGlobal {
                         name: var.name.clone(),
-                        ty: var.ty.clone(),
+                        ty,
                         linkage: info.linkage,
                         init,
                         attrs,
@@ -1185,6 +1222,19 @@ impl Sema<'_> {
     pub(super) fn check_typedef(&mut self, decl: &mut VarDecl) -> Result<(), Diagnostic> {
         self.check_atomic_types(&decl.ty, decl.line, decl.column)?;
         self.check_vla_sizes(&decl.ty, decl.line, decl.column)
+    }
+}
+
+/// `ty`, an array of unknown size, completed with one element.
+fn one_element(ty: &CType) -> Option<CType> {
+    match ty {
+        CType::Array(elem, ArrayLen::Incomplete) => {
+            Some(CType::Array(elem.clone(), ArrayLen::Const(1)))
+        }
+        CType::Qualified(quals, inner) => {
+            Some(CType::Qualified(*quals, Box::new(one_element(inner)?)))
+        }
+        _ => None,
     }
 }
 

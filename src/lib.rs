@@ -547,6 +547,37 @@ mod tests {
     }
 
     #[test]
+    fn tentative_array_definition_gets_one_element() {
+        // C11 6.9.2p5 EXAMPLE 2.
+        let out = compile("int i[]; const int c[]; int *p = i;", Dialect::C11).unwrap();
+        assert!(
+            out.ir.contains("@i = global [1 x i32] zeroinitializer"),
+            "{}",
+            out.ir
+        );
+        assert!(
+            out.ir.contains("@c = constant [1 x i32] zeroinitializer"),
+            "{}",
+            out.ir
+        );
+        let text: Vec<String> = out.warnings.iter().map(|w| w.to_string()).collect();
+        assert_eq!(
+            text.iter()
+                .filter(|w| w.contains("tentative array definition assumed to have one element"))
+                .count(),
+            2,
+            "{text:?}"
+        );
+        // A later definition still completes it, and internal linkage
+        // needs a complete type (6.9.2p3).
+        let out = compile("int i[]; int i[3] = {1};", Dialect::C11).unwrap();
+        assert!(out.ir.contains("@i = global [3 x i32]"), "{}", out.ir);
+        assert!(out.warnings.is_empty());
+        assert!(compile("static int s[];", Dialect::C11).is_err());
+        assert!(compile("extern int e[]; int *q = e;", Dialect::C11).is_ok());
+    }
+
+    #[test]
     fn multi_character_constants_warn() {
         let out = compile("int a = 'ab'; int b = 'abcde'; int c = 'a';", Dialect::C11).unwrap();
         let text: Vec<String> = out.warnings.iter().map(|w| w.to_string()).collect();
