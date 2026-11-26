@@ -7,7 +7,7 @@ default, and on an Intel Mac `x86_64-apple-macos`. The general
 [user guide](USER_GUIDE.md) covers everything that is not Mac-specific.
 
 **The quickest start on Apple Silicon** is the release archive
-`hcc-1.0.0-macos-arm64.tar.gz` ([user guide section 1](USER_GUIDE.md#1-install)):
+`hcc-1.0.1-macos-arm64.tar.gz` ([user guide section 1](USER_GUIDE.md#1-install)):
 it holds a ready-built `bin/hcc`, so you need only the Xcode Command Line
 Tools (step 1 below), not Rust. On an Intel Mac, build hcc from source
 (step 2).

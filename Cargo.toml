@@ -1,6 +1,6 @@
 [package]
 name = "hcc"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 publish = false
 description = "Haviland C Compiler (hcc): a clean-room C11 compiler that emits textual LLVM IR"
