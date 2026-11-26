@@ -280,7 +280,7 @@ In hcc almost every real mistake was caught by comparison with an outside judge 
 | Performance | Clang's compile time and the compiled programs' run time | the budgets in 7.4 | every pull request (frontend), weekly (whole programs) |
 | Behaviour the standard leaves open | the standard, the ABI document, then a written decision (5.1) | recorded in `docs/LANGUAGE.md` with the reason | when the choice is made |
 
-**The harness is tested too.** Before the first compiler code, the differential harness is run with Clang itself as the compiler under test and must pass everything. The harness calls the compiler as `COMPILER INPUT.c -o OUTPUT.ll` and expects textual IR, and calls it with `-E` to preprocess, so `CC_UNDER_TEST` names a small adapter script rather than Clang itself: for a compile it runs `clang -S -emit-llvm` with the same input, options and output, and it passes `-E` and every other mode through to Clang unchanged. The adapter is the rebuild's own file and lives outside the read-only `testkit/` (for example `tools/clang_as_candidate.sh`). Seeded faults in the adapter (a wrong constant in the IR, a dropped diagnostic) must be caught. A harness that cannot fail proves nothing.
+**The harness is tested too.** Before the first compiler code, the differential harness is run with Clang itself as the compiler under test and must pass everything. The harness calls the compiler as `COMPILER INPUT.c -o OUTPUT.ll` and expects textual IR, and calls it with `-E` to preprocess, so `CC_UNDER_TEST` names a small adapter script rather than Clang itself: for a compile it runs `clang -S -emit-llvm` with the same input, options and output, adding `-std=c11 -pedantic-errors` when the call names no `-std` (Clang's own default is a GNU dialect, and the compiler's default is strict C11) and keeping an explicit `-std=gnu11`; it passes `-E` and every other mode through to Clang the same way. The adapter is the rebuild's own file and lives outside the read-only `testkit/` (for example `tools/clang_as_candidate.sh`). Seeded faults in the adapter (a wrong constant in the IR, a dropped diagnostic) must be caught. A harness that cannot fail proves nothing.
 
 ## 9. Quality tools in CI from the first milestone
 
@@ -295,7 +295,7 @@ hcc ran these tools for the first time in its quality phase (PLAN.md step 8) and
 | Line and branch coverage (`cargo llvm-cov`) | yes, on the unit tests and the harness | the full test set | at least 80% of lines in M1; 85% of lines and 75% of branches from M2; 92% and 83% by release (hcc 1.0: 92.7% and 83.4%). A pull request may not lower either by more than 0.5 points without a reason |
 | Mutation testing (`cargo-mutants`) | on the files the pull request changes, with the unit tests as the oracle and a 20-minute cap | the whole crate, monthly | at least 80% of viable mutants caught in changed files; the monthly whole-crate score is reported with its scope (hcc 1.0: 92.9% in 7 selected files) |
 | Fuzzing (`cargo-fuzz`) of the lexer, the parser and the whole frontend from M1, and of the preprocessor from M2 | 2 minutes per target, as a smoke test | 1 hour per target, weekly | no panic, no hang, no invalid IR from an accepted input |
-| Csmith and YARPGen | a fixed set of seeds (hcc: 40 Csmith seeds) | 3,000 Csmith and 2,000 YARPGen programs before each release | 0 mismatches, with generated, compared and mismatch counts reported together |
+| Csmith and YARPGen | a fixed set of Csmith seeds from M4, because hcc's runner compiles them with `-std=gnu11` and the preprocessor (hcc: 40 seeds) | 3,000 Csmith and 2,000 YARPGen programs before each release | 0 mismatches, with generated, compared and mismatch counts reported together |
 | Complexity and size report | yes | | the limits in 6.1 |
 | Sanitizers (ASan, UBSan, TSan) on compiled test programs | | weekly | no new findings |
 | Secret scanning (GitHub's own, or gitleaks as a black box) | yes | | clean |
@@ -353,7 +353,7 @@ The order differs from hcc's on purpose: all of C11 comes before the GNU layer a
 
 Integers, pointers, arrays, functions, control flow and simple structs, without a preprocessor: hcc's Stage 1.
 
-**Gates:** the WACC chapters that cover the subset pass with no known failures; the matching harness programs pass; every pull-request job of section 9 that applies to M1 is on and green (the preprocessor fuzz target starts in M2), with line coverage at least 80%; the fuzz smoke test of the M1 targets is clean; every compile's IR is verified; the first reviewer round is frozen and then fixed; no file is over 1,500 lines.
+**Gates:** the WACC chapters that cover the subset pass with no known failures; the matching harness programs pass; every pull-request job of section 9 that applies to M1 is on and green (the preprocessor fuzz target starts in M2, and the Csmith and YARPGen jobs in M4), with line coverage at least 80%; the fuzz smoke test of the M1 targets is clean; every compile's IR is verified; the first reviewer round is frozen and then fixed; no file is over 1,500 lines.
 
 ### M2: Preprocessor, types, headers and the ABI
 
@@ -365,13 +365,13 @@ The preprocessor, the full type system, floating types in every format, varargs,
 
 Everything in 5.1: `_Generic`, `_Static_assert`, `_Alignas` and `_Alignof`, compound literals, flexible array members, Unicode literals, universal character names and UTF-8 in identifiers, multi-character constants, trigraphs, `_Pragma`, K&R definitions, `<tgmath.h>`, `_Thread_local`, variable-length arrays, `_Atomic` and `<stdatomic.h>`, `<threads.h>` with its runtime for macOS and Windows, and the translation limits of 5.2.4.1.
 
-**Gates:** the conformance matrix is complete for clauses 5 to 7 and its probes pass [286 of 288; the 2 are the inline-definition gap of 6.7.4p3]; held-out kit v0.6 has its first run recorded, then passes 724 of 724 at `-O0` and `-O2` [hcc's first run of v0.6: 722 of 724]; held-out kits v0.7, v0.8 and v0.9 have their first runs recorded, then pass 65, 80 and 100 at both levels [hcc's first runs: 64 of 65, 76 of 80, 84 of 100]; the reviewer's own M3 round is frozen and fixed; the Csmith CI seeds pass.
+**Gates:** the conformance matrix is complete for clauses 5 to 7 and its probes pass [286 of 288; the 2 are the inline-definition gap of 6.7.4p3]; held-out kit v0.6 has its first run recorded, then passes 724 of 724 at `-O0` and `-O2` [hcc's first run of v0.6: 722 of 724]; held-out kits v0.7, v0.8 and v0.9 have their first runs recorded, then pass 65, 80 and 100 at both levels [hcc's first runs: 64 of 65, 76 of 80, 84 of 100]; the reviewer's own M3 round is frozen and fixed.
 
 ### M4: The GNU layer
 
 `-std=gnu11`, as in 5.1.
 
-**Gates:** GCC torture `execute` has 0 unexpected failures and at most 334 listed known failures of 1,746 executed [1,412 passed, 334 known]; strict mode still rejects every GNU feature, each with a strict-mode rejection test; a Csmith campaign of 2,000 seeds at `-O0` and `-O2` has 0 mismatches, with its counts reported in full.
+**Gates:** the Csmith CI seeds pass; GCC torture `execute` has 0 unexpected failures and at most 334 listed known failures of 1,746 executed [1,412 passed, 334 known]; strict mode still rejects every GNU feature, each with a strict-mode rejection test; a Csmith campaign of 2,000 seeds at `-O0` and `-O2` has 0 mismatches, with its counts reported in full.
 
 ### M5: Big programs
 
@@ -427,8 +427,8 @@ None of these is vendored. Each is fetched by script at a pin, checked against a
 | --- | --- | --- | --- |
 | Writing a C Compiler test suite (WACC) | commit `ae12014d2dec14488f3f80d14df4b6d8e4634d7d` | `scripts/fetch_wacc_tests.sh` | M1 |
 | GCC torture, `gcc.c-torture/execute` only | GCC `releases/gcc-15.2.0`, commit `5115c7e447fc07457443df874bf57840e8316d5f`, sparse checkout | `scripts/fetch_gcc_torture.sh` | measured from M2, gated at M4 |
-| Csmith | tag `csmith-2.3.0`, commit `30dccd73b78652c4719f36572994778a5b233a4e`, built from source | `scripts/fetch_csmith.sh` | M1 |
-| YARPGen | commit `a65fa1d79f9860546a858f14733a1621c9c01c84`, the one hcc's campaigns used | a new `scripts/fetch_yarpgen.sh` (hcc cloned it without a pin) | M2 |
+| Csmith | tag `csmith-2.3.0`, commit `30dccd73b78652c4719f36572994778a5b233a4e`, built from source | `scripts/fetch_csmith.sh` | M4 (it needs the preprocessor and `-std=gnu11`) |
+| YARPGen | commit `a65fa1d79f9860546a858f14733a1621c9c01c84`, the one hcc's campaigns used | a new `scripts/fetch_yarpgen.sh` (hcc cloned it without a pin) | M4 |
 | One True AWK | tag `20260426`, commit `5739fd79bcfc75ba7526773d0cf634521f8aca3c` | `scripts/fetch_onetrueawk.sh` | M2 |
 | Independent POSIX AWK Challenge | `spacefilm900/awk-posix-challenge`, tag `v0.6`, commit `b46ea063c6d25372b6a2010ac537ca19a8fd1b1e` | `scripts/fetch_awk_posix_challenge.sh` | M5 |
 | Shakespeare volume test | `spacefilm900/awk-volume-tests`, commit `46701e477fe48a7e0592b8022c77ac29c4114582` | `scripts/fetch_awk_volume.sh` | M5 |
