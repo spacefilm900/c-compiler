@@ -301,7 +301,7 @@ hcc ran these tools for the first time in its quality phase (PLAN.md step 8) and
 | Secret scanning (GitHub's own, or gitleaks as a black box) | yes | | clean |
 | Dependabot for the workflow actions | | weekly | each update reviewed like any pull request |
 
-A Csmith or YARPGen campaign passes only when there are 0 mismatches and at least as many valid comparisons, at each optimisation level, as hcc recorded for the same seed range (Csmith seeds 200001–203000: 2,775 at `-O0` and 2,774 at `-O2`; YARPGen seeds 1–2000: 1,651). A seed is a valid comparison only when both compilers accepted the program and both programs ran to a compared result. A candidate that rejects valid GNU C, a timeout, or a missing checksum is not a valid comparison and is not a pass. Generated, compared and mismatch counts are reported together. hcc's campaign scripts record a reject or a timeout without treating it as a mismatch, and they exit 0 even when no seed was compared, so the rebuild wraps them with a check that applies this gate; the reused scripts themselves are not edited.
+A Csmith or YARPGen campaign passes only when there are 0 mismatches and the valid-comparison count meets hcc's recorded baseline for the same seed range. Csmith's counts are per optimisation level (seeds 200001–203000: 2,775 at `-O0` and 2,774 at `-O2`). YARPGen's count is once per seed, not per level: a seed counts only when both `-O0` and `-O2` agree with the reference (seeds 1–2000: 1,651). The figure 1,651 is not applied to each level. If the rebuild wants YARPGen per-level counts, it records them and sets their baselines from its own hcc 1.0 runs. A seed is a valid comparison only when both compilers accepted the program and both programs ran to a compared result. A candidate that rejects valid GNU C, a timeout, or a missing checksum is not a valid comparison and is not a pass. Generated, compared and mismatch counts are reported together. hcc's campaign scripts record a reject or a timeout without treating it as a mismatch, and they exit 0 even when no seed was compared, so the rebuild wraps them with a check that applies this gate; the reused scripts themselves are not edited.
 
 The fuzz crate needs a nightly Rust toolchain. It lives outside the stable build, as in hcc, and only the fuzz job installs nightly.
 
@@ -389,7 +389,7 @@ Native runs on all six targets, using the target description that has existed si
 
 ### M7: Hardening
 
-**Gates:** at least 13 hours of fuzzing across the targets with 0 failures [13.2 hours, 11 million inputs, 0 failures]; Csmith 3,000 and YARPGen 2,000 programs at `-O0` and `-O2` with 0 mismatches and at least as many valid comparisons as hcc recorded [2,775 and 2,774 compared; 1,651 compared], with the counts in full; coverage at least 92% of lines and 83% of branches; the whole-crate mutation score reported with its scope; sanitizer runs clean.
+**Gates:** at least 13 hours of fuzzing across the targets with 0 failures [13.2 hours, 11 million inputs, 0 failures]; Csmith 3,000 programs at `-O0` and `-O2` with 0 mismatches and at least 2,775 and 2,774 valid comparisons at those levels, and YARPGen 2,000 programs with 0 mismatches and at least 1,651 valid comparisons counted once per seed (not per level), with the counts in full; coverage at least 92% of lines and 83% of branches; the whole-crate mutation score reported with its scope; sanitizer runs clean.
 
 ### M8: Release candidate and release
 
