@@ -12,6 +12,10 @@ management, CI, automated code review, and structured test approaches
 including adversarial testing by another AI model, with regular human
 input at process level.
 
+> hcc is the result of an experiment in agentic software engineering. It
+> is not intended to replace established supported compilers such as GCC
+> or Clang, and it is provided strictly "as is" under the MIT licence.
+
 **Version 1.0.1.** [User guide](docs/USER_GUIDE.md) ·
 [Language reference](docs/LANGUAGE.md) · [Changelog](CHANGELOG.md) ·
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) ·

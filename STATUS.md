@@ -12,7 +12,10 @@ definition, a later declaration in the parameter declaration list could
 take the address of a `register` parameter, as in
 `void f(r, a) register int r; int a[sizeof &r]; {}` (C11 6.5.3.2p1). The
 download instructions now use `SHA256SUMS`, because the release publishes
-no per-archive `.sha256` files. The next step in `PLAN.md` is step 16, an
+no per-archive `.sha256` files. The README and the 1.0.1 release notes
+include a notice that hcc is an experiment in agentic software
+engineering, is not intended to replace GCC or Clang, and is provided
+"as is" under the MIT licence. The next step in `PLAN.md` is step 16, an
 improved specification for a fresh rebuild.
 
 ## Release 1.0

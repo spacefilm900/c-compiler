@@ -23,6 +23,12 @@ for each target.
   the release does not publish.
 - The date of 1.0.0 is now 2026-11-25, the day it was released.
 
+### Changed
+
+- The README and the 1.0.1 release notes now include a notice that hcc
+  is an experiment in agentic software engineering, is not intended to
+  replace GCC or Clang, and is provided "as is" under the MIT licence.
+
 ## [1.0.0] - 2026-11-25
 
 The first release. hcc is a clean-room C11 compiler written in Rust that
