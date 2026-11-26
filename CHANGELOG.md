@@ -9,7 +9,7 @@ for each target.
 
 ## [Unreleased]
 
-## [1.0.1] - Unreleased
+## [1.0.1] - 2026-11-26
 
 ### Fixed
 
