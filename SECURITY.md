@@ -40,8 +40,8 @@ credits you unless you ask otherwise.
 
 ## Verifying a release
 
-Each release lists a SHA-256 checksum for every archive in `SHA256SUMS`,
-and each archive has its own `.sha256` file. Check them before use:
+Each release lists a SHA-256 checksum for every archive in one
+`SHA256SUMS` file. Check the archive you downloaded before use:
 
 ```sh
 sha256sum -c SHA256SUMS --ignore-missing     # Linux
