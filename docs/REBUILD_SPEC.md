@@ -280,7 +280,7 @@ In hcc almost every real mistake was caught by comparison with an outside judge 
 | Performance | Clang's compile time and the compiled programs' run time | the budgets in 7.4 | every pull request (frontend), weekly (whole programs) |
 | Behaviour the standard leaves open | the standard, the ABI document, then a written decision (5.1) | recorded in `docs/LANGUAGE.md` with the reason | when the choice is made |
 
-**The harness is tested too.** Before the first compiler code, the differential harness is run with Clang itself as the compiler under test and must pass everything. The harness calls the compiler as `COMPILER INPUT.c -o OUTPUT.ll` and expects textual IR, and calls it with `-E` to preprocess, so `CC_UNDER_TEST` names a small adapter script rather than Clang itself: for a compile it runs `clang -S -emit-llvm` with the same input, options and output, adding `-std=c11 -pedantic-errors` when the call names no `-std` (Clang's own default is a GNU dialect, and the compiler's default is strict C11) and keeping an explicit `-std=gnu11`; it passes `-E` and every other mode through to Clang the same way. The adapter is the rebuild's own file and lives outside the read-only `testkit/` (for example `tools/clang_as_candidate.sh`). Seeded faults in the adapter (a wrong constant in the IR, a dropped diagnostic) must be caught. A harness that cannot fail proves nothing.
+**The harness is tested too.** Before the first compiler code, the differential harness is run with Clang itself as the compiler under test and must pass everything. The harness calls the compiler as `COMPILER INPUT.c -o OUTPUT.ll` and expects textual IR, and calls it with `-E` to preprocess, so `CC_UNDER_TEST` names a small adapter script rather than Clang itself: for a compile it runs `clang -S -emit-llvm` with the same input, options and output, adding `-std=c11 -pedantic-errors` when the call names no `-std` (Clang's own default is a GNU dialect, and the compiler's default is strict C11), adding `-pedantic-errors` when the call already names `-std=c11` (Clang without that flag still accepts some GNU extensions), and keeping `-std=gnu11` unchanged; it passes `-E` and every other mode through to Clang the same way. The adapter is the rebuild's own file and lives outside the read-only `testkit/` (for example `tools/clang_as_candidate.sh`). Seeded faults in the adapter must be caught, including a wrong constant in the IR, a dropped diagnostic, and one that drops `-pedantic-errors` from an explicit `-std=c11` call on a GNU-extension input. A harness that cannot fail proves nothing.
 
 ## 9. Quality tools in CI from the first milestone
 
@@ -295,11 +295,13 @@ hcc ran these tools for the first time in its quality phase (PLAN.md step 8) and
 | Line and branch coverage (`cargo llvm-cov`) | yes, on the unit tests and the harness | the full test set | at least 80% of lines in M1; 85% of lines and 75% of branches from M2; 92% and 83% by release (hcc 1.0: 92.7% and 83.4%). A pull request may not lower either by more than 0.5 points without a reason |
 | Mutation testing (`cargo-mutants`) | on the files the pull request changes, with the unit tests as the oracle and a 20-minute cap | the whole crate, monthly | at least 80% of viable mutants caught in changed files; the monthly whole-crate score is reported with its scope (hcc 1.0: 92.9% in 7 selected files) |
 | Fuzzing (`cargo-fuzz`) of the lexer, the parser and the whole frontend from M1, and of the preprocessor from M2 | 2 minutes per target, as a smoke test | 1 hour per target, weekly | no panic, no hang, no invalid IR from an accepted input |
-| Csmith and YARPGen | a fixed set of Csmith seeds from M4, because hcc's runner compiles them with `-std=gnu11` and the preprocessor (hcc: 40 seeds) | 3,000 Csmith and 2,000 YARPGen programs before each release | 0 mismatches, with generated, compared and mismatch counts reported together |
+| Csmith and YARPGen | a fixed set of Csmith seeds from M4, because hcc's runner compiles them with `-std=gnu11` and the preprocessor (hcc: 40 seeds) | 3,000 Csmith and 2,000 YARPGen programs before each release | 0 mismatches and a minimum valid-comparison count, as defined below |
 | Complexity and size report | yes | | the limits in 6.1 |
 | Sanitizers (ASan, UBSan, TSan) on compiled test programs | | weekly | no new findings |
 | Secret scanning (GitHub's own, or gitleaks as a black box) | yes | | clean |
 | Dependabot for the workflow actions | | weekly | each update reviewed like any pull request |
+
+A Csmith or YARPGen campaign passes only when there are 0 mismatches and at least as many valid comparisons, at each optimisation level, as hcc recorded for the same seed range (Csmith seeds 200001–203000: 2,775 at `-O0` and 2,774 at `-O2`; YARPGen seeds 1–2000: 1,651). A seed is a valid comparison only when both compilers accepted the program and both programs ran to a compared result. A candidate that rejects valid GNU C, a timeout, or a missing checksum is not a valid comparison and is not a pass. Generated, compared and mismatch counts are reported together. hcc's campaign scripts record a reject or a timeout without treating it as a mismatch, and they exit 0 even when no seed was compared, so the rebuild wraps them with a check that applies this gate; the reused scripts themselves are not edited.
 
 The fuzz crate needs a nightly Rust toolchain. It lives outside the stable build, as in hcc, and only the fuzz job installs nightly.
 
@@ -371,7 +373,7 @@ Everything in 5.1: `_Generic`, `_Static_assert`, `_Alignas` and `_Alignof`, comp
 
 `-std=gnu11`, as in 5.1.
 
-**Gates:** the Csmith CI seeds pass; GCC torture `execute` has 0 unexpected failures and at most 334 listed known failures of 1,746 executed [1,412 passed, 334 known]; strict mode still rejects every GNU feature, each with a strict-mode rejection test; a Csmith campaign of 2,000 seeds at `-O0` and `-O2` has 0 mismatches, with its counts reported in full.
+**Gates:** the Csmith CI seeds pass; GCC torture `execute` has 0 unexpected failures and at most 334 listed known failures of 1,746 executed [1,412 passed, 334 known]; strict mode still rejects every GNU feature, each with a strict-mode rejection test; a Csmith campaign of 2,000 seeds at `-O0` and `-O2` has 0 mismatches and at least as many valid comparisons, at each level, as a rerun of the same seeds with hcc 1.0, with the counts reported in full.
 
 ### M5: Big programs
 
@@ -387,7 +389,7 @@ Native runs on all six targets, using the target description that has existed si
 
 ### M7: Hardening
 
-**Gates:** at least 13 hours of fuzzing across the targets with 0 failures [13.2 hours, 11 million inputs, 0 failures]; Csmith 3,000 and YARPGen 2,000 programs at `-O0` and `-O2` with 0 mismatches and the counts in full [2,775 and 2,774 compared; 1,651 compared]; coverage at least 92% of lines and 83% of branches; the whole-crate mutation score reported with its scope; sanitizer runs clean.
+**Gates:** at least 13 hours of fuzzing across the targets with 0 failures [13.2 hours, 11 million inputs, 0 failures]; Csmith 3,000 and YARPGen 2,000 programs at `-O0` and `-O2` with 0 mismatches and at least as many valid comparisons as hcc recorded [2,775 and 2,774 compared; 1,651 compared], with the counts in full; coverage at least 92% of lines and 83% of branches; the whole-crate mutation score reported with its scope; sanitizer runs clean.
 
 ### M8: Release candidate and release
 
