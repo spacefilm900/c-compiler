@@ -190,7 +190,7 @@ Rules:
 - **Size limits from the first commit:** no source file over 1,500 lines and no function over 120 lines or above cyclomatic complexity 25, unless the decision log records an exception and why. hcc had to split three files of over 6,000 lines (the largest 8,766) after the fact.
 - **One owner per rule.** Each C rule (for example "the address of a `register` object may not be taken") is checked in one place, named in the conformance matrix. hcc's late `register` findings came from the same rule being checked separately for parameters, K&R declarations and `_Generic`.
 - **Every phase can be dumped.** `--dump-tokens`, `--dump-pp`, `--dump-ast`, `--dump-sema` and `--dump-ir` exist from the milestone that adds the phase, with deterministic, documented formats and golden tests. hcc added them only in its quality phase.
-- **Deterministic output.** The same input and options give byte-identical IR, run to run and machine to machine. A CI check compiles a fixed set twice and compares.
+- **Deterministic output.** The same input, options and `SOURCE_DATE_EPOCH` give byte-identical IR, run to run and machine to machine (without `SOURCE_DATE_EPOCH`, `__DATE__` and `__TIME__` change with the clock). A CI check compiles a fixed set twice, with `SOURCE_DATE_EPOCH` set to the same fixed value both times, and compares.
 - **Design and history are separate.** `docs/ARCHITECTURE.md` and `docs/LANGUAGE.md` hold the current design; dated decisions go in `docs/DECISIONS.md`; `STATUS.md` holds the current state only. hcc's `DESIGN.md` and `STATUS.md` mixed the two, and `STATUS.md` grew to over 1,300 lines; an outside review flagged it.
 
 ### 6.2 Diagnostics model
@@ -211,7 +211,7 @@ The outside review of hcc noted that its v0.7 to v0.9 defects clustered in recor
 
 - **`target`** is one description per triple: type sizes and alignments (including `long`, `long double`, `wchar_t` and the signedness of plain `char`), the LLVM data layout and triple, predefined macros (taken from `clang -dM -E` as a black box), object-format details (symbol prefixes, section names), and the C library's header search. All six targets exist from the first milestone.
 - **`layout`** is the only place struct and union layout is decided: member offsets, bit-field storage units, padding, `_Alignas`, flexible array members, and GNU `packed` and `aligned`, with each target's rules (System V, AAPCS64, Apple arm64, MSVC). It produces one layout record that `sema` (`sizeof`, `offsetof`, constant initializers), `abi` (argument and return classification) and `irgen` (member access and static images) all read.
-- **Layout is checked automatically.** For every record in the test corpus, the offsets and size in `layout` must equal what Clang reports for the same target (a probe program that prints `sizeof`, `_Alignof` and `offsetof`) and what the emitted IR implies. A layout fuzzer, and random calling-convention pairs linking the compiler's objects with Clang's in both directions, run in CI from the milestone that adds structs.
+- **Layout is checked automatically.** For every record in the test corpus, the offsets and size in `layout` must equal what Clang reports for the same target (a probe program that prints `sizeof`, `_Alignof` and `offsetof`) and what the emitted IR implies. Bit-fields need their own oracle, because `offsetof` may not name a bit-field (C11 7.19p3): for every bit-field record, the bytes of initialized objects must equal those of Clang's build for the same target, and cross-compiler access tests read and write each bit-field from Clang-built code and from the compiler's code, in both directions. A layout fuzzer, and random calling-convention pairs linking the compiler's objects with Clang's in both directions, run in CI from the milestone that adds structs.
 
 ## 7. Budgets
 
@@ -280,7 +280,7 @@ In hcc almost every real mistake was caught by comparison with an outside judge 
 | Performance | Clang's compile time and the compiled programs' run time | the budgets in 7.4 | every pull request (frontend), weekly (whole programs) |
 | Behaviour the standard leaves open | the standard, the ABI document, then a written decision (5.1) | recorded in `docs/LANGUAGE.md` with the reason | when the choice is made |
 
-**The harness is tested too.** Before the first compiler code, the differential harness is run with Clang itself as the compiler under test (through `CC_UNDER_TEST`) and must pass everything, and seeded faults (a wrong constant, a missing diagnostic) must be caught. A harness that cannot fail proves nothing.
+**The harness is tested too.** Before the first compiler code, the differential harness is run with Clang itself as the compiler under test and must pass everything. The harness calls the compiler as `COMPILER INPUT.c -o OUTPUT.ll` and expects textual IR, and calls it with `-E` to preprocess, so `CC_UNDER_TEST` names a small adapter script rather than Clang itself: for a compile it runs `clang -S -emit-llvm` with the same input, options and output, and it passes `-E` and every other mode through to Clang unchanged. The adapter is the rebuild's own file and lives outside the read-only `testkit/` (for example `tools/clang_as_candidate.sh`). Seeded faults in the adapter (a wrong constant in the IR, a dropped diagnostic) must be caught. A harness that cannot fail proves nothing.
 
 ## 9. Quality tools in CI from the first milestone
 
@@ -294,7 +294,7 @@ hcc ran these tools for the first time in its quality phase (PLAN.md step 8) and
 | Differential harness, conformance probes, documentation-claims check | yes | | all pass, with known failures listed |
 | Line and branch coverage (`cargo llvm-cov`) | yes, on the unit tests and the harness | the full test set | at least 80% of lines in M1; 85% of lines and 75% of branches from M2; 92% and 83% by release (hcc 1.0: 92.7% and 83.4%). A pull request may not lower either by more than 0.5 points without a reason |
 | Mutation testing (`cargo-mutants`) | on the files the pull request changes, with the unit tests as the oracle and a 20-minute cap | the whole crate, monthly | at least 80% of viable mutants caught in changed files; the monthly whole-crate score is reported with its scope (hcc 1.0: 92.9% in 7 selected files) |
-| Fuzzing (`cargo-fuzz`) of the lexer, the preprocessor, the parser and the whole frontend | 2 minutes per target, as a smoke test | 1 hour per target, weekly | no panic, no hang, no invalid IR from an accepted input |
+| Fuzzing (`cargo-fuzz`) of the lexer, the parser and the whole frontend from M1, and of the preprocessor from M2 | 2 minutes per target, as a smoke test | 1 hour per target, weekly | no panic, no hang, no invalid IR from an accepted input |
 | Csmith and YARPGen | a fixed set of seeds (hcc: 40 Csmith seeds) | 3,000 Csmith and 2,000 YARPGen programs before each release | 0 mismatches, with generated, compared and mismatch counts reported together |
 | Complexity and size report | yes | | the limits in 6.1 |
 | Sanitizers (ASan, UBSan, TSan) on compiled test programs | | weekly | no new findings |
@@ -342,7 +342,7 @@ The order differs from hcc's on purpose: all of C11 comes before the GNU layer a
 
 - The repository with branch protection, the merge procedure of 3.3, CodeRabbit, Dependabot, secret scanning, `SECURITY.md`, `CONTRIBUTING.md`, and a licence chosen by the owner.
 - The test kit (12.1) imported at its pinned commit with its checksums; every fetch script runs and verifies its checksums.
-- The differential harness runs with Clang as the compiler under test and passes, and catches seeded faults.
+- The differential harness runs with Clang, through the adapter of section 8, as the compiler under test and passes, and catches seeded faults.
 - A CI skeleton with the budgets of section 7 wired in; the pull-request workflow under 10 minutes.
 - `docs/ARCHITECTURE.md` (6.1), the diagnostics model (6.2), the target description for all six targets (6.3), a `docs/LANGUAGE.md` skeleton, the conformance matrix with every row present, and `docs/DECISIONS.md`.
 - The reviewer has the specification and has returned its first kit.
@@ -353,13 +353,13 @@ The order differs from hcc's on purpose: all of C11 comes before the GNU layer a
 
 Integers, pointers, arrays, functions, control flow and simple structs, without a preprocessor: hcc's Stage 1.
 
-**Gates:** the WACC chapters that cover the subset pass with no known failures; the matching harness programs pass; every pull-request job of section 9 is on and green, with line coverage at least 80%; the fuzz smoke test is clean; every compile's IR is verified; the first reviewer round is frozen and then fixed; no file is over 1,500 lines.
+**Gates:** the WACC chapters that cover the subset pass with no known failures; the matching harness programs pass; every pull-request job of section 9 that applies to M1 is on and green (the preprocessor fuzz target starts in M2), with line coverage at least 80%; the fuzz smoke test of the M1 targets is clean; every compile's IR is verified; the first reviewer round is frozen and then fixed; no file is over 1,500 lines.
 
 ### M2: Preprocessor, types, headers and the ABI
 
 The preprocessor, the full type system, floating types in every format, varargs, `goto`, `switch`, designated initializers, bit-fields, `volatile`, typedefs, unions, system headers, struct passing, and the single layout model on all six targets.
 
-**Gates:** WACC chapters 1 to 18 all pass [1,384 passed, 233 skipped]; `clang -E` equivalence on every test file; layout agrees with Clang on all six targets for every record in the corpus; random calling-convention pairs pass in both directions, natively on x86-64 and under qemu or Wine on the others; One True AWK builds and matches Clang's build; coverage at least 85% of lines and 75% of branches; the frontend and scaling gates of 7.4 hold on One True AWK, the torture tests and a generated stress file (and on `sqlite3.c` as soon as it compiles); the second reviewer round is frozen and fixed.
+**Gates:** WACC chapters 1 to 18 all pass [1,384 passed, 233 skipped]; `clang -E` equivalence on every test file; layout agrees with Clang on all six targets for every record in the corpus, including the bit-field byte and access checks of 6.3; random calling-convention pairs pass in both directions, natively on x86-64 and under qemu or Wine on the others; One True AWK builds and matches Clang's build; coverage at least 85% of lines and 75% of branches; the frontend and scaling gates of 7.4 hold on One True AWK, the torture tests and a generated stress file (and on `sqlite3.c` as soon as it compiles); the second reviewer round is frozen and fixed.
 
 ### M3: All of C11
 
