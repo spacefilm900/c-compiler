@@ -359,7 +359,7 @@ Integers, pointers, arrays, functions, control flow and simple structs, without 
 
 The preprocessor, the full type system, floating types in every format, varargs, `goto`, `switch`, designated initializers, bit-fields, `volatile`, typedefs, unions, system headers, struct passing, and the single layout model on all six targets.
 
-**Gates:** WACC chapters 1 to 18 all pass [1,384 passed, 233 skipped]; `clang -E` equivalence on every test file; layout agrees with Clang on all six targets for every record in the corpus, including the bit-field byte and access checks of 6.3; random calling-convention pairs pass in both directions, natively on x86-64 and under qemu or Wine on the others; One True AWK builds and matches Clang's build; coverage at least 85% of lines and 75% of branches; the frontend and scaling gates of 7.4 hold on One True AWK, the torture tests and a generated stress file (and on `sqlite3.c` as soon as it compiles); the second reviewer round is frozen and fixed.
+**Gates:** WACC chapters 1 to 18 all pass [1,384 passed, 233 skipped]; `clang -E` equivalence on every test file; layout agrees with Clang on all six targets for every record in the corpus, including the bit-field byte and access checks of 6.3; random calling-convention pairs pass in both directions, natively on x86-64 and under qemu or Wine on the others; One True AWK builds and matches Clang's build; coverage at least 85% of lines and 75% of branches; the frontend and scaling gates of 7.4 hold on One True AWK, the torture tests that compile without the GNU layer, and a generated stress file (and on `sqlite3.c` as soon as it compiles); the second reviewer round is frozen and fixed.
 
 ### M3: All of C11
 
