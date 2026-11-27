@@ -162,7 +162,7 @@ The difference from hcc: **the target description covers all six from the first 
 
 The reused test kit drives the compiler through its command line, so hcc2 must keep hcc 1.0's interface exactly. The kit's contract is `build/hcc INPUT.c -o OUTPUT.ll`, producing textual IR with exit status 0; the binary's path can be overridden with the `CC_UNDER_TEST` environment variable.
 
-- **Build:** `make` writes the hcc2 binary to `build/hcc`, the path the reused kit expects (not every reused script reads `CC_UNDER_TEST`). `--version` names it hcc2.
+- **Build:** `make` writes the hcc2 binary to `build/hcc`, the path the kit's contract and documentation use; 12.1 says how each reused script is pointed at it. `--version` names it hcc2.
 - **Options:** `-o`, `--link`, `-E` (also `--dump-pp`), `--dump-tokens`, `--dump-ast`, `--dump-sema`, `--dump-ir`, `-O0` to `-O3`, `-Os`, `-Oz`, `-l`, `-L`, `-Wl,`, `-pthread`, `-static`, `-I`, `-D`, `-U`, `-std=c11`, `-std=gnu11`, `-trigraphs`, `-fgnu89-inline`, `-target TRIPLE` (also `--target=TRIPLE`), `-isysroot`, `-fno-caret-diagnostics`, `--time-phases`, `--version`, `-h` and `--help`.
 - **Environment:** `HCC_CLANG` names the Clang used by `--link`; `SOURCE_DATE_EPOCH` fixes `__DATE__` and `__TIME__`.
 - **Exit status:** 0 for success, 1 for errors in the program, 2 for a command-line error (with a one-line reason), 3 for an internal compiler error.
@@ -281,7 +281,7 @@ In hcc almost every real mistake was caught by comparison with an outside judge 
 | Preprocessing | `clang -E` | the output is token-for-token equivalent (ignoring whitespace and line markers) on every test file and every header the suites use; predefined macros agree with `clang -dM -E` | every pull request |
 | Parsing and semantic checks | `clang -std=c11 -pedantic-errors -fsyntax-only`, and the conformance matrix | accept or reject agrees on every probe; where Clang and the standard differ, the standard wins and the case is listed | every pull request |
 | Types and layout | probe programs built by Clang that print `sizeof`, `_Alignof` and `offsetof`; the layout fuzzer | identical numbers on all six targets | every pull request |
-| Calling conventions | objects from Clang, linked with hcc2's objects in both directions | hand-written and random argument and return pairs agree | every pull request (x86-64 natively, other targets under qemu or Wine) |
+| Calling conventions | objects from Clang, linked with hcc2's objects in both directions | hand-written and random argument and return pairs agree | every pull request: x86-64 Linux natively; AArch64 Linux under qemu; MinGW-w64 and MSVC under Wine; the two macOS targets through ELF stand-ins (hcc2's macOS IR built as ELF objects for the same processor, run under qemu or natively, as hcc's `harness/run_cross.py` does); native macOS runners on `main` and weekly (5.3) |
 | IR | `llvm-as` and `opt -passes=verify` | every module the compiler writes is valid IR | every pull request, and on every fuzzer input the compiler accepts |
 | Code generation | Clang's build of the same program | the same exit status and output, at `-O0` and `-O2` | every pull request |
 | Whole programs | Clang's builds of DOOM, Lua, SQLite, QuickJS, zlib and One True AWK | the same frame hashes, test results, database files and outputs | from the milestone that adds them; then on `main` and weekly |
@@ -370,7 +370,7 @@ Integers, pointers, arrays, functions, control flow and simple structs, without 
 
 The preprocessor, the full type system, floating types in every format, varargs, `goto`, `switch`, designated initializers, bit-fields, `volatile`, typedefs, unions, system headers, struct passing, and the single layout model on all six targets.
 
-**Gates:** WACC chapters 1 to 18 all pass [1,384 passed, 233 skipped]; `clang -E` equivalence on every test file; layout agrees with Clang on all six targets for every record in the corpus, including the bit-field byte and access checks of 6.3; random calling-convention pairs pass in both directions, natively on x86-64 and under qemu or Wine on the others; One True AWK builds and matches Clang's build; coverage at least 85% of lines and 75% of branches; the frontend and scaling gates of 7.4 hold on One True AWK, the torture tests that compile without the GNU layer, and a generated stress file (and on `sqlite3.c` as soon as it compiles); the second reviewer round is frozen and fixed.
+**Gates:** WACC chapters 1 to 18 all pass [1,384 passed, 233 skipped]; `clang -E` equivalence on every test file; layout agrees with Clang on all six targets for every record in the corpus, including the bit-field byte and access checks of 6.3; random calling-convention pairs pass in both directions, natively on x86-64, under qemu or Wine on the other Linux and Windows targets, and through the ELF stand-ins on the two macOS targets (section 8); One True AWK builds and matches Clang's build; coverage at least 85% of lines and 75% of branches; the frontend and scaling gates of 7.4 hold on One True AWK, the torture tests that compile without the GNU layer, and a generated stress file (and on `sqlite3.c` as soon as it compiles); the second reviewer round is frozen and fixed.
 
 ### M3: All of C11
 
@@ -419,6 +419,8 @@ The rebuild reuses hcc's tests unchanged, so the two builds can be compared. The
 | `conformance/` | the C11 probes and diagnostic cases | hcc2 adds its own probes beside them and never edits these |
 | `scripts/fetch_*.sh` | the fetch scripts, with their pins and checksums | |
 | `tools/csmith_campaign.py`, `tools/yarpgen_campaign.py`, `tools/abi_fuzz.py`, `tools/layout_fuzz.py`, `tools/constfold_fuzz.py`, `tools/perf_guard.py`, `tools/perf_scorecard.py`, `tools/bench_compile.py`, `tools/platform/` | campaign, fuzzing and timing tools | black-box tools that drive a compiler through its command line |
+
+**How the kit finds hcc2.** The reused runners and tools take their default compiler path from their own location, which inside `testkit/` would be `testkit/build/hcc`, a path `make` does not write. So every kit run names the binary at the repository root explicitly: the harness runners (`run_tests.py`, `run_wacc.py`, `run_conformance.py`, `run_cross.py` and the program runners) through `CC_UNDER_TEST`; `tools/csmith_campaign.py`, `tools/yarpgen_campaign.py`, `tools/layout_fuzz.py` and `tools/constfold_fuzz.py` through their `--compiler` option, since they do not read `CC_UNDER_TEST`; and `run_awk_extra.py` through `AWK_CCOMP`, the One True AWK binary that hcc2 built. hcc2's CI scripts set these, and the M0 harness self-test (section 8) runs every runner this way, so a missing override shows up before any compiler code exists.
 
 **Known-failure lists are hcc2's own.** hcc's lists (`harness/*known_failures*.txt`, `conformance/known_gaps.txt`) are kept for comparison only. The rebuild starts with empty lists in its own directory outside `testkit/`, pointed to by the runners' options or environment variables, or, where a runner reads a fixed path, by replacing that one list file and recording the replacement in `testkit/SHA256SUMS`. Every entry needs an issue and a reason, and once a suite's milestone gate has passed, its list only shrinks.
 
@@ -518,12 +520,12 @@ The comparison is one report, `reports/rebuild-comparison/README.md` in hcc2's r
 
 From M1, hcc2's repository has a `CODING_STANDARDS.md` that the builder and its helpers read at the start of every session, before writing code.
 
-- **Grouping.** At the end of every milestone, and as soon as the same kind of finding has appeared three times, the builder groups the findings from CodeRabbit, the independent reviewer and the owner by kind (for example "record offsets computed outside the layout module", "a register name reused across calls", "a count reported without its denominator"). The grouping, with counts and links to the threads or kit cases, is recorded in `reports/findings/` for that milestone.
+- **Grouping.** At the end of every milestone, and as soon as the same kind of finding has appeared three times, the builder groups the findings from CodeRabbit, the independent reviewer and the owner by kind (for example "record offsets computed outside the layout module", "a C rule checked in more than one place", "a count reported without its denominator"). The grouping, with counts and links to the threads or kit cases, is recorded in `reports/findings/` for that milestone.
 - **Written rule.** Each kind that has recurred becomes a rule in `CODING_STANDARDS.md`, with a one-line reason and a link to the findings it came from.
 - **Automatic check where cheap.** Where a rule can be checked mechanically for little cost, it also gets a check in CI: a Clippy lint setting, a small lint script, a regression test or a harness case. The rule then says which check enforces it; a rule with no check says so.
 - **Measured.** Section 13.2's review measure also counts findings of a kind that already had a rule, so the comparison shows whether the rules work.
 
-Why: an agent does not carry review comments from one session to the next, so without a written rule it makes the same mistake again and the reviewer writes the same comment again. The owner points to the Anthropic Messages-API Rust migration of November 2026 as an example of this memory loop, broken by turning recurring findings into standing written rules and checks. hcc showed the same pattern: struct-layout defects were found in three review rounds in a row before one layout model fixed the family (A4), and CodeRabbit raised the IR register rule in three rounds before it was fixed structurally (A7). hcc's own `CODING_STANDARDS.md` (pull request 81, not yet merged) is the model: rules already enforced, with the check that enforces each; soft guidelines; and a section on turning recurring findings into rules.
+Why: an agent does not carry review comments from one session to the next, so without a written rule it makes the same mistake again and the reviewer writes the same comment again. The owner points to the Anthropic Messages-API Rust migration of November 2026 as an example of this memory loop, broken by turning recurring findings into standing written rules and checks. hcc showed the same pattern: struct-layout defects were found in three review rounds in a row before one layout model fixed the family (A4), and CodeRabbit raised cases of the C `register` address rule in three rounds, because the rule was checked in several places (A7). hcc's own `CODING_STANDARDS.md` (pull request 81, not yet merged) is the model: rules already enforced, with the check that enforces each; soft guidelines; and a section on turning recurring findings into rules.
 
 ## 15. Risks
 
@@ -607,7 +609,7 @@ Pull-request numbers and commit SHAs refer to `spacefilm900/c-compiler`. Sources
 | A31 | Unpinned tools weaken reproducibility | YARPGen was cloned without a pin (`docs/FUZZING.md`); the commit used is recorded only on the builder's box | 12.3 |
 | A32 | Stale working copies confused the agent | project review, section 8 (33 working copies then); 73 `cc-*` working copies on the box at the release | 14.4 |
 | A33 | Sanitizers and real platforms found bugs CI did not | the weekly platform run (pull request 61): a struct-parameter store-order bug exposed by AddressSanitizer, and the macOS SDK's `_chk` builtins (`STATUS.md`) | 9, M6 |
-| A34 | The same kinds of review finding kept coming back | struct-layout families in three review rounds in a row (A4); the IR register rule in three CodeRabbit rounds (A7); hcc wrote its `CODING_STANDARDS.md` only after the release (pull request 81) | 14.5 |
+| A34 | The same kinds of review finding kept coming back | struct-layout families in three review rounds in a row (A4); the C `register` address rule in three CodeRabbit rounds (A7); hcc wrote its `CODING_STANDARDS.md` only after the release (pull request 81) | 14.5 |
 
 ## Appendix B: hcc 1.0 baseline
 
