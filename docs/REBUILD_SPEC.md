@@ -52,7 +52,7 @@ The words **must**, **must not** and **should** have their usual meaning: *must*
 - **Budgets are set up front.** Money, CI minutes and compile speed have limits from the start, and CI fails when they are broken. In hcc, cost and speed were raised by the owner, not the agent.
 - **The quality tools run from the first milestone.** Coverage, mutation testing, fuzzing, lint and size limits are part of CI from the first milestone, not a clean-up phase after the code has grown. Review findings that keep coming back become written rules and, where cheap, automatic checks (14.5).
 - **The structure is planned.** The module layout and the way errors are reported are designed before the code is written, including one shared model of struct layout, the area where the last three review rounds kept finding bugs.
-- **Agent summaries should be facts, not claims.** Every number in a status report must link to the evidence (a commit, a CI run or a report file), and is checked before it is published. hcc had several summaries that overstated results or went stale.
+- **Agent summaries are checked against evidence before they count as facts.** Every number in a status report must link to the evidence (a commit, a CI run or a report file). hcc had several summaries that overstated results or went stale.
 - **The owner stays in control.** Every hcc2 merge, tag, release and settings change still needs the owner's OK, as in hcc.
 
 ## 3. Roles and governance
@@ -123,7 +123,7 @@ These carry over from hcc unchanged in spirit. They are mandatory.
 3. **The original hcc is also off limits.** For the experiment to be fair, the builder must not read hcc's compiler source (`src/`, `lib/`, `include/`, `build.rs`, `fuzz/`) or its design notes beyond this specification. It may read and run the reused test kit (section 12.1) and the public documents named in this specification. Interface names given here (command-line options, exit codes, file names) are not code.
 4. **Oracles are black boxes.** Clang and GCC may be run, and their output, diagnostics, `-E` output, `-dM -E` macro lists and emitted IR may be compared. Their source may not be read. The same holds for LLVM's tools.
 5. **Test inputs stay test inputs.** WACC, GCC torture, Csmith, YARPGen, One True AWK, the AWK suites, DOOM, Lua, SQLite, QuickJS and zlib are inputs only. They are fetched by script at a pinned version, not vendored, and never patched. Compiler code must not be shaped around one of them; a failure is fixed in the general C feature, with its own test.
-6. **No compiler code from other models.** Only the builder agent writes compiler code. ChatGPT and other assistants may write test programs and reviews. Their compiler code, if offered, must not be used.
+6. **No compiler code from other models.** Only the builder agent and its own helpers write compiler code; other models such as ChatGPT write tests and reviews only. Their compiler code, if offered, must not be used.
 7. **Third-party tools are black boxes.** cargo-fuzz, cargo-mutants, cargo-llvm-cov, Csmith, YARPGen, C-Reduce or C-Vise, gitleaks and similar tools are run, never read or adapted.
 8. **Provenance is recorded, not just asserted.** The repository keeps a provenance section listing the sources used. Each pull request that adds a language feature names the clauses or manual sections it was written from. This is a record of how the code was made, not proof; an outside review noted that inspecting code cannot prove the absence of copying.
 
@@ -132,7 +132,7 @@ These carry over from hcc unchanged in spirit. They are mandatory.
 ### 5.1 Language
 
 - **C11 (N1570), strict by default** (`-std=c11`). The whole language, including the parts hcc added later: `_Alignas`, `_Thread_local`, K&R definitions, `<tgmath.h>`, variable-length arrays, `_Atomic` with `<stdatomic.h>`, `<threads.h>`, trigraphs, `_Pragma`, `__DATE__` and `__TIME__`, universal character names and UTF-8 in identifiers, and multi-character character constants.
-- **Optional features** follow the standard's feature macros. `_Complex` is left out, with `__STDC_NO_COMPLEX__` defined, exactly as in hcc 1.0; implementing it later is an owner decision (section 16).
+- **Optional features** follow the standard's feature macros. Whether to support complex numbers (`_Complex`, an optional C11 feature) is the builder's decision, recorded with its reason in the decision log. If it is left out, `__STDC_NO_COMPLEX__` is defined, as in hcc 1.0; if it is added, it is tested against Clang like every other feature, and the comparison report (13.4) notes it as scope beyond hcc 1.0.
 - **Invalid programs are rejected.** Every constraint or syntax violation gets an error and a non-zero exit status. This is stricter than 5.1.1.3 requires; hcc used the same rule and its conformance probes check it.
 - **The tie-break rule** for anything the standard leaves to the implementation: the standard first, then the target's ABI document, then a choice made by hand and written down with its reason, usually to match GCC and Clang on that target so objects link. Clang is the CI oracle. hcc's first wording ("follow the GCC and Clang majority") was not a real rule with two compilers and had to be corrected.
 - **GNU compatibility** is a separate, opt-in layer, `-std=gnu11`, with the same scope as hcc 1.0's (statement expressions, `__typeof__`, `__attribute__`, case ranges, range designators, labels as values, `__int128`, the builtins that map onto library calls or LLVM intrinsics, and the object-size checking builtins the macOS SDK uses). Every GNU feature is switched on in one dialect table, so strict mode cannot accept it by accident.
@@ -140,7 +140,7 @@ These carry over from hcc unchanged in spirit. They are mandatory.
 ### 5.2 Output and toolchain
 
 - Textual LLVM IR, turned into machine code by LLVM's own tools. Clang is the linker driver for `--link`.
-- Rust, stable, with the standard library only. The toolchain is pinned in `rust-toolchain.toml`. For a fair comparison it should be Rust 1.85.1, with Clang and LLVM 19.1.7 as the oracle, as in hcc; a newer pin is an owner decision.
+- Rust, stable, with the standard library only. The toolchain is pinned in `rust-toolchain.toml`. It must be at least the versions hcc used: Rust 1.85.1, with Clang and LLVM 19.1.7 as the oracle. Newer versions are the builder's choice, recorded in the decision log.
 - No own back end. LLVM is the back end; an experimental own back end is outside this specification (PLAN.md step 18 covers it for hcc). It may also be added to hcc2 later, as a separate stage after this specification is complete.
 
 ### 5.3 Target platforms
@@ -162,7 +162,7 @@ The difference from hcc: **the target description covers all six from the first 
 
 The reused test kit drives the compiler through its command line, so hcc2 must keep hcc 1.0's interface exactly. The kit's contract is `build/hcc INPUT.c -o OUTPUT.ll`, producing textual IR with exit status 0; the binary's path can be overridden with the `CC_UNDER_TEST` environment variable.
 
-- **Build:** `make` writes the hcc2 binary to `build/hcc`, the path the kit's contract and documentation use; 12.1 says how each reused script is pointed at it. `--version` names it hcc2.
+- **Build:** `make` writes the hcc2 binary to `build/hcc`. The project is called hcc2, but the built program is deliberately named `build/hcc` so the reused test kit runs unchanged; do not rename it. A CI step checks that `build/hcc` exists and runs after every build, and fails otherwise. 12.1 says how each reused script is pointed at it. `--version` names it hcc2.
 - **Options:** `-o`, `--link`, `-E` (also `--dump-pp`), `--dump-tokens`, `--dump-ast`, `--dump-sema`, `--dump-ir`, `-O0` to `-O3`, `-Os`, `-Oz`, `-l`, `-L`, `-Wl,`, `-pthread`, `-static`, `-I`, `-D`, `-U`, `-std=c11`, `-std=gnu11`, `-trigraphs`, `-fgnu89-inline`, `-target TRIPLE` (also `--target=TRIPLE`), `-isysroot`, `-fno-caret-diagnostics`, `--time-phases`, `--version`, `-h` and `--help`.
 - **Environment:** `HCC_CLANG` names the Clang used by `--link`; `SOURCE_DATE_EPOCH` fixes `__DATE__` and `__TIME__`.
 - **Exit status:** 0 for success, 1 for errors in the program, 2 for a command-line error (with a one-line reason), 3 for an internal compiler error.
@@ -195,7 +195,7 @@ The builder writes `docs/ARCHITECTURE.md` in the first milestone, before the cod
 Rules:
 
 - **Dependencies point one way.** A later phase never re-derives a fact an earlier phase owns. In particular `abi` and `irgen` read struct layout from `layout` and never compute it again.
-- **Size limits from the first commit:** no source file over 1,500 lines and, if possible, no function over 120 lines or above cyclomatic complexity 25, unless the decision log records an exception and why. hcc had to split three files of over 6,000 lines (the largest 8,766) after the fact.
+- **Size limits from the first commit:** no source file over 1,500 lines and no function over 120 lines or above cyclomatic complexity 25. These are hard limits, checked in CI; an exception is allowed only when it is written down in the decision log with its reason. hcc had to split three files of over 6,000 lines (the largest 8,766) after the fact.
 - **One owner per rule.** Each C rule (for example "the address of a `register` object may not be taken") is checked in one place, named in the conformance matrix. hcc's late `register` findings came from the same rule being checked separately for parameters, K&R declarations and `_Generic`.
 - **Every phase can be dumped.** `--dump-tokens`, `--dump-pp`, `--dump-ast`, `--dump-sema` and `--dump-ir` exist from the milestone that adds the phase, with deterministic, documented formats and golden tests. hcc added them only in its quality phase.
 - **Deterministic output.** The same input, options and `SOURCE_DATE_EPOCH` give byte-identical IR, run to run and machine to machine (without `SOURCE_DATE_EPOCH`, `__DATE__` and `__TIME__` change with the clock). A CI check compiles a fixed set twice, with `SOURCE_DATE_EPOCH` set to the same fixed value both times, and compares.
@@ -229,7 +229,7 @@ Budgets are fixed before the first milestone and checked by CI or a monthly repo
 
 | Item | Budget | Notes from hcc |
 | --- | --- | --- |
-| GitHub Actions | the owner's account limit ($50 a month, as on hcc's account now) | CI was blocked on 14 November 2026 by a $0 spending limit until the owner set $30, now expanded. Standard runners for a public repository do not use paid minutes. |
+| GitHub Actions | the owner's account limit: $75 a month | the original hcc run had a $30 a month cap; CI was blocked on 14 November 2026 by a $0 spending limit until the owner set it. The owner has since raised the limit to $75 a month. Standard runners for a public repository do not use paid minutes. |
 | CodeRabbit | one seat, as in hcc | about one review an hour; see 7.3 |
 | Cloud agents | none, unless the owner approves a specific one | hcc's first 19 pull requests came from cloud agents; the owner paused them on 11 November 2026 and the rest of the project ran on the builder's own box |
 | Anything else | none without the owner's OK | |
@@ -337,7 +337,7 @@ So in the rebuild:
 3. **Each platform:** a short round on its calling rules and type model.
 4. **Before release:** a review of the whole repository, including the documentation's claims, as hcc had at the end.
 
-How hcc's existing kits v0.6 to v0.9 are reused is in section 12.2. They are held-out comparison material, not a substitute for new rounds.
+How hcc's existing kits v0.6 to v0.9 are reused is in section 12.2. They are visible to the builder from the start, so they are a test suite, not a substitute for the reviewer's new rounds.
 
 ### 10.3 The C11 conformance matrix
 
@@ -351,10 +351,10 @@ The order differs from hcc's on purpose: all of C11 comes before the GNU layer a
 
 ### M0: Foundations (no compiler code yet)
 
-- The repository with branch protection, the merge procedure of 3.3, CodeRabbit, Dependabot, secret scanning, `SECURITY.md`, `CONTRIBUTING.md`, and a licence chosen by the owner.
+- The repository with branch protection, the merge procedure of 3.3, CodeRabbit, Dependabot, secret scanning, `SECURITY.md`, `CONTRIBUTING.md`, and the MIT licence with Keith Haviland as copyright holder, as in hcc.
 - The test kit (12.1) imported at its pinned commit with its checksums; every fetch script runs and verifies its checksums.
 - The differential harness runs with Clang, through the adapter of section 8, as the compiler under test and passes, and catches seeded faults.
-- A CI skeleton with the budgets of section 7 wired in; the pull-request workflow under 10 minutes.
+- A CI skeleton with the budgets of section 7 wired in, including the check that the build writes `build/hcc` (5.4); the pull-request workflow under 10 minutes.
 - `docs/ARCHITECTURE.md` (6.1), the diagnostics model (6.2), the target description for all six targets (6.3), a `docs/LANGUAGE.md` skeleton, the conformance matrix with every row present, and `docs/DECISIONS.md`.
 - The reviewer has the specification and has returned its first kit.
 
@@ -376,7 +376,7 @@ The preprocessor, the full type system, floating types in every format, varargs,
 
 Everything in 5.1: `_Generic`, `_Static_assert`, `_Alignas` and `_Alignof`, compound literals, flexible array members, Unicode literals, universal character names and UTF-8 in identifiers, multi-character constants, trigraphs, `_Pragma`, K&R definitions, `<tgmath.h>`, `_Thread_local`, variable-length arrays, `_Atomic` and `<stdatomic.h>`, `<threads.h>` with its runtime for macOS and Windows, and the translation limits of 5.2.4.1.
 
-**Gates:** the conformance matrix is complete for clauses 5 to 7 and its probes pass [286 of 288; the 2 are the inline-definition gap of 6.7.4p3]; held-out kit v0.6 has its first run recorded, then passes 724 of 724 at `-O0` and `-O2` [hcc's first run of v0.6: 722 of 724]; held-out kits v0.7, v0.8 and v0.9 have their first runs recorded, then pass 65, 80 and 100 at both levels [hcc's first runs: 64 of 65, 76 of 80, 84 of 100]; the reviewer's own M3 round is frozen and fixed.
+**Gates:** the conformance matrix is complete for clauses 5 to 7 and its probes pass [286 of 288; the 2 are the inline-definition gap of 6.7.4p3]; kit v0.6 has its first gate run recorded, then passes 724 of 724 at `-O0` and `-O2` [hcc's first run of v0.6: 722 of 724]; kits v0.7, v0.8 and v0.9 have their first gate runs recorded, then pass 65, 80 and 100 at both levels [hcc's first runs: 64 of 65, 76 of 80, 84 of 100]; the reviewer's own M3 round is frozen and fixed.
 
 ### M4: The GNU layer
 
@@ -414,7 +414,7 @@ The rebuild reuses hcc's tests unchanged, so the two builds can be compared. The
 
 | Taken from hcc | What it is | Notes |
 | --- | --- | --- |
-| `tests/` (the `.c` programs and `gnu/`, `hosted/`, `posix/`, `xabi/`, `arm64/`, `inc/`, `data/`) | the differential harness programs | written for hcc but compared against Clang, so they work for any compiler; `tests/adversarial/` and the regression tests listed in 12.2 are held out until M3 |
+| `tests/` (the `.c` programs and `gnu/`, `hosted/`, `posix/`, `xabi/`, `arm64/`, `inc/`, `data/`) | the differential harness programs | written for hcc but compared against Clang, so they work for any compiler; `tests/adversarial/` and the regression tests listed in 12.2 are included from the start |
 | `harness/` runners | `run_tests.py`, `run_wacc.py`, `run_gcc_torture.py`, `run_csmith.py`, `run_conformance.py`, `run_doom.py`, `run_lua.py`, `run_sqlite.py`, `run_quickjs.py`, `run_zlib.py`, `run_onetrueawk.py`, `run_awk_extra.py`, `run_cross.py` and the platform runners | the runners are used unchanged; the known-failure lists are not (see below) |
 | `conformance/` | the C11 probes and diagnostic cases | hcc2 adds its own probes beside them and never edits these |
 | `scripts/fetch_*.sh`, `scripts/build_onetrueawk.sh` | the fetch scripts, with their pins and checksums, and the One True AWK build helper that `run_onetrueawk.py` calls | copied unchanged and listed in `SHA256SUMS` like the rest of the kit |
@@ -426,11 +426,13 @@ The rebuild reuses hcc's tests unchanged, so the two builds can be compared. The
 
 Not reused, because they test hcc's insides rather than its behaviour: hcc's unit tests (they live inside `src/`), `harness/dumps/` (hcc's own dump formats; hcc2 writes its own golden dumps) and `fuzz/` (compiler code). The rebuild writes its own versions of these.
 
-### 12.2 Held-out material
+### 12.2 The reviewer's earlier kits
 
-The adversarial kits v0.6 to v0.9 are held out. The builder does not read their cases before the milestone gate that runs them (M3), so that their first-run scores mean the same as hcc's. They are run, frozen, then fixed. After M3 they are ordinary regression suites. Earlier kits v0.1 to v0.5 are contained in v0.6, which grew from 87 cases to 724.
+The owner has decided that the adversarial kits v0.6 to v0.9 are visible to the builder from the start, because the aim is an optimised process, not a blind retest. They are part of the test kit from M0, and each case becomes a gate at the milestone that covers its features (all of them by M3). Earlier kits v0.1 to v0.5 are contained in v0.6, which grew from 87 cases to 724.
 
-hcc's regression tests for the kits' failures are held out with them, because they reveal the cases: `tests/128` to `tests/136`, `tests/157` to `tests/159`, and `tests/hosted/01` to `tests/hosted/04` (added in pull requests 21 to 25 and 58 to 60), and `docs/adversarial/`. They join the test kit at M3.
+hcc's regression tests for the kits' failures are included with them: `tests/128` to `tests/136`, `tests/157` to `tests/159`, and `tests/hosted/01` to `tests/hosted/04` (added in pull requests 21 to 25 and 58 to 60), and `docs/adversarial/`.
+
+Because the builder has seen these kits, their scores show how correct hcc2 is, not how many defects a blind review would have found. That second measure comes from the reviewer's new rounds (section 10), which the builder has not seen before their first run and which are frozen before fixing, as in hcc.
 
 ### 12.3 Fetched suites and programs
 
@@ -460,7 +462,7 @@ The two AWK repositories were private when hcc's CI was written, and CI read the
 
 ### 13.1 Fair conditions
 
-- The same host type (x86-64 Linux with 8 CPUs, as in hcc's reports), the same Rust, Clang and LLVM versions, the same pins, seeds and timeouts, and the same CI runner images.
+- The same host type (x86-64 Linux with 8 CPUs, as in hcc's reports), the same pins, seeds and timeouts, and the same CI runner images. Rust, Clang and LLVM are at least hcc's versions (5.2); if hcc2 uses newer ones, the report says so, and measures that depend on the Clang version (such as compile time relative to Clang) are taken for both compilers with the same Clang.
 - The same test kit, byte for byte, checked by its checksums.
 - hcc is measured at `v1.0.0` (`d848f46`). Its release results are in `reports/release-1.0/README.md`, measured on `2e80ec0`, whose source tree is the release's. Any measure in 13.2 that was not recorded for hcc is measured again on `v1.0.0` with the same scripts before the comparison.
 - hcc is not used as an oracle during the rebuild, so hcc2's results are its own (an owner decision; see section 16).
@@ -470,7 +472,7 @@ The two AWK repositories were private when hcc's CI was written, and CI read the
 | Area | Measure | hcc evidence |
 | --- | --- | --- |
 | Correctness at the end | every suite in Appendix B, with denominators | `reports/release-1.0/README.md` |
-| Defects found by others | first-run score of every held-out kit; failures per kit and per root cause | `STATUS.md` sections on v0.7 to v0.9; `docs/adversarial/v0.6/`; Appendix A |
+| Defects found by others | first-run score of each of the reviewer's new rounds (unseen before the run); the gate score of each earlier kit, marked as seen in advance; failures per kit and per root cause | `STATUS.md` sections on v0.7 to v0.9; `docs/adversarial/v0.6/`; Appendix A |
 | Escaped defects | defects found after the milestone that should have caught them was accepted (by a later suite, the reviewer, CodeRabbit or a user), each tagged with that milestone | git history, the `STATUS.md` repair sections, issue #68 |
 | Rework | fix-only pull requests; lines changed in code less than 7 days old; known-failure entries added for something that used to pass | git history |
 | Review | CodeRabbit threads per 1,000 changed lines, the share that led to a code change, and the findings of a kind that `CODING_STANDARDS.md` already covered (14.5) | GitHub review data (hcc: 494 threads across 60 of 77 pull requests) |
@@ -532,7 +534,7 @@ Why: an agent does not carry review comments from one session to the next, so wi
 | Risk | Effect | Mitigation |
 | --- | --- | --- |
 | The builder reads hcc's source, or hcc's code leaks in through memory or notes | the comparison is unfair and the rebuild is not independent | rule 4.3; the builder starts with no memory of hcc; the provenance section; the owner may ask for an outside provenance review |
-| The builder tunes to the held-out kits | first-run scores look better than they are | the kits and hcc's regression tests for them are held out until M3 (12.2); frozen first runs; new reviewer rounds at every milestone |
+| The builder tunes to the earlier kits, which it can see from the start (12.2) | those kits' scores say less about how many defects a blind review would find | accepted by the owner for an optimised process; the report marks those scores as seen in advance; the blind measure comes from the reviewer's new, frozen rounds at every milestone |
 | This specification's lessons point at the defect families the kits found (for example record layout) | the rebuild's first-run scores are partly informed by hcc's results | intended: applying lessons is the experiment; the comparison report says so next to the scores |
 | The early quality gates slow the first milestones | the rebuild takes longer, and the comparison favours hcc on time | gates start at realistic levels (80% line coverage in M1) and rise; their time cost is measured, not hidden |
 | CI cost grows with the gates from day one | the budget is exceeded | the limits in 7.2; expensive work weekly or local; a public repository if the owner agrees; the monthly report |
@@ -548,23 +550,24 @@ Why: an agent does not carry review comments from one session to the next, so wi
 
 ## 16. Decisions for the owner
 
-Only the owner can make these. Everything else is the builder's choice, recorded in the decision log. The owner's review of 27 November 2026 settled some of them.
+Only the owner can make these. Everything else is the builder's choice, recorded in the decision log. The owner settled the following on 27 November 2026.
 
 **Settled**
 
-- **Scope:** `_Complex` is left out, with `__STDC_NO_COMPLEX__` defined, as in hcc 1.0 (5.1). Adding it later is a new owner decision.
-- **Name:** the new compiler is called hcc2 (section 1). Its binary keeps the path `build/hcc` so the reused kit runs unchanged (5.4).
-- **The reviewer:** another agent, assumed to be ChatGPT, relayed by the owner as before; the builder and the reviewer exchange human-readable memos or reports (3.1, 10.1).
-- **GitHub Actions money limit:** the owner's account limit is now $50 a month (7.1).
+1. **When the rebuild runs, and with which agent:** after hcc's own back end (PLAN.md step 18) is done, at Keith Haviland's discretion; the choice of agent is also his.
+2. **The reviewer's earlier kits:** ChatGPT's kits v0.6 to v0.9 are visible to the builder from the start, because the aim is an optimised process (12.2).
+3. **hcc as an oracle:** hcc2 is not compared against hcc 1.0's binary while it is being built, so its results are its own (13.1).
+4. **GitHub Actions budget:** $75 a month. The original hcc run had a $30 a month cap (7.1).
+5. **Toolchain:** at least the versions of the first run, Rust 1.85.1 and Clang and LLVM 19.1.7; newer versions are otherwise unconstrained (5.2).
+6. **Licence:** MIT, with Keith Haviland as copyright holder, as in hcc.
+7. **Name:** the project is called hcc2; the built program stays `build/hcc` (5.4).
+8. **The reviewer:** another agent, assumed to be ChatGPT, relayed by the owner; the builder and the reviewer exchange human-readable memos or reports (3.1, 10.1).
+9. **Complex numbers (`_Complex`):** the builder decides whether to support them (5.1).
 
 **Still open**
 
-1. **Whether and when to run the rebuild**, and with which agent.
-2. **The held-out rule:** may the builder see the v0.6 to v0.9 kits before M3? This specification says no.
-3. **hcc as an oracle:** may hcc2 be compared against hcc 1.0's binary during development? This specification says no, so hcc2's results are its own.
-4. **The rest of the budgets:** confirm the other limits of section 7 (CodeRabbit, cloud agents, CI minutes and compile time), and whether hcc2's repository is public from the start (free standard runners) or private until a milestone.
-5. **Toolchain:** the same Rust 1.85.1 and Clang 19.1.7 as hcc for fairness, or current versions.
-6. **Licence** of hcc2 and its repository.
+- **Repository visibility:** whether hcc2's repository is public from the start (standard runners are then free) or private until a milestone.
+- **The other budgets of section 7:** confirmation of the CodeRabbit seat, no cloud agents without approval, and the CI-minute and compile-time limits.
 
 ## Appendix A: lessons and their evidence
 
