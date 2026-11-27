@@ -19,7 +19,8 @@ input at process level.
 **Version 1.0.1.** [User guide](docs/USER_GUIDE.md) ·
 [Language reference](docs/LANGUAGE.md) · [Changelog](CHANGELOG.md) ·
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) ·
-[Design](DESIGN.md) · [Licence: MIT](LICENSE)
+[Design](DESIGN.md) · [Coding standards](CODING_STANDARDS.md) ·
+[Licence: MIT](LICENSE)
 
 ## Quick start
 
@@ -251,7 +252,8 @@ pinned actions and the Cargo dependencies.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Outside contributions are welcome,
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[coding standards](CODING_STANDARDS.md). Outside contributions are welcome,
 but are reviewed slowly.
 
 ## Licence
