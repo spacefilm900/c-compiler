@@ -1,9 +1,10 @@
 # Coding standards
 
 This file records how hcc is written and reviewed. The first section is
-already enforced. The guidelines that follow are aims, not CI gates: a
-pull request is not rejected only because a function or a file is over
-the sizes below.
+already enforced. "Layout and naming" says what rustfmt and the compiler
+already check, and a little guidance they do not. The guidelines after
+that are aims, not CI gates: a pull request is not rejected only because
+a function or a file is over the sizes below.
 
 ## Rules already enforced
 
@@ -60,6 +61,30 @@ touches only documentation.
 **CodeRabbit.** Pull requests are reviewed by CodeRabbit
 ([`.coderabbit.yaml`](.coderabbit.yaml)). Review threads must be
 resolved before a merge ([CONTRIBUTING.md](CONTRIBUTING.md)).
+
+## Layout and naming
+
+**Layout.** Indentation and other formatting are left to rustfmt. There
+is no `rustfmt.toml` in the repository, so rustfmt uses its defaults.
+The `rustfmt` step in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs
+`cargo fmt --all -- --check`, and unformatted code fails that check.
+
+**Naming conventions.** Names follow Rust's usual conventions:
+`snake_case` for functions, methods, variables and modules, `CamelCase`
+for types and traits, and `SCREAMING_SNAKE_CASE` for constants and
+statics. rustc warns on a name that breaks those rules
+(`non_snake_case`, `non_camel_case_types`, `non_upper_case_globals`).
+The `clippy` step in the same CI workflow passes `-D warnings`, so those
+warnings fail the build.
+
+**Names we do not check automatically.** Prefer a descriptive name. Use
+the C standard's terms consistently (`declarator`, `translation unit`,
+`lvalue`, and so on), and LLVM Language Reference terms in code
+generation. Short names such as `i` and `n` belong only in a small
+scope. Do not invent abbreviations beyond those already common in the
+code, such as `ty`, `tok`, `decl`, `stmt`, `expr`, `ir`, `pp`, `sema`,
+`sig`, and `ptr`.
 
 ## Soft guidelines
 
