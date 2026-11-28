@@ -1333,6 +1333,11 @@ pub struct TranslationUnit {
     /// Size expressions for VLA types, in the order they were parsed.
     /// Each [`VlaId`] in a type refers to one of these.
     pub vla_sizes: Vec<VlaBound>,
+    /// Whether the translation unit's tokens contain `_Atomic` anywhere
+    /// (macro expansions and included headers count). When false, no type
+    /// in the unit is atomic and semantic analysis skips the `_Atomic`
+    /// constraint walk, which is otherwise repeated for every declaration.
+    pub uses_atomic: bool,
 }
 
 /// One VLA size expression, evaluated once when the declarator, typedef,

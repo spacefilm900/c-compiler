@@ -1700,3 +1700,21 @@ fn array_bound_errors_name_the_problem() {
     assert!(parse_err("struct S { int x : 2147483647 + 1; };")
         .contains("constant expression overflows"));
 }
+
+#[test]
+fn unit_records_whether_it_has_an_atomic_token() {
+    let uses = |source: &str| {
+        let tokens = lex(source, "t.c").unwrap();
+        parse(&tokens, "t.c").unwrap().uses_atomic
+    };
+    assert!(!uses(
+        "struct S { int a; struct S *next; }; struct S *p; int f(struct S *s);\n"
+    ));
+    assert!(uses("_Atomic int x;\n"));
+    assert!(uses("typedef _Atomic(int *) ap; ap p;\n"));
+    // Only a declaration the parser never reaches would be missed, and the
+    // scan looks at every token, so a use deep inside a function counts.
+    assert!(uses(
+        "void f(void) { if (1) { struct { _Atomic int n; } s; (void)s; } }\n"
+    ));
+}

@@ -27,6 +27,43 @@ first, diagnostic style, the clean-room rule, and the documentation-claims
 check) and soft guidelines for function and file size, which are not CI
 gates. When a kind of review finding recurs, it should be added there.
 
+## Further performance tuning (step 17, branch `perf-cheap-wins`)
+
+Step 17 started with a measurement-only round (no code changed) on `44073c7`, then a first pull request of three small changes. The IR, the `-E` output and every diagnostic are unchanged: the IR is byte-identical to `44073c7`'s on all 297 files compared (`sqlite3.c`, `shell.c`, the 34 Lua and 82 DOOM files, the five torture files, and the 174 `tests/*.c`).
+
+**What the measurement found** (`perf` sampling and `callgrind` instruction counts, `sqlite3.c`, Lua and DOOM, on an 8-vCPU virtual Xeon with Clang 19.1.7):
+
+- A regression in semantic analysis. `sqlite3.c`'s sema phase had grown from 0.15 s (`44cc353`, the end of the performance phase) to 0.55 s. A bisect over the merge commits puts a first step of +0.1 s at pull request 46 (`2846773`, the review-bug fixes; the exact cause there is not isolated) and the large step, 0.26 s to 0.53 s, at pull request 56 (`29650fe`, `_Atomic`). The `_Atomic` constraint check (`bad_atomic`, `src/sema/atomic.rs`) walked every struct reachable from each declaration, with a fresh SipHash set each time: 22% of all instructions on `sqlite3.c`, a program that never uses `_Atomic`. CI never noticed because the guard compared the whole frontend with Clang at a 6x limit.
+- Punctuator matching (`match_punct`, `src/pp/scan.rs`) tried each of the 54 punctuators in turn with `memcmp`: about 8% of the time on DOOM and Lua.
+- Every preprocessing token allocated twice: its spelling `String`, and a new empty hide set (`Rc`) that is almost never used. The allocator was 33-35% of the samples on DOOM and Lua, 24% on SQLite.
+- Where the time goes overall: at `-O0` our frontend is 60-67% of a whole compile (1.9-2.5x Clang); at `-O2` LLVM is 70-90% of it (SQLite: about 11 s optimiser and 9 s code generation) and the ratio is 1.0-1.4x. Lexing plus preprocessing is about 75% of the frontend on Lua and DOOM, mostly system headers that are read again for every file.
+
+**What changed.**
+
+1. `TranslationUnit::uses_atomic`: the parser records whether any token is `_Atomic` (after macro expansion, so macros, typedefs and headers all count). Without one, no type can be atomic and `check_atomic_types` returns at once. A debug assertion in test builds checks that claim on every call. Units that use `_Atomic` take the same path as before.
+2. `punctuator_prefix`: a `match` on the next bytes, longest first, instead of 54 comparisons. A unit test compares it with the old linear scan on all 0.7 million strings of up to four characters over the punctuator characters, and a harness program, `tests/169_punctuator_munch.c`, runs maximal munch and digraphs against Clang.
+3. One shared empty hide set (`hide_empty`) instead of a new `Rc` per token. Sets are never changed in place.
+
+**Measured** (`tools/bench_compile.py --runs 3`, median per file, same machine, `44073c7` against this branch):
+
+| | Before | After |
+|---|---|---|
+| `sqlite3.c` frontend | 1.97 s | 1.45 s (-26%) |
+| `shell.c` frontend | 0.44 s | 0.35 s (-20%) |
+| Lua (34 files) frontend | 1.66 s | 1.29 s (-22%) |
+| DOOM (82 files) frontend | 2.81 s | 2.23 s (-21%) |
+| `sqlite3.c` sema phase | 0.55 s | 0.27 s |
+| Whole compile at `-O0`: SQLite / Lua / DOOM | 3.10 / 2.64 / 4.48 s | 2.51 / 2.23 / 4.01 s |
+| Whole compile against Clang at `-O0`: SQLite / Lua / DOOM | 2.33x / 2.01x / 1.90x | 1.96x / 1.71x / 1.63x |
+| Whole compile against Clang at `-O2`: SQLite / Lua / DOOM | 1.02x / 1.38x / 1.36x | 1.02x / 1.30x / 1.24x |
+| Frontend peak memory: `shell.c` / Lua / DOOM | 102 / 36 / 26 MiB | 86 / 34 / 23 MiB |
+
+The `-O2` totals move by 2-7% only, because LLVM is most of that time. Both columns come from one session of `tools/bench_compile.py`. The sema phase is not back at 0.15 s: about 0.1 s of the pull request 46 step remains, and is the next thing to isolate.
+
+**CI guard (`tools/perf_guard.py`, end of the SQLite job).** It now has two checks on `sqlite3.c` and `shell.c`. (1) The frontend may take at most 3x `clang -O0 -c` (was 6x) and at most 10 s (was 30 s); CI measured 1.2 to 1.3x before this change (this machine 1.0x after it), so there is more than two times of room. (2) Phase shares from `--time-phases`, which cancel out the speed of the runner: sema at most 0.45 of lex + preprocess + parse time, and irgen at most 0.55. On `sqlite3.c` sema is 0.15 before the regression, 0.52 with it and 0.32 after this change (single runs vary by about 0.03), so the regression fails the new check and the fixed compiler passes with 40% to spare. `tools/test_perf_tools.py` checks the logic with the measured phase times. The same script runs in the arm64 workflow.
+
+**Next targets**, from the measurement: share token spellings and hide-set names (`Rc<str>` or interned ids) instead of copying a `String` per token and per macro expansion (an estimated further 15-20% of the frontend on header-heavy files; 1.3 million `String` clones for one 158,000-token Lua file); a line index for the source line printed under a warning (`sqlite3.c` prints 24 warnings and each scans the whole file, about 0.17 s); the remaining sema step above. A bump allocator was tried and rejected: slower on Lua and 4 to 7 times the memory on DOOM and SQLite.
+
 ## Release 1.0
 
 Hardening (step 14 of `PLAN.md`) is closed: fuzzing, the large Csmith and YARPGen campaigns, coverage and mutation testing, QuickJS and zlib (pull requests 63–67). The current phase is step 15, Release 1.0: version numbers and `hcc --version`, a changelog, a user guide, clearer `--help` and messages, automatic linking of `lib/threads.c`, tagged release builds with checksums, and the project files. Issue #68 (GNU forward-declared enums) is fixed first. A tag or release is made only with the owner's approval.
@@ -42,7 +79,7 @@ The last pull request before the tag answers an outside review of the 1.0 candid
 - `docs/C11_CONFORMANCE.md` audits N1570 clauses 5 to 7. It has 288 probes (54 programs and 234 constraint or syntax violations); 286 pass and 2 are a known gap. A further 20 cases that the standard leaves undefined or implementation-defined are counted apart; hcc diagnoses all of them. The audit found and fixed two wrong behaviours: macro rescanning past the end of a replacement list, and the 6.9.2p2 tentative definition `int a[];`. It also found 12 accepted constraint violations: 10 now give diagnostics, and the 2 inline-definition cases of 6.7.4p3 remain a known gap. CI runs the probes.
 - `reports/release-1.0/README.md` records the rerun of every suite on the release-candidate commit `2e80ec0`. Everything passed: 286/288 conformance probes (the 2 are the 6.7.4p3 gap), the harness, WACC, GCC torture, the six big programs, all 969 adversarial cases at `-O0` and `-O2`, and Csmith (2,775 and 2,774 compared) and YARPGen (1,651 compared), with 0 mismatches.
 
-Unit tests: 366. Harness: 230/230.
+Unit tests: 374. Harness: 231/231.
 
 ## Current milestone
 
@@ -636,7 +673,7 @@ Local results (rustc 1.85.1, Clang 19.1.7, GCC 14.2.0): `cargo fmt --all -- --ch
 | Lua (34 files) total vs Clang, `-O0` / `-O2` | 4.36x / 2.15x | 1.86x / 1.36x |
 | DOOM (82 files) total vs Clang, `-O0` / `-O2` | 3.87x / 2.24x | 1.79x / 1.31x |
 
-The cause was a quadratic preprocessor splice (each macro expansion moved the rest of the file's tokens), plus copying of tokens, file names, macro bodies, and struct member lists. The IR is byte-identical to the baseline compiler's on all 275 benchmark and `tests/` files after every fix. No optimiser was added. The remaining time is spread thinly over per-token allocation and type copying; see the scorecard notes. CI runs `tools/perf_guard.py` at the end of the SQLite job: it fails above 6x `clang -O0` (or 30 s) on `sqlite3.c` or `shell.c`. The DOOM, Lua, and SQLite scorecards were not re-measured and keep their recorded compile times.
+The cause was a quadratic preprocessor splice (each macro expansion moved the rest of the file's tokens), plus copying of tokens, file names, macro bodies, and struct member lists. The IR is byte-identical to the baseline compiler's on all 275 benchmark and `tests/` files after every fix. No optimiser was added. The remaining time is spread thinly over per-token allocation and type copying; see the scorecard notes. CI runs `tools/perf_guard.py` at the end of the SQLite job: it failed above 6x `clang -O0` (or 30 s) on `sqlite3.c` or `shell.c`; step 17 tightened it (see "Further performance tuning"). The DOOM, Lua, and SQLite scorecards were not re-measured and keep their recorded compile times.
 
 ## macOS on Apple Silicon, round 1 (branch `macos-arm64`)
 

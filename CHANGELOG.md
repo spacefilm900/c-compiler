@@ -9,6 +9,15 @@ for each target.
 
 ## [Unreleased]
 
+### Changed
+
+- The compiler front end is 20% to 26% faster on `sqlite3.c`, SQLite's
+  shell, Lua and DOOM (a whole `-O0` compile is 10% to 19% faster), with
+  identical output: the `_Atomic` type check is skipped in files that
+  contain no `_Atomic`, punctuators are matched directly, and tokens share
+  one empty macro-hiding set. See the "Further performance tuning" section
+  of [STATUS.md](STATUS.md).
+
 ### Added
 
 - [CODING_STANDARDS.md](CODING_STANDARDS.md), linked from the README and

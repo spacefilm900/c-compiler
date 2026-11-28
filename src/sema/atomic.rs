@@ -27,6 +27,16 @@ impl Sema<'_> {
         column: usize,
         allow_incomplete: bool,
     ) -> Result<(), Diagnostic> {
+        if !self.uses_atomic {
+            // No `_Atomic` token reached the parser, so no type here can be
+            // atomic. Walking every reachable struct for each declaration
+            // cost more than a fifth of `sqlite3.c`'s compile time.
+            debug_assert!(
+                bad_atomic(ty, &mut HashSet::new(), allow_incomplete).is_none(),
+                "an atomic type in a unit with no _Atomic token"
+            );
+            return Ok(());
+        }
         if let Some(message) = bad_atomic(ty, &mut HashSet::new(), allow_incomplete) {
             return self.err(line, column, message);
         }

@@ -3492,3 +3492,71 @@ fn gnu_forward_enum_ir_uses_the_defined_type() {
     assert!(ir.contains("load i64, ptr"), "{ir}");
     assert!(ir.contains("@x = external global i64"), "{ir}");
 }
+
+/// A header that `#include "..."` can reach, written to a temporary file.
+fn temp_header(tag: &str, text: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("hcc-atomic-{}-{tag}.h", std::process::id()));
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+#[test]
+fn atomic_constraints_are_still_checked_through_macros_typedefs_and_headers() {
+    let big = "struct Big { char a[24]; };\n";
+    let diag = |source: &str| {
+        crate::compile_to_ir(source, "t.c")
+            .expect_err("a non-lock-free atomic type is rejected")
+            .to_string()
+    };
+    // Through an object-like macro, and through a function-like one.
+    let err = diag(&format!("#define ATOM _Atomic\n{big}ATOM struct Big x;\n"));
+    assert!(err.contains("not lock-free"), "{err}");
+    let err = diag(&format!(
+        "#define AT(t) _Atomic(t)\n{big}void f(AT(struct Big) *p);\n"
+    ));
+    assert!(err.contains("not lock-free"), "{err}");
+    // Through a typedef, used much later and only by pointer.
+    let err = diag(&format!(
+        "{big}typedef _Atomic struct Big BigA;\nstruct Holder {{ BigA *p; int n; }};\nstruct Holder h;\n"
+    ));
+    assert!(err.contains("not lock-free"), "{err}");
+    // Through a struct member that is reached from an ordinary declaration.
+    let err = diag(&format!(
+        "{big}struct Wrap {{ _Atomic struct Big b; }};\nvoid f(struct Wrap *w);\n"
+    ));
+    assert!(err.contains("not lock-free"), "{err}");
+    // Incomplete atomic types are still diagnosed as before.
+    let err = diag("struct Inc;\n_Atomic struct Inc x;\n");
+    assert!(err.contains("incomplete"), "{err}");
+    // Through a user header.
+    let header = temp_header(
+        "user",
+        &format!("{big}typedef _Atomic struct Big HdrBig;\n"),
+    );
+    let err = diag(&format!("#include \"{}\"\nHdrBig *p;\n", header.display()));
+    assert!(err.contains("not lock-free"), "{err}");
+    let _ = std::fs::remove_file(header);
+    // Through the C library's <stdatomic.h>.
+    let err = diag(&format!(
+        "#include <stdatomic.h>\n{big}atomic_int ok;\n_Atomic struct Big bad;\n"
+    ));
+    assert!(err.contains("not lock-free"), "{err}");
+}
+
+#[test]
+fn units_without_atomic_still_compile_with_deep_struct_graphs() {
+    // No `_Atomic` token anywhere: the walk is skipped, and the result is
+    // the same as before for self-referential and mutually recursive types.
+    let source = "\
+struct A; struct B;
+struct A { struct B *b; struct A *self; int v[4]; };
+struct B { struct A a[2]; struct B *next; union { struct A *pa; long l; } u; };
+typedef struct B BT;
+BT *table[8];
+int use(struct A *a, BT *b) { return a->v[0] + (b == 0); }
+";
+    crate::compile_to_ir(source, "t.c").unwrap();
+    // And with it, an atomic of a lock-free size next to the same graph.
+    let with = format!("{source}_Atomic int counter;\n");
+    crate::compile_to_ir(&with, "t.c").unwrap();
+}

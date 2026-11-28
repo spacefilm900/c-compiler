@@ -753,3 +753,147 @@ fn pragma_operator_destringizes_and_applies_once() {
     assert!(preprocess("_Pragma(\"once\"\n", "t.c", &options).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The C11 6.4.6 punctuators, digraphs included, in the order the
+/// punctuator matcher used to try them (a linear scan, kept here as the
+/// reference the faster `match` is compared against).
+const REFERENCE_PUNCTUATORS: &[&str] = &[
+    "%:%:", "<<=", ">>=", "...", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||", "++", "--", "+=",
+    "-=", "*=", "/=", "%=", "&=", "^=", "|=", "->", "##", "<:", ":>", "<%", "%>", "%:", "#", "+",
+    "-", "*", "/", "%", "=", "<", ">", "!", "&", "|", "^", "~", "(", ")", "{", "}", "[", "]", ";",
+    ",", "?", ":", ".",
+];
+
+fn reference_punctuator(ahead: &[u8]) -> Option<&'static str> {
+    let ahead = &ahead[..ahead.len().min(4)];
+    REFERENCE_PUNCTUATORS
+        .iter()
+        .find(|punct| ahead.starts_with(punct.as_bytes()))
+        .copied()
+}
+
+#[test]
+fn every_c11_punctuator_is_matched_alone_and_before_other_text() {
+    // 6.4.6p1 lists 47 punctuators; with the six digraphs counted
+    // separately and `%:%:` that is the 54 in the table.
+    assert_eq!(REFERENCE_PUNCTUATORS.len(), 54);
+    for punct in REFERENCE_PUNCTUATORS {
+        let bytes = punct.as_bytes();
+        assert_eq!(scan::punctuator_prefix(bytes), Some(*punct), "{punct}");
+        // Text that cannot extend any punctuator does not change the match.
+        for tail in ["a", " ", "9", "\"", "'", "_"] {
+            let text = format!("{punct}{tail}");
+            assert_eq!(
+                scan::punctuator_prefix(text.as_bytes()),
+                Some(*punct),
+                "{text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn punctuator_matching_takes_the_longest_match() {
+    let cases: &[(&str, Option<&str>)] = &[
+        ("...", Some("...")),
+        ("....", Some("...")),
+        ("..", Some(".")),
+        (".a", Some(".")),
+        ("<<=", Some("<<=")),
+        ("<<", Some("<<")),
+        ("<<<", Some("<<")),
+        ("<=", Some("<=")),
+        ("<:", Some("<:")),
+        ("<%", Some("<%")),
+        ("<", Some("<")),
+        (">>=", Some(">>=")),
+        (">>>", Some(">>")),
+        (":>", Some(":>")),
+        (":", Some(":")),
+        ("%:%:", Some("%:%:")),
+        ("%:%", Some("%:")),
+        ("%:%>", Some("%:")),
+        ("%:%:%:", Some("%:%:")),
+        ("%:", Some("%:")),
+        ("%>", Some("%>")),
+        ("%=", Some("%=")),
+        ("%", Some("%")),
+        ("##", Some("##")),
+        ("###", Some("##")),
+        ("#", Some("#")),
+        ("->", Some("->")),
+        ("-->", Some("--")),
+        ("&&&", Some("&&")),
+        ("||=", Some("||")),
+        ("", None),
+        ("a", None),
+        ("$", None),
+        ("@", None),
+        ("`", None),
+        ("\\", None),
+        ("\"", None),
+        ("'", None),
+        ("0", None),
+    ];
+    for (text, want) in cases {
+        assert_eq!(scan::punctuator_prefix(text.as_bytes()), *want, "{text:?}");
+    }
+}
+
+#[test]
+fn punctuator_matching_agrees_with_the_linear_scan_on_every_short_string() {
+    // Every string of up to four characters over the punctuator
+    // characters plus a letter and a space: 0.7 million cases.
+    let alphabet: Vec<u8> = b"%:<>=!&|+-*/^.#~(){}[];,?a ".to_vec();
+    let mut buf = Vec::new();
+    fn walk(buf: &mut Vec<u8>, alphabet: &[u8], depth: usize) {
+        assert_eq!(
+            scan::punctuator_prefix(buf),
+            reference_punctuator(buf),
+            "{:?}",
+            String::from_utf8_lossy(buf)
+        );
+        if depth == 4 {
+            return;
+        }
+        for &byte in alphabet {
+            buf.push(byte);
+            walk(buf, alphabet, depth + 1);
+            buf.pop();
+        }
+    }
+    walk(&mut buf, &alphabet, 0);
+}
+
+#[test]
+fn punctuators_survive_the_preprocessor_with_digraphs_and_splices() {
+    let text = pp("x <<= y >>= z ... w -> v ## u <: :> <% %> a %:%: b\n");
+    // `%:%:` is the digraph for `##`; the preprocessor writes it that way.
+    assert_eq!(
+        squash(&text),
+        "x <<= y >>= z ... w -> v ## u <: :> <% %> a ## b"
+    );
+    // A line splice inside a punctuator is removed before matching.
+    assert_eq!(squash(&pp("a <\\\n<= b .\\\n.. c\n")), "a <<= b ... c");
+    // Two dots are two tokens, and three dots are one.
+    assert_eq!(squash(&pp("a .. b ... c\n")), "a . . b ... c");
+}
+
+#[test]
+fn tokens_share_one_empty_hide_set_and_macro_hiding_still_works() {
+    // Tokens that have not been through a macro share the empty set.
+    let first = hide_empty();
+    let second = hide_empty();
+    assert!(Rc::ptr_eq(&first, &second));
+    assert!(first.is_empty());
+    // Painting builds a new set; the shared one stays empty.
+    let painted = hide_with(&first, "M");
+    assert!(!Rc::ptr_eq(&painted, &first));
+    assert!(painted.contains("M"));
+    assert!(hide_empty().is_empty());
+    // A self-referential macro is still not expanded again, and the hiding
+    // of `f` through `g` stops where C11 6.10.3.4 says (these are the
+    // results of the unchanged compiler).
+    let text = pp("#define f(a) a*f\n#define g f\n#define M M + 1\nf(2)(9) M g(3)\n");
+    assert_eq!(squash(&text), "2*f(9) M + 1 3*f");
+}
