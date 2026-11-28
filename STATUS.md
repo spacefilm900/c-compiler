@@ -27,9 +27,9 @@ first, diagnostic style, the clean-room rule, and the documentation-claims
 check) and soft guidelines for function and file size, which are not CI
 gates. When a kind of review finding recurs, it should be added there.
 
-## Further performance tuning (step 17, branch `perf-cheap-wins`)
+## Further performance tuning (step 17)
 
-Step 17 started with a measurement-only round (no code changed) on `44073c7`, then a first pull request of three small changes. The IR, the `-E` output and every diagnostic are unchanged: the IR is byte-identical to `44073c7`'s on all 297 files compared (`sqlite3.c`, `shell.c`, the 34 Lua and 82 DOOM files, the five torture files, and the 174 `tests/*.c`).
+Step 17 started with a measurement-only round (no code changed) on `44073c7`, then a first pull request of three small changes (pull request 82) and a second that shares token spellings (below). The IR, the `-E` output and every diagnostic are unchanged: the IR is byte-identical to `44073c7`'s on all 297 files compared (`sqlite3.c`, `shell.c`, the 34 Lua and 82 DOOM files, the five torture files, and the 174 `tests/*.c`).
 
 **What the measurement found** (`perf` sampling and `callgrind` instruction counts, `sqlite3.c`, Lua and DOOM, on an 8-vCPU virtual Xeon with Clang 19.1.7):
 
@@ -62,7 +62,31 @@ The `-O2` totals move by 2-7% only, because LLVM is most of that time. Both colu
 
 **CI guard (`tools/perf_guard.py`, end of the SQLite job).** It now has two checks on `sqlite3.c` and `shell.c`. (1) The frontend may take at most 3x `clang -O0 -c` (was 6x) and at most 10 s (was 30 s); CI measured 1.2 to 1.3x before this change (this machine 1.0x after it), so there is more than two times of room. (2) Phase shares from `--time-phases`, which cancel out the speed of the runner: sema at most 0.45 of lex + preprocess + parse time, and irgen at most 0.55. On `sqlite3.c` sema is 0.15 before the regression, 0.52 with it and 0.32 after this change (single runs vary by about 0.03), so the regression fails the new check and the fixed compiler passes with 40% to spare. `tools/test_perf_tools.py` checks the logic with the measured phase times. The same script runs in the arm64 workflow.
 
-**Next targets**, from the measurement: share token spellings and hide-set names (`Rc<str>` or interned ids) instead of copying a `String` per token and per macro expansion (an estimated further 15-20% of the frontend on header-heavy files; 1.3 million `String` clones for one 158,000-token Lua file); a line index for the source line printed under a warning (`sqlite3.c` prints 24 warnings and each scans the whole file, about 0.17 s); the remaining sema step above. A bump allocator was tried and rejected: slower on Lua and 4 to 7 times the memory on DOOM and SQLite.
+**Second pull request: shared token spellings** (branch `perf-shared-spellings`, on `5bda983`). Every preprocessing token owned a `String` spelling, and copying a token (a macro body into its expansion, an argument into each use, every rescan) copied it; hide sets copied every macro name they held, and the parser's tokens copied the spelling once more.
+
+1. Spellings are `Rc<str>`, for preprocessing tokens, macro names, hide-set names and the parser's `Token`. Copying a token bumps reference counts.
+2. The scanner shares one allocation per distinct identifier, pp-number and punctuator spelling in a translation unit (`intern` in `src/pp/scan.rs`); string and character literals are not looked up. The table is emptied when a unit starts and ends. The parser's tokens reuse the preprocessor's spellings, so only names the AST keeps are copied into `String`s.
+3. Interned integer ids were considered and not used: every comparison with a fixed spelling (`"defined"`, `"##"`, `"("`, ...) would need a table lookup or a list of reserved ids, for at most the gain the shared table already gives. Measured with callgrind on Lua's `lvm.c`: 1,297 M instructions before, 1,083 M with `Rc<str>` tokens, 873 M with shared hide-set names, 791 M with the shared spelling table (about 6% of the remainder), 765 M with the parser sharing the spellings.
+
+Nothing that is printed changes: the IR and diagnostics are byte-identical to `5bda983`'s on the 298 benchmark and `tests/*.c` files and on all 1,890 `gcc.c-torture/execute` files, and so is the `-E` output on the 298 files. New unit tests pin stringizing, token pasting, `__VA_ARGS__` and GNU comma pasting, UCN identifiers in pastes and macro names, digraphs reaching the parser, and the sharing itself. Writing them showed three existing differences from Clang that this change keeps: `#` applied to `%:` gives `"#"` (C11 6.10.3.2 keeps the spelling, `"%:"`), a UCN in a stringized identifier comes out as UTF-8, and pasting `caf` with `\u00e9` expands a macro named `café`, which Clang leaves alone.
+
+**Measured** (`tools/bench_compile.py --runs 3`, three alternating rounds of `5bda983` and this branch on the same machine, best round per group; the machine was noisy, single rounds of the `sqlite3.c` frontend ranged from 1.26 to 1.81 s):
+
+| | Before | After |
+|---|---|---|
+| `sqlite3.c` frontend | 1.46 s | 1.26 s (-14%) |
+| `shell.c` frontend | 0.36 s | 0.32 s (-12%) |
+| Lua (34 files) frontend | 1.35 s | 1.04 s (-23%) |
+| DOOM (82 files) frontend | 2.42 s | 1.98 s (-18%) |
+| Preprocess phase: SQLite / Lua / DOOM | 0.36 / 0.71 / 1.10 s | 0.22 / 0.46 / 0.78 s |
+| Whole compile at `-O0`: SQLite / Lua / DOOM | 2.55 / 2.38 / 4.42 s | 2.29 / 2.00 / 3.93 s |
+| Whole compile against Clang at `-O2`: SQLite / Lua / DOOM | 1.02x / 1.29x / 1.20x | 0.99x / 1.19x / 1.15x |
+| Frontend peak memory: `sqlite3.c` / `shell.c` / Lua / DOOM | 320 / 86 / 34 / 22 MiB | 291 / 72 / 24 / 19 MiB |
+| Instructions (callgrind): `sqlite3.c` / Lua `lvm.c` | 8.37 G / 1.30 G | 7.02 G / 0.77 G |
+
+`shell.c` at `-O2` and the five torture files are within the noise (Clang's own times moved by 6-14% between rounds).
+
+**Next targets**, from the measurement: a line index for the source line printed under a warning (`sqlite3.c` prints 24 warnings and each scans the whole file, about 0.17 s); the remaining sema step above; the system headers that are lexed and preprocessed again for every file; the remaining allocation in macro expansion (argument maps keyed by `String` with SipHash, and growing token vectors). A bump allocator was tried and rejected: slower on Lua and 4 to 7 times the memory on DOOM and SQLite.
 
 ## Release 1.0
 
@@ -79,7 +103,7 @@ The last pull request before the tag answers an outside review of the 1.0 candid
 - `docs/C11_CONFORMANCE.md` audits N1570 clauses 5 to 7. It has 288 probes (54 programs and 234 constraint or syntax violations); 286 pass and 2 are a known gap. A further 20 cases that the standard leaves undefined or implementation-defined are counted apart; hcc diagnoses all of them. The audit found and fixed two wrong behaviours: macro rescanning past the end of a replacement list, and the 6.9.2p2 tentative definition `int a[];`. It also found 12 accepted constraint violations: 10 now give diagnostics, and the 2 inline-definition cases of 6.7.4p3 remain a known gap. CI runs the probes.
 - `reports/release-1.0/README.md` records the rerun of every suite on the release-candidate commit `2e80ec0`. Everything passed: 286/288 conformance probes (the 2 are the 6.7.4p3 gap), the harness, WACC, GCC torture, the six big programs, all 969 adversarial cases at `-O0` and `-O2`, and Csmith (2,775 and 2,774 compared) and YARPGen (1,651 compared), with 0 mismatches.
 
-Unit tests: 374. Harness: 231/231.
+Unit tests: 379. Harness: 231/231.
 
 ## Current milestone
 
