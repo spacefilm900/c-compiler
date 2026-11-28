@@ -121,18 +121,15 @@ impl Parser<'_> {
         token: &Token,
         where_: SpecPlace,
     ) -> Result<bool, Diagnostic> {
-        if matches!(
-            token.spelling.as_str(),
-            "__int128" | "__int128_t" | "__uint128_t"
-        ) {
+        if matches!(&*token.spelling, "__int128" | "__int128_t" | "__uint128_t") {
             self.note_int128(flags, token)?;
-        } else if token.spelling == "__builtin_va_list" || token.spelling == "_Float16" {
+        } else if &*token.spelling == "__builtin_va_list" || &*token.spelling == "_Float16" {
             if flags.has_type_specifier() {
                 return Ok(false);
             }
             self.bump();
             flags.any = true;
-            flags.struct_ty = Some(if token.spelling == "_Float16" {
+            flags.struct_ty = Some(if &*token.spelling == "_Float16" {
                 self.float16()
             } else {
                 self.builtin_va_list()
@@ -350,7 +347,7 @@ impl Parser<'_> {
                 "invalid combination of type specifiers",
             ));
         }
-        if token.spelling == "__uint128_t" && flags.signed {
+        if &*token.spelling == "__uint128_t" && flags.signed {
             return Err(self.error_at(
                 token.line,
                 token.column,
@@ -360,7 +357,7 @@ impl Parser<'_> {
         self.bump();
         flags.any = true;
         flags.int128 = true;
-        if token.spelling == "__uint128_t" {
+        if &*token.spelling == "__uint128_t" {
             flags.unsigned = true;
         }
         flags.line = token.line;
@@ -486,8 +483,8 @@ impl Parser<'_> {
     /// with a diagnostic), and `typeof` in GNU mode, where it is a keyword.
     pub(super) fn is_typeof_word(&self, token: &Token) -> bool {
         token.kind == TokenKind::Ident
-            && (matches!(token.spelling.as_str(), "__typeof__" | "__typeof")
-                || (token.spelling == "typeof" && self.dialect.gnu()))
+            && (matches!(&*token.spelling, "__typeof__" | "__typeof")
+                || (&*token.spelling == "typeof" && self.dialect.gnu()))
     }
 
     /// `typeof ( expression )` or `typeof ( type-name )` (GCC manual,
@@ -530,7 +527,7 @@ impl Parser<'_> {
     }
 
     pub(super) fn spec_word(&self, words: &[&str]) -> bool {
-        self.current().kind == TokenKind::Ident && words.contains(&self.current().spelling.as_str())
+        self.current().kind == TokenKind::Ident && words.contains(&&*self.current().spelling)
     }
 
     pub(super) fn note_ident_spec(
@@ -540,7 +537,7 @@ impl Parser<'_> {
     ) -> Result<(), Diagnostic> {
         let token = self.current().clone();
         self.bump();
-        match token.spelling.as_str() {
+        match &*token.spelling {
             "__inline" | "__inline__" => {
                 flags.inline_ = true;
                 flags.note_func_spec("inline", &token);

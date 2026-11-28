@@ -18,7 +18,7 @@ impl Processor {
                 self.index += 1;
                 continue;
             }
-            if self.in_if && self.tokens[self.index].spelling == "defined" {
+            if self.in_if && &*self.tokens[self.index].spelling == "defined" {
                 // `defined` that came out of a macro in an `#if` line. C11
                 // 6.10.1p4 leaves this undefined; GCC's manual documents
                 // that it is evaluated like a written `defined`, and system
@@ -61,7 +61,7 @@ impl Processor {
 
     fn at_pragma_operator(&self) -> bool {
         let tok = &self.tokens[self.index];
-        tok.kind == PpKind::Ident && tok.spelling == "_Pragma"
+        tok.kind == PpKind::Ident && &*tok.spelling == "_Pragma"
     }
 
     /// The `_Pragma ( string-literal )` operator (C11 6.10.9), met in the
@@ -127,15 +127,10 @@ impl Processor {
         self.apply_pragma(&at, &line)
     }
 
-    /// The token at the cursor, about to be consumed. Its spelling is moved
-    /// out rather than copied: a consumed token is read again only for its
-    /// kind (`at_line_start`) or its position.
+    /// The token at the cursor, about to be consumed. Copying it only bumps
+    /// reference counts: the spelling and hide set are shared.
     pub(super) fn take_current(&mut self) -> PpToken {
-        let slot = &mut self.tokens[self.index];
-        let spelling = std::mem::take(&mut slot.spelling);
-        let mut tok = slot.clone();
-        tok.spelling = spelling;
-        tok
+        self.tokens[self.index].clone()
     }
 
     pub(super) fn at_line_start(&self) -> bool {
@@ -148,7 +143,7 @@ impl Processor {
 
     pub(super) fn try_expand(&mut self, isolated: bool) -> Result<bool, Diagnostic> {
         let current = &self.tokens[self.index];
-        if current.kind != PpKind::Ident || current.hide.contains(&current.spelling) {
+        if current.kind != PpKind::Ident || current.hide.contains(&*current.spelling) {
             return Ok(false);
         }
         let found = self.lookup(&current.spelling);
@@ -225,7 +220,7 @@ impl Processor {
             self.headroom = 2 * n + 64;
             let filler = PpToken {
                 kind: PpKind::Placemarker,
-                spelling: String::new(),
+                spelling: Rc::from(""),
                 display: Rc::from(""),
                 file_id: 0,
                 line: 0,
@@ -308,7 +303,7 @@ impl Processor {
         // `__LINE__` and `__FILE__` in a replacement list use the invocation,
         // not the line where the macro was defined.
         retarget(&mut body, inv);
-        let ops: Vec<bool> = body.iter().map(|tok| tok.spelling == "##").collect();
+        let ops: Vec<bool> = body.iter().map(|tok| &*tok.spelling == "##").collect();
         let mut repl = paste_tokens(&body, &ops, inv)?;
         repl.retain(|tok| tok.kind != PpKind::Placemarker);
         paint(&mut repl, &inv.hide, &mac.name);
@@ -353,8 +348,8 @@ impl Processor {
             if mac.variadic
                 && index + 2 < body.len()
                 && body[index].is_comma()
-                && body[index + 1].spelling == "##"
-                && body[index + 2].spelling == "__VA_ARGS__"
+                && &*body[index + 1].spelling == "##"
+                && &*body[index + 2].spelling == "__VA_ARGS__"
             {
                 if args.va_omitted {
                     index += 3;
@@ -365,19 +360,19 @@ impl Processor {
                 index += 3;
                 continue;
             }
-            if body[index].spelling == "#"
+            if &*body[index].spelling == "#"
                 && !hashhash_operand(&body, index)
                 && index + 1 < body.len()
-                && raw.contains_key(&body[index + 1].spelling)
+                && raw.contains_key(&*body[index + 1].spelling)
             {
-                let mut string = stringify(&raw[&body[index + 1].spelling], &body[index]);
+                let mut string = stringify(&raw[&*body[index + 1].spelling], &body[index]);
                 string.leading_space = body[index].leading_space;
                 subst.push(string);
                 index += 2;
                 continue;
             }
-            if raw.contains_key(&body[index].spelling) {
-                let name = &body[index].spelling;
+            if raw.contains_key(&*body[index].spelling) {
+                let name = &*body[index].spelling;
                 let beside = hashhash_operand(&body, index);
                 let source = if beside {
                     raw.get(name).cloned().unwrap_or_default()
@@ -396,7 +391,7 @@ impl Processor {
                 index += 1;
                 continue;
             }
-            ops.push(body[index].spelling == "##");
+            ops.push(&*body[index].spelling == "##");
             subst.push(body[index].clone());
             index += 1;
         }
@@ -572,7 +567,7 @@ pub(super) fn retarget(tokens: &mut [PpToken], inv: &PpToken) {
     }
 }
 
-pub(super) fn paint(tokens: &mut [PpToken], base: &Hide, name: &str) {
+pub(super) fn paint(tokens: &mut [PpToken], base: &Hide, name: &Rc<str>) {
     let extra = hide_with(base, name);
     // Neighbouring tokens usually share one hide set (they came from the
     // same body or argument), so the last union is reused instead of
@@ -612,23 +607,23 @@ pub(super) fn param_uses(
     let mut need_raw = HashSet::new();
     let mut need_exp = HashSet::new();
     for (index, tok) in body.iter().enumerate() {
-        if tok.kind != PpKind::Ident || !raw.contains_key(&tok.spelling) {
+        if tok.kind != PpKind::Ident || !raw.contains_key(&*tok.spelling) {
             continue;
         }
         let stringified =
-            index > 0 && body[index - 1].spelling == "#" && !hashhash_operand(body, index - 1);
+            index > 0 && &*body[index - 1].spelling == "#" && !hashhash_operand(body, index - 1);
         if hashhash_operand(body, index) || stringified {
-            need_raw.insert(tok.spelling.clone());
+            need_raw.insert(tok.spelling.to_string());
         } else {
-            need_exp.insert(tok.spelling.clone());
+            need_exp.insert(tok.spelling.to_string());
         }
     }
     (need_raw, need_exp)
 }
 
 pub(super) fn hashhash_operand(body: &[PpToken], index: usize) -> bool {
-    (index + 1 < body.len() && body[index + 1].spelling == "##")
-        || (index > 0 && body[index - 1].spelling == "##")
+    (index + 1 < body.len() && &*body[index + 1].spelling == "##")
+        || (index > 0 && &*body[index - 1].spelling == "##")
 }
 
 pub(super) fn stringify(arg: &[PpToken], at: &PpToken) -> PpToken {
@@ -654,7 +649,7 @@ pub(super) fn stringify(arg: &[PpToken], at: &PpToken) -> PpToken {
     }
     PpToken {
         kind: PpKind::String,
-        spelling: format!("\"{text}\""),
+        spelling: format!("\"{text}\"").into(),
         display: at.display.clone(),
         file_id: at.file_id,
         line: at.line,
@@ -667,7 +662,7 @@ pub(super) fn stringify(arg: &[PpToken], at: &PpToken) -> PpToken {
 pub(super) fn placemarker(at: &PpToken) -> PpToken {
     PpToken {
         kind: PpKind::Placemarker,
-        spelling: String::new(),
+        spelling: Rc::from(""),
         display: at.display.clone(),
         file_id: at.file_id,
         line: at.line,

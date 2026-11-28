@@ -290,7 +290,7 @@ impl Parser<'_> {
             && matches!(self.lookahead(), TokenKind::Comma | TokenKind::RParen)
         {
             self.bump();
-            return Ok(AttrArg::Ident(cur.spelling));
+            return Ok(AttrArg::Ident(cur.spelling.to_string()));
         }
         let mut depth = 0usize;
         loop {

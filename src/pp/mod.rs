@@ -144,7 +144,7 @@ pub fn preprocess_tokens(
     }
     out.push(Token {
         kind: TokenKind::Eof,
-        spelling: String::new(),
+        spelling: Rc::from(""),
         line: eof_line,
         column: eof_col,
         filename: eof_file,
@@ -158,6 +158,7 @@ pub fn preprocess_tokens(
 }
 
 fn run(source: &str, filename: &str, options: &PpOptions) -> Result<Vec<PpToken>, Diagnostic> {
+    let _spellings = Spellings::scope();
     crate::target::set(options.target);
     let mut processor = Processor::new(options)?;
     processor.push_main(filename);
@@ -169,12 +170,12 @@ fn run(source: &str, filename: &str, options: &PpOptions) -> Result<Vec<PpToken>
 fn format_tokens(tokens: &[PpToken]) -> String {
     let mut out = String::new();
     let mut at_bol = true;
-    let mut previous = String::new();
+    let mut previous: Rc<str> = Rc::from("");
     for tok in tokens {
         if tok.kind == PpKind::Newline {
             out.push('\n');
             at_bol = true;
-            previous.clear();
+            previous = Rc::from("");
             continue;
         }
         if tok.kind == PpKind::Placemarker {
@@ -209,30 +210,35 @@ fn tokens_glue(previous: &str, next: &str) -> bool {
                 .iter()
                 .filter(|tok| tok.kind != PpKind::Newline)
                 .collect();
-            !(kept.len() == 2 && kept[0].spelling == previous && kept[1].spelling == next)
+            !(kept.len() == 2 && &*kept[0].spelling == previous && &*kept[1].spelling == next)
         }
         Err(_) => true,
     }
 }
 
 fn convert_token(tok: &PpToken) -> Result<Token, Diagnostic> {
-    if tok.spelling == "#" || tok.spelling == "##" {
+    if &*tok.spelling == "#" || &*tok.spelling == "##" {
         return Err(error_at(tok, "stray '#' in program"));
     }
-    let spelling = match tok.spelling.as_str() {
-        "<:" => "[",
-        ":>" => "]",
-        "<%" => "{",
-        "%>" => "}",
-        other => other,
+    let digraph = match &*tok.spelling {
+        "<:" => Some("["),
+        ":>" => Some("]"),
+        "<%" => Some("{"),
+        "%>" => Some("}"),
+        _ => None,
     };
+    let spelling = digraph.unwrap_or(&tok.spelling);
     // Identifiers, keywords, and punctuators are most tokens; they need no
     // value, so the full lexer is skipped for them.
     if matches!(tok.kind, PpKind::Ident | PpKind::Punct) {
         if let Some(kind) = crate::timing::lexing(|| crate::lexer::simple_kind(spelling)) {
             return Ok(Token {
                 kind,
-                spelling: spelling.to_string(),
+                // The parser's token shares the preprocessor's spelling.
+                spelling: match digraph {
+                    Some(text) => Rc::from(text),
+                    None => Rc::clone(&tok.spelling),
+                },
                 line: tok.line,
                 column: tok.column,
                 filename: Rc::clone(&tok.display),
@@ -272,7 +278,9 @@ fn error_at(tok: &PpToken, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(&*tok.display, tok.line, tok.column, message)
 }
 
-type Hide = Rc<FxHashSet<String>>;
+/// Macro names blocked from expanding on a token. The names are shared
+/// `Rc<str>`s, so copying a set does not copy the strings.
+type Hide = Rc<FxHashSet<Rc<str>>>;
 
 thread_local! {
     /// The one empty hide set. Most tokens carry an empty set, so they all
@@ -286,12 +294,12 @@ fn hide_empty() -> Hide {
     EMPTY_HIDE.with(Rc::clone)
 }
 
-fn hide_with(hide: &Hide, name: &str) -> Hide {
+fn hide_with(hide: &Hide, name: &Rc<str>) -> Hide {
     if hide.contains(name) {
         return Rc::clone(hide);
     }
     let mut set = (**hide).clone();
-    set.insert(name.to_string());
+    set.insert(Rc::clone(name));
     Rc::new(set)
 }
 
@@ -341,7 +349,10 @@ enum PpKind {
 #[derive(Clone)]
 struct PpToken {
     kind: PpKind,
-    spelling: String,
+    /// Shared, so copying a token (macro bodies, arguments, rescans) is a
+    /// reference-count bump rather than a string allocation. Identical
+    /// spellings from the scanner share one allocation (see `Spellings`).
+    spelling: Rc<str>,
     display: Rc<str>,
     file_id: u32,
     line: usize,
@@ -352,25 +363,26 @@ struct PpToken {
 
 impl PpToken {
     fn is_lparen(&self) -> bool {
-        self.kind == PpKind::Punct && self.spelling == "("
+        self.kind == PpKind::Punct && &*self.spelling == "("
     }
 
     fn is_rparen(&self) -> bool {
-        self.kind == PpKind::Punct && self.spelling == ")"
+        self.kind == PpKind::Punct && &*self.spelling == ")"
     }
 
     fn is_comma(&self) -> bool {
-        self.kind == PpKind::Punct && self.spelling == ","
+        self.kind == PpKind::Punct && &*self.spelling == ","
     }
 
     fn is_hash(&self) -> bool {
-        self.kind == PpKind::Punct && self.spelling == "#"
+        self.kind == PpKind::Punct && &*self.spelling == "#"
     }
 }
 
 #[derive(Clone)]
 struct Macro {
-    name: String,
+    /// Shared with every hide set the macro is painted into.
+    name: Rc<str>,
     /// `None` is object-like. `Some` is function-like, possibly with no
     /// parameters. `__VA_ARGS__` is not stored here.
     params: Option<Vec<String>>,
@@ -527,7 +539,7 @@ impl Processor {
             let (name, params) = split_function_like(name);
             let mac = self.macro_from_parts(name, params, false, body_tokens(body)?, None)?;
             self.macros
-                .insert(mac.name.clone(), MacroEntry::Defined(Rc::new(mac)));
+                .insert(mac.name.to_string(), MacroEntry::Defined(Rc::new(mac)));
         }
         Ok(())
     }
@@ -556,7 +568,7 @@ impl Processor {
                 };
                 let mac = self.macro_from_parts(name, params, false, body, Some(&at))?;
                 self.macros
-                    .insert(mac.name.clone(), MacroEntry::Defined(Rc::new(mac)));
+                    .insert(mac.name.to_string(), MacroEntry::Defined(Rc::new(mac)));
                 Ok(())
             }
         }

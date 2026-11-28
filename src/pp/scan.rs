@@ -12,6 +12,8 @@ pub(super) struct Scanner<'a> {
     pub(super) file_id: u32,
     pub(super) pending_space: bool,
     pub(super) tokens: Vec<PpToken>,
+    /// Reused buffer for building identifier and pp-number spellings.
+    pub(super) scratch: String,
 }
 
 pub(super) fn lex_source(
@@ -28,6 +30,7 @@ pub(super) fn lex_source(
         file_id,
         pending_space: false,
         tokens: Vec::new(),
+        scratch: String::new(),
     };
     scanner.run()?;
     Ok(scanner.tokens)
@@ -130,7 +133,8 @@ impl Scanner<'_> {
     /// universal character names and UTF-8 characters from Annex D; the
     /// spelling keeps them as UTF-8, so both forms name one identifier.
     pub(super) fn ident(&mut self, line: usize, column: usize) -> Result<(), Diagnostic> {
-        let mut spelling = String::new();
+        let mut spelling = std::mem::take(&mut self.scratch);
+        spelling.clear();
         loop {
             if self.peek_byte_logical().is_some_and(is_ident_continue) {
                 spelling.push(self.next_logical().unwrap().0 as char);
@@ -178,11 +182,13 @@ impl Scanner<'_> {
             }
         }
         self.push(PpKind::Ident, &spelling, line, column);
+        self.scratch = spelling;
         Ok(())
     }
 
     pub(super) fn number(&mut self, line: usize, column: usize) {
-        let mut spelling = String::new();
+        let mut spelling = std::mem::take(&mut self.scratch);
+        spelling.clear();
         let (byte, _, _) = self.next_logical().unwrap();
         spelling.push(byte as char);
         loop {
@@ -215,6 +221,7 @@ impl Scanner<'_> {
             break;
         }
         self.push(PpKind::Number, &spelling, line, column);
+        self.scratch = spelling;
     }
 
     pub(super) fn string_or_char(
@@ -308,9 +315,14 @@ impl Scanner<'_> {
     pub(super) fn push(&mut self, kind: PpKind, spelling: &str, line: usize, column: usize) {
         let leading_space = self.pending_space;
         self.pending_space = false;
+        // Literals are rarely repeated, so only the other kinds are shared.
+        let spelling = match kind {
+            PpKind::String | PpKind::Char => Rc::from(spelling),
+            _ => intern(spelling),
+        };
         self.tokens.push(PpToken {
             kind,
-            spelling: spelling.to_string(),
+            spelling,
             display: Rc::clone(&self.display),
             file_id: self.file_id,
             line,
@@ -324,7 +336,7 @@ impl Scanner<'_> {
         self.pending_space = false;
         self.tokens.push(PpToken {
             kind: PpKind::Newline,
-            spelling: "\n".to_string(),
+            spelling: intern("\n"),
             display: Rc::clone(&self.display),
             file_id: self.file_id,
             line,
@@ -550,4 +562,43 @@ pub(super) fn is_ident_start(byte: u8) -> bool {
 
 pub(super) fn is_ident_continue(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+thread_local! {
+    /// Spellings already seen in this translation unit. The scanner hands
+    /// out clones of these, so the many copies of `int`, `(` or a common
+    /// macro name share one allocation. [`Spellings::scope`] empties it.
+    static SPELLINGS: std::cell::RefCell<FxHashSet<Rc<str>>> =
+        std::cell::RefCell::new(FxHashSet::default());
+}
+
+/// The shared copy of `spelling`, made on first use.
+pub(super) fn intern(spelling: &str) -> Rc<str> {
+    SPELLINGS.with(|set| {
+        let mut set = set.borrow_mut();
+        if let Some(found) = set.get(spelling) {
+            return Rc::clone(found);
+        }
+        let shared: Rc<str> = Rc::from(spelling);
+        set.insert(Rc::clone(&shared));
+        shared
+    })
+}
+
+/// Empties the spelling table when a translation unit starts and again when
+/// it ends, so one process compiling many units does not keep their
+/// spellings alive.
+pub(super) struct Spellings;
+
+impl Spellings {
+    pub(super) fn scope() -> Self {
+        SPELLINGS.with(|set| set.borrow_mut().clear());
+        Spellings
+    }
+}
+
+impl Drop for Spellings {
+    fn drop(&mut self) {
+        SPELLINGS.with(|set| set.borrow_mut().clear());
+    }
 }

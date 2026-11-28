@@ -48,7 +48,7 @@ pub(super) fn val_from_compiler(tok: &Token) -> Val {
     // not scanned for a suffix. Its type is fixed, not chosen by value, so an
     // unsigned one (`u'a'` is `char16_t`, `U'a'` is `char32_t`) acts as
     // `uintmax_t` (C11 6.10.1p4): `#if u'a' - 98 < 0` is false.
-    let spelling = tok.spelling.as_str();
+    let spelling = &*tok.spelling;
     let number = spelling.as_bytes().first().is_some_and(u8::is_ascii_digit);
     let u_suffix = number && spelling.bytes().any(|byte| byte == b'u' || byte == b'U');
     let too_big = !ty.is_signed() && ty.width() == 64 && bits > i64::MAX as u64;
@@ -248,7 +248,7 @@ impl IfParser<'_> {
         let Some(tok) = self.current().cloned() else {
             return Err(self.error("expected an expression"));
         };
-        let op = match tok.spelling.as_str() {
+        let op = match &*tok.spelling {
             "+" if tok.kind == PpKind::Punct => Unary::Plus,
             "-" if tok.kind == PpKind::Punct => Unary::Minus,
             "~" if tok.kind == PpKind::Punct => Unary::BitNot,
@@ -291,7 +291,7 @@ impl IfParser<'_> {
 
     pub(super) fn peek_punct(&self, spelling: &str) -> bool {
         self.current()
-            .is_some_and(|tok| tok.kind == PpKind::Punct && tok.spelling == spelling)
+            .is_some_and(|tok| tok.kind == PpKind::Punct && &*tok.spelling == spelling)
     }
 
     pub(super) fn eat(&mut self, spelling: &str) -> bool {

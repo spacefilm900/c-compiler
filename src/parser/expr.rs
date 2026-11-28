@@ -261,7 +261,7 @@ impl Parser<'_> {
                 self.bump();
                 let name = self.advance();
                 Ok(Expr::LabelAddr {
-                    name: name.spelling,
+                    name: name.spelling.to_string(),
                     func: None,
                     line: token.line,
                     column: token.column,
@@ -403,7 +403,7 @@ impl Parser<'_> {
             }
             let name = self.advance();
             return Ok(DesignatorPart::One(Designator::Field {
-                name: name.spelling,
+                name: name.spelling.to_string(),
                 line: name.line,
                 column: name.column,
             }));
@@ -1086,7 +1086,7 @@ impl Parser<'_> {
                         return Err(self.error("expected a member name"));
                     }
                     let name = self.advance();
-                    expr = Expr::member(expr, name.spelling, arrow, op.line, op.column);
+                    expr = Expr::member(expr, name.spelling.to_string(), arrow, op.line, op.column);
                 }
                 // `case low ... high:` in GNU C.
                 TokenKind::Ellipsis if self.dialect.gnu() => break,
@@ -1156,7 +1156,11 @@ impl Parser<'_> {
                         format!("typedef name '{}' used as a value", token.spelling),
                     ));
                 }
-                Ok(Expr::var(token.spelling, token.line, token.column))
+                Ok(Expr::var(
+                    token.spelling.to_string(),
+                    token.line,
+                    token.column,
+                ))
             }
             TokenKind::String => {
                 self.bump();
