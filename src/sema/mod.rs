@@ -79,6 +79,7 @@ pub fn analyze_dialect(
         dialect,
         warnings: RefCell::new(Vec::new()),
         tokens,
+        uses_atomic: unit.uses_atomic,
         locs: std::cell::OnceCell::new(),
         scopes: vec![HashMap::new()],
         loop_depth: 0,
@@ -291,6 +292,8 @@ struct Sema<'t> {
     /// Built from `tokens` on the first diagnostic.
     locs: std::cell::OnceCell<HashMap<(usize, usize), std::rc::Rc<str>>>,
     tokens: &'t [crate::token::Token],
+    /// [`TranslationUnit::uses_atomic`]: false means no type is atomic.
+    uses_atomic: bool,
     scopes: Vec<HashMap<String, Symbol>>,
     loop_depth: u32,
     /// Innermost switch first at the end. A `case` or `default` belongs to

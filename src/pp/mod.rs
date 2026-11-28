@@ -274,8 +274,16 @@ fn error_at(tok: &PpToken, message: impl Into<String>) -> Diagnostic {
 
 type Hide = Rc<FxHashSet<String>>;
 
+thread_local! {
+    /// The one empty hide set. Most tokens carry an empty set, so they all
+    /// share this instead of allocating a new `Rc` each. Sets are never
+    /// changed in place (`hide_with` and `hide_union` build new ones), so
+    /// sharing is safe.
+    static EMPTY_HIDE: Hide = Rc::new(FxHashSet::default());
+}
+
 fn hide_empty() -> Hide {
-    Rc::new(FxHashSet::default())
+    EMPTY_HIDE.with(Rc::clone)
 }
 
 fn hide_with(hide: &Hide, name: &str) -> Hide {

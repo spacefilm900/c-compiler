@@ -246,6 +246,8 @@ impl Parser<'_> {
             var_attrs: std::mem::take(&mut self.var_attrs),
             warnings: std::mem::take(&mut self.warnings),
             vla_sizes: std::mem::take(&mut self.vla_sizes),
+            // Atomic qualifiers are only ever created from this keyword.
+            uses_atomic: self.tokens.iter().any(|t| t.kind == TokenKind::KwAtomic),
         })
     }
 
