@@ -22,7 +22,11 @@ impl Parser<'_> {
         let pre_attrs = self.parse_attributes_into()?;
         let (tag, line, column) = if self.current().kind == TokenKind::Ident {
             let tag_tok = self.advance();
-            (Some(tag_tok.spelling), tag_tok.line, tag_tok.column)
+            (
+                Some(tag_tok.spelling.to_string()),
+                tag_tok.line,
+                tag_tok.column,
+            )
         } else if self.current().kind == TokenKind::LBrace {
             (None, kw.line, kw.column)
         } else {
@@ -264,7 +268,11 @@ impl Parser<'_> {
         let kw = self.advance();
         let (tag, line, column) = if self.current().kind == TokenKind::Ident {
             let tag_tok = self.advance();
-            (Some(tag_tok.spelling), tag_tok.line, tag_tok.column)
+            (
+                Some(tag_tok.spelling.to_string()),
+                tag_tok.line,
+                tag_tok.column,
+            )
         } else {
             (None, kw.line, kw.column)
         };
@@ -455,7 +463,7 @@ impl Parser<'_> {
             };
             prev_ty = ty;
             self.bind_enum(&name.spelling, value, ty, name.line, name.column)?;
-            names.push(name.spelling);
+            names.push(name.spelling.to_string());
             min = min.min(value);
             max = max.max(value);
             next = value + 1;

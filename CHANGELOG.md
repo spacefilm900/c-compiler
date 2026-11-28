@@ -17,6 +17,10 @@ for each target.
   contain no `_Atomic`, punctuators are matched directly, and tokens share
   one empty macro-hiding set. See the "Further performance tuning" section
   of [STATUS.md](STATUS.md).
+- The front end is a further 12% to 23% faster on the same programs and
+  uses 9% to 28% less peak memory, with identical output: tokens share
+  their spellings instead of copying a string each time a macro is
+  expanded.
 
 ### Added
 

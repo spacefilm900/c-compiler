@@ -187,7 +187,7 @@ impl Parser<'_> {
                 ));
             }
             params.push(Param {
-                name: Some(token.spelling),
+                name: Some(token.spelling.to_string()),
                 ty: CType::from_name(TypeName::Int),
                 line: token.line,
                 column: token.column,
@@ -373,7 +373,7 @@ impl Parser<'_> {
             }
         } else if self.current().kind == TokenKind::Ident {
             let name = self.advance();
-            RawDecl::Named(name.spelling, name.line, name.column)
+            RawDecl::Named(name.spelling.to_string(), name.line, name.column)
         } else if abstract_ok {
             let token = self.current();
             RawDecl::Abstract(token.line, token.column)
@@ -451,10 +451,7 @@ impl Parser<'_> {
                     self.bump();
                 }
                 TokenKind::Ident
-                    if matches!(
-                        self.current().spelling.as_str(),
-                        "__restrict" | "__restrict__"
-                    ) =>
+                    if matches!(&*self.current().spelling, "__restrict" | "__restrict__") =>
                 {
                     if quals.is_restrict {
                         return Err(self.error("duplicate 'restrict' qualifier"));

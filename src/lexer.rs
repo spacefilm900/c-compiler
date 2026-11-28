@@ -153,7 +153,7 @@ impl Lexer<'_> {
         }
         self.tokens.push(Token {
             kind: TokenKind::Eof,
-            spelling: String::new(),
+            spelling: Rc::from(""),
             line: self.line,
             column: self.column,
             filename: Rc::clone(self.filename),
@@ -195,7 +195,7 @@ impl Lexer<'_> {
     fn push(&mut self, kind: TokenKind, spelling: &str, line: usize, column: usize) {
         self.tokens.push(Token {
             kind,
-            spelling: spelling.to_string(),
+            spelling: Rc::from(spelling),
             line,
             column,
             filename: Rc::clone(self.filename),
@@ -560,7 +560,7 @@ impl Lexer<'_> {
     ) {
         self.tokens.push(Token {
             kind: TokenKind::Float,
-            spelling: spelling.to_string(),
+            spelling: Rc::from(spelling),
             line,
             column,
             filename: Rc::clone(self.filename),
@@ -667,7 +667,7 @@ impl Lexer<'_> {
     fn push_int(&mut self, spelling: &str, bits: u64, ty: TypeName, line: usize, column: usize) {
         self.tokens.push(Token {
             kind: TokenKind::Int,
-            spelling: spelling.to_string(),
+            spelling: Rc::from(spelling),
             line,
             column,
             filename: Rc::clone(self.filename),
@@ -706,7 +706,7 @@ impl Lexer<'_> {
     fn push_string(&mut self, spelling: String, bytes: Vec<u8>, line: usize, column: usize) {
         self.tokens.push(Token {
             kind: TokenKind::String,
-            spelling,
+            spelling: Rc::from(spelling),
             line,
             column,
             filename: Rc::clone(self.filename),
@@ -1343,7 +1343,10 @@ mod tests {
     }
 
     fn spellings(source: &str) -> Vec<String> {
-        tokens(source).into_iter().map(|t| t.spelling).collect()
+        tokens(source)
+            .into_iter()
+            .map(|t| t.spelling.to_string())
+            .collect()
     }
 
     fn kinds(source: &str) -> Vec<TokenKind> {
@@ -1599,9 +1602,9 @@ mod tests {
         // UCN spell the same identifier.
         let ident = tokens("int café caf\\u00e9 \\U0001F600x");
         assert_eq!(ident[1].kind, TokenKind::Ident);
-        assert_eq!(ident[1].spelling, "café");
-        assert_eq!(ident[2].spelling, "café");
-        assert_eq!(ident[3].spelling, "\u{1F600}x");
+        assert_eq!(&*ident[1].spelling, "café");
+        assert_eq!(&*ident[2].spelling, "café");
+        assert_eq!(&*ident[3].spelling, "\u{1F600}x");
         assert!(err("int \\u0301x").contains("not allowed at the start of an identifier"));
         assert!(err("int a\\u0041").contains("cannot be written as a universal character name"));
         assert!(err("int a\\uDC00").contains("not a valid universal character name"));

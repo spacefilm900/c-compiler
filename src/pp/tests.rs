@@ -887,7 +887,7 @@ fn tokens_share_one_empty_hide_set_and_macro_hiding_still_works() {
     assert!(Rc::ptr_eq(&first, &second));
     assert!(first.is_empty());
     // Painting builds a new set; the shared one stays empty.
-    let painted = hide_with(&first, "M");
+    let painted = hide_with(&first, &Rc::from("M"));
     assert!(!Rc::ptr_eq(&painted, &first));
     assert!(painted.contains("M"));
     assert!(hide_empty().is_empty());
@@ -896,4 +896,146 @@ fn tokens_share_one_empty_hide_set_and_macro_hiding_still_works() {
     // results of the unchanged compiler).
     let text = pp("#define f(a) a*f\n#define g f\n#define M M + 1\nf(2)(9) M g(3)\n");
     assert_eq!(squash(&text), "2*f(9) M + 1 3*f");
+}
+
+/// The preprocessed lines of `source`, each with its spacing squashed.
+fn pp_lines(source: &str) -> Vec<String> {
+    pp(source)
+        .lines()
+        .map(squash)
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+#[test]
+fn stringizing_keeps_each_spelling() {
+    // C11 6.10.3.2: spacing collapses to one space, and `"` and `\` in
+    // string and character literals are escaped. These are the results of
+    // the compiler before spellings were shared.
+    let lines = pp_lines(concat!(
+        "#define S(x) #x\n",
+        "#define XS(x) S(x)\n",
+        "#define CAT(a, b) a ## b\n",
+        "S( a   +  b )\n",
+        "S(\"a\\n\" 'c' L\"w\" u8\"v\")\n",
+        "S(<: :> <% %> %: %:%:)\n",
+        "S(  leading   and trailing  )\n",
+        "S(caf\\u00e9 x\\U0001F600 \u{e9})\n",
+        "XS(CAT(a, b))\n",
+        "XS(__LINE__)\n",
+    ));
+    assert_eq!(
+        lines,
+        [
+            r#""a + b""#,
+            r#""\"a\\n\" 'c' L\"w\" u8\"v\"""#,
+            // The scanner stores `%:` and `%:%:` as `#` and `##`.
+            r#""<: :> <% %> # ##""#,
+            r#""leading and trailing""#,
+            // UCNs in identifiers are kept as UTF-8.
+            "\"caf\u{e9} x\u{1F600} \u{e9}\"",
+            r#""ab""#,
+            r#""10""#,
+        ]
+    );
+}
+
+#[test]
+fn token_pasting_builds_new_spellings() {
+    let lines = pp_lines(concat!(
+        "#define CAT(a, b) a ## b\n",
+        "#define XCAT(a, b) CAT(a, b)\n",
+        "#define FOO 42\n",
+        "#define caf\\u00e9 7\n",
+        "CAT(a, b) CAT(1, 2) CAT(<, <=) CAT(%:, %:) CAT(L, \"s\") CAT(x, ) CAT(, y)\n",
+        "CAT(F, OO) XCAT(F, OO) CAT(1e, +5) CAT(0x, 1p-3)\n",
+        // A pasted identifier with a UCN names the same macro as the
+        // UTF-8 spelling.
+        "CAT(caf, \\u00e9) CAT(caf, \u{e9}) caf\u{e9} caf\\u00e9 caf\\u00E9\n",
+    ));
+    assert_eq!(
+        lines,
+        ["ab 12 <<= ## L\"s\" x y", "42 42 1e+ 5 0x1p-3", "7 7 7 7 7",]
+    );
+    let err = pp_err("#define CAT(a, b) a ## b\nCAT(., .)\n");
+    assert!(
+        err.contains("pasting '..' does not produce a valid preprocessing token"),
+        "{err}"
+    );
+}
+
+#[test]
+fn macro_expansion_spellings_and_shared_tokens() {
+    let lines = pp_lines(concat!(
+        "#define V(fmt, ...) f(fmt, ## __VA_ARGS__)\n",
+        "#define W(...) g(__VA_ARGS__) #__VA_ARGS__\n",
+        "#define int int\n",
+        "#define TWICE(x) x x\n",
+        "V(1) V(1, 2, 3) W() W(a, b ,c)\n",
+        "int x; int y; TWICE(TWICE(z))\n",
+    ));
+    assert_eq!(
+        lines,
+        [
+            r#"f(1) f(1, 2, 3) g() "" g(a, b ,c) "a, b ,c""#,
+            "int x; int y; z z z z",
+        ]
+    );
+}
+
+#[test]
+fn scanned_spellings_are_shared_within_a_unit() {
+    let _scope = Spellings::scope();
+    let tokens = lex_source("int x; int y; \"s\" \"s\"\n", "t.c", 0).unwrap();
+    let spelled = |text: &str| -> Vec<&PpToken> {
+        tokens.iter().filter(|tok| &*tok.spelling == text).collect()
+    };
+    // Identifiers and punctuators share one allocation per spelling.
+    let ints = spelled("int");
+    assert_eq!(ints.len(), 2);
+    assert!(Rc::ptr_eq(&ints[0].spelling, &ints[1].spelling));
+    let semis = spelled(";");
+    assert!(Rc::ptr_eq(&semis[0].spelling, &semis[1].spelling));
+    // String literals are not looked up.
+    let strings = spelled("\"s\"");
+    assert_eq!(strings.len(), 2);
+    assert!(!Rc::ptr_eq(&strings[0].spelling, &strings[1].spelling));
+    drop(_scope);
+    // The table is emptied when the unit ends; the tokens keep their text.
+    assert!(!Rc::ptr_eq(&intern("int"), &ints[0].spelling));
+    assert_eq!(&*ints[0].spelling, "int");
+}
+
+#[test]
+fn parser_tokens_share_the_preprocessor_spelling() {
+    let mut options = PpOptions::default();
+    options.system_dirs.clear();
+    let tokens = preprocess_tokens("int a <: 2 :>; int b;\n", "t.c", &options).unwrap();
+    let spellings: Vec<&str> = tokens.iter().map(|tok| &*tok.spelling).collect();
+    // Digraphs still reach the parser as the tokens they stand for.
+    assert_eq!(
+        spellings,
+        ["int", "a", "[", "2", "]", ";", "int", "b", ";", ""]
+    );
+    assert_eq!(tokens[2].kind, TokenKind::LBrack);
+    assert!(Rc::ptr_eq(&tokens[0].spelling, &tokens[6].spelling));
+    assert!(Rc::ptr_eq(&tokens[5].spelling, &tokens[8].spelling));
+    // Numbers and other tokens that go through the full lexer share it too,
+    // and keep their value.
+    let tokens = preprocess_tokens("42 + 42;\n", "t.c", &options).unwrap();
+    assert_eq!(tokens[0].kind, TokenKind::Int);
+    assert_eq!(tokens[2].value, Some(42));
+    assert!(Rc::ptr_eq(&tokens[0].spelling, &tokens[2].spelling));
+}
+
+#[test]
+fn the_spelling_table_is_empty_after_preprocessing() {
+    // `-E` output lexes token pairs again while it is written; those
+    // spellings are dropped as well.
+    pp("int v0;int v1;\n#define M(x) x x\nM(a)\n");
+    assert_eq!(interned_count(), 0);
+    let mut options = PpOptions::default();
+    options.system_dirs.clear();
+    preprocess_tokens("int a;\n", "t.c", &options).unwrap();
+    assert_eq!(interned_count(), 0);
 }

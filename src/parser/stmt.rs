@@ -65,7 +65,7 @@ impl Parser<'_> {
         let mut index = self.index;
         while self.tokens.get(index).is_some_and(|tok| {
             tok.kind == TokenKind::Ident
-                && matches!(tok.spelling.as_str(), "__attribute__" | "__attribute")
+                && matches!(&*tok.spelling, "__attribute__" | "__attribute")
         }) {
             index += 1;
             if self.tokens.get(index).map(|tok| tok.kind) != Some(TokenKind::LParen) {
@@ -177,7 +177,7 @@ impl Parser<'_> {
         self.parse_attributes_into()?;
         let stmt = Box::new(self.parse_statement()?);
         Ok(Stmt::Label {
-            name: name.spelling,
+            name: name.spelling.to_string(),
             stmt,
             line: name.line,
             column: name.column,
@@ -210,7 +210,7 @@ impl Parser<'_> {
         let name = self.advance();
         self.expect_skip(TokenKind::Semi, "';'")?;
         Ok(Stmt::Goto {
-            name: name.spelling,
+            name: name.spelling.to_string(),
             line: token.line,
             column: token.column,
         })

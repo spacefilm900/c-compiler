@@ -404,14 +404,11 @@ impl Parser<'_> {
             )
             || (token.kind == TokenKind::Ident
                 && (self.is_typedef(&token.spelling)
-                    || token.spelling == "__builtin_va_list"
-                    || token.spelling == "_Float16"
-                    || matches!(
-                        token.spelling.as_str(),
-                        "__int128" | "__int128_t" | "__uint128_t"
-                    )))
+                    || &*token.spelling == "__builtin_va_list"
+                    || &*token.spelling == "_Float16"
+                    || matches!(&*token.spelling, "__int128" | "__int128_t" | "__uint128_t")))
             || self.is_typeof_word(token)
-            || matches!(token.spelling.as_str(), "__restrict" | "__restrict__")
+            || matches!(&*token.spelling, "__restrict" | "__restrict__")
                 && token.kind == TokenKind::Ident
     }
 

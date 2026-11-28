@@ -17,7 +17,7 @@ impl Processor {
             return Err(error_at(&hash, "invalid preprocessing directive"));
         }
         self.index += 1;
-        match name_tok.spelling.as_str() {
+        match &*name_tok.spelling {
             "define" => self.do_define(&hash),
             "undef" => self.do_undef(&hash),
             "include" => self.do_include(&hash, false),
@@ -46,7 +46,7 @@ impl Processor {
         if line[0].kind != PpKind::Ident {
             return Err(error_at(&line[0], "macro name must be an identifier"));
         }
-        let name = line[0].spelling.clone();
+        let name = line[0].spelling.to_string();
         if name == "defined" {
             return Err(error_at(
                 &line[0],
@@ -84,7 +84,7 @@ impl Processor {
         if line.len() != 1 || line[0].kind != PpKind::Ident {
             return Err(error_at(at, "expected one identifier after #undef"));
         }
-        if line[0].spelling == "defined" {
+        if &*line[0].spelling == "defined" {
             return Err(error_at(
                 &line[0],
                 "'defined' cannot be used as a macro name",
@@ -92,8 +92,7 @@ impl Processor {
         }
         // C11 6.10.8p2: the predefined macro names of 6.10.8.1 are not the
         // subject of a #undef.
-        if PREDEFINED_FIXED.contains(&line[0].spelling.as_str())
-            && !self.files[at.file_id as usize].system
+        if PREDEFINED_FIXED.contains(&&*line[0].spelling) && !self.files[at.file_id as usize].system
         {
             return Err(error_at(
                 &line[0],
@@ -101,7 +100,7 @@ impl Processor {
             ));
         }
         self.macros
-            .insert(line[0].spelling.clone(), MacroEntry::Undefined);
+            .insert(line[0].spelling.to_string(), MacroEntry::Undefined);
         Ok(())
     }
 
@@ -230,7 +229,7 @@ impl Processor {
         at: &PpToken,
         line: &[PpToken],
     ) -> Result<(), Diagnostic> {
-        if line.first().is_some_and(|tok| tok.spelling == "once") {
+        if line.first().is_some_and(|tok| &*tok.spelling == "once") {
             if line.len() != 1 {
                 return Err(error_at(&line[1], "extra tokens after #pragma once"));
             }
@@ -298,7 +297,7 @@ impl Processor {
                 let column = last.column.saturating_add(last.spelling.len());
                 included.push(PpToken {
                     kind: PpKind::Newline,
-                    spelling: "\n".to_string(),
+                    spelling: Rc::from("\n"),
                     display: Rc::clone(&display),
                     file_id,
                     line,
@@ -427,7 +426,7 @@ impl Processor {
                 self.skip_rest_of_line();
                 continue;
             }
-            let name = name_tok.spelling.clone();
+            let name = name_tok.spelling.to_string();
             self.index += 1;
             match name.as_str() {
                 "if" | "ifdef" | "ifndef" => {
@@ -542,17 +541,17 @@ impl Processor {
             let tok = &tokens[index];
             let query = tok.kind == PpKind::Ident
                 && is_has_query(&tok.spelling)
-                && !self.macros.contains_key(&tok.spelling)
-                && !(index > 0 && tokens[index - 1].spelling == "defined")
+                && !self.macros.contains_key(&*tok.spelling)
+                && !(index > 0 && &*tokens[index - 1].spelling == "defined")
                 && !(index > 1
                     && tokens[index - 1].is_lparen()
-                    && tokens[index - 2].spelling == "defined");
+                    && &*tokens[index - 2].spelling == "defined");
             if !query {
                 out.push(tok.clone());
                 index += 1;
                 continue;
             }
-            let name = tok.spelling.as_str();
+            let name = &*tok.spelling;
             if index + 1 >= tokens.len() || !tokens[index + 1].is_lparen() {
                 return Err(error_at(tok, format!("missing '(' after '{name}'")));
             }
@@ -616,7 +615,7 @@ impl Processor {
         force: bool,
     ) -> Result<(), Diagnostic> {
         if !force {
-            if let Some(MacroEntry::Defined(previous)) = self.macros.get(&mac.name) {
+            if let Some(MacroEntry::Defined(previous)) = self.macros.get(&*mac.name) {
                 if !same_macro(previous, &mac) {
                     return Err(error_at(at, format!("macro '{}' redefined", mac.name)));
                 }
@@ -624,7 +623,7 @@ impl Processor {
             }
         }
         self.macros
-            .insert(mac.name.clone(), MacroEntry::Defined(Rc::new(mac)));
+            .insert(mac.name.to_string(), MacroEntry::Defined(Rc::new(mac)));
         Ok(())
     }
 
@@ -644,7 +643,7 @@ impl Processor {
             validate_body(&body, params.as_deref(), variadic, &marker)?;
         }
         Ok(Macro {
-            name: name.to_string(),
+            name: Rc::from(name),
             params,
             variadic,
             body,
@@ -702,7 +701,7 @@ pub(super) fn cond_frame(at: &PpToken, value: bool) -> Cond {
 pub(super) fn cond_token(frame: &Cond) -> PpToken {
     PpToken {
         kind: PpKind::Punct,
-        spelling: "#".to_string(),
+        spelling: Rc::from("#"),
         display: frame.display.clone(),
         file_id: 0,
         line: frame.line,
@@ -715,7 +714,7 @@ pub(super) fn cond_token(frame: &Cond) -> PpToken {
 pub(super) fn command_token() -> PpToken {
     PpToken {
         kind: PpKind::Ident,
-        spelling: String::new(),
+        spelling: Rc::from(""),
         display: Rc::from("<command-line>"),
         file_id: 0,
         line: 1,
@@ -729,12 +728,12 @@ pub(super) fn special_token(tok: &PpToken) -> PpToken {
     let mut repl = tok.clone();
     repl.hide = hide_empty();
     repl.leading_space = tok.leading_space;
-    if tok.spelling == "__LINE__" {
+    if &*tok.spelling == "__LINE__" {
         repl.kind = PpKind::Number;
-        repl.spelling = tok.line.to_string();
+        repl.spelling = tok.line.to_string().into();
     } else {
         repl.kind = PpKind::String;
-        repl.spelling = format!("\"{}\"", escape_string(&tok.display));
+        repl.spelling = format!("\"{}\"", escape_string(&tok.display)).into();
     }
     repl
 }
@@ -800,7 +799,7 @@ pub(super) fn replace_defined(
     let mut out = Vec::new();
     let mut index = 0;
     while index < tokens.len() {
-        if tokens[index].kind == PpKind::Ident && tokens[index].spelling == "defined" {
+        if tokens[index].kind == PpKind::Ident && &*tokens[index].spelling == "defined" {
             let at = &tokens[index];
             index += 1;
             let name = if index < tokens.len() && tokens[index].is_lparen() {
@@ -832,7 +831,7 @@ pub(super) fn replace_defined(
 pub(super) fn number_token(at: &PpToken, spelling: &str) -> PpToken {
     PpToken {
         kind: PpKind::Number,
-        spelling: spelling.to_string(),
+        spelling: Rc::from(spelling),
         display: at.display.clone(),
         file_id: at.file_id,
         line: at.line,
@@ -848,7 +847,7 @@ pub(super) fn replace_idents(tokens: Vec<PpToken>) -> Vec<PpToken> {
         .map(|mut tok| {
             if tok.kind == PpKind::Ident {
                 tok.kind = PpKind::Number;
-                tok.spelling = "0".to_string();
+                tok.spelling = Rc::from("0");
                 tok.hide = hide_empty();
             }
             tok
@@ -859,7 +858,7 @@ pub(super) fn replace_idents(tokens: Vec<PpToken>) -> Vec<PpToken> {
 pub(super) fn starts_header(tokens: &[PpToken]) -> bool {
     tokens
         .first()
-        .is_some_and(|tok| tok.kind == PpKind::String || tok.spelling == "<")
+        .is_some_and(|tok| tok.kind == PpKind::String || &*tok.spelling == "<")
 }
 
 pub(super) fn header_from(
@@ -872,11 +871,11 @@ pub(super) fn header_from(
     if tokens[0].kind == PpKind::String {
         return Ok((decode_string(&tokens[0])?, true, 1));
     }
-    if tokens[0].spelling == "<" {
+    if &*tokens[0].spelling == "<" {
         let mut name = String::new();
         let mut index = 1;
         while index < tokens.len() {
-            if tokens[index].kind == PpKind::Punct && tokens[index].spelling == ">" {
+            if tokens[index].kind == PpKind::Punct && &*tokens[index].spelling == ">" {
                 return Ok((name, false, index + 1));
             }
             if tokens[index].leading_space {
@@ -977,7 +976,7 @@ pub(super) fn parse_function_header(
                 "missing ')' in macro parameter list",
             ));
         }
-        if rest[index].spelling == "..." && rest[index].kind == PpKind::Punct {
+        if &*rest[index].spelling == "..." && rest[index].kind == PpKind::Punct {
             variadic = true;
             index += 1;
             if index >= rest.len() || !rest[index].is_rparen() {
@@ -989,7 +988,7 @@ pub(super) fn parse_function_header(
         if rest[index].kind != PpKind::Ident {
             return Err(error_at(&rest[index], "expected a parameter name"));
         }
-        let name = rest[index].spelling.clone();
+        let name = rest[index].spelling.to_string();
         if name == "__VA_ARGS__" {
             return Err(error_at(
                 &rest[index],
@@ -1007,7 +1006,7 @@ pub(super) fn parse_function_header(
         if system
             && index < rest.len()
             && rest[index].kind == PpKind::Punct
-            && rest[index].spelling == "..."
+            && &*rest[index].spelling == "..."
         {
             va_name = params.pop();
             variadic = true;
@@ -1030,7 +1029,7 @@ pub(super) fn parse_function_header(
         }
         if rest[index].is_comma() {
             index += 1;
-            if index < rest.len() && rest[index].spelling == "..." {
+            if index < rest.len() && &*rest[index].spelling == "..." {
                 continue;
             }
             continue;
@@ -1043,8 +1042,8 @@ pub(super) fn parse_function_header(
     let mut body = rest[index..].to_vec();
     if let Some(va_name) = va_name {
         for tok in &mut body {
-            if tok.kind == PpKind::Ident && tok.spelling == va_name {
-                tok.spelling = "__VA_ARGS__".to_string();
+            if tok.kind == PpKind::Ident && *tok.spelling == *va_name {
+                tok.spelling = Rc::from("__VA_ARGS__");
             }
         }
     }
@@ -1082,20 +1081,20 @@ pub(super) fn validate_body(
     variadic: bool,
     at: &PpToken,
 ) -> Result<(), Diagnostic> {
-    if body.first().is_some_and(|tok| tok.spelling == "##") {
+    if body.first().is_some_and(|tok| &*tok.spelling == "##") {
         return Err(error_at(
             at,
             "'##' at the beginning of a macro replacement list",
         ));
     }
-    if body.last().is_some_and(|tok| tok.spelling == "##") {
+    if body.last().is_some_and(|tok| &*tok.spelling == "##") {
         return Err(error_at(at, "'##' at the end of a macro replacement list"));
     }
     // C11 6.10.3p5: `__VA_ARGS__` belongs only to a variadic macro.
     if !variadic
         && body
             .iter()
-            .any(|tok| tok.kind == PpKind::Ident && tok.spelling == "__VA_ARGS__")
+            .any(|tok| tok.kind == PpKind::Ident && &*tok.spelling == "__VA_ARGS__")
     {
         return Err(error_at(
             at,
@@ -1106,14 +1105,14 @@ pub(super) fn validate_body(
         return Ok(());
     };
     for (index, tok) in body.iter().enumerate() {
-        if tok.spelling != "#" || hashhash_operand(body, index) {
+        if &*tok.spelling != "#" || hashhash_operand(body, index) {
             continue;
         }
         let Some(next) = body.get(index + 1) else {
             return Err(error_at(at, "'#' is not followed by a macro parameter"));
         };
-        let ok = params.iter().any(|name| name == &next.spelling)
-            || (variadic && next.spelling == "__VA_ARGS__");
+        let ok = params.iter().any(|name| name == &*next.spelling)
+            || (variadic && &*next.spelling == "__VA_ARGS__");
         if !ok {
             return Err(error_at(at, "'#' is not followed by a macro parameter"));
         }

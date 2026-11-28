@@ -114,7 +114,7 @@ pub enum TokenKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub kind: TokenKind,
-    pub spelling: String,
+    pub spelling: std::rc::Rc<str>,
     pub line: usize,
     pub column: usize,
     /// Source file this token came from. The preprocessor sets this for
