@@ -2,21 +2,30 @@
 
 The program is `hcc`, the Haviland C Compiler. `make` writes `build/hcc`.
 
-## Release 1.0.1 (in preparation)
+## Release 1.0.1
 
+v1.0.1 was released on 2026-11-26
+(https://github.com/spacefilm900/c-compiler/releases/tag/v1.0.1).
 v1.0.0 was released on 2026-11-25 from `d848f46`
 (https://github.com/spacefilm900/c-compiler/releases/tag/v1.0.0). 1.0.1 is
-being prepared as a bug-fix release (`Cargo.toml` 1.0.1,
-`docs/release-notes/v1.0.1.md`). It fixes one missing diagnostic: in a K&R
-definition, a later declaration in the parameter declaration list could
-take the address of a `register` parameter, as in
-`void f(r, a) register int r; int a[sizeof &r]; {}` (C11 6.5.3.2p1). The
-download instructions now use `SHA256SUMS`, because the release publishes
-no per-archive `.sha256` files. The README and the 1.0.1 release notes
-include a notice that hcc is an experiment in agentic software
-engineering, is not intended to replace GCC or Clang, and is provided
-"as is" under the MIT licence. The next step in `PLAN.md` is step 16, an
-improved specification for a fresh rebuild.
+a bug-fix release (`Cargo.toml` 1.0.1, `docs/release-notes/v1.0.1.md`).
+It fixes one missing diagnostic: in a K&R definition, a later declaration
+in the parameter declaration list could take the address of a `register`
+parameter, as in `void f(r, a) register int r; int a[sizeof &r]; {}`
+(C11 6.5.3.2p1). The download instructions now use `SHA256SUMS`, because
+the release publishes no per-archive `.sha256` files. The README and the
+1.0.1 release notes include a notice that hcc is an experiment in
+agentic software engineering, is not intended to replace GCC or Clang,
+and is provided "as is" under the MIT licence. The next step in `PLAN.md`
+is step 16, an improved specification for a fresh rebuild.
+
+## Coding standards
+
+[CODING_STANDARDS.md](CODING_STANDARDS.md) records the rules already
+enforced in CI and review (formatting, Clippy, writing a failing test
+first, diagnostic style, the clean-room rule, and the documentation-claims
+check) and soft guidelines for function and file size, which are not CI
+gates. When a kind of review finding recurs, it should be added there.
 
 ## Release 1.0
 

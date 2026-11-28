@@ -55,6 +55,10 @@ Commit messages say what changed and why, in plain sentences. Diagnostics
 are lower case, name the construct, and quote source spellings with `'...'`
 (`use of undeclared identifier 'x'`).
 
+The [coding standards](CODING_STANDARDS.md) record these rules in one
+place, and the soft guidelines for file and function size (those are not
+CI gates).
+
 ## Reporting a bug
 
 Include the smallest C program that shows the problem, the exact command

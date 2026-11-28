@@ -9,6 +9,13 @@ for each target.
 
 ## [Unreleased]
 
+### Added
+
+- [CODING_STANDARDS.md](CODING_STANDARDS.md), linked from the README and
+  [CONTRIBUTING.md](CONTRIBUTING.md): the rules already enforced in CI
+  and review, and soft guidelines for file and function size (not CI
+  gates).
+
 ## [1.0.1] - 2026-11-26
 
 ### Fixed
