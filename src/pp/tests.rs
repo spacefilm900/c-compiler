@@ -1020,4 +1020,22 @@ fn parser_tokens_share_the_preprocessor_spelling() {
     assert_eq!(tokens[2].kind, TokenKind::LBrack);
     assert!(Rc::ptr_eq(&tokens[0].spelling, &tokens[6].spelling));
     assert!(Rc::ptr_eq(&tokens[5].spelling, &tokens[8].spelling));
+    // Numbers and other tokens that go through the full lexer share it too,
+    // and keep their value.
+    let tokens = preprocess_tokens("42 + 42;\n", "t.c", &options).unwrap();
+    assert_eq!(tokens[0].kind, TokenKind::Int);
+    assert_eq!(tokens[2].value, Some(42));
+    assert!(Rc::ptr_eq(&tokens[0].spelling, &tokens[2].spelling));
+}
+
+#[test]
+fn the_spelling_table_is_empty_after_preprocessing() {
+    // `-E` output lexes token pairs again while it is written; those
+    // spellings are dropped as well.
+    pp("int v0;int v1;\n#define M(x) x x\nM(a)\n");
+    assert_eq!(interned_count(), 0);
+    let mut options = PpOptions::default();
+    options.system_dirs.clear();
+    preprocess_tokens("int a;\n", "t.c", &options).unwrap();
+    assert_eq!(interned_count(), 0);
 }

@@ -115,6 +115,9 @@ impl Default for PpOptions {
 /// Spacing is only required to keep tokens from gluing back together. It does
 /// not match any other preprocessor byte for byte.
 pub fn preprocess(source: &str, filename: &str, options: &PpOptions) -> Result<String, Diagnostic> {
+    // Formatting lexes pairs of tokens again to see whether they glue, so
+    // the spelling table is emptied only after it.
+    let _spellings = Spellings::scope();
     let tokens = run(source, filename, options)?;
     Ok(format_tokens(&tokens))
 }
@@ -263,6 +266,10 @@ fn convert_token(tok: &PpToken) -> Result<Token, Diagnostic> {
             converted.line = tok.line;
             converted.column = tok.column;
             converted.filename = Rc::clone(&tok.display);
+            if digraph.is_none() {
+                // Keep the lexer's value and type, and share the spelling.
+                converted.spelling = Rc::clone(&tok.spelling);
+            }
             Ok(converted)
         }
         Err(mut err) => {

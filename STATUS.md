@@ -103,7 +103,7 @@ The last pull request before the tag answers an outside review of the 1.0 candid
 - `docs/C11_CONFORMANCE.md` audits N1570 clauses 5 to 7. It has 288 probes (54 programs and 234 constraint or syntax violations); 286 pass and 2 are a known gap. A further 20 cases that the standard leaves undefined or implementation-defined are counted apart; hcc diagnoses all of them. The audit found and fixed two wrong behaviours: macro rescanning past the end of a replacement list, and the 6.9.2p2 tentative definition `int a[];`. It also found 12 accepted constraint violations: 10 now give diagnostics, and the 2 inline-definition cases of 6.7.4p3 remain a known gap. CI runs the probes.
 - `reports/release-1.0/README.md` records the rerun of every suite on the release-candidate commit `2e80ec0`. Everything passed: 286/288 conformance probes (the 2 are the 6.7.4p3 gap), the harness, WACC, GCC torture, the six big programs, all 969 adversarial cases at `-O0` and `-O2`, and Csmith (2,775 and 2,774 compared) and YARPGen (1,651 compared), with 0 mismatches.
 
-Unit tests: 379. Harness: 231/231.
+Unit tests: 380. Harness: 231/231.
 
 ## Current milestone
 

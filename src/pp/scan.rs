@@ -572,6 +572,12 @@ thread_local! {
         std::cell::RefCell::new(FxHashSet::default());
 }
 
+/// How many spellings the table holds (for tests).
+#[cfg(test)]
+pub(super) fn interned_count() -> usize {
+    SPELLINGS.with(|set| set.borrow().len())
+}
+
 /// The shared copy of `spelling`, made on first use.
 pub(super) fn intern(spelling: &str) -> Rc<str> {
     SPELLINGS.with(|set| {
